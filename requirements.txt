@@ -1,1 +1,6 @@
-streamlitpandaspython-docxpypdfpython-dateutildocx2pdf
+streamlit
+python-docx
+Pillow
+docx2pdf
+gspread
+google-auth
