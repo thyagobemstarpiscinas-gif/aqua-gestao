@@ -2,21 +2,25 @@ import os
 import re
 import json
 import shutil
-import platform
 from datetime import date, datetime, timedelta
+import platform
 from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
 from docx import Document
+from docx.shared import Inches
+from PIL import Image, ImageOps
 
 # =========================================
 # CONFIGURAÇÃO GERAL
 # =========================================
 
 APP_TITLE = "Aqua Gestão – Controle Técnico de Piscinas"
-RESPONSAVEL_TECNICO = "Thyago Fernando da Silveira"
-CRQ = "CRQ 024025748"
+RESPONSAVEL_TÉCNICO = "Thyago Fernando da Silveira"
+RESPONSAVEL_TECNICO_ASSINATURA = "Thyago Fernando da Silveira | CRQ 024025748 | Técnico em Química"
+CRQ = "CRQ-MG 2ª Região | CRQ 024025748"
+CRQ_NUMERO = "024025748"
 QUALIFICACAO_RT = "Técnico em Química"
 CERTIFICACOES_RT = "NR-26 e NR-6"
 EMPRESA_RT = "Aqua Gestão – Controle Técnico de Piscinas"
@@ -28,6 +32,16 @@ TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
 DADOS_JSON_NAME = "dados_condominio.json"
 MANIFEST_JSON_NAME = "manifest.json"
+ANALISES_PADRAO = 9
+ANALISES_MAX_SUGERIDO = 40
+
+ASSINATURA_RT_CANDIDATOS = [
+    BASE_DIR / "assinatura_rt.png",
+    BASE_DIR / "assinatura_rt.jpg",
+    BASE_DIR / "assinatura_rt.jpeg",
+    BASE_DIR / "assets" / "assinatura_rt.png",
+    BASE_DIR / "images" / "assinatura_rt.png",
+]
 
 LOGO_CANDIDATOS = [
     BASE_DIR / "aqua_gestao_logo.png",
@@ -247,28 +261,6 @@ st.markdown(
             font-size: 0.84rem;
             margin-top: 8px;
         }
-
-        .doc-chip {
-            display: inline-block;
-            padding: 5px 9px;
-            border-radius: 999px;
-            font-size: 0.75rem;
-            margin-right: 6px;
-            margin-top: 6px;
-            background: #eef6ff;
-            color: #174d87;
-            border: 1px solid #d5e6fb;
-        }
-
-        .health-ok {
-            color: #1d7a43;
-            font-weight: 600;
-        }
-
-        .health-no {
-            color: #b42318;
-            font-weight: 600;
-        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -277,6 +269,32 @@ st.markdown(
 # =========================================
 # FUNÇÕES AUXILIARES GERAIS
 # =========================================
+
+def encontrar_assinatura_rt() -> Path | None:
+    for caminho in ASSINATURA_RT_CANDIDATOS:
+        if caminho.exists() and caminho.is_file():
+            return caminho
+    return None
+
+
+def preparar_assinatura_rt_para_relatorio() -> Path | None:
+    assinatura = encontrar_assinatura_rt()
+    if not assinatura:
+        return None
+
+    destino = GENERATED_DIR / "_assinatura_rt_relatorio.png"
+    try:
+        with Image.open(assinatura) as img:
+            img = img.convert("RGBA")
+            fundo = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            fundo.alpha_composite(img)
+            fundo = fundo.convert("RGB")
+            fundo = ImageOps.expand(fundo, border=18, fill="white")
+            fundo.save(destino, format="PNG")
+        return destino
+    except Exception:
+        return assinatura
+
 
 def encontrar_logo() -> Path | None:
     for caminho in LOGO_CANDIDATOS:
@@ -317,10 +335,6 @@ def hoje_br() -> str:
     return date.today().strftime("%d/%m/%Y")
 
 
-def agora_br() -> str:
-    return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-
-
 def apenas_digitos(texto: str) -> str:
     return re.sub(r"\D", "", texto or "")
 
@@ -333,12 +347,12 @@ def formatar_data_hora_arquivo(ts: float) -> str:
 def classificar_arquivo(nome_arquivo: str) -> tuple[str, str]:
     nome_lower = nome_arquivo.lower()
 
-    if "relatorio" in nome_lower:
-        tipo_doc = "Relatório"
-    elif "contrato" in nome_lower:
+    if "contrato" in nome_lower:
         tipo_doc = "Contrato"
     elif "aditivo" in nome_lower:
         tipo_doc = "Aditivo"
+    elif "relatorio" in nome_lower:
+        tipo_doc = "Relatório"
     else:
         tipo_doc = "Documento"
 
@@ -536,6 +550,15 @@ def valor_para_template(texto: str) -> str:
     return f"R$ {fmt}" if fmt else ""
 
 
+def on_change_nome_condominio():
+    """Salva automaticamente o JSON quando o usuário sai do campo nome_condominio."""
+    nome = (st.session_state.get("nome_condominio") or "").strip()
+    if nome:
+        pasta = GENERATED_DIR / slugify_nome(nome)
+        pasta.mkdir(parents=True, exist_ok=True)
+        salvar_dados_condominio(pasta, salvar_snapshot_formulario())
+
+
 def on_change_cpf():
     st.session_state.cpf_sindico = formatar_cpf(st.session_state.get("cpf_sindico", ""))
 
@@ -566,6 +589,16 @@ def on_change_data_fim():
 
 def on_change_data_assinatura():
     st.session_state.data_assinatura = formatar_data_digitada(st.session_state.get("data_assinatura", ""))
+
+
+def on_change_rel_documento_representante():
+    atual = st.session_state.get("rel_cpf_cnpj_representante", "")
+    dig = apenas_digitos(atual)
+    if len(dig) <= 11:
+        st.session_state.rel_cpf_cnpj_representante = formatar_cpf(atual)
+    else:
+        st.session_state.rel_cpf_cnpj_representante = formatar_cnpj(atual)
+
 
 # =========================================
 # VALIDAÇÕES REAIS
@@ -629,28 +662,6 @@ def validar_email(email: str) -> bool:
     return re.match(padrao, email) is not None
 
 
-def validar_campos_obrigatorios(dados: dict) -> list[str]:
-    mapa = {
-        "DATA_ASSINATURA": "Data de assinatura",
-        "NOME_CONDOMINIO": "Nome do condomínio",
-        "CNPJ_CONDOMINIO": "CNPJ do condomínio",
-        "ENDERECO_CONDOMINIO": "Endereço do condomínio",
-        "NOME_SINDICO": "Nome do síndico / representante",
-        "CPF_SINDICO": "CPF do síndico / representante",
-        "VALOR_MENSAL": "Valor mensal",
-        "VALOR_ADITIVO": "Valor com desconto/aditivo",
-        "DATA_INICIO": "Data de início",
-        "DATA_FIM": "Data de fim",
-    }
-
-    faltando = []
-    for chave, rotulo in mapa.items():
-        if not (dados.get(chave) or "").strip():
-            faltando.append(rotulo)
-
-    return faltando
-
-
 def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     erros = []
 
@@ -667,101 +678,11 @@ def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     if email_cliente.strip() and not validar_email(email_cliente):
         erros.append("E-mail inválido.")
 
-    dt_inicio = parse_data_br(dados["DATA_INICIO"])
-    dt_fim = parse_data_br(dados["DATA_FIM"])
-    if dt_inicio and dt_fim and dt_fim < dt_inicio:
-        erros.append("A data de fim não pode ser anterior à data de início.")
-
     return erros
 
-# =========================================
-# MANIFEST / AUDITORIA DOCUMENTAL
-# =========================================
-
-def caminho_manifest(pasta_condominio: Path) -> Path:
-    return pasta_condominio / MANIFEST_JSON_NAME
-
-
-def carregar_manifest(pasta_condominio: Path) -> dict:
-    caminho = caminho_manifest(pasta_condominio)
-    if not caminho.exists():
-        return {
-            "condominio": "",
-            "criado_em": agora_br(),
-            "atualizado_em": agora_br(),
-            "documentos": [],
-        }
-    try:
-        with open(caminho, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        if "documentos" not in dados or not isinstance(dados["documentos"], list):
-            dados["documentos"] = []
-        return dados
-    except Exception:
-        return {
-            "condominio": "",
-            "criado_em": agora_br(),
-            "atualizado_em": agora_br(),
-            "documentos": [],
-        }
-
-
-def salvar_manifest(pasta_condominio: Path, manifest: dict):
-    manifest["atualizado_em"] = agora_br()
-    with open(caminho_manifest(pasta_condominio), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
-
-def registrar_documento_manifest(
-    pasta_condominio: Path,
-    nome_condominio: str,
-    tipo: str,
-    arquivo_docx: Path | None,
-    arquivo_pdf: Path | None,
-    pdf_gerado: bool,
-    erro_pdf: str | None,
-    dados_utilizados: dict,
-):
-    manifest = carregar_manifest(pasta_condominio)
-    manifest["condominio"] = nome_condominio
-
-    registro = {
-        "registrado_em": agora_br(),
-        "tipo": tipo,
-        "arquivo_docx": arquivo_docx.name if arquivo_docx and arquivo_docx.exists() else "",
-        "arquivo_pdf": arquivo_pdf.name if arquivo_pdf and arquivo_pdf.exists() else "",
-        "pdf_gerado": pdf_gerado,
-        "erro_pdf": erro_pdf or "",
-        "data_inicio": dados_utilizados.get("DATA_INICIO", ""),
-        "data_fim": dados_utilizados.get("DATA_FIM", ""),
-        "valor_mensal": dados_utilizados.get("VALOR_MENSAL", ""),
-        "valor_aditivo": dados_utilizados.get("VALOR_ADITIVO", ""),
-    }
-    manifest["documentos"].append(registro)
-    salvar_manifest(pasta_condominio, manifest)
-
-
-def resumo_manifest(pasta_condominio: Path) -> dict:
-    manifest = carregar_manifest(pasta_condominio)
-    docs = manifest.get("documentos", [])
-
-    contratos = [d for d in docs if d.get("tipo") == "Contrato"]
-    aditivos = [d for d in docs if d.get("tipo") == "Aditivo"]
-    relatorios = [d for d in docs if d.get("tipo") == "Relatório"]
-
-    ultimo = docs[-1] if docs else None
-
-    return {
-        "total": len(docs),
-        "contratos": len(contratos),
-        "aditivos": len(aditivos),
-        "relatorios": len(relatorios),
-        "ultimo_registro": ultimo,
-        "manifest_atualizado_em": manifest.get("atualizado_em", ""),
-    }
 
 # =========================================
-# PERSISTÊNCIA DE DADOS DO CONDOMÍNIO
+# SNAPSHOT / MANIFEST / CADASTRO
 # =========================================
 
 def salvar_snapshot_formulario() -> dict:
@@ -771,20 +692,162 @@ def salvar_snapshot_formulario() -> dict:
         "endereco_condominio": (st.session_state.get("endereco_condominio") or "").strip(),
         "nome_sindico": (st.session_state.get("nome_sindico") or "").strip(),
         "cpf_sindico": (st.session_state.get("cpf_sindico") or "").strip(),
-        "valor_mensal": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
-        "valor_aditivo": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
+        "valor_mensal": (st.session_state.get("valor_mensal") or "").strip(),
+        "valor_aditivo": (st.session_state.get("valor_aditivo") or "").strip(),
         "data_inicio": (st.session_state.get("data_inicio") or "").strip(),
         "data_fim": (st.session_state.get("data_fim") or "").strip(),
         "data_assinatura": (st.session_state.get("data_assinatura") or "").strip(),
         "whatsapp_cliente": (st.session_state.get("whatsapp_cliente") or "").strip(),
         "email_cliente": (st.session_state.get("email_cliente") or "").strip(),
         "observacoes_internas": (st.session_state.get("observacoes_internas") or "").strip(),
-        "salvo_em": agora_br(),
-        "responsavel_tecnico": RESPONSAVEL_TECNICO,
-        "crq": CRQ,
-        "marca": APP_TITLE,
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
+        "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
+        "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
+        "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
+        "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
+        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
     }
 
+
+def obter_dosagens_ultimas_relatorio() -> list[dict]:
+    itens = []
+    for i in range(7):
+        itens.append({
+            "produto": (st.session_state.get(f"rel_dos_produto_{i}") or "").strip(),
+            "fabricante_lote": (st.session_state.get(f"rel_dos_lote_{i}") or "").strip(),
+            "quantidade": (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip(),
+            "unidade": (st.session_state.get(f"rel_dos_un_{i}") or "").strip(),
+            "finalidade": (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip(),
+        })
+    return itens
+
+
+def aplicar_dosagens_ultimas_no_relatorio(dados_salvos: dict | None):
+    dosagens = []
+    if isinstance(dados_salvos, dict):
+        dosagens = dados_salvos.get("dosagens_ultimas") or []
+
+    for i in range(7):
+        item = dosagens[i] if i < len(dosagens) and isinstance(dosagens[i], dict) else {}
+        st.session_state[f"rel_dos_produto_{i}"] = (item.get("produto") or "").strip()
+        st.session_state[f"rel_dos_lote_{i}"] = (item.get("fabricante_lote") or "").strip()
+        st.session_state[f"rel_dos_qtd_{i}"] = (item.get("quantidade") or "").strip()
+        st.session_state[f"rel_dos_un_{i}"] = (item.get("unidade") or "").strip()
+        st.session_state[f"rel_dos_finalidade_{i}"] = (item.get("finalidade") or "").strip()
+
+
+def obter_snapshot_relatorio_independente() -> dict:
+    return {
+        "nome_condominio": (st.session_state.get("rel_nome_condominio") or "").strip(),
+        "cnpj_condominio": (st.session_state.get("rel_cnpj_condominio") or "").strip(),
+        "endereco_condominio": (st.session_state.get("rel_endereco_condominio") or "").strip(),
+        "nome_sindico": (st.session_state.get("rel_representante") or "").strip(),
+        "cpf_sindico": (st.session_state.get("rel_cpf_cnpj_representante") or "").strip(),
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
+        "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
+        "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
+        "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
+        "ultima_origem_relatorio": (st.session_state.get("rel_tipo_atendimento") or "").strip(),
+        "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
+        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+    }
+
+
+def sincronizar_relatorio_com_cadastro():
+    if not (st.session_state.get("rel_nome_condominio") or "").strip():
+        st.session_state.rel_nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
+    if not (st.session_state.get("rel_cnpj_condominio") or "").strip():
+        st.session_state.rel_cnpj_condominio = (st.session_state.get("cnpj_condominio") or "").strip()
+    if not (st.session_state.get("rel_endereco_condominio") or "").strip():
+        st.session_state.rel_endereco_condominio = (st.session_state.get("endereco_condominio") or "").strip()
+    if not (st.session_state.get("rel_representante") or "").strip():
+        st.session_state.rel_representante = (st.session_state.get("nome_sindico") or "").strip()
+    if not (st.session_state.get("rel_cpf_cnpj_representante") or "").strip():
+        cpf = (st.session_state.get("cpf_sindico") or "").strip()
+        cnpj = (st.session_state.get("cnpj_condominio") or "").strip()
+        st.session_state.rel_cpf_cnpj_representante = cpf or cnpj
+
+
+def carregar_dados_cadastro_no_relatorio():
+    st.session_state.rel_nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
+    st.session_state.rel_cnpj_condominio = (st.session_state.get("cnpj_condominio") or "").strip()
+    st.session_state.rel_endereco_condominio = (st.session_state.get("endereco_condominio") or "").strip()
+    st.session_state.rel_representante = (st.session_state.get("nome_sindico") or "").strip()
+    st.session_state.rel_cpf_cnpj_representante = (st.session_state.get("cpf_sindico") or "").strip() or (st.session_state.get("cnpj_condominio") or "").strip()
+    aplicar_dosagens_ultimas_no_relatorio(salvar_snapshot_formulario())
+
+
+def salvar_relatorio_no_cadastro_principal():
+    st.session_state.nome_condominio = (st.session_state.get("rel_nome_condominio") or "").strip()
+    st.session_state.cnpj_condominio = (st.session_state.get("rel_cnpj_condominio") or "").strip()
+    st.session_state.endereco_condominio = (st.session_state.get("rel_endereco_condominio") or "").strip()
+    st.session_state.nome_sindico = (st.session_state.get("rel_representante") or "").strip()
+    doc = (st.session_state.get("rel_cpf_cnpj_representante") or "").strip()
+    dig = apenas_digitos(doc)
+    if len(dig) == 11:
+        st.session_state.cpf_sindico = formatar_cpf(doc)
+    elif len(dig) == 14:
+        st.session_state.cnpj_condominio = formatar_cnpj(doc)
+
+
+def validar_campos_obrigatorios(dados: dict) -> list[str]:
+    campos = {
+        "Nome do condomínio": dados.get("NOME_CONDOMINIO", ""),
+        "CNPJ do condomínio": dados.get("CNPJ_CONDOMINIO", ""),
+        "Endereço do condomínio": dados.get("ENDERECO_CONDOMINIO", ""),
+        "Nome do síndico / representante": dados.get("NOME_SINDICO", ""),
+        "CPF do síndico / representante": dados.get("CPF_SINDICO", ""),
+        "Valor mensal": dados.get("VALOR_MENSAL", ""),
+        "Data de início": dados.get("DATA_INICIO", ""),
+        "Data de fim": dados.get("DATA_FIM", ""),
+        "Data de assinatura": dados.get("DATA_ASSINATURA", ""),
+    }
+    faltando = [nome for nome, valor in campos.items() if not (valor or "").strip()]
+    return faltando
+
+
+def carregar_manifest_condominio(pasta_condominio: Path) -> dict:
+    caminho = pasta_condominio / MANIFEST_JSON_NAME
+    if caminho.exists():
+        try:
+            return json.loads(caminho.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"condominio": pasta_condominio.name, "documentos": []}
+
+
+def salvar_manifest_condominio(pasta_condominio: Path, manifest: dict):
+    caminho = pasta_condominio / MANIFEST_JSON_NAME
+    caminho.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def registrar_documento_manifest(pasta_condominio: Path, nome_condominio: str, tipo: str, arquivo_docx: Path | None, arquivo_pdf: Path | None, pdf_gerado: bool, erro_pdf: str | None, dados_utilizados: dict | None = None, extras: dict | None = None):
+    manifest = carregar_manifest_condominio(pasta_condominio)
+    documento = {
+        "tipo": tipo,
+        "nome_condominio": nome_condominio,
+        "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "arquivo_docx": arquivo_docx.name if arquivo_docx and arquivo_docx.exists() else None,
+        "arquivo_pdf": arquivo_pdf.name if arquivo_pdf and arquivo_pdf.exists() else None,
+        "pdf_gerado": bool(pdf_gerado),
+        "erro_pdf": erro_pdf,
+        "dados_utilizados": dados_utilizados or {},
+        "extras": extras or {},
+    }
+    manifest.setdefault("documentos", []).append(documento)
+    manifest["ultimo_update"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    salvar_manifest_condominio(pasta_condominio, manifest)
+
+
+def obter_ultimo_documento_manifest(pasta_condominio: Path, tipo: str) -> dict | None:
+    manifest = carregar_manifest_condominio(pasta_condominio)
+    docs = [d for d in manifest.get("documentos", []) if d.get("tipo") == tipo]
+    return docs[-1] if docs else None
+
+
+# =========================================
+# PERSISTÊNCIA DE DADOS DO CONDOMÍNIO
+# =========================================
 
 def salvar_dados_condominio(pasta_condominio: Path, dados_para_salvar: dict):
     caminho_json = pasta_condominio / DADOS_JSON_NAME
@@ -817,7 +880,14 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.whatsapp_cliente = dados_salvos.get("whatsapp_cliente", "")
     st.session_state.email_cliente = dados_salvos.get("email_cliente", "")
     st.session_state.observacoes_internas = dados_salvos.get("observacoes_internas", "")
+    st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Emitida")
+    st.session_state.rel_art_numero = dados_salvos.get("rel_art_numero", "")
+    st.session_state.rel_art_inicio = dados_salvos.get("rel_art_inicio", "")
+    st.session_state.rel_art_fim = dados_salvos.get("rel_art_fim", "")
     st.session_state.origem_dados_carregados = dados_salvos.get("nome_condominio", "")
+
+    carregar_dados_cadastro_no_relatorio()
+    aplicar_dosagens_ultimas_no_relatorio(dados_salvos)
 
 
 def preparar_cadastro_legado(nome_pasta: str):
@@ -874,12 +944,8 @@ def salvar_cadastro_sem_gerar_documentos() -> tuple[bool, str]:
     assert pasta_condominio is not None
     pasta_condominio.mkdir(parents=True, exist_ok=True)
     salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
-
-    manifest = carregar_manifest(pasta_condominio)
-    manifest["condominio"] = nome_condominio
-    salvar_manifest(pasta_condominio, manifest)
-
     return True, f"Cadastro salvo/atualizado com sucesso em '{pasta_condominio.name}'."
+
 
 # =========================================
 # HISTÓRICO / PAINEL
@@ -892,7 +958,7 @@ def listar_arquivos_pasta(pasta: Path):
     arquivos = []
     for p in pasta.iterdir():
         if p.is_file():
-            if p.name in (DADOS_JSON_NAME, MANIFEST_JSON_NAME):
+            if p.name in {DADOS_JSON_NAME, MANIFEST_JSON_NAME}:
                 continue
 
             tipo_doc, tipo_ext = classificar_arquivo(p.name)
@@ -931,7 +997,6 @@ def listar_historico():
         dados_salvos = carregar_dados_condominio(pasta)
         data_fim = dados_salvos.get("data_fim", "") if dados_salvos else ""
         status = status_vencimento(data_fim)
-        resumo_docs = resumo_manifest(pasta)
 
         historico.append(
             {
@@ -942,7 +1007,6 @@ def listar_historico():
                 "tem_dados_salvos": (pasta / DADOS_JSON_NAME).exists(),
                 "status_vencimento": status,
                 "data_fim": data_fim,
-                "resumo_docs": resumo_docs,
             }
         )
     return historico
@@ -958,7 +1022,6 @@ def listar_painel_vencimentos(alerta_dias: int):
     for pasta in pastas:
         dados_salvos = carregar_dados_condominio(pasta)
         arquivos = listar_arquivos_pasta(pasta)
-        resumo_docs = resumo_manifest(pasta)
 
         nome_exibicao = pasta.name
         data_fim = ""
@@ -996,7 +1059,6 @@ def listar_painel_vencimentos(alerta_dias: int):
                 "ultimo_contrato": ultimo_contrato,
                 "ultimo_aditivo": ultimo_aditivo,
                 "ultimo_relatorio": ultimo_relatorio,
-                "resumo_docs": resumo_docs,
             }
         )
 
@@ -1056,12 +1118,6 @@ def filtrar_itens_painel(itens: list, termo: str, filtro_status: str):
 
 def abrir_pasta_windows(caminho: Path):
     try:
-        if not caminho.exists():
-            st.error("A pasta não foi encontrada.")
-            return
-        if not sistema_e_windows():
-            st.error("Esta função de abertura direta foi preparada para ambiente Windows.")
-            return
         os.startfile(str(caminho))
     except Exception as e:
         st.error(f"Não foi possível abrir a pasta no Windows: {e}")
@@ -1069,12 +1125,6 @@ def abrir_pasta_windows(caminho: Path):
 
 def abrir_arquivo_windows(caminho: Path):
     try:
-        if not caminho.exists():
-            st.error("O arquivo não foi encontrado.")
-            return
-        if not sistema_e_windows():
-            st.error("Esta função de abertura direta foi preparada para ambiente Windows.")
-            return
         os.startfile(str(caminho))
     except Exception as e:
         st.error(f"Não foi possível abrir o arquivo: {e}")
@@ -1094,6 +1144,7 @@ def deletar_arquivo_individual(arquivo: Path):
         restantes = list(pasta.iterdir())
         if len(restantes) == 0:
             pasta.rmdir()
+
 
 # =========================================
 # DOCX / PLACEHOLDERS
@@ -1156,52 +1207,93 @@ def adicionar_espaco(doc: Document, qtd: int = 1):
         doc.add_paragraph("")
 
 
-def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str):
+def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str, nome_condominio: str = "", cnpj_condominio: str = ""):
+    from docx.shared import Pt, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
     adicionar_espaco(doc, 2)
 
+    # Data — parágrafo simples centralizado, fora de qualquer tabela
     p_local = doc.add_paragraph()
-    p_local.alignment = 1
-    p_local.add_run(f"Uberlândia/MG, {hoje_br()}.")
+    p_local.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_data = p_local.add_run(f"Uberlândia/MG, {hoje_br()}.")
+    run_data.font.size = Pt(11)
 
     adicionar_espaco(doc, 2)
 
-    tabela = doc.add_table(rows=2, cols=2)
-    tabela.autofit = True
+    def preencher_celula(cell, linhas, negrito_idx=None):
+        negrito_idx = negrito_idx or []
+        cell.paragraphs[0].clear()
+        primeira = True
+        for i, linha in enumerate(linhas):
+            p = cell.paragraphs[0] if primeira else cell.add_paragraph()
+            primeira = False
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(linha)
+            run.font.size = Pt(9)
+            run.bold = (i in negrito_idx)
 
-    cell_00 = tabela.cell(0, 0)
-    cell_01 = tabela.cell(0, 1)
-    cell_10 = tabela.cell(1, 0)
-    cell_11 = tabela.cell(1, 1)
+    col_w = Cm(6)
 
-    cell_00.text = "__________________________________\nAQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS\nCONTRATADA"
-    cell_01.text = f"__________________________________\n{nome_sindico}\nCONTRATANTE"
-
-    cell_10.text = "__________________________________\nTestemunha 1\nNome:\nCPF:"
-    cell_11.text = "__________________________________\nTestemunha 2\nNome:\nCPF:"
-
-    for row in tabela.rows:
+    # ---- Tabela: CONTRATADA | CONTRATANTE ----
+    tab1 = doc.add_table(rows=1, cols=2)
+    tab1.autofit = False
+    for row in tab1.rows:
         for cell in row.cells:
-            for p in cell.paragraphs:
-                p.alignment = 1
+            cell.width = col_w
+
+    linhas_contratada = [
+        "_" * 28,
+        "AQUA GESTÃO",
+        "CONTROLE TÉCNICO DE PISCINAS",
+        RESPONSAVEL_TÉCNICO,
+        CRQ,
+        "CONTRATADA",
+    ]
+    preencher_celula(tab1.cell(0, 0), linhas_contratada, negrito_idx=[1, 2, 5])
+
+    # Monta linhas do CONTRATANTE — nome quebra por palavras com até 32 chars/linha
+    linhas_contratante = ["_" * 28]
+    if nome_condominio:
+        palavras = nome_condominio.upper().split()
+        linha_atual = ""
+        for palavra in palavras:
+            teste = (linha_atual + " " + palavra).strip()
+            if len(teste) <= 32:
+                linha_atual = teste
+            else:
+                if linha_atual:
+                    linhas_contratante.append(linha_atual)
+                linha_atual = palavra
+        if linha_atual:
+            linhas_contratante.append(linha_atual)
+    if cnpj_condominio:
+        linhas_contratante.append(f"CNPJ: {cnpj_condominio}")
+    if nome_sindico:
+        linhas_contratante.append(nome_sindico)
+    linhas_contratante.append("CONTRATANTE")
+    preencher_celula(tab1.cell(0, 1), linhas_contratante, negrito_idx=[1, len(linhas_contratante) - 1])
+
+    adicionar_espaco(doc, 2)
+
+    # ---- Tabela de testemunhas ----
+    tab2 = doc.add_table(rows=1, cols=2)
+    tab2.autofit = False
+    for row in tab2.rows:
+        for cell in row.cells:
+            cell.width = col_w
+
+    preencher_celula(tab2.cell(0, 0), ["_" * 28, "Testemunha 1", "Nome:", "CPF:"])
+    preencher_celula(tab2.cell(0, 1), ["_" * 28, "Testemunha 2", "Nome:", "CPF:"])
 
 
 def converter_docx_para_pdf(docx_path: Path, pdf_path: Path):
     try:
-        if not sistema_e_windows():
-            return False, "Conversão DOCX -> PDF configurada para uso no Windows com Word."
-
-        if not docx_path.exists():
-            return False, "Arquivo DOCX não encontrado para conversão."
-
         import pythoncom
         from docx2pdf import convert
 
         pythoncom.CoInitialize()
         convert(str(docx_path), str(pdf_path))
-
-        if not pdf_path.exists():
-            return False, "Conversão executada, mas o PDF não foi localizado ao final."
-
         return True, None
     except Exception as e:
         return False, str(e)
@@ -1213,6 +1305,8 @@ def gerar_documento(
     placeholders: dict[str, str],
     incluir_assinaturas: bool = True,
     nome_sindico: str = "",
+    nome_condominio: str = "",
+    cnpj_condominio: str = "",
 ):
     if not template_path.exists():
         raise FileNotFoundError(f"Template não encontrado: {template_path.name}")
@@ -1221,373 +1315,10 @@ def gerar_documento(
     substituir_placeholders_doc(doc, placeholders)
 
     if incluir_assinaturas:
-        adicionar_bloco_assinaturas(doc, nome_sindico=nome_sindico)
+        adicionar_bloco_assinaturas(doc, nome_sindico=nome_sindico, nome_condominio=nome_condominio, cnpj_condominio=cnpj_condominio)
 
     doc.save(str(output_docx))
 
-# =========================================
-# RELATÓRIO MENSAL DE RT
-# =========================================
-
-def normalizar_texto(texto: str) -> str:
-    texto = (texto or "").lower()
-    mapa = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüç", "aaaaaeeeeiiiiooooouuuuc")
-    return texto.translate(mapa)
-
-
-def set_cell_text(cell, texto: str):
-    texto = texto if texto is not None else ""
-    if cell.paragraphs:
-        primeira = True
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.text = ""
-            if primeira:
-                if p.runs:
-                    p.runs[0].text = str(texto)
-                else:
-                    p.add_run(str(texto))
-                primeira = False
-    else:
-        cell.text = str(texto)
-
-
-def encontrar_tabela_por_keywords(doc: Document, keywords: list[str]):
-    kws = [normalizar_texto(k) for k in keywords]
-    melhor = None
-    melhor_score = -1
-    for table in doc.tables:
-        conteudo = " ".join(normalizar_texto(c.text) for row in table.rows[:3] for c in row.cells)
-        score = sum(1 for k in kws if k in conteudo)
-        if score > melhor_score:
-            melhor = table
-            melhor_score = score
-    return melhor if melhor_score > 0 else None
-
-
-def preencher_tabela_generica(table, rows_data: list[list[str]], start_row: int = 1):
-    if table is None:
-        return False
-    total_cols = max((len(r.cells) for r in table.rows), default=0)
-    if total_cols == 0:
-        return False
-    for idx, row_data in enumerate(rows_data, start=start_row):
-        if idx >= len(table.rows):
-            table.add_row()
-        row = table.rows[idx]
-        for c in range(total_cols):
-            valor = row_data[c] if c < len(row_data) else ""
-            set_cell_text(row.cells[c], valor)
-    return True
-
-
-def substituir_rotulo_em_paragrafos(container, mapa_rotulos: dict[str, str]) -> int:
-    alteracoes = 0
-    paragrafos = []
-    if hasattr(container, "paragraphs"):
-        paragrafos.extend(container.paragraphs)
-    if hasattr(container, "tables"):
-        for t in container.tables:
-            for row in t.rows:
-                for cell in row.cells:
-                    paragrafos.extend(cell.paragraphs)
-    for p in paragrafos:
-        txt_norm = normalizar_texto(p.text)
-        for rotulo, valor in mapa_rotulos.items():
-            if normalizar_texto(rotulo) in txt_norm and valor:
-                novo = f"{rotulo}: {valor}"
-                for run in p.runs:
-                    run.text = ""
-                if p.runs:
-                    p.runs[0].text = novo
-                else:
-                    p.add_run(novo)
-                alteracoes += 1
-                break
-    return alteracoes
-
-
-def coletar_analises_relatorio() -> list[dict]:
-    itens = []
-    for i in range(10):
-        itens.append({
-            "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
-            "ph": (st.session_state.get(f"rel_analise_ph_{i}") or "").strip(),
-            "cloro_livre": (st.session_state.get(f"rel_analise_cl_{i}") or "").strip(),
-            "cloro_total": (st.session_state.get(f"rel_analise_ct_{i}") or "").strip(),
-            "alcalinidade": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
-            "dureza": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
-            "cianurico": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
-            "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
-        })
-    return itens
-
-
-def coletar_dosagens_relatorio() -> list[dict]:
-    itens = []
-    for i in range(7):
-        itens.append({
-            "produto": (st.session_state.get(f"rel_dos_produto_{i}") or "").strip(),
-            "fabricante_lote": (st.session_state.get(f"rel_dos_lote_{i}") or "").strip(),
-            "quantidade": (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip(),
-            "unidade": (st.session_state.get(f"rel_dos_un_{i}") or "").strip(),
-            "finalidade": (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip(),
-        })
-    return itens
-
-
-def coletar_recomendacoes_relatorio() -> list[dict]:
-    itens = []
-    for i in range(5):
-        itens.append({
-            "recomendacao": (st.session_state.get(f"rel_rec_texto_{i}") or "").strip(),
-            "prazo": (st.session_state.get(f"rel_rec_prazo_{i}") or "").strip(),
-            "responsavel": (st.session_state.get(f"rel_rec_resp_{i}") or "").strip(),
-        })
-    return itens
-
-
-def coletar_conformidades_relatorio() -> dict:
-    return {
-        "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
-        "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
-        "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
-    }
-
-
-def montar_dados_relatorio() -> dict:
-    nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
-    representante = (st.session_state.get("nome_sindico") or "").strip()
-    dados_base = salvar_snapshot_formulario()
-    return {
-        "empresa_rt": EMPRESA_RT,
-        "responsavel_tecnico": RESPONSAVEL_TECNICO,
-        "crq": CRQ,
-        "qualificacao": QUALIFICACAO_RT,
-        "certificacoes": CERTIFICACOES_RT,
-        "nome_condominio": nome_condominio,
-        "cnpj_condominio": dados_base.get("cnpj_condominio", ""),
-        "endereco_condominio": dados_base.get("endereco_condominio", ""),
-        "representante": representante,
-        "mes_referencia": (st.session_state.get("rel_mes_referencia") or "").strip(),
-        "ano_referencia": (st.session_state.get("rel_ano_referencia") or "").strip(),
-        "art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
-        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
-        "art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
-        "data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()).strip(),
-        "status_agua": (st.session_state.get("rel_status_agua") or "CONFORME").strip(),
-        "diagnostico": (st.session_state.get("rel_diagnostico") or "").strip(),
-        "analises": coletar_analises_relatorio(),
-        "dosagens": coletar_dosagens_relatorio(),
-        "recomendacoes": coletar_recomendacoes_relatorio(),
-        "conformidades": coletar_conformidades_relatorio(),
-    }
-
-
-def validar_relatorio_mensal(dados_relatorio: dict) -> list[str]:
-    erros = []
-    if not dados_relatorio.get("nome_condominio"):
-        erros.append("Informe o nome do condomínio no cadastro antes de gerar o relatório.")
-    if not dados_relatorio.get("mes_referencia"):
-        erros.append("Informe o mês de referência do relatório.")
-    if not dados_relatorio.get("ano_referencia"):
-        erros.append("Informe o ano de referência do relatório.")
-    if not TEMPLATE_RELATORIO.exists():
-        erros.append("O arquivo relatorio_mensal.docx não foi localizado na pasta do projeto.")
-    return erros
-
-
-def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
-    doc.add_page_break()
-    doc.add_paragraph("COMPLEMENTO AUTOMÁTICO – DADOS ESTRUTURADOS DO RELATÓRIO MENSAL")
-    doc.add_paragraph(f"Condomínio: {dados_relatorio['nome_condominio']}")
-    doc.add_paragraph(f"Mês/Ano de referência: {dados_relatorio['mes_referencia']}/{dados_relatorio['ano_referencia']}")
-    doc.add_paragraph(f"ART nº: {dados_relatorio['art_numero']}")
-    doc.add_paragraph(f"Vigência ART: {dados_relatorio['art_inicio']} até {dados_relatorio['art_fim']}")
-    doc.add_paragraph(f"Data de emissão: {dados_relatorio['data_emissao']}")
-    doc.add_paragraph(f"Responsável técnico: {dados_relatorio['responsavel_tecnico']} – {dados_relatorio['qualificacao']} – {dados_relatorio['crq']}")
-    doc.add_paragraph(f"Certificações relevantes: {dados_relatorio['certificacoes']}")
-    doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
-    doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
-
-    doc.add_paragraph("ANÁLISES FÍSICO-QUÍMICAS")
-    t1 = doc.add_table(rows=1, cols=8)
-    headers1 = ["Data", "pH", "Cloro Livre", "Cloro Total", "Alcalinidade", "Dureza Cálcica", "Ácido Cianúrico", "Operador"]
-    for i, h in enumerate(headers1):
-        set_cell_text(t1.rows[0].cells[i], h)
-    linhas = []
-    for a in dados_relatorio["analises"]:
-        linhas.append([a["data"], a["ph"], a["cloro_livre"], a["cloro_total"], a["alcalinidade"], a["dureza"], a["cianurico"], a["operador"]])
-    preencher_tabela_generica(t1, linhas, start_row=1)
-
-    doc.add_paragraph("DOSAGENS DE PRODUTOS QUÍMICOS")
-    t2 = doc.add_table(rows=1, cols=5)
-    headers2 = ["Produto químico", "Fabricante/Lote", "Quantidade", "Unidade", "Finalidade técnica"]
-    for i, h in enumerate(headers2):
-        set_cell_text(t2.rows[0].cells[i], h)
-    linhas = []
-    for d in dados_relatorio["dosagens"]:
-        linhas.append([d["produto"], d["fabricante_lote"], d["quantidade"], d["unidade"], d["finalidade"]])
-    preencher_tabela_generica(t2, linhas, start_row=1)
-
-    doc.add_paragraph("RECOMENDAÇÕES TÉCNICAS")
-    t3 = doc.add_table(rows=1, cols=3)
-    headers3 = ["Recomendação", "Prazo", "Responsável"]
-    for i, h in enumerate(headers3):
-        set_cell_text(t3.rows[0].cells[i], h)
-    linhas = []
-    for r in dados_relatorio["recomendacoes"]:
-        linhas.append([r["recomendacao"], r["prazo"], r["responsavel"]])
-    preencher_tabela_generica(t3, linhas, start_row=1)
-
-    doc.add_paragraph("CONFORMIDADE E SEGURANÇA")
-    doc.add_paragraph(f"NBR 11238: {dados_relatorio['conformidades']['nbr_11238']}")
-    doc.add_paragraph(f"NR-26 / GHS: {dados_relatorio['conformidades']['nr_26']}")
-    doc.add_paragraph(f"NR-06 / EPI: {dados_relatorio['conformidades']['nr_06']}")
-
-
-def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dados_relatorio: dict):
-    doc = Document(str(template_path))
-
-    placeholders = {
-        "{{NOME_CONDOMINIO}}": dados_relatorio["nome_condominio"],
-        "{{CNPJ_CONDOMINIO}}": dados_relatorio["cnpj_condominio"],
-        "{{ENDERECO_CONDOMINIO}}": dados_relatorio["endereco_condominio"],
-        "{{NOME_SINDICO}}": dados_relatorio["representante"],
-        "{{RESPONSAVEL_TECNICO}}": dados_relatorio["responsavel_tecnico"],
-        "{{CRQ}}": dados_relatorio["crq"],
-        "{{QUALIFICACAO_RT}}": dados_relatorio["qualificacao"],
-        "{{CERTIFICACOES_RT}}": dados_relatorio["certificacoes"],
-        "{{EMPRESA_RT}}": dados_relatorio["empresa_rt"],
-        "{{MES_REFERENCIA}}": dados_relatorio["mes_referencia"],
-        "{{ANO_REFERENCIA}}": dados_relatorio["ano_referencia"],
-        "{{ART_NUMERO}}": dados_relatorio["art_numero"],
-        "{{ART_INICIO}}": dados_relatorio["art_inicio"],
-        "{{ART_FIM}}": dados_relatorio["art_fim"],
-        "{{DATA_EMISSAO}}": dados_relatorio["data_emissao"],
-        "{{STATUS_AGUA}}": dados_relatorio["status_agua"],
-        "{{DIAGNOSTICO_TECNICO}}": dados_relatorio["diagnostico"],
-        "{{NBR_11238}}": dados_relatorio["conformidades"]["nbr_11238"],
-        "{{NR_26}}": dados_relatorio["conformidades"]["nr_26"],
-        "{{NR_06}}": dados_relatorio["conformidades"]["nr_06"],
-    }
-    substituir_placeholders_doc(doc, placeholders)
-
-    substituir_rotulo_em_paragrafos(doc, {
-        "Mês de referência": dados_relatorio["mes_referencia"],
-        "Ano de referência": dados_relatorio["ano_referencia"],
-        "ART nº": dados_relatorio["art_numero"],
-        "Vigência da ART": f"{dados_relatorio['art_inicio']} a {dados_relatorio['art_fim']}",
-        "Data de emissão": dados_relatorio["data_emissao"],
-        "Status geral da água": dados_relatorio["status_agua"],
-        "Parecer técnico": dados_relatorio["diagnostico"],
-        "Diagnóstico técnico": dados_relatorio["diagnostico"],
-        "NBR 11238": dados_relatorio["conformidades"]["nbr_11238"],
-        "NR-26": dados_relatorio["conformidades"]["nr_26"],
-        "NR-06": dados_relatorio["conformidades"]["nr_06"],
-        "Responsável Técnico": f"{dados_relatorio['responsavel_tecnico']} - {dados_relatorio['crq']}",
-        "Representante do estabelecimento": dados_relatorio["representante"],
-    })
-
-    analises_rows = [
-        [a["data"], a["ph"], a["cloro_livre"], a["cloro_total"], a["alcalinidade"], a["dureza"], a["cianurico"], a["operador"]]
-        for a in dados_relatorio["analises"]
-    ]
-    dosagens_rows = [
-        [d["produto"], d["fabricante_lote"], d["quantidade"], d["unidade"], d["finalidade"]]
-        for d in dados_relatorio["dosagens"]
-    ]
-    recomendacoes_rows = [
-        [r["recomendacao"], r["prazo"], r["responsavel"]]
-        for r in dados_relatorio["recomendacoes"]
-    ]
-
-    tabela_analises = encontrar_tabela_por_keywords(doc, ["ph", "cloro", "alcalinidade", "cianurico", "operador"])
-    tabela_dosagens = encontrar_tabela_por_keywords(doc, ["produto", "lote", "quantidade", "unidade", "finalidade"])
-    tabela_recomendacoes = encontrar_tabela_por_keywords(doc, ["recomendacao", "prazo", "responsavel"])
-
-    preencheu_alguma = False
-    if tabela_analises:
-        preencheu_alguma = preencher_tabela_generica(tabela_analises, analises_rows, start_row=1) or preencheu_alguma
-    if tabela_dosagens:
-        preencheu_alguma = preencher_tabela_generica(tabela_dosagens, dosagens_rows, start_row=1) or preencheu_alguma
-    if tabela_recomendacoes:
-        preencheu_alguma = preencher_tabela_generica(tabela_recomendacoes, recomendacoes_rows, start_row=1) or preencheu_alguma
-
-    if not preencheu_alguma:
-        append_relatorio_fallback(doc, dados_relatorio)
-
-    doc.save(str(output_docx))
-
-
-def gerar_relatorio_mensal() -> tuple[bool, str]:
-    dados_relatorio = montar_dados_relatorio()
-    erros = validar_relatorio_mensal(dados_relatorio)
-    if erros:
-        return False, " | ".join(erros)
-
-    nome_condominio = dados_relatorio["nome_condominio"]
-    pasta_condominio = GENERATED_DIR / slugify_nome(nome_condominio)
-    pasta_condominio.mkdir(parents=True, exist_ok=True)
-    salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_nome = limpar_nome_arquivo(
-        f"Relatorio_Mensal_RT_{nome_condominio}_{dados_relatorio['mes_referencia']}_{dados_relatorio['ano_referencia']}_{timestamp}"
-    )
-    relatorio_docx = pasta_condominio / f"{base_nome}.docx"
-    relatorio_pdf = pasta_condominio / f"{base_nome}.pdf"
-
-    preencher_relatorio_mensal_docx(TEMPLATE_RELATORIO, relatorio_docx, dados_relatorio)
-    ok_pdf, erro_pdf = converter_docx_para_pdf(relatorio_docx, relatorio_pdf)
-
-    registrar_documento_manifest(
-        pasta_condominio=pasta_condominio,
-        nome_condominio=nome_condominio,
-        tipo="Relatório",
-        arquivo_docx=relatorio_docx,
-        arquivo_pdf=relatorio_pdf,
-        pdf_gerado=ok_pdf,
-        erro_pdf=erro_pdf,
-        dados_utilizados={
-            "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
-            "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
-            "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
-            "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
-        },
-    )
-
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Relatório mensal gerado")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if relatorio_docx.exists():
-            with open(relatorio_docx, "rb") as f:
-                st.download_button(
-                    "Baixar DOCX do relatório",
-                    data=f,
-                    file_name=relatorio_docx.name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True,
-                )
-    with c2:
-        if ok_pdf and relatorio_pdf.exists():
-            with open(relatorio_pdf, "rb") as f:
-                st.download_button(
-                    "Baixar PDF do relatório",
-                    data=f,
-                    file_name=relatorio_pdf.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-        else:
-            st.warning(f"PDF do relatório não gerado. Erro: {erro_pdf}")
-    with c3:
-        if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
-            abrir_pasta_windows(pasta_condominio)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    return True, f"Relatório mensal registrado com sucesso para {nome_condominio}."
 
 # =========================================
 # EXPORTAÇÃO DE CADASTRO
@@ -1597,12 +1328,9 @@ def gerar_html_resumo_cadastro(item: dict) -> str:
     dados = item["dados"] or {}
     status = item["status"]
     nome = item["nome_exibicao"]
-    resumo_docs = item.get("resumo_docs", {})
 
     def val(chave):
         return dados.get(chave, "Não informado") or "Não informado"
-
-    ultimo_registro = resumo_docs.get("ultimo_registro") or {}
 
     html = f"""
     <html>
@@ -1677,27 +1405,13 @@ def gerar_html_resumo_cadastro(item: dict) -> str:
         <div class="box">
             <div class="line"><span class="label">WhatsApp:</span> {val('whatsapp_cliente')}</div>
             <div class="line"><span class="label">E-mail:</span> {val('email_cliente')}</div>
-            <div class="line"><span class="label">Última atualização cadastral:</span> {val('salvo_em')}</div>
-        </div>
-
-        <h2>Controle documental</h2>
-        <div class="box">
-            <div class="line"><span class="label">Total de registros documentais:</span> {resumo_docs.get('total', 0)}</div>
-            <div class="line"><span class="label">Contratos gerados:</span> {resumo_docs.get('contratos', 0)}</div>
-            <div class="line"><span class="label">Aditivos gerados:</span> {resumo_docs.get('aditivos', 0)}</div>
-            <div class="line"><span class="label">Relatórios gerados:</span> {resumo_docs.get('relatorios', 0)}</div>
-            <div class="line"><span class="label">Último registro:</span> {ultimo_registro.get('registrado_em', 'Não informado')}</div>
-            <div class="line"><span class="label">Último tipo:</span> {ultimo_registro.get('tipo', 'Não informado')}</div>
-        </div>
-
-        <h2>Observações internas</h2>
-        <div class="box">
-            <div class="line">{val('observacoes_internas')}</div>
+            <div class="line"><span class="label">Última atualização:</span> {val('salvo_em')}</div>
         </div>
     </body>
     </html>
     """
     return html
+
 
 # =========================================
 # MENSAGENS / LINKS
@@ -1726,7 +1440,7 @@ def montar_mensagem_envio(
         "Permaneço à disposição para quaisquer esclarecimentos.",
         "",
         "Atenciosamente,",
-        f"{RESPONSAVEL_TECNICO}",
+        f"{RESPONSAVEL_TÉCNICO}",
         CRQ,
         "Aqua Gestão – Controle Técnico de Piscinas",
     ]
@@ -1774,6 +1488,7 @@ def componente_copiar(texto: str):
         height=55,
     )
 
+
 # =========================================
 # AÇÕES DO PAINEL
 # =========================================
@@ -1792,7 +1507,7 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
     dados_atualizados["data_inicio"] = formatar_data_br(novo_inicio)
     dados_atualizados["data_fim"] = formatar_data_br(novo_fim)
     dados_atualizados["data_assinatura"] = hoje_br()
-    dados_atualizados["salvo_em"] = agora_br()
+    dados_atualizados["salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     placeholders = {
         "{{DATA_ASSINATURA}}": dados_atualizados.get("data_assinatura", ""),
@@ -1818,14 +1533,14 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
         template_path=TEMPLATE_ADITIVO,
         output_docx=aditivo_docx,
         placeholders=placeholders,
-        incluir_assinaturas=st.session_state.get("incluir_assinaturas", True),
+        incluir_assinaturas=True,
         nome_sindico=nome_sindico,
+        nome_condominio=nome_condominio,
+        cnpj_condominio=dados_atualizados.get("cnpj_condominio", ""),
     )
 
     ok_pdf, erro_pdf = converter_docx_para_pdf(aditivo_docx, aditivo_pdf)
     salvar_dados_condominio(pasta, dados_atualizados)
-    aplicar_dados_no_formulario(dados_atualizados)
-
     registrar_documento_manifest(
         pasta_condominio=pasta,
         nome_condominio=nome_condominio,
@@ -1834,12 +1549,784 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
         arquivo_pdf=aditivo_pdf,
         pdf_gerado=ok_pdf,
         erro_pdf=erro_pdf,
-        dados_utilizados=placeholders,
+        dados_utilizados=dados_atualizados,
     )
+    aplicar_dados_no_formulario(dados_atualizados)
 
     if ok_pdf:
         return True, f"Aditivo de renovação gerado para '{nome_condominio}'. Nova vigência: {dados_atualizados['data_inicio']} até {dados_atualizados['data_fim']}."
     return True, f"Aditivo DOCX de renovação gerado para '{nome_condominio}', mas o PDF falhou: {erro_pdf}"
+
+
+
+# =========================================
+# RELATÓRIO MENSAL DE RT
+# =========================================
+
+def valor_float(texto: str):
+    try:
+        t = str(texto).replace(",", ".").strip()
+        return float(t) if t else None
+    except Exception:
+        return None
+
+
+def formatar_data_relatorio_chave(chave: str):
+    st.session_state[chave] = formatar_data_digitada(st.session_state.get(chave, ""))
+
+
+def formatar_art_numero(texto: str) -> str:
+    texto = (texto or "").strip()
+    return re.sub(r"[^A-Za-z0-9./-]", "", texto)[:40]
+
+
+def on_change_rel_art_numero():
+    st.session_state.rel_art_numero = formatar_art_numero(st.session_state.get("rel_art_numero", ""))
+
+
+def on_change_rel_art_status():
+    status = (st.session_state.get("rel_art_status") or "Emitida").strip()
+    if status != "Emitida":
+        st.session_state.rel_art_numero = ""
+        st.session_state.rel_art_inicio = ""
+        st.session_state.rel_art_fim = ""
+
+
+def obter_status_art_texto(dados_relatorio: dict) -> str:
+    status = (dados_relatorio.get("art_status") or "Emitida").strip()
+    numero = (dados_relatorio.get("art_numero") or "").strip()
+    inicio = (dados_relatorio.get("art_inicio") or "").strip()
+    fim = (dados_relatorio.get("art_fim") or "").strip()
+    if status == "Emitida":
+        numero_final = numero or "N/A"
+        if inicio and fim:
+            return f"ART nº {numero_final} | Vigência: {inicio} a {fim}"
+        return f"ART nº {numero_final}"
+    if status == "Em tramitação":
+        return "ART em tramitação administrativa"
+    return "ART não emitida até a data de emissão deste relatório"
+
+
+LIMITES_RELATORIO = {
+    "ph": (7.2, 7.8, "pH"),
+    "cloro_livre": (0.5, 3.0, "cloro residual livre"),
+    "alcalinidade": (80.0, 120.0, "alcalinidade total"),
+    "dureza": (150.0, 300.0, "dureza cálcica"),
+    "cianurico": (30.0, 50.0, "ácido cianúrico"),
+}
+
+
+def avaliar_conformidade_analises(analises: list[dict]) -> dict:
+    nao_conformes = []
+    houve_leitura = False
+    cloraminas_altas = []
+    for idx, item in enumerate(analises, start=1):
+        linha_tem = any((item.get(k) or "").strip() for k in ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico"])
+        if not linha_tem:
+            continue
+        houve_leitura = True
+        for campo, (mn, mx, rotulo) in LIMITES_RELATORIO.items():
+            v = valor_float(item.get(campo, ""))
+            if v is None:
+                continue
+            if v < mn or v > mx:
+                nao_conformes.append(f"Linha {idx}: {rotulo}={v} fora da faixa {mn}–{mx}")
+        cl = valor_float(item.get("cloro_livre", ""))
+        ct = valor_float(item.get("cloro_total", ""))
+        if cl is not None and ct is not None:
+            combinado = round(max(ct - cl, 0), 2)
+            item["cloro_combinado"] = combinado
+            if combinado > 0.2:
+                cloraminas_altas.append((idx, combinado))
+        else:
+            item["cloro_combinado"] = None
+
+    status = "NÃO CONFORME" if nao_conformes else ("CONFORME" if houve_leitura else "EM CORREÇÃO")
+    return {
+        "status": status,
+        "detalhes": nao_conformes,
+        "houve_leitura": houve_leitura,
+        "cloraminas_altas": cloraminas_altas,
+    }
+
+
+def normalizar_texto(texto: str) -> str:
+    texto = (texto or "").lower()
+    mapa = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüç", "aaaaaeeeeiiiiooooouuuuc")
+    return texto.translate(mapa)
+
+
+def limpar_paragrafo(paragraph):
+    for run in paragraph.runs:
+        run.text = ""
+
+
+def set_cell_text(cell, texto: str):
+    texto = texto if texto is not None else ""
+    if cell.paragraphs:
+        primeira = True
+        for p in cell.paragraphs:
+            for run in p.runs:
+                run.text = ""
+            if primeira:
+                if p.runs:
+                    p.runs[0].text = str(texto)
+                else:
+                    p.add_run(str(texto))
+                primeira = False
+    else:
+        cell.text = str(texto)
+
+
+def encontrar_tabela_por_keywords(doc: Document, keywords: list[str]):
+    kws = [normalizar_texto(k) for k in keywords]
+    melhor = None
+    melhor_score = -1
+    for table in doc.tables:
+        conteudo = " ".join(normalizar_texto(c.text) for row in table.rows[:6] for c in row.cells)
+        score = sum(1 for k in kws if k in conteudo)
+        if score > melhor_score:
+            melhor = table
+            melhor_score = score
+    return melhor if melhor_score > 0 else None
+
+
+def preencher_tabela_generica(table, rows_data: list[list[str]], start_row: int = 1):
+    if table is None:
+        return False
+    total_cols = max((len(r.cells) for r in table.rows), default=0)
+    if total_cols == 0:
+        return False
+    for idx, row_data in enumerate(rows_data, start=start_row):
+        if idx >= len(table.rows):
+            table.add_row()
+        row = table.rows[idx]
+        for c in range(total_cols):
+            valor = row_data[c] if c < len(row_data) else ""
+            set_cell_text(row.cells[c], valor)
+    return True
+
+
+def preencher_tabela_identificacao(doc: Document, dados_relatorio: dict):
+    tabela = encontrar_tabela_por_keywords(doc, ["Responsável Técnico", "Registro CRQ", "Cliente", "Período de Referência", "Data de Emissão"])
+    if tabela is None:
+        return False
+    mapa_linhas = {
+        "responsavel tecnico": dados_relatorio["responsavel_tecnico"],
+        "registro crq": dados_relatorio["crq"],
+        "qualificacao": dados_relatorio["qualificacao"],
+        "empresa": dados_relatorio["empresa_rt"],
+        "cliente / estabelecimento": dados_relatorio["nome_condominio"],
+        "endereco do local": dados_relatorio["endereco_condominio"],
+        "periodo de referencia": f"Mês: {dados_relatorio['mes_referencia']} / Ano: {dados_relatorio['ano_referencia']}",
+        "n° art – crq": obter_status_art_texto(dados_relatorio),
+        "nº art – crq": obter_status_art_texto(dados_relatorio),
+        "data de emissao": dados_relatorio["data_emissao"],
+    }
+    for row in tabela.rows:
+        primeira = normalizar_texto(row.cells[0].text)
+        for chave, valor in mapa_linhas.items():
+            if chave in primeira and len(row.cells) > 1:
+                set_cell_text(row.cells[1], valor)
+    return True
+
+
+def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
+    tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
+    if tabela_nbr is not None and len(tabela_nbr.rows) > 1:
+        observacao = dados_relatorio["conformidades"].get("nbr_11238", "") or "Sem observações adicionais registradas."
+        for idx in range(1, len(tabela_nbr.rows)):
+            row = tabela_nbr.rows[idx]
+            if len(row.cells) > 1 and idx == 1:
+                set_cell_text(row.cells[1], observacao)
+
+    tabela_nr26 = encontrar_tabela_por_keywords(doc, ["NR-26", "GHS", "FISPQs"])
+    if tabela_nr26 is not None and len(tabela_nr26.rows) > 1:
+        observacao = dados_relatorio["conformidades"].get("nr_26", "") or "Checklist de GHS/FDS/FISPQ sem observações adicionais registradas."
+        for idx in range(1, len(tabela_nr26.rows)):
+            row = tabela_nr26.rows[idx]
+            if len(row.cells) > 1 and idx == 1:
+                set_cell_text(row.cells[1], observacao)
+            if len(row.cells) > 2 and idx == 1:
+                set_cell_text(row.cells[2], "OK" if observacao else "Pend.")
+
+    tabela_nr6 = encontrar_tabela_por_keywords(doc, ["Equipamentos de Proteção Individual", "CA nº", "Luvas de nitrila"])
+    if tabela_nr6 is not None and len(tabela_nr6.rows) > 1:
+        ca_map = dados_relatorio["epis"]
+        linhas_epi = [
+            ("luvas", ca_map.get("luvas_status", "Conforme"), ca_map.get("luvas_ca", "")),
+            ("oculos", ca_map.get("oculos_status", "Conforme"), ca_map.get("oculos_ca", "")),
+            ("respirador", ca_map.get("respirador_status", "Conforme"), ca_map.get("respirador_ca", "")),
+            ("botas", ca_map.get("botas_status", "Conforme"), ca_map.get("botas_ca", "")),
+        ]
+        mapa_status = {
+            "Conforme": ("Sim", "Sim"),
+            "Pendente": ("Não", "Não"),
+            "Não informado": ("Não", "Não"),
+            "N/A": ("Não", "Não"),
+        }
+        for row in tabela_nr6.rows[1:]:
+            texto = normalizar_texto(row.cells[0].text)
+            for chave, status_epi, ca in linhas_epi:
+                if chave in texto and len(row.cells) > 1:
+                    # Coluna 1 = CA nº: apenas o número ou N/A, NUNCA o status
+                    ca_valor = ca.strip() if (ca or "").strip() else "N/A"
+                    set_cell_text(row.cells[1], ca_valor)
+                    fornecido, fiscalizado = mapa_status.get(status_epi, ("Não", "Não"))
+                    if len(row.cells) > 2:
+                        set_cell_text(row.cells[2], fornecido)
+                    if len(row.cells) > 3:
+                        set_cell_text(row.cells[3], fiscalizado)
+
+
+def inserir_assinatura_rt_no_doc(doc: Document):
+    assinatura = preparar_assinatura_rt_para_relatorio()
+    texto_ass = RESPONSAVEL_TECNICO_ASSINATURA
+
+    # Prioridade máxima: colocar a assinatura no fim do relatório,
+    # exatamente acima do campo "Data" do bloco do Responsável Técnico.
+    paragrafos = list(doc.paragraphs)
+    for i, p in enumerate(paragrafos):
+        txt = normalizar_texto(p.text)
+        if "responsavel tecnico" in txt:
+            for prox in paragrafos[i + 1:i + 8]:
+                txt_prox = normalizar_texto(prox.text)
+                if "representante do estabelecimento" in txt_prox:
+                    break
+                if "data:" in txt_prox:
+                    try:
+                        novo = prox.insert_paragraph_before("")
+                    except Exception:
+                        novo = doc.add_paragraph()
+                    novo.alignment = 1
+                    if assinatura:
+                        try:
+                            novo.add_run().add_picture(str(assinatura), width=Inches(1.45))
+                        except Exception:
+                            pass
+                    return True
+
+    # Fallback: insere ao final se não achar o bloco correto
+    if assinatura:
+        try:
+            novo = doc.add_paragraph()
+            novo.alignment = 1
+            novo.add_run().add_picture(str(assinatura), width=Inches(1.45))
+            novo2 = doc.add_paragraph(texto_ass)
+            novo2.alignment = 1
+            return True
+        except Exception:
+            pass
+
+    doc.add_paragraph(texto_ass)
+    return False
+
+
+def salvar_uploads_relatorio(pasta_condominio: Path):
+    caminhos = []
+    arquivos = st.session_state.get("rel_fotos_upload") or []
+    pasta_fotos = pasta_condominio / "fotos_relatorio"
+    pasta_fotos.mkdir(exist_ok=True)
+    for idx, arquivo in enumerate(arquivos, start=1):
+        nome = limpar_nome_arquivo(f"foto_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
+        destino = pasta_fotos / nome
+        with open(destino, "wb") as f:
+            f.write(arquivo.getbuffer())
+        caminhos.append(destino)
+    return caminhos
+
+
+
+
+def garantir_campos_analises(qtd: int):
+    qtd = max(ANALISES_PADRAO, int(qtd or ANALISES_PADRAO))
+    qtd = min(qtd, ANALISES_MAX_SUGERIDO)
+    st.session_state.rel_analises_total = qtd
+    for i in range(qtd):
+        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "operador"]:
+            chave = f"rel_analise_{sufixo}_{i}"
+            if chave not in st.session_state:
+                st.session_state[chave] = ""
+
+
+def adicionar_analise_extra():
+    atual = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    garantir_campos_analises(atual + 1)
+
+
+def coletar_analises_relatorio() -> list[dict]:
+    itens = []
+    qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    garantir_campos_analises(qtd)
+    for i in range(qtd):
+        itens.append({
+            "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
+            "ph": (st.session_state.get(f"rel_analise_ph_{i}") or "").strip(),
+            "cloro_livre": (st.session_state.get(f"rel_analise_cl_{i}") or "").strip(),
+            "cloro_total": (st.session_state.get(f"rel_analise_ct_{i}") or "").strip(),
+            "alcalinidade": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
+            "dureza": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
+            "cianurico": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
+            "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
+        })
+    return itens
+
+
+def coletar_dosagens_relatorio() -> list[dict]:
+    itens = []
+    for i in range(7):
+        itens.append({
+            "produto": (st.session_state.get(f"rel_dos_produto_{i}") or "").strip(),
+            "fabricante_lote": (st.session_state.get(f"rel_dos_lote_{i}") or "").strip(),
+            "quantidade": (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip(),
+            "unidade": (st.session_state.get(f"rel_dos_un_{i}") or "").strip(),
+            "finalidade": (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip(),
+        })
+    return itens
+
+
+def coletar_recomendacoes_relatorio() -> list[dict]:
+    itens = []
+    for i in range(5):
+        itens.append({
+            "recomendacao": (st.session_state.get(f"rel_rec_texto_{i}") or "").strip(),
+            "prazo": (st.session_state.get(f"rel_rec_prazo_{i}") or "").strip(),
+            "responsavel": (st.session_state.get(f"rel_rec_resp_{i}") or "").strip(),
+        })
+    return itens
+
+
+def coletar_observacoes_relatorio() -> list[str]:
+    return [(st.session_state.get(f"rel_obs_{i}") or "").strip() for i in range(5)]
+
+
+def coletar_conformidades_relatorio() -> dict:
+    return {
+        "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
+        "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
+        "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
+    }
+
+
+def coletar_epis_relatorio() -> dict:
+    return {
+        "luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme").strip(),
+        "luvas_ca": (st.session_state.get("rel_epi_luvas_ca") or "").strip(),
+        "oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Conforme").strip(),
+        "oculos_ca": (st.session_state.get("rel_epi_oculos_ca") or "").strip(),
+        "respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Conforme").strip(),
+        "respirador_ca": (st.session_state.get("rel_epi_respirador_ca") or "").strip(),
+        "botas_status": (st.session_state.get("rel_epi_botas_status") or "Conforme").strip(),
+        "botas_ca": (st.session_state.get("rel_epi_botas_ca") or "").strip(),
+    }
+
+
+def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) -> dict:
+    observacoes = []
+    recomendacoes = []
+    detalhes = avaliacao.get("detalhes", [])
+    if detalhes:
+        for detalhe in detalhes[:3]:
+            observacoes.append(detalhe.replace("Linha", "Leitura"))
+    if avaliacao.get("cloraminas_altas"):
+        idx, valor = avaliacao["cloraminas_altas"][0]
+        observacoes.append(f"Leitura {idx}: cloro combinado estimado em {valor} mg/L, sugerindo formação de cloraminas e maior carga orgânica.")
+        recomendacoes.append("Executar oxidação complementar / supercloração controlada e reavaliar CT, CL e cloro combinado.")
+    if any("ph=" in d for d in detalhes):
+        recomendacoes.append("Ajustar pH para a faixa operacional de 7,2 a 7,8 e repetir a leitura após estabilização.")
+    if any("cloro residual livre" in d for d in detalhes):
+        recomendacoes.append("Revisar a dosagem de desinfetante e a demanda oxidante da água.")
+    if any("ácido cianúrico" in d for d in detalhes):
+        recomendacoes.append("Reavaliar o estabilizante e considerar renovação parcial de água quando tecnicamente indicada.")
+    if any("alcalinidade total" in d for d in detalhes):
+        recomendacoes.append("Corrigir alcalinidade total para aumentar a estabilidade do pH e reduzir flutuações operacionais.")
+    if any("dureza cálcica" in d for d in detalhes):
+        recomendacoes.append("Ajustar dureza cálcica para reduzir risco de corrosão ou incrustação.")
+
+    if not observacoes:
+        observacoes.append("Parâmetros avaliados sem desvios críticos nas leituras registradas no período.")
+    if not recomendacoes:
+        recomendacoes.append("Manter rotina de monitoramento, rastreabilidade de dosagens e controle técnico periódico.")
+
+    diagnostico = []
+    if avaliacao["status"] == "CONFORME":
+        diagnostico.append("No período avaliado, os parâmetros registrados indicam condição satisfatória de controle físico-químico da água, sem desvios relevantes frente às faixas operacionais adotadas pelo sistema.")
+    elif avaliacao["status"] == "EM CORREÇÃO":
+        diagnostico.append("O sistema registra fase operacional de correção, recomendando continuidade das medidas técnicas, reforço de monitoramento e nova conferência analítica após estabilização.")
+    else:
+        diagnostico.append("Foram observadas não conformidades físico-químicas que exigem ação corretiva e reavaliação técnica sequencial.")
+    if avaliacao.get("cloraminas_altas"):
+        diagnostico.append("A presença de cloro combinado acima do desejável sugere formação de cloraminas, condição compatível com carga orgânica elevada, consumo do desinfetante e possível redução da eficiência sanitizante.")
+    if detalhes:
+        diagnostico.append("Resumo automático dos desvios: " + "; ".join(detalhes[:5]) + ".")
+
+    return {
+        "diagnostico": " ".join(diagnostico),
+        "observacoes": observacoes[:5],
+        "recomendacoes": recomendacoes[:5],
+    }
+
+
+def aplicar_textos_automaticos_relatorio():
+    analises = coletar_analises_relatorio()
+    avaliacao = avaliar_conformidade_analises(analises)
+    textos = gerar_textos_automaticos_relatorio(analises, avaliacao)
+
+    # Nunca apaga parâmetros digitados. Só recalcula os campos textuais do parecer.
+    st.session_state.rel_diagnostico = textos["diagnostico"]
+
+    for i in range(5):
+        chave_obs = f"rel_obs_{i}"
+        texto_obs = textos["observacoes"][i] if i < len(textos["observacoes"]) else ""
+        st.session_state[chave_obs] = texto_obs
+
+    for i in range(5):
+        chave_rec = f"rel_rec_texto_{i}"
+        chave_prazo = f"rel_rec_prazo_{i}"
+        chave_resp = f"rel_rec_resp_{i}"
+        texto_rec = textos["recomendacoes"][i] if i < len(textos["recomendacoes"]) else ""
+        st.session_state[chave_rec] = texto_rec
+        st.session_state[chave_prazo] = "Imediato" if texto_rec and i == 0 else ("Próxima rotina" if texto_rec else "")
+        st.session_state[chave_resp] = "Operação / RT" if texto_rec else ""
+
+    # Não escrever diretamente na chave do selectbox após o widget existir.
+    if st.session_state.get("rel_status_agua") != "EM CORREÇÃO":
+        st.session_state["rel_status_agua"] = avaliacao["status"]
+
+
+def montar_dados_relatorio() -> dict:
+    nome_condominio = (st.session_state.get("rel_nome_condominio") or "").strip()
+    representante = (st.session_state.get("rel_representante") or "").strip()
+    dados_base = obter_snapshot_relatorio_independente()
+    analises = coletar_analises_relatorio()
+    avaliacao = avaliar_conformidade_analises(analises)
+    status_manual = (st.session_state.get("rel_status_agua") or "CONFORME").strip()
+    status_final = "EM CORREÇÃO" if status_manual == "EM CORREÇÃO" else avaliacao["status"]
+    textos_auto = gerar_textos_automaticos_relatorio(analises, avaliacao)
+    diagnostico_base = (st.session_state.get("rel_diagnostico") or "").strip() or textos_auto["diagnostico"]
+
+    recomendacoes = coletar_recomendacoes_relatorio()
+    if not any(r["recomendacao"] for r in recomendacoes):
+        recomendacoes = [{"recomendacao": t, "prazo": "Imediato" if i == 0 else "Próxima rotina", "responsavel": "Operação / RT"} for i, t in enumerate(textos_auto["recomendacoes"])]
+
+    observacoes = coletar_observacoes_relatorio()
+    if not any(observacoes):
+        observacoes = textos_auto["observacoes"]
+
+    return {
+        "empresa_rt": EMPRESA_RT,
+        "responsavel_tecnico": RESPONSAVEL_TÉCNICO,
+        "assinatura_rt_texto": RESPONSAVEL_TECNICO_ASSINATURA,
+        "crq": CRQ,
+        "qualificacao": QUALIFICACAO_RT,
+        "certificacoes": CERTIFICACOES_RT,
+        "nome_condominio": nome_condominio,
+        "cnpj_condominio": dados_base.get("cnpj_condominio", ""),
+        "endereco_condominio": dados_base.get("endereco_condominio", ""),
+        "representante": representante,
+        "cpf_cnpj_representante": dados_base.get("cpf_sindico", ""),
+        "tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo").strip(),
+        "mes_referencia": (st.session_state.get("rel_mes_referencia") or "").strip(),
+        "ano_referencia": (st.session_state.get("rel_ano_referencia") or "").strip(),
+        "art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
+        "art_numero": (st.session_state.get("rel_art_numero") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
+        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
+        "art_fim": (st.session_state.get("rel_art_fim") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
+        "art_texto": "",
+        "data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()).strip(),
+        "status_agua": status_final,
+        "diagnostico": diagnostico_base,
+        "analises": analises,
+        "dosagens": coletar_dosagens_relatorio(),
+        "recomendacoes": recomendacoes,
+        "observacoes": observacoes,
+        "conformidades": coletar_conformidades_relatorio(),
+        "epis": coletar_epis_relatorio(),
+        "avaliacao_automatica": avaliacao,
+    }
+
+
+def validar_relatorio_mensal(dados_relatorio: dict) -> list[str]:
+    erros = []
+    if not dados_relatorio.get("nome_condominio"):
+        erros.append("Informe o nome do condomínio/estabelecimento no próprio relatório antes de gerar.")
+    if not dados_relatorio.get("mes_referencia"):
+        erros.append("Informe o mês de referência do relatório.")
+    if not dados_relatorio.get("ano_referencia"):
+        erros.append("Informe o ano de referência do relatório.")
+    if not TEMPLATE_RELATORIO.exists():
+        erros.append("O arquivo relatorio_mensal.docx não foi localizado na pasta do projeto.")
+    if not validar_data_br(dados_relatorio.get("data_emissao", "")):
+        erros.append("Data de emissão do relatório inválida.")
+    if dados_relatorio.get("art_status") == "Emitida":
+        if not dados_relatorio.get("art_numero"):
+            erros.append("Informe o número da ART ou altere o status para Não emitida / Em tramitação.")
+        if not validar_data_br(dados_relatorio.get("art_inicio", "")):
+            erros.append("Vigência ART - início inválida.")
+        if not validar_data_br(dados_relatorio.get("art_fim", "")):
+            erros.append("Vigência ART - fim inválida.")
+    return erros
+
+
+def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
+    doc.add_page_break()
+    doc.add_paragraph("COMPLEMENTO AUTOMÁTICO – DADOS ESTRUTURADOS DO RELATÓRIO MENSAL")
+    doc.add_paragraph(f"Condomínio: {dados_relatorio['nome_condominio']}")
+    doc.add_paragraph(f"Mês/Ano de referência: {dados_relatorio['mes_referencia']}/{dados_relatorio['ano_referencia']}")
+    doc.add_paragraph(f"ART: {obter_status_art_texto(dados_relatorio)}")
+    doc.add_paragraph(f"Data de emissão: {dados_relatorio['data_emissao']}")
+    doc.add_paragraph(f"Responsável técnico: {dados_relatorio['assinatura_rt_texto']}")
+    doc.add_paragraph(f"Certificações relevantes: {dados_relatorio['certificacoes']}")
+    doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
+    doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
+    doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025; ABNT NBR 10339; NR-26; NR-06.")
+    doc.add_paragraph("Recomenda-se a guarda e organização deste documento e de seus registros correlatos por prazo mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental e segurança jurídica.")
+    doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas in loco e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
+
+    doc.add_paragraph("Observações automáticas:")
+    for obs in dados_relatorio["observacoes"]:
+        if obs:
+            doc.add_paragraph(f"• {obs}")
+
+    doc.add_paragraph("Recomendações automáticas:")
+    for item in dados_relatorio["recomendacoes"]:
+        if item.get("recomendacao"):
+            doc.add_paragraph(f"• {item['recomendacao']} | Prazo: {item.get('prazo','')} | Responsável: {item.get('responsavel','')}")
+
+
+def atualizar_textos_normativos(doc: Document):
+    # Mapeia TODAS as variações conhecidas de CRQ errado e normas defasadas
+    trocas_ordenadas = [
+        # CRQ – variações mais específicas primeiro para evitar substituição parcial
+        ("CRQ CRQ 024025748 – 4ª Região", CRQ),
+        ("CRQ 024025748 – 4ª Região", CRQ),
+        ("CRQ-IV | CRQ 024025748", CRQ),
+        ("CRQ-IV – CRQ 024025748", CRQ),
+        ("CRQ-IV", "CRQ-MG 2ª Região"),
+        # Normas
+        ("Resolução CFQ nº 491/2020", "Resolução CFQ nº 332/2025"),
+        ("Res. Normativa CFQ nº 01/1982", "Decreto nº 85.877/1981 e normas profissionais aplicáveis do Sistema CFQ/CRQs"),
+        ("Portaria MS nº 888/2021", "Portaria GM/MS nº 888/2021 (referência sanitária complementar para água de consumo humano)"),
+        ("NBR 10818", "ABNT NBR 10339"),
+    ]
+    # Aplica na ordem para evitar substituições aninhadas incorretas
+    for de, para in trocas_ordenadas:
+        substituir_placeholders_doc(doc, {de: para})
+
+
+def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dados_relatorio: dict, fotos: list[Path] | None = None):
+    doc = Document(str(template_path))
+    dados_relatorio["art_texto"] = obter_status_art_texto(dados_relatorio)
+
+    # ---- Placeholders primários (substituição em todo o documento) ----
+    placeholders = {
+        "{{NOME_CONDOMINIO}}": dados_relatorio["nome_condominio"],
+        "{{CNPJ_CONDOMINIO}}": dados_relatorio["cnpj_condominio"],
+        "{{ENDERECO_CONDOMINIO}}": dados_relatorio["endereco_condominio"],
+        "{{NOME_SINDICO}}": dados_relatorio["representante"],
+        "{{RESPONSAVEL_TÉCNICO}}": dados_relatorio["responsavel_tecnico"],
+        "{{RESPONSAVEL_TECNICO_ASSINATURA}}": dados_relatorio["assinatura_rt_texto"],
+        "{{CRQ}}": dados_relatorio["crq"],
+        "{{QUALIFICACAO_RT}}": dados_relatorio["qualificacao"],
+        "{{CERTIFICACOES_RT}}": dados_relatorio["certificacoes"],
+        "{{EMPRESA_RT}}": dados_relatorio["empresa_rt"],
+        "{{MES_REFERENCIA}}": dados_relatorio["mes_referencia"],
+        "{{ANO_REFERENCIA}}": dados_relatorio["ano_referencia"],
+        "{{ART_NUMERO}}": dados_relatorio["art_numero"],
+        "{{ART_INICIO}}": dados_relatorio["art_inicio"],
+        "{{ART_FIM}}": dados_relatorio["art_fim"],
+        "{{ART_TEXTO}}": dados_relatorio["art_texto"],
+        "{{DATA_EMISSAO}}": dados_relatorio["data_emissao"],
+        "{{STATUS_AGUA}}": dados_relatorio["status_agua"],
+        "{{DIAGNOSTICO_TÉCNICO}}": dados_relatorio["diagnostico"],
+        "{{DIAGNOSTICO_TECNICO}}": dados_relatorio["diagnostico"],
+    }
+    substituir_placeholders_doc(doc, placeholders)
+    atualizar_textos_normativos(doc)
+    preencher_tabela_identificacao(doc, dados_relatorio)
+    preencher_bloco_conformidades(doc, dados_relatorio)
+
+    # ---- Tabela de análises ----
+    tabela_analises = encontrar_tabela_por_keywords(doc, ["Data", "CRL", "Cl. Total", "Operador"])
+    linhas_analises = []
+    for item in dados_relatorio["analises"]:
+        if any((item.get(k) or "").strip() for k in ["data", "ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico", "operador"]):
+            linhas_analises.append([item["data"], item["ph"], item["cloro_livre"], item["cloro_total"], item["alcalinidade"], item["dureza"], item["cianurico"], item["operador"]])
+    if linhas_analises:
+        preencher_tabela_generica(tabela_analises, linhas_analises, start_row=1)
+
+    # ---- Tabela de dosagens ----
+    tabela_dos = encontrar_tabela_por_keywords(doc, ["Produto Químico", "Fabricante / Lote", "Finalidade Técnica"])
+    linhas_dos = []
+    for item in dados_relatorio["dosagens"]:
+        if any(item.values()):
+            linhas_dos.append([item["produto"], item["fabricante_lote"], item["quantidade"], item["unidade"], item["finalidade"]])
+    if linhas_dos:
+        preencher_tabela_generica(tabela_dos, linhas_dos, start_row=1)
+
+    # ---- Tabela de recomendações ----
+    tabela_rec = encontrar_tabela_por_keywords(doc, ["Recomendação Técnica", "Prazo", "Responsável"])
+    linhas_rec = []
+    for idx, item in enumerate(dados_relatorio["recomendacoes"], start=1):
+        if item.get("recomendacao"):
+            linhas_rec.append([str(idx), item["recomendacao"], item.get("prazo", ""), item.get("responsavel", "")])
+    if linhas_rec:
+        preencher_tabela_generica(tabela_rec, linhas_rec, start_row=1)
+
+    # ---- Parecer principal e aviso legal em parágrafos soltos ----
+    # Também cobre o caso de o template ter esses textos fora de tabelas/placeholders.
+    aviso_legal_texto = (
+        "AVISO LEGAL: Recomenda-se a guarda e organização deste documento e de seus registros correlatos "
+        "por prazo mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental "
+        "e segurança jurídica. Emitido sob responsabilidade técnica do RT acima identificado. "
+        "Análises microbiológicas in loco não integram este relatório e dependem de laboratório acreditado, "
+        "sob responsabilidade de contratação do contratante."
+    )
+
+    # Rastreia se os quadros principais foram encontrados e preenchidos
+    quadro_diagnostico_preenchido = False
+
+    for p in doc.paragraphs:
+        txt = normalizar_texto(p.text)
+        # Quadro de diagnóstico – qualquer parágrafo que contenha o texto modelo do template
+        if "diagnostico:" in txt and dados_relatorio["diagnostico"] not in p.text:
+            # Preserva formatação dos runs, substituindo só o conteúdo
+            for run in p.runs:
+                run.text = ""
+            if p.runs:
+                p.runs[0].text = f"Diagnóstico: {dados_relatorio['diagnostico']}"
+            else:
+                p.add_run(f"Diagnóstico: {dados_relatorio['diagnostico']}")
+            quadro_diagnostico_preenchido = True
+        elif "conforme" in txt and ("nao conforme" in txt or "em correcao" in txt):
+            # Linha de status geral – substitui o texto modelo
+            for run in p.runs:
+                run.text = ""
+            if p.runs:
+                p.runs[0].text = f"Status geral da água: {dados_relatorio['status_agua']}"
+            else:
+                p.add_run(f"Status geral da água: {dados_relatorio['status_agua']}")
+        elif "aviso legal:" in txt:
+            for run in p.runs:
+                run.text = ""
+            if p.runs:
+                p.runs[0].text = aviso_legal_texto
+            else:
+                p.add_run(aviso_legal_texto)
+
+    # ---- Também busca diagnóstico dentro de tabelas do template ----
+    if not quadro_diagnostico_preenchido:
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        txt = normalizar_texto(p.text)
+                        if "diagnostico:" in txt and dados_relatorio["diagnostico"] not in p.text:
+                            for run in p.runs:
+                                run.text = ""
+                            if p.runs:
+                                p.runs[0].text = f"Diagnóstico: {dados_relatorio['diagnostico']}"
+                            else:
+                                p.add_run(f"Diagnóstico: {dados_relatorio['diagnostico']}")
+
+    # ---- Assinatura automática REMOVIDA definitivamente. ----
+    # O bloco oficial de assinatura existe no template relatorio_mensal.docx
+    # e não deve ser duplicado ou complementado aqui.
+
+    # ---- Fotos ----
+    if fotos:
+        doc.add_page_break()
+        doc.add_paragraph("REGISTRO FOTOGRÁFICO")
+        for foto in fotos:
+            try:
+                doc.add_paragraph(foto.name)
+                doc.add_picture(str(foto), width=Inches(5.8))
+            except Exception:
+                doc.add_paragraph(f"Não foi possível inserir a foto: {foto.name}")
+
+    # ---- Fallback CONDICIONAL: só adiciona se as tabelas principais não foram encontradas ----
+    # O fallback NÃO deve ser gerado se o template já tem os quadros de análise, dosagem e recomendação.
+    template_tem_analises = encontrar_tabela_por_keywords(doc, ["Data", "CRL", "Cl. Total", "Operador"]) is not None
+    template_tem_dosagens = encontrar_tabela_por_keywords(doc, ["Produto Químico", "Fabricante / Lote", "Finalidade Técnica"]) is not None
+    if not template_tem_analises and not template_tem_dosagens:
+        append_relatorio_fallback(doc, dados_relatorio)
+
+    doc.save(str(output_docx))
+
+
+def gerar_relatorio_mensal() -> tuple[bool, str]:
+    dados_relatorio = montar_dados_relatorio()
+    erros = validar_relatorio_mensal(dados_relatorio)
+    if erros:
+        return False, " | ".join(erros)
+
+    nome_condominio = dados_relatorio["nome_condominio"]
+    pasta_condominio = GENERATED_DIR / slugify_nome(nome_condominio)
+    pasta_condominio.mkdir(parents=True, exist_ok=True)
+    if st.session_state.get("rel_salvar_alteracoes_cadastro"):
+        salvar_relatorio_no_cadastro_principal()
+        salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
+    else:
+        salvar_dados_condominio(pasta_condominio, obter_snapshot_relatorio_independente())
+    fotos_salvas = salvar_uploads_relatorio(pasta_condominio)
+
+    data_nome = datetime.now().strftime("%Y%m%d")
+    base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_RELATORIO_RT")
+    relatorio_docx = pasta_condominio / f"{base_nome}.docx"
+    relatorio_pdf = pasta_condominio / f"{base_nome}.pdf"
+
+    preencher_relatorio_mensal_docx(TEMPLATE_RELATORIO, relatorio_docx, dados_relatorio, fotos=fotos_salvas)
+    ok_pdf, erro_pdf = converter_docx_para_pdf(relatorio_docx, relatorio_pdf)
+
+    registrar_documento_manifest(
+        pasta_condominio=pasta_condominio,
+        nome_condominio=nome_condominio,
+        tipo="Relatório",
+        arquivo_docx=relatorio_docx,
+        arquivo_pdf=relatorio_pdf,
+        pdf_gerado=ok_pdf,
+        erro_pdf=erro_pdf,
+        dados_utilizados={
+            "TIPO_ATENDIMENTO": dados_relatorio.get("tipo_atendimento"),
+            "REPRESENTANTE": dados_relatorio.get("representante"),
+            "CPF_CNPJ_REPRESENTANTE": dados_relatorio.get("cpf_cnpj_representante"),
+            "ART_STATUS": dados_relatorio.get("art_status"),
+            "ART_TEXTO": obter_status_art_texto(dados_relatorio),
+        },
+        extras={"fotos": [p.name for p in fotos_salvas]},
+    )
+
+    st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
+    st.session_state.ultimos_docs_gerados.update({
+        "relatorio_docx": str(relatorio_docx) if relatorio_docx.exists() else None,
+        "relatorio_pdf": str(relatorio_pdf) if ok_pdf and relatorio_pdf.exists() else None,
+    })
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    if dados_relatorio["avaliacao_automatica"]["detalhes"]:
+        st.warning("Diagnóstico automático marcou NÃO CONFORME com base nos parâmetros fora de faixa.")
+        for item in dados_relatorio["avaliacao_automatica"]["detalhes"]:
+            st.write(f"- {item}")
+    if dados_relatorio["avaliacao_automatica"].get("cloraminas_altas"):
+        for idx, valor in dados_relatorio["avaliacao_automatica"]["cloraminas_altas"]:
+            st.write(f"- Linha {idx}: cloro combinado estimado em {valor} mg/L.")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if relatorio_docx.exists():
+            with open(relatorio_docx, "rb") as f:
+                st.download_button("Baixar DOCX do relatório", data=f, file_name=relatorio_docx.name, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+    with c2:
+        if ok_pdf and relatorio_pdf.exists():
+            with open(relatorio_pdf, "rb") as f:
+                st.download_button("Baixar PDF do relatório", data=f, file_name=relatorio_pdf.name, mime="application/pdf", use_container_width=True)
+        else:
+            st.warning(f"PDF do relatório não gerado. Erro: {erro_pdf}")
+    with c3:
+        if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
+            abrir_pasta_windows(pasta_condominio)
+    st.markdown("</div>", unsafe_allow_html=True)
+    return True, f"Relatório mensal registrado com sucesso para {nome_condominio}."
+
 
 # =========================================
 # PROCESSAMENTO DE VALIDAÇÃO
@@ -1852,6 +2339,7 @@ def validar_para_geracao(dados_base: dict, email_cliente: str) -> list[str]:
 
     erros_formato = validar_campos_formato(dados_base, email_cliente)
     return erros_formato
+
 
 # =========================================
 # SESSÃO
@@ -1881,16 +2369,53 @@ def inicializar_campos():
         "painel_acao_msg": "",
         "busca_rapida": "",
         "filtro_status_central": "Todos",
-        "incluir_assinaturas": True,
         "rel_mes_referencia": datetime.now().strftime("%m"),
+        "rel_tipo_atendimento": "Contrato ativo",
+        "rel_nome_condominio": "",
+        "rel_cnpj_condominio": "",
+        "rel_endereco_condominio": "",
+        "rel_representante": "",
+        "rel_cpf_cnpj_representante": "",
+        "rel_salvar_alteracoes_cadastro": False,
         "rel_ano_referencia": str(datetime.now().year),
+        "rel_art_status": "Emitida",
         "rel_art_numero": "",
         "rel_art_inicio": "",
         "rel_art_fim": "",
         "rel_data_emissao": hoje_br(),
+        "rel_epi_luvas_ca": "",
+        "rel_epi_oculos_ca": "",
+        "rel_epi_respirador_ca": "",
+        "rel_epi_botas_ca": "",
         "rel_status_agua": "CONFORME",
+        "rel_status_agua_select": "CONFORME",
         "rel_diagnostico": "",
+        "rel_nbr_11238": "",
+        "rel_nr_26": "",
+        "rel_nr_06": "",
+        "rel_analises_total": ANALISES_PADRAO,
     }
+    garantir_campos_analises(st.session_state.get("rel_analises_total", ANALISES_PADRAO) if hasattr(st, "session_state") else ANALISES_PADRAO)
+    for i in range(ANALISES_PADRAO):
+        defaults[f"rel_analise_data_{i}"] = ""
+        defaults[f"rel_analise_ph_{i}"] = ""
+        defaults[f"rel_analise_cl_{i}"] = ""
+        defaults[f"rel_analise_ct_{i}"] = ""
+        defaults[f"rel_analise_alc_{i}"] = ""
+        defaults[f"rel_analise_dc_{i}"] = ""
+        defaults[f"rel_analise_cya_{i}"] = ""
+        defaults[f"rel_analise_operador_{i}"] = ""
+    for i in range(7):
+        defaults[f"rel_dos_produto_{i}"] = ""
+        defaults[f"rel_dos_lote_{i}"] = ""
+        defaults[f"rel_dos_qtd_{i}"] = ""
+        defaults[f"rel_dos_un_{i}"] = ""
+        defaults[f"rel_dos_finalidade_{i}"] = ""
+    for i in range(5):
+        defaults[f"rel_rec_texto_{i}"] = ""
+        defaults[f"rel_rec_prazo_{i}"] = ""
+        defaults[f"rel_rec_resp_{i}"] = ""
+        defaults[f"rel_obs_{i}"] = ""
     for chave, valor in defaults.items():
         if chave not in st.session_state:
             st.session_state[chave] = valor
@@ -1911,17 +2436,219 @@ def limpar_formulario():
     st.session_state.email_cliente = ""
     st.session_state.observacoes_internas = ""
     st.session_state.origem_dados_carregados = ""
+    st.session_state.rel_tipo_atendimento = "Contrato ativo"
+    st.session_state.rel_nome_condominio = ""
+    st.session_state.rel_cnpj_condominio = ""
+    st.session_state.rel_endereco_condominio = ""
+    st.session_state.rel_representante = ""
+    st.session_state.rel_cpf_cnpj_representante = ""
+    st.session_state.rel_salvar_alteracoes_cadastro = False
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
+    st.session_state.rel_art_status = "Emitida"
     st.session_state.rel_art_numero = ""
     st.session_state.rel_art_inicio = ""
     st.session_state.rel_art_fim = ""
     st.session_state.rel_data_emissao = hoje_br()
+    st.session_state.rel_epi_luvas_ca = ""
+    st.session_state.rel_epi_oculos_ca = ""
+    st.session_state.rel_epi_respirador_ca = ""
+    st.session_state.rel_epi_botas_ca = ""
     st.session_state.rel_status_agua = "CONFORME"
+    st.session_state.rel_status_agua_select = "CONFORME"
     st.session_state.rel_diagnostico = ""
+    st.session_state.rel_nbr_11238 = ""
+    st.session_state.rel_nr_26 = ""
+    st.session_state.rel_nr_06 = ""
+    st.session_state.rel_epi_luvas_status = "Conforme"
+    st.session_state.rel_epi_oculos_status = "Conforme"
+    st.session_state.rel_epi_respirador_status = "Conforme"
+    st.session_state.rel_epi_botas_status = "Conforme"
+    st.session_state.rel_epi_luvas_ca = ""
+    st.session_state.rel_epi_oculos_ca = ""
+    st.session_state.rel_epi_respirador_ca = ""
+    st.session_state.rel_epi_botas_ca = ""
+    total_analises_atual = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    st.session_state.rel_analises_total = ANALISES_PADRAO
+    for i in range(max(total_analises_atual, ANALISES_PADRAO)):
+        st.session_state[f"rel_analise_data_{i}"] = ""
+        st.session_state[f"rel_analise_ph_{i}"] = ""
+        st.session_state[f"rel_analise_cl_{i}"] = ""
+        st.session_state[f"rel_analise_ct_{i}"] = ""
+        st.session_state[f"rel_analise_alc_{i}"] = ""
+        st.session_state[f"rel_analise_dc_{i}"] = ""
+        st.session_state[f"rel_analise_cya_{i}"] = ""
+        st.session_state[f"rel_analise_operador_{i}"] = ""
+    for i in range(7):
+        st.session_state[f"rel_dos_produto_{i}"] = ""
+        st.session_state[f"rel_dos_lote_{i}"] = ""
+        st.session_state[f"rel_dos_qtd_{i}"] = ""
+        st.session_state[f"rel_dos_un_{i}"] = ""
+        st.session_state[f"rel_dos_finalidade_{i}"] = ""
+    for i in range(5):
+        st.session_state[f"rel_rec_texto_{i}"] = ""
+        st.session_state[f"rel_rec_prazo_{i}"] = ""
+        st.session_state[f"rel_rec_resp_{i}"] = ""
+        st.session_state[f"rel_obs_{i}"] = ""
+
+
+RASCUNHO_JSON_NAME = "rascunho_relatorio.json"
+
+
+def salvar_rascunho_relatorio(pasta_condominio: Path):
+    """Salva o estado atual do formulário de relatório como rascunho no JSON."""
+    qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    rascunho = {
+        "rel_nome_condominio": (st.session_state.get("rel_nome_condominio") or "").strip(),
+        "rel_cnpj_condominio": (st.session_state.get("rel_cnpj_condominio") or "").strip(),
+        "rel_endereco_condominio": (st.session_state.get("rel_endereco_condominio") or "").strip(),
+        "rel_representante": (st.session_state.get("rel_representante") or "").strip(),
+        "rel_cpf_cnpj_representante": (st.session_state.get("rel_cpf_cnpj_representante") or "").strip(),
+        "rel_tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo"),
+        "rel_mes_referencia": (st.session_state.get("rel_mes_referencia") or ""),
+        "rel_ano_referencia": (st.session_state.get("rel_ano_referencia") or ""),
+        "rel_data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()),
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida"),
+        "rel_art_numero": (st.session_state.get("rel_art_numero") or ""),
+        "rel_art_inicio": (st.session_state.get("rel_art_inicio") or ""),
+        "rel_art_fim": (st.session_state.get("rel_art_fim") or ""),
+        "rel_status_agua": (st.session_state.get("rel_status_agua") or "CONFORME"),
+        "rel_diagnostico": (st.session_state.get("rel_diagnostico") or ""),
+        "rel_nbr_11238": (st.session_state.get("rel_nbr_11238") or ""),
+        "rel_nr_26": (st.session_state.get("rel_nr_26") or ""),
+        "rel_nr_06": (st.session_state.get("rel_nr_06") or ""),
+        "rel_epi_luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme"),
+        "rel_epi_luvas_ca": (st.session_state.get("rel_epi_luvas_ca") or ""),
+        "rel_epi_oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Conforme"),
+        "rel_epi_oculos_ca": (st.session_state.get("rel_epi_oculos_ca") or ""),
+        "rel_epi_respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Conforme"),
+        "rel_epi_respirador_ca": (st.session_state.get("rel_epi_respirador_ca") or ""),
+        "rel_epi_botas_status": (st.session_state.get("rel_epi_botas_status") or "Conforme"),
+        "rel_epi_botas_ca": (st.session_state.get("rel_epi_botas_ca") or ""),
+        "rel_analises_total": qtd,
+        "analises": [],
+        "dosagens": obter_dosagens_ultimas_relatorio(),
+        "observacoes": [(st.session_state.get(f"rel_obs_{i}") or "") for i in range(5)],
+        "recomendacoes": [
+            {
+                "texto": (st.session_state.get(f"rel_rec_texto_{i}") or ""),
+                "prazo": (st.session_state.get(f"rel_rec_prazo_{i}") or ""),
+                "responsavel": (st.session_state.get(f"rel_rec_resp_{i}") or ""),
+            }
+            for i in range(5)
+        ],
+        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+    }
+    for i in range(qtd):
+        rascunho["analises"].append({
+            "data": (st.session_state.get(f"rel_analise_data_{i}") or ""),
+            "ph": (st.session_state.get(f"rel_analise_ph_{i}") or ""),
+            "cl": (st.session_state.get(f"rel_analise_cl_{i}") or ""),
+            "ct": (st.session_state.get(f"rel_analise_ct_{i}") or ""),
+            "alc": (st.session_state.get(f"rel_analise_alc_{i}") or ""),
+            "dc": (st.session_state.get(f"rel_analise_dc_{i}") or ""),
+            "cya": (st.session_state.get(f"rel_analise_cya_{i}") or ""),
+            "operador": (st.session_state.get(f"rel_analise_operador_{i}") or ""),
+        })
+    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    caminho.write_text(json.dumps(rascunho, ensure_ascii=False, indent=2), encoding="utf-8")
+    return rascunho
+
+
+def carregar_rascunho_relatorio(pasta_condominio: Path) -> dict | None:
+    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    if not caminho.exists():
+        return None
+    try:
+        return json.loads(caminho.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def aplicar_rascunho_no_formulario(rascunho: dict):
+    """Restaura todos os campos do relatório a partir do rascunho salvo."""
+    campos_simples = [
+        "rel_nome_condominio", "rel_cnpj_condominio", "rel_endereco_condominio",
+        "rel_representante", "rel_cpf_cnpj_representante", "rel_tipo_atendimento",
+        "rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao",
+        "rel_art_status", "rel_art_numero", "rel_art_inicio", "rel_art_fim",
+        "rel_status_agua", "rel_diagnostico", "rel_nbr_11238", "rel_nr_26", "rel_nr_06",
+        "rel_epi_luvas_status", "rel_epi_luvas_ca", "rel_epi_oculos_status", "rel_epi_oculos_ca",
+        "rel_epi_respirador_status", "rel_epi_respirador_ca", "rel_epi_botas_status", "rel_epi_botas_ca",
+    ]
+    for c in campos_simples:
+        if c in rascunho:
+            st.session_state[c] = rascunho[c]
+
+    analises = rascunho.get("analises", [])
+    qtd = max(len(analises), ANALISES_PADRAO)
+    garantir_campos_analises(qtd)
+    st.session_state.rel_analises_total = qtd
+    for i, a in enumerate(analises):
+        st.session_state[f"rel_analise_data_{i}"] = a.get("data", "")
+        st.session_state[f"rel_analise_ph_{i}"] = a.get("ph", "")
+        st.session_state[f"rel_analise_cl_{i}"] = a.get("cl", "")
+        st.session_state[f"rel_analise_ct_{i}"] = a.get("ct", "")
+        st.session_state[f"rel_analise_alc_{i}"] = a.get("alc", "")
+        st.session_state[f"rel_analise_dc_{i}"] = a.get("dc", "")
+        st.session_state[f"rel_analise_cya_{i}"] = a.get("cya", "")
+        st.session_state[f"rel_analise_operador_{i}"] = a.get("operador", "")
+
+    dosagens = rascunho.get("dosagens", [])
+    for i in range(7):
+        d = dosagens[i] if i < len(dosagens) else {}
+        st.session_state[f"rel_dos_produto_{i}"] = d.get("produto", "")
+        st.session_state[f"rel_dos_lote_{i}"] = d.get("fabricante_lote", "")
+        st.session_state[f"rel_dos_qtd_{i}"] = d.get("quantidade", "")
+        st.session_state[f"rel_dos_un_{i}"] = d.get("unidade", "")
+        st.session_state[f"rel_dos_finalidade_{i}"] = d.get("finalidade", "")
+
+    for i, obs in enumerate(rascunho.get("observacoes", [])[:5]):
+        st.session_state[f"rel_obs_{i}"] = obs
+
+    for i, rec in enumerate(rascunho.get("recomendacoes", [])[:5]):
+        st.session_state[f"rel_rec_texto_{i}"] = rec.get("texto", "")
+        st.session_state[f"rel_rec_prazo_{i}"] = rec.get("prazo", "")
+        st.session_state[f"rel_rec_resp_{i}"] = rec.get("responsavel", "")
+
+
+def excluir_rascunho_relatorio(pasta_condominio: Path):
+    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    if caminho.exists():
+        caminho.unlink()
 
 
 inicializar_campos()
+sincronizar_relatorio_com_cadastro()
+
+# Auto-restaurar rascunho ao iniciar sessão
+if not st.session_state.get("_rascunho_restaurado"):
+    nome_atual = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+    if nome_atual:
+        pasta_rasc = GENERATED_DIR / slugify_nome(nome_atual)
+        rasc = carregar_rascunho_relatorio(pasta_rasc)
+        if rasc:
+            aplicar_rascunho_no_formulario(rasc)
+    st.session_state["_rascunho_restaurado"] = True
+
+# Quando nome do condomínio do relatório muda, tenta restaurar rascunho automaticamente
+_nome_rel_check = (st.session_state.get("rel_nome_condominio") or "").strip()
+_ultimo_nome_rasc = st.session_state.get("_ultimo_nome_rasc_check", "")
+if _nome_rel_check and _nome_rel_check != _ultimo_nome_rasc:
+    st.session_state["_ultimo_nome_rasc_check"] = _nome_rel_check
+    _pasta_check = GENERATED_DIR / slugify_nome(_nome_rel_check)
+    if _pasta_check.exists():
+        _rasc_auto = carregar_rascunho_relatorio(_pasta_check)
+        if _rasc_auto:
+            aplicar_rascunho_no_formulario(_rasc_auto)
+
+pasta_formulario_atual = obter_pasta_atual_do_formulario()
+if pasta_formulario_atual and pasta_formulario_atual.exists():
+    dados_auto = carregar_dados_condominio(pasta_formulario_atual)
+    if dados_auto:
+        dosagens_preenchidas = any((st.session_state.get(f"rel_dos_produto_{i}") or "").strip() or (st.session_state.get(f"rel_dos_lote_{i}") or "").strip() or (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip() or (st.session_state.get(f"rel_dos_un_{i}") or "").strip() or (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip() for i in range(7))
+        if not dosagens_preenchidas:
+            aplicar_dosagens_ultimas_no_relatorio(dados_auto)
 
 # =========================================
 # TOPO
@@ -1941,12 +2668,11 @@ with col_top2:
         <div class="top-card">
             <div class="top-title">{APP_TITLE}</div>
             <div class="top-subtitle">
-                Sistema profissional para geração automatizada de contrato, aditivo e relatório mensal de RT
+                Sistema profissional para geração automatizada de contrato e aditivo de RT
             </div>
             <div>
-                <span class="info-badge">{RESPONSAVEL_TECNICO}</span>
+                <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
                 <span class="info-badge">{CRQ}</span>
-                <span class="info-badge">{QUALIFICACAO_RT}</span>
                 <span class="info-badge">Windows + Word + DOCX/PDF</span>
             </div>
         </div>
@@ -1967,12 +2693,6 @@ with st.sidebar:
         max_value=180,
         step=1,
         key="alerta_vencimento_dias",
-    )
-
-    st.checkbox(
-        "Adicionar bloco extra de assinaturas ao final",
-        key="incluir_assinaturas",
-        help="Mantenha ativado se seus templates não possuem assinatura pronta.",
     )
 
     st.text_input(
@@ -1996,7 +2716,6 @@ with st.sidebar:
             arquivos = item["arquivos"]
             folder_key = chave_segura(str(pasta))
             status = status_vencimento(item["data_fim"], st.session_state.alerta_vencimento_dias)
-            resumo_docs = item.get("resumo_docs", {})
 
             titulo = f"{nome_cond} ({item['total_arquivos']})"
 
@@ -2007,12 +2726,6 @@ with st.sidebar:
                     unsafe_allow_html=True,
                 )
                 st.caption(status["mensagem"])
-                st.caption(
-                    f"Docs registrados: {resumo_docs.get('total', 0)} | "
-                    f"Contratos: {resumo_docs.get('contratos', 0)} | "
-                    f"Aditivos: {resumo_docs.get('aditivos', 0)} | "
-                    f"Relatórios: {resumo_docs.get('relatorios', 0)}"
-                )
 
                 col_h1, col_h2 = st.columns(2)
                 with col_h1:
@@ -2152,14 +2865,357 @@ with st.sidebar:
                         st.markdown("---")
 
 # =========================================
-# MODO DE OPERAÇÃO
+# MODO DE OPERAÇÃO — TELA DE ENTRADA
 # =========================================
 
-modo = st.radio(
-    "Modo de operação",
-    ["Modo Escritório", "Modo Campo"],
-    horizontal=True,
+# PIN padrão — altere aqui para trocar o PIN do operador
+PIN_OPERADOR = "5010"
+
+# Inicializa o modo se não estiver definido
+if "modo_atual" not in st.session_state:
+    st.session_state["modo_atual"] = "entrada"
+
+# Compatibilidade com seletor antigo (Modo Campo ainda usa st.radio internamente)
+_modo_interno = st.session_state.get("modo_atual", "entrada")
+
+# ---- TELA DE ENTRADA ----
+if _modo_interno == "entrada":
+    st.markdown("""
+    <style>
+    .entrada-card {
+        border: 1px solid rgba(20,85,160,0.15);
+        border-radius: 20px;
+        padding: 32px 24px;
+        background: linear-gradient(135deg, #ffffff 0%, #f4f9ff 100%);
+        box-shadow: 0 6px 24px rgba(10,50,100,0.08);
+        margin: 12px 0;
+        text-align: center;
+    }
+    .entrada-title { font-size: 1.3rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
+    .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 20px; }
+    .entrada-link { font-size: 0.75rem; color: #aab8c8; margin-top: 18px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    col_e1, col_e2, col_e3 = st.columns([1, 2, 1])
+    with col_e2:
+        st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-title">Aqua Gestão</div>', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
+
+        if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
+            st.session_state["modo_atual"] = "operador"
+            st.rerun()
+
+        # Acesso ao escritório — com PIN administrativo
+        st.markdown('<div class="entrada-link">Acesso administrativo</div>', unsafe_allow_html=True)
+        if st.button("·  ·  ·", use_container_width=False, key="btn_escritorio_oculto"):
+            st.session_state["mostrar_pin_admin"] = True
+
+        if st.session_state.get("mostrar_pin_admin"):
+            pin_admin = st.text_input("PIN administrativo", type="password",
+                key="pin_admin_input", placeholder="Digite o PIN", label_visibility="collapsed")
+            if st.button("Entrar", key="btn_pin_admin_ok", use_container_width=True):
+                if pin_admin == "@Anajullya10":
+                    st.session_state["modo_atual"] = "escritorio"
+                    st.session_state["mostrar_pin_admin"] = False
+                    st.rerun()
+                else:
+                    st.error("PIN incorreto.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.stop()
+
+# Alias para compatibilidade
+modo = "Modo Escritório" if _modo_interno == "escritorio" else (
+    "📱 Modo Operador (Campo / Celular)" if _modo_interno == "operador" else "Modo Escritório"
 )
+
+# Botão de voltar à tela inicial (aparece em todos os modos)
+if _modo_interno in ("escritorio", "operador"):
+    if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+        st.session_state["modo_atual"] = "entrada"
+        if _modo_interno == "operador":
+            st.session_state["op_pin_ok"] = False
+        st.rerun()
+
+# =========================================
+# MODO OPERADOR — LANÇAMENTO DE CAMPO
+# =========================================
+
+if modo == "📱 Modo Operador (Campo / Celular)":
+
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] { display: none !important; }
+    .main .block-container { padding: 0.5rem 0.8rem 2rem !important; max-width: 100% !important; }
+    .op-card {
+        border: 1px solid rgba(20,85,160,0.18);
+        border-radius: 16px;
+        padding: 16px;
+        background: #ffffff;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .op-title { font-size: 1.2rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; }
+    .op-sub { font-size: 0.82rem; color: #5d7288; margin-bottom: 10px; }
+    .op-salvo {
+        border: 1px solid rgba(30,140,70,0.3);
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: rgba(30,140,70,0.08);
+        color: #1a6e3a;
+        font-size: 0.95rem;
+        margin-top: 8px;
+    }
+    .stTextInput input, .stTextArea textarea {
+        font-size: 1rem !important;
+        min-height: 48px !important;
+        border-radius: 10px !important;
+    }
+    .stButton > button {
+        min-height: 52px !important;
+        font-size: 1.05rem !important;
+        border-radius: 12px !important;
+    }
+    .stTextInput label, .stSelectbox label, .stTextArea label {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #1a3a5c !important;
+    }
+    .element-container { margin-bottom: 6px !important; }
+    .pin-box {
+        border: 2px solid rgba(20,85,160,0.25);
+        border-radius: 20px;
+        padding: 32px 20px;
+        background: #ffffff;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        margin: 20px 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ---- TELA DE PIN ----
+    if not st.session_state.get("op_pin_ok"):
+        st.markdown('<div class="pin-box">', unsafe_allow_html=True)
+        st.markdown("### 🔐 Área do Operador")
+        st.markdown("**Aqua Gestão – Controle Técnico de Piscinas**")
+        st.markdown("Digite o PIN para acessar o lançamento de campo.")
+        pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
+            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=6)
+        if st.button("Entrar", type="primary", use_container_width=True):
+            if pin_digitado == PIN_OPERADOR:
+                st.session_state["op_pin_ok"] = True
+                st.rerun()
+            else:
+                st.error("PIN incorreto. Tente novamente.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.stop()
+
+    if st.button("🔒 Sair / Trocar operador", use_container_width=False):
+        st.session_state["op_pin_ok"] = False
+        st.rerun()
+
+    st.markdown('<div class="op-card">', unsafe_allow_html=True)
+    st.markdown('<div class="op-title">📱 Lançamento de Campo</div>', unsafe_allow_html=True)
+    st.markdown('<div class="op-sub">Aqua Gestão – Controle Técnico de Piscinas | Thyago Fernando da Silveira</div>', unsafe_allow_html=True)
+
+    _salvo = st.session_state.pop("op_salvo_sucesso", None)
+    if _salvo:
+        st.markdown(f"""
+        <div class="op-salvo">
+            ✅ <strong>Lançamento salvo!</strong><br>
+            Condomínio: {_salvo['nome']}<br>
+            Data: {_salvo['data']}<br>
+            Operador: {_salvo['operador']}<br>
+            Total este mês: {_salvo['total']}
+        </div>
+        """, unsafe_allow_html=True)
+
+    pastas_disponiveis = sorted([
+        p for p in GENERATED_DIR.iterdir() if p.is_dir()
+    ], key=lambda p: p.name) if GENERATED_DIR.exists() else []
+
+    opcoes_cond = []
+    for p in pastas_disponiveis:
+        dados_c = carregar_dados_condominio(p)
+        nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
+        opcoes_cond.append(nome_ex)
+
+    op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
+    if op_usar_novo:
+        op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
+    else:
+        if opcoes_cond:
+            op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
+        else:
+            st.warning("Nenhum condomínio cadastrado.")
+            op_nome_cond = ""
+
+    op_operador = st.text_input("Operador", key="op_operador", placeholder="Seu nome")
+
+    def _fmt_data_op():
+        v = apenas_digitos(st.session_state.get("op_data_visita", ""))[:8]
+        if len(v) <= 2:
+            st.session_state["op_data_visita"] = v
+        elif len(v) <= 4:
+            st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:]}"
+        else:
+            st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:4]}/{v[4:]}"
+
+    st.text_input("Data (digite só números: ddmmaaaa)",
+        key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if op_nome_cond:
+
+        # Limpa campos SE houver limpeza pendente (definida após o salvar + rerun)
+        if st.session_state.pop("op_limpar_campos", False):
+            for k in ["op_ph","op_crl","op_ct","op_alc","op_dc","op_cya","op_obs_campo","op_data_visita"]:
+                st.session_state[k] = ""
+            for i in range(5):
+                for s in ["prod","qtd","un","fin"]:
+                    st.session_state[f"op_dos_{s}_{i}"] = ""
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">🧪 Parâmetros da água</div>', unsafe_allow_html=True)
+
+        with st.expander("📋 Faixas de referência"):
+            st.markdown("""
+| Parâmetro | Faixa ideal |
+|---|---|
+| pH | 7,2 – 7,8 |
+| CRL mg/L | 0,5 – 3,0 |
+| Alcalinidade mg/L | 80 – 120 |
+| Dureza DC mg/L | 150 – 300 |
+| CYA mg/L | 30 – 50 |
+            """)
+
+        def _num_op(chave, label, placeholder):
+            v = st.text_input(label, key=chave, placeholder=placeholder)
+            return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            op_ph  = _num_op("op_ph",  "pH", "ex: 7.4")
+            op_alc = _num_op("op_alc", "Alcalinidade mg/L", "ex: 95")
+            op_dc  = _num_op("op_dc",  "Dureza DC mg/L", "ex: 200")
+        with c2:
+            op_crl = _num_op("op_crl", "CRL mg/L", "ex: 1.5")
+            op_ct  = _num_op("op_ct",  "Cloro Total CT mg/L", "ex: 1.8")
+            op_cya = _num_op("op_cya", "CYA mg/L", "ex: 40")
+
+        alertas_op = []
+        for val, mn, mx, rot in [
+            (op_ph, 7.2, 7.8, "pH"), (op_crl, 0.5, 3.0, "CRL"),
+            (op_alc, 80, 120, "Alcalinidade"), (op_dc, 150, 300, "Dureza DC"),
+            (op_cya, 30, 50, "CYA"),
+        ]:
+            v = valor_float(val)
+            if v is not None:
+                alertas_op.append(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
+        v_crl2 = valor_float(op_crl); v_ct2 = valor_float(op_ct)
+        if v_crl2 is not None and v_ct2 is not None:
+            clor2 = round(max(v_ct2 - v_crl2, 0), 2)
+            alertas_op.append(f"{'⚠️' if clor2 > 0.2 else '✅'} **Cloraminas: {clor2} mg/L**")
+        for a in alertas_op:
+            st.markdown(a)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">⚗️ Dosagens aplicadas</div>', unsafe_allow_html=True)
+        op_dosagens = []
+        for i in range(5):
+            with st.expander(f"Produto {i+1}", expanded=(i == 0)):
+                d1, d2 = st.columns([2, 1])
+                prod = d1.text_input("Produto", key=f"op_dos_prod_{i}", label_visibility="collapsed", placeholder="Nome do produto")
+                qtd  = d2.text_input("Qtd", key=f"op_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd")
+                d3, d4 = st.columns([1, 2])
+                un   = d3.text_input("Un", key=f"op_dos_un_{i}", label_visibility="collapsed", placeholder="kg/L")
+                fin  = d4.text_input("Finalidade", key=f"op_dos_fin_{i}", label_visibility="collapsed", placeholder="Finalidade")
+                if prod.strip():
+                    op_dosagens.append({"produto": prod.strip(), "fabricante_lote": "", "quantidade": qtd.strip(), "unidade": un.strip(), "finalidade": fin.strip()})
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">📸 Fotos da visita</div>', unsafe_allow_html=True)
+        op_fotos = st.file_uploader("Fotos", type=["jpg","jpeg","png","webp","heic"],
+            accept_multiple_files=True, key="op_fotos_campo", label_visibility="collapsed")
+        if op_fotos:
+            cols_f = st.columns(min(len(op_fotos), 3))
+            for idx_f, foto_f in enumerate(op_fotos):
+                with cols_f[idx_f % 3]:
+                    st.image(foto_f, caption=foto_f.name, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">📝 Observação</div>', unsafe_allow_html=True)
+        op_obs = st.text_area("Obs", key="op_obs_campo", height=90,
+            label_visibility="collapsed", placeholder="Ex.: água turva, bomba com ruído...")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        if st.button("💾 Salvar lançamento", type="primary", use_container_width=True):
+            data_vis = (st.session_state.get("op_data_visita") or "").strip()
+            if not op_nome_cond.strip():
+                st.error("Informe o condomínio.")
+            elif not data_vis:
+                st.error("Informe a data da visita.")
+            else:
+                pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                pasta_op.mkdir(parents=True, exist_ok=True)
+                fotos_salvas_op = []
+                if op_fotos:
+                    pasta_fotos_op = pasta_op / "fotos_campo"
+                    pasta_fotos_op.mkdir(exist_ok=True)
+                    ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    for idx_ff, foto_ff in enumerate(op_fotos, 1):
+                        nome_ff = limpar_nome_arquivo(f"campo_{ts_f}_{idx_ff}_{foto_ff.name}")
+                        with open(pasta_fotos_op / nome_ff, "wb") as ff:
+                            ff.write(foto_ff.getbuffer())
+                        fotos_salvas_op.append(nome_ff)
+                dados_ex = carregar_dados_condominio(pasta_op) or {}
+                lancamento = {
+                    "data": data_vis, "operador": op_operador.strip(),
+                    "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
+                    "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
+                    "observacao": op_obs.strip(), "dosagens": op_dosagens,
+                    "fotos": fotos_salvas_op,
+                    "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                }
+                pendentes = dados_ex.get("lancamentos_campo", [])
+                pendentes.append(lancamento)
+                dados_ex["lancamentos_campo"] = pendentes
+                dados_ex["nome_condominio"] = dados_ex.get("nome_condominio", op_nome_cond.strip())
+                if op_dosagens:
+                    dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
+                salvar_dados_condominio(pasta_op, dados_ex)
+                st.session_state["op_salvo_sucesso"] = {
+                    "nome": op_nome_cond, "data": data_vis,
+                    "operador": op_operador.strip() or "Não informado",
+                    "total": len(pendentes),
+                }
+                # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
+                st.session_state["op_limpar_campos"] = True
+                st.rerun()
+
+        pasta_hc = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) if op_nome_cond.strip() else None
+        if pasta_hc and pasta_hc.exists():
+            dados_hc = carregar_dados_condominio(pasta_hc)
+            pend_hc = (dados_hc or {}).get("lancamentos_campo", [])
+            if pend_hc:
+                st.markdown(f"**{len(pend_hc)} lançamento(s) registrado(s):**")
+                for lc in reversed(pend_hc[-3:]):
+                    ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
+                    st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Para o restante da página não renderizar no modo operador
+    st.stop()
 
 if modo == "Modo Campo":
     st.info("Fluxo compacto habilitado para operação em campo no Windows / tablet Windows.")
@@ -2290,40 +3346,17 @@ st.subheader("Saúde do sistema")
 
 s1, s2, s3, s4, s5, s6 = st.columns(6)
 with s1:
-    st.markdown(
-        f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s2:
-    st.markdown(
-        f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s3:
-    st.markdown(
-        f"Template do relatório<br><span class='{'health-ok' if diag['template_relatorio_ok'] else 'health-no'}'>{'OK' if diag['template_relatorio_ok'] else 'Ausente'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Template do relatório<br><span class='{'health-ok' if diag['template_relatorio_ok'] else 'health-no'}'>{'OK' if diag['template_relatorio_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s4:
-    st.markdown(
-        f"Pasta de documentos<br><span class='{'health-ok' if diag['generated_ok'] else 'health-no'}'>{'OK' if diag['generated_ok'] else 'Ausente'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Pasta de documentos<br><span class='{'health-ok' if diag['generated_ok'] else 'health-no'}'>{'OK' if diag['generated_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s5:
-    st.markdown(
-        f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>",
-        unsafe_allow_html=True,
-    )
-with s5:
-    st.markdown(
-        f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>", unsafe_allow_html=True)
 with s6:
-    st.markdown(
-        f"Ambiente Windows<br><span class='{'health-ok' if diag['windows_ok'] else 'health-no'}'>{'OK' if diag['windows_ok'] else 'Fora do padrão'}</span>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"Ambiente Windows<br><span class='{'health-ok' if diag['windows_ok'] else 'health-no'}'>{'OK' if diag['windows_ok'] else 'Fora do padrão'}</span>", unsafe_allow_html=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -2384,22 +3417,8 @@ def render_exportacao_e_docs(item: dict, item_key: str):
     ultimo_contrato = item["ultimo_contrato"]
     ultimo_aditivo = item["ultimo_aditivo"]
     ultimo_relatorio = item.get("ultimo_relatorio")
-    resumo_docs = item.get("resumo_docs", {})
-    ultimo_registro = resumo_docs.get("ultimo_registro") or {}
 
-    st.markdown("<div class='docs-note'><strong>Documentos e controle</strong></div>", unsafe_allow_html=True)
-
-    chips = []
-    chips.append(f"<span class='doc-chip'>Registros: {resumo_docs.get('total', 0)}</span>")
-    chips.append(f"<span class='doc-chip'>Contratos: {resumo_docs.get('contratos', 0)}</span>")
-    chips.append(f"<span class='doc-chip'>Aditivos: {resumo_docs.get('aditivos', 0)}</span>")
-    chips.append(f"<span class='doc-chip'>Relatórios: {resumo_docs.get('relatorios', 0)}</span>")
-    if ultimo_registro.get("registrado_em"):
-        chips.append(f"<span class='doc-chip'>Último: {ultimo_registro.get('registrado_em')}</span>")
-    st.markdown("".join(chips), unsafe_allow_html=True)
-
-    if dados and dados.get("salvo_em"):
-        st.caption(f"Última atualização cadastral: {dados.get('salvo_em')}")
+    st.markdown("<div class='docs-note'><strong>Documentos mais recentes</strong></div>", unsafe_allow_html=True)
 
     dc1, dc2, dc3, dc4, dc5 = st.columns(5)
     with dc1:
@@ -2450,6 +3469,7 @@ def render_exportacao_e_docs(item: dict, item_key: str):
             )
         else:
             st.button("Sem resumo", key=f"sem_resumo_{item_key}", disabled=True, use_container_width=True)
+
 
 with aba1:
     if not itens_vencidos:
@@ -2639,6 +3659,349 @@ with aba3:
 st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
+# CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("Clientes sem RT — Relatório Técnico Simples")
+st.caption("Para condomínios que não possuem contrato de RT mas recebem visita técnica com análise e dosagem.")
+
+with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
+
+    # Lista clientes sem RT já cadastrados
+    CLIENTES_SEM_RT_JSON = GENERATED_DIR / "_clientes_sem_rt.json"
+
+    def carregar_clientes_sem_rt() -> list:
+        if CLIENTES_SEM_RT_JSON.exists():
+            try:
+                return json.loads(CLIENTES_SEM_RT_JSON.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    def salvar_clientes_sem_rt(lista: list):
+        GENERATED_DIR.mkdir(exist_ok=True)
+        CLIENTES_SEM_RT_JSON.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    clientes_sem_rt = carregar_clientes_sem_rt()
+
+    st.markdown("**Novo cliente sem RT:**")
+    csr1, csr2 = st.columns(2)
+    with csr1:
+        csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+        csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+    with csr2:
+        csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00")
+        csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
+        csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999")
+
+    if st.button("➕ Salvar cliente sem RT", use_container_width=True):
+        if not csr_nome.strip():
+            st.error("Informe o nome do local.")
+        else:
+            novo = {
+                "nome": csr_nome.strip(),
+                "cnpj": csr_cnpj.strip(),
+                "endereco": csr_endereco.strip(),
+                "contato": csr_contato.strip(),
+                "telefone": csr_telefone.strip(),
+                "cadastrado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            }
+            # Atualiza se já existe, senão adiciona
+            nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
+            if csr_nome.strip().lower() in nomes_existentes:
+                idx_ex = nomes_existentes.index(csr_nome.strip().lower())
+                clientes_sem_rt[idx_ex] = novo
+                st.success(f"Cliente '{csr_nome}' atualizado.")
+            else:
+                clientes_sem_rt.append(novo)
+                st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
+            salvar_clientes_sem_rt(clientes_sem_rt)
+            # Cria pasta do cliente no generated
+            pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
+            pasta_csr.mkdir(parents=True, exist_ok=True)
+            salvar_dados_condominio(pasta_csr, {
+                "nome_condominio": csr_nome.strip(),
+                "cnpj_condominio": csr_cnpj.strip(),
+                "endereco_condominio": csr_endereco.strip(),
+                "nome_sindico": csr_contato.strip(),
+                "tipo": "sem_rt",
+                "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            })
+            st.rerun()
+
+    if clientes_sem_rt:
+        st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
+        for c in clientes_sem_rt:
+            st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
+
+# ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
+st.markdown("---")
+st.markdown("**Gerar relatório técnico simples (sem RT)**")
+
+clientes_sem_rt_reload = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
+
+if not opcoes_csr:
+    st.info("Cadastre um cliente sem RT acima para gerar o relatório técnico.")
+else:
+    rts1, rts2, rts3 = st.columns([2, 1, 1])
+    with rts1:
+        csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
+    with rts2:
+        csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder="04")
+    with rts3:
+        csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder="2026")
+
+    csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
+
+    # Carrega lançamentos de campo do cliente selecionado
+    pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
+    lancamentos_csr = []
+    if pasta_csr_sel and pasta_csr_sel.exists():
+        dados_csr_json = carregar_dados_condominio(pasta_csr_sel)
+        lancamentos_csr = (dados_csr_json or {}).get("lancamentos_campo", [])
+
+    if lancamentos_csr:
+        st.markdown(f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:10px;padding:10px;background:rgba(20,120,60,0.07);'>"
+            f"📱 <strong>{len(lancamentos_csr)} lançamento(s) de campo disponível(is)</strong> — "
+            f"período: {lancamentos_csr[0].get('data','?')} a {lancamentos_csr[-1].get('data','?')}</div>",
+            unsafe_allow_html=True)
+
+    csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
+    csr_obs_geral = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
+        placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+
+    if st.button("📄 Gerar relatório técnico simples", type="primary", use_container_width=True):
+        if not csr_sel or not csr_mes.strip() or not csr_ano.strip():
+            st.error("Selecione o cliente, mês e ano.")
+        else:
+            try:
+                from docx import Document as DocxDoc
+                from docx.shared import Pt, Cm, Inches
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+                doc_rt = DocxDoc()
+
+                for section in doc_rt.sections:
+                    section.top_margin = Cm(2)
+                    section.bottom_margin = Cm(2)
+                    section.left_margin = Cm(2.5)
+                    section.right_margin = Cm(2.5)
+
+                def add_par(doc, texto, bold=False, size=11, align=None):
+                    p = doc.add_paragraph()
+                    if align:
+                        p.alignment = align
+                    run = p.add_run(texto)
+                    run.bold = bold
+                    run.font.size = Pt(size)
+                    return p
+
+                # ── Cabeçalho ──
+                add_par(doc_rt, "AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
+                add_par(doc_rt, "RELATÓRIO TÉCNICO DE QUALIDADE DA ÁGUA", bold=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
+                add_par(doc_rt, f"Mês de Referência: {csr_mes.strip()}/{csr_ano.strip()}  |  Emissão: {hoje_br()}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+                doc_rt.add_paragraph()
+
+                # ── 1. Identificação ──
+                add_par(doc_rt, "1. IDENTIFICAÇÃO DO LOCAL", bold=True, size=11)
+                tab_id = doc_rt.add_table(rows=5, cols=2)
+                tab_id.autofit = True
+                dados_id = [
+                    ("Local / Condomínio", csr_dados_sel.get("nome", csr_sel)),
+                    ("CNPJ", csr_dados_sel.get("cnpj", "Não informado") or "Não informado"),
+                    ("Endereço", csr_dados_sel.get("endereco", "Não informado") or "Não informado"),
+                    ("Responsável", csr_dados_sel.get("contato", "Não informado") or "Não informado"),
+                    ("Operador de campo", csr_operador_nome or "Não informado"),
+                ]
+                for i, (k, v) in enumerate(dados_id):
+                    tab_id.cell(i, 0).text = k
+                    tab_id.cell(i, 1).text = v
+                    tab_id.cell(i, 0).paragraphs[0].runs[0].bold = True
+                doc_rt.add_paragraph()
+
+                # ── 2. Base normativa ──
+                add_par(doc_rt, "2. BASE NORMATIVA E FAIXAS DE REFERÊNCIA", bold=True, size=11)
+                normas_texto = (
+                    "As análises físico-químicas registradas neste relatório seguem as faixas operacionais "
+                    "estabelecidas pela ABNT NBR 10339 (Piscinas — Projeto, execução e manutenção), "
+                    "com referência complementar à Portaria GM/MS nº 888/2021 (padrão sanitário de água). "
+                    "Os procedimentos de segurança química observam a NR-26 (Sinalização de Segurança) "
+                    "e NR-6 (Equipamentos de Proteção Individual — EPI)."
+                )
+                p_normas = doc_rt.add_paragraph()
+                p_normas.add_run(normas_texto).font.size = Pt(10)
+
+                # Tabela de faixas de referência
+                faixas_header = ["Parâmetro", "Unidade", "Faixa Mínima", "Faixa Máxima", "Referência"]
+                faixas_data = [
+                    ["pH", "—", "7,2", "7,8", "ABNT NBR 10339"],
+                    ["Cloro Residual Livre (CRL)", "mg/L", "0,5", "3,0", "ABNT NBR 10339"],
+                    ["Cloro Total (CT)", "mg/L", "—", "CRL + 0,5", "ABNT NBR 10339"],
+                    ["Alcalinidade Total", "mg/L", "80", "120", "ABNT NBR 10339"],
+                    ["Dureza Cálcica (DC)", "mg/L", "150", "300", "ABNT NBR 10339"],
+                    ["Ácido Cianúrico (CYA)", "mg/L", "30", "50", "ABNT NBR 10339"],
+                ]
+                tab_faixas = doc_rt.add_table(rows=1 + len(faixas_data), cols=5)
+                tab_faixas.style = "Table Grid"
+                for j, h in enumerate(faixas_header):
+                    c = tab_faixas.cell(0, j)
+                    c.text = h
+                    c.paragraphs[0].runs[0].bold = True
+                    c.paragraphs[0].runs[0].font.size = Pt(9)
+                for i, row in enumerate(faixas_data, 1):
+                    for j, v in enumerate(row):
+                        tab_faixas.cell(i, j).text = v
+                        tab_faixas.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
+                doc_rt.add_paragraph()
+
+                # ── 3. Análises ──
+                add_par(doc_rt, "3. ANÁLISES FÍSICO-QUÍMICAS REGISTRADAS", bold=True, size=11)
+                if lancamentos_csr:
+                    headers_an = ["Data", "pH", "CRL", "CT", "Alc.", "DC", "CYA", "Operador"]
+                    tab_an = doc_rt.add_table(rows=1 + len(lancamentos_csr), cols=len(headers_an))
+                    tab_an.style = "Table Grid"
+                    for j, h in enumerate(headers_an):
+                        c = tab_an.cell(0, j)
+                        c.text = h
+                        c.paragraphs[0].runs[0].bold = True
+                        c.paragraphs[0].runs[0].font.size = Pt(9)
+                    for i, lc in enumerate(lancamentos_csr, 1):
+                        vals = [lc.get("data",""), lc.get("ph",""), lc.get("cloro_livre",""),
+                                lc.get("cloro_total",""), lc.get("alcalinidade",""),
+                                lc.get("dureza",""), lc.get("cianurico",""), lc.get("operador","")]
+                        for j, v in enumerate(vals):
+                            tab_an.cell(i, j).text = str(v)
+                            tab_an.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
+                else:
+                    add_par(doc_rt, "Nenhuma análise registrada neste período.", size=10)
+                doc_rt.add_paragraph()
+
+                # ── 4. Dosagens ──
+                add_par(doc_rt, "4. DOSAGENS DE PRODUTOS QUÍMICOS", bold=True, size=11)
+                todas_dosagens = []
+                for lc in lancamentos_csr:
+                    for d in lc.get("dosagens", []):
+                        if d.get("produto") and d["produto"] not in [x.get("produto") for x in todas_dosagens]:
+                            todas_dosagens.append(d)
+                if todas_dosagens:
+                    tab_dos = doc_rt.add_table(rows=1 + len(todas_dosagens), cols=4)
+                    tab_dos.style = "Table Grid"
+                    for j, h in enumerate(["Produto", "Quantidade", "Unidade", "Finalidade"]):
+                        c = tab_dos.cell(0, j)
+                        c.text = h
+                        c.paragraphs[0].runs[0].bold = True
+                        c.paragraphs[0].runs[0].font.size = Pt(9)
+                    for i, d in enumerate(todas_dosagens, 1):
+                        for j, v in enumerate([d.get("produto",""), d.get("quantidade",""), d.get("unidade",""), d.get("finalidade","")]):
+                            tab_dos.cell(i, j).text = v
+                            tab_dos.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
+                else:
+                    add_par(doc_rt, "Nenhuma dosagem registrada neste período.", size=10)
+                doc_rt.add_paragraph()
+
+                # ── 5. Observações ──
+                add_par(doc_rt, "5. OBSERVAÇÕES TÉCNICAS", bold=True, size=11)
+                obs_unidas = csr_obs_geral.strip()
+                for lc in lancamentos_csr:
+                    if lc.get("observacao"):
+                        obs_unidas += f"\n• {lc.get('data','')}: {lc['observacao']}"
+                p_obs = doc_rt.add_paragraph()
+                p_obs.add_run(obs_unidas or "Sem observações registradas.").font.size = Pt(10)
+                doc_rt.add_paragraph()
+
+                # ── 6. Registro fotográfico ──
+                pasta_csr_out_pre = GENERATED_DIR / slugify_nome(csr_sel)
+                pasta_fotos_csr = pasta_csr_out_pre / "fotos_campo"
+                fotos_encontradas = []
+                if pasta_fotos_csr.exists():
+                    for lc in lancamentos_csr:
+                        for nome_foto in lc.get("fotos", []):
+                            caminho_foto = pasta_fotos_csr / nome_foto
+                            if caminho_foto.exists():
+                                fotos_encontradas.append((lc.get("data",""), caminho_foto))
+
+                if fotos_encontradas:
+                    add_par(doc_rt, "6. REGISTRO FOTOGRÁFICO", bold=True, size=11)
+                    for data_foto, caminho_foto in fotos_encontradas:
+                        try:
+                            p_foto_leg = doc_rt.add_paragraph()
+                            p_foto_leg.add_run(f"Visita: {data_foto}").font.size = Pt(9)
+                            p_foto = doc_rt.add_paragraph()
+                            p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            run_foto = p_foto.add_run()
+                            run_foto.add_picture(str(caminho_foto), width=Inches(5.5))
+                        except Exception:
+                            add_par(doc_rt, f"[Foto não pôde ser inserida: {caminho_foto.name}]", size=9)
+                    doc_rt.add_paragraph()
+                    secao_aviso = 7
+                else:
+                    secao_aviso = 6
+
+                # ── Aviso legal ──
+                add_par(doc_rt, f"{secao_aviso}. AVISO LEGAL E GUARDA DOCUMENTAL", bold=True, size=10)
+                p_aviso = doc_rt.add_paragraph()
+                p_aviso.add_run(
+                    "Recomenda-se a guarda e organização deste documento e de seus registros correlatos por prazo "
+                    "mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental e "
+                    "segurança jurídica. Este relatório é de caráter técnico-informativo e não substitui laudo "
+                    "laboratorial microbiológico, cuja contratação é de responsabilidade do estabelecimento."
+                ).font.size = Pt(9)
+                doc_rt.add_paragraph()
+
+                # ── Assinatura ──
+                add_par(doc_rt, f"Uberlândia/MG, {hoje_br()}.", size=11, align=WD_ALIGN_PARAGRAPH.CENTER)
+                doc_rt.add_paragraph()
+                tab_ass = doc_rt.add_table(rows=1, cols=2)
+                tab_ass.autofit = True
+                c_ass1 = tab_ass.cell(0, 0)
+                c_ass2 = tab_ass.cell(0, 1)
+                for cell_a, texto_a in [
+                    (c_ass1, f"___________________________\n{csr_operador_nome or 'Operador'}\nAqua Gestão – Controle Técnico de Piscinas"),
+                    (c_ass2, f"___________________________\n{csr_dados_sel.get('contato','Responsável')}\n{csr_sel}"),
+                ]:
+                    cell_a.paragraphs[0].clear()
+                    cell_a.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    cell_a.paragraphs[0].add_run(texto_a).font.size = Pt(9)
+
+                # ── Salva ──
+                pasta_csr_out = GENERATED_DIR / slugify_nome(csr_sel)
+                pasta_csr_out.mkdir(parents=True, exist_ok=True)
+                data_nome_csr = datetime.now().strftime("%Y%m%d_%H%M%S")
+                docx_csr = pasta_csr_out / f"{data_nome_csr}_{slugify_nome(csr_sel)}_RELATORIO_TECNICO.docx"
+                pdf_csr  = pasta_csr_out / f"{data_nome_csr}_{slugify_nome(csr_sel)}_RELATORIO_TECNICO.pdf"
+                doc_rt.save(str(docx_csr))
+                ok_pdf_csr, err_pdf_csr = converter_docx_para_pdf(docx_csr, pdf_csr)
+
+                registrar_documento_manifest(pasta_csr_out, csr_sel, "Relatório", docx_csr, pdf_csr, ok_pdf_csr, err_pdf_csr)
+                st.session_state["ultimos_docs_gerados"] = st.session_state.get("ultimos_docs_gerados") or {}
+                st.session_state["ultimos_docs_gerados"].update({
+                    "relatorio_docx": str(docx_csr),
+                    "relatorio_pdf": str(pdf_csr) if ok_pdf_csr else None,
+                })
+
+                st.success(f"✅ Relatório técnico gerado para {csr_sel}! {len(fotos_encontradas)} foto(s) incluída(s).")
+                dl1, dl2 = st.columns(2)
+                with dl1:
+                    with open(docx_csr, "rb") as f:
+                        st.download_button("⬇️ Baixar DOCX", data=f, file_name=docx_csr.name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True)
+                with dl2:
+                    if ok_pdf_csr and pdf_csr.exists():
+                        with open(pdf_csr, "rb") as f:
+                            st.download_button("⬇️ Baixar PDF", data=f, file_name=pdf_csr.name,
+                                mime="application/pdf", use_container_width=True)
+                    else:
+                        st.warning(f"PDF não gerado: {err_pdf_csr}")
+
+            except Exception as e:
+                st.error(f"Erro ao gerar relatório: {e}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
 # FORMULÁRIO
 # =========================================
 
@@ -2648,7 +4011,7 @@ st.subheader("Dados do contrato e aditivo")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.text_input("Nome do condomínio", key="nome_condominio")
+    st.text_input("Nome do condomínio", key="nome_condominio", on_change=on_change_nome_condominio)
     st.text_input(
         "CNPJ do condomínio",
         key="cnpj_condominio",
@@ -2696,9 +4059,8 @@ with col2:
         on_change=on_change_data_assinatura,
     )
 
-st.markdown("---")
-
 if modo == "Modo Campo":
+    st.markdown("---")
     col_campo1, col_campo2 = st.columns(2)
     with col_campo1:
         st.text_input(
@@ -2710,6 +4072,7 @@ if modo == "Modo Campo":
     with col_campo2:
         st.text_input("E-mail do cliente (opcional)", key="email_cliente")
 else:
+    st.markdown("---")
     col_cont1, col_cont2 = st.columns(2)
     with col_cont1:
         st.text_input(
@@ -2724,8 +4087,8 @@ else:
 st.text_area(
     "Observações internas (não vai para contrato/aditivo)",
     key="observacoes_internas",
-    height=110,
-    placeholder="Ex.: condição comercial específica, histórico jurídico, observação de cobrança, particularidades do condomínio...",
+    height=100,
+    placeholder="Ex.: condição comercial específica, observação operacional, histórico jurídico...",
 )
 
 st.markdown('</div>', unsafe_allow_html=True)
@@ -2766,94 +4129,358 @@ with r3:
         "Renovação anual rápida ajusta datas no formulário sem gerar documento automaticamente."
     )
 
+st.markdown("---")
+st.markdown("**Geração de documentos contratuais**")
+
+col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.5, 1.5, 1, 1])
+
+with col_btn1:
+    gerar = st.button(
+        "✅ Gerar contrato + aditivo",
+        type="primary",
+        use_container_width=True,
+    )
+
+with col_btn2:
+    gerar_aditivo_rapido = st.button(
+        "📄 Gerar somente aditivo rápido",
+        use_container_width=True,
+    )
+
+with col_btn3:
+    if st.button("🗑️ Limpar formulário", use_container_width=True):
+        limpar_formulario()
+        st.rerun()
+
+with col_btn4:
+    if st.button("📁 Abrir pasta gerada", use_container_width=True):
+        abrir_pasta_windows(GENERATED_DIR)
+
 st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
-# RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA
+# DOWNLOADS DOS ÚLTIMOS DOCUMENTOS GERADOS
+# =========================================
+# Exibe os downloads logo aqui, antes do relatório, independente de onde o botão foi clicado.
+
+_ultimos = st.session_state.get("ultimos_docs_gerados")
+if _ultimos:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("⬇️ Últimos documentos gerados")
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        st.markdown("**Contrato**")
+        _p = _ultimos.get("contrato_docx")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button("Baixar DOCX do contrato", data=_f, file_name=Path(_p).name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_contrato_docx_top")
+        _p = _ultimos.get("contrato_pdf")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button("Baixar PDF do contrato", data=_f, file_name=Path(_p).name,
+                    mime="application/pdf", use_container_width=True, key="dl_contrato_pdf_top")
+    with _dc2:
+        st.markdown("**Aditivo**")
+        _p = _ultimos.get("aditivo_docx")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button("Baixar DOCX do aditivo", data=_f, file_name=Path(_p).name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_aditivo_docx_top")
+        _p = _ultimos.get("aditivo_pdf")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button("Baixar PDF do aditivo", data=_f, file_name=Path(_p).name,
+                    mime="application/pdf", use_container_width=True, key="dl_aditivo_pdf_top")
+    _p_rel = _ultimos.get("relatorio_docx")
+    _p_rel_pdf = _ultimos.get("relatorio_pdf")
+    if (_p_rel and Path(_p_rel).exists()) or (_p_rel_pdf and Path(_p_rel_pdf).exists()):
+        st.markdown("**Relatório mensal**")
+        _dc3, _dc4 = st.columns(2)
+        with _dc3:
+            if _p_rel and Path(_p_rel).exists():
+                with open(_p_rel, "rb") as _f:
+                    st.download_button("Baixar DOCX do relatório", data=_f, file_name=Path(_p_rel).name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_relatorio_docx_top")
+        with _dc4:
+            if _p_rel_pdf and Path(_p_rel_pdf).exists():
+                with open(_p_rel_pdf, "rb") as _f:
+                    st.download_button("Baixar PDF do relatório", data=_f, file_name=Path(_p_rel_pdf).name,
+                        mime="application/pdf", use_container_width=True, key="dl_relatorio_pdf_top")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# RELATÓRIO MENSAL DE RT
 # =========================================
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
-st.caption("Módulo integrado ao histórico do condomínio, com geração em DOCX/PDF e registro no manifest.json.")
 
-ra1, ra2, ra3, ra4 = st.columns(4)
-with ra1:
+st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
+
+rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
+with rr0a:
+    st.selectbox("Tipo de atendimento", ["Contrato ativo", "Visita técnica avulsa", "Inspeção técnica", "Acompanhamento sem contrato"], key="rel_tipo_atendimento")
+with rr0b:
+    if st.button("Carregar dados do cadastro no relatório", use_container_width=True):
+        carregar_dados_cadastro_no_relatorio()
+        st.rerun()
+with rr0c:
+    st.checkbox("Salvar alterações deste relatório no cadastro principal", key="rel_salvar_alteracoes_cadastro")
+
+# ---- Importar lançamentos de campo ----
+nome_rel_atual = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+pasta_rel_atual = GENERATED_DIR / slugify_nome(nome_rel_atual) if nome_rel_atual else None
+lancamentos_disponiveis = []
+if pasta_rel_atual and pasta_rel_atual.exists():
+    dados_rel_json = carregar_dados_condominio(pasta_rel_atual)
+    lancamentos_disponiveis = (dados_rel_json or {}).get("lancamentos_campo", [])
+
+if lancamentos_disponiveis:
+    st.markdown(f"""
+    <div style="border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;
+    background:rgba(20,120,60,0.07);margin-bottom:12px;">
+    <strong>📱 {len(lancamentos_disponiveis)} lançamento(s) de campo disponível(is) para este condomínio</strong><br>
+    <span style="font-size:0.85rem;color:#3a6a3a;">
+    Período: {lancamentos_disponiveis[0].get('data','?')} até {lancamentos_disponiveis[-1].get('data','?')}
+    </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    imp1, imp2, imp3 = st.columns([1.5, 1.5, 1])
+    with imp1:
+        if st.button("📥 Importar lançamentos de campo para o relatório", use_container_width=True, type="primary"):
+            # Preenche as linhas de análise com os lançamentos
+            garantir_campos_analises(max(len(lancamentos_disponiveis), ANALISES_PADRAO))
+            for i, lc in enumerate(lancamentos_disponiveis[:ANALISES_MAX_SUGERIDO]):
+                st.session_state[f"rel_analise_data_{i}"] = lc.get("data", "")
+                st.session_state[f"rel_analise_ph_{i}"] = lc.get("ph", "")
+                st.session_state[f"rel_analise_cl_{i}"] = lc.get("cloro_livre", "")
+                st.session_state[f"rel_analise_ct_{i}"] = lc.get("cloro_total", "")
+                st.session_state[f"rel_analise_alc_{i}"] = lc.get("alcalinidade", "")
+                st.session_state[f"rel_analise_dc_{i}"] = lc.get("dureza", "")
+                st.session_state[f"rel_analise_cya_{i}"] = lc.get("cianurico", "")
+                st.session_state[f"rel_analise_operador_{i}"] = lc.get("operador", "")
+            # Importa última dosagem disponível
+            for lc in reversed(lancamentos_disponiveis):
+                if lc.get("dosagens"):
+                    aplicar_dosagens_ultimas_no_relatorio({"dosagens_ultimas": lc["dosagens"]})
+                    break
+            # Importa observações concatenadas
+            obs_campo = [lc.get("observacao","") for lc in lancamentos_disponiveis if lc.get("observacao","").strip()]
+            for i, obs in enumerate(obs_campo[:5]):
+                st.session_state[f"rel_obs_{i}"] = obs
+            st.success(f"{len(lancamentos_disponiveis)} lançamento(s) importado(s) com sucesso!")
+            st.rerun()
+
+    with imp2:
+        if st.button("🗑️ Limpar lançamentos após gerar relatório", use_container_width=True):
+            if pasta_rel_atual and pasta_rel_atual.exists():
+                dados_limpar = carregar_dados_condominio(pasta_rel_atual) or {}
+                dados_limpar["lancamentos_campo"] = []
+                salvar_dados_condominio(pasta_rel_atual, dados_limpar)
+                st.success("Lançamentos de campo limpos.")
+                st.rerun()
+
+    with imp3:
+        with st.expander("Ver lançamentos"):
+            for lc in lancamentos_disponiveis:
+                st.caption(f"📅 {lc.get('data','?')} | Op: {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')} CT:{lc.get('cloro_total','–')} Alc:{lc.get('alcalinidade','–')} DC:{lc.get('dureza','–')} CYA:{lc.get('cianurico','–')}")
+                if lc.get("observacao"):
+                    st.caption(f"   📝 {lc['observacao']}")
+
+st.markdown("**Dados do condomínio / local atendido**")
+rd1, rd2 = st.columns(2)
+with rd1:
+    st.text_input("Condomínio / estabelecimento", key="rel_nome_condominio")
+    st.text_area("Endereço do local", key="rel_endereco_condominio", height=90)
+    st.text_input("Representante / síndico / contato local", key="rel_representante")
+with rd2:
+    st.text_input(
+        "CNPJ do condomínio / estabelecimento",
+        key="rel_cnpj_condominio",
+        on_change=lambda: st.session_state.__setitem__("rel_cnpj_condominio", formatar_cnpj(st.session_state.get("rel_cnpj_condominio", "")))
+    )
+    st.text_input("CPF/CNPJ do representante", key="rel_cpf_cnpj_representante", on_change=lambda: on_change_rel_documento_representante())
+    st.file_uploader(
+        "Upload de fotos do relatório",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="rel_fotos_upload",
+        help="As fotos serão salvas na pasta do condomínio e inseridas no relatório."
+    )
+    st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
+
+r1, r2, r3, r4 = st.columns(4)
+with r1:
     st.text_input("Mês de referência", key="rel_mes_referencia", placeholder="04")
-with ra2:
+with r2:
     st.text_input("Ano de referência", key="rel_ano_referencia", placeholder="2026")
-with ra3:
-    st.text_input("ART nº", key="rel_art_numero", placeholder="Ex.: 123456")
-with ra4:
-    st.text_input("Data de emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa")
+with r3:
+    st.selectbox("Status da ART", ["Emitida", "Não emitida", "Em tramitação"], key="rel_art_status", on_change=on_change_rel_art_status)
+with r4:
+    st.text_input("Data de emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_data_emissao"))
 
-rb1, rb2, rb3, rb4 = st.columns(4)
-with rb1:
-    st.text_input("Vigência da ART - início", key="rel_art_inicio", placeholder="01/04/2026")
-with rb2:
-    st.text_input("Vigência da ART - fim", key="rel_art_fim", placeholder="31/03/2027")
-with rb3:
-    st.selectbox("Status geral da água", ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO"], key="rel_status_agua")
-with rb4:
-    st.text_input("Representante (usa cadastro)", value=st.session_state.get("nome_sindico", ""), disabled=True)
+r5, r6, r7, r8 = st.columns(4)
+with r5:
+    st.text_input("ART nº", key="rel_art_numero", on_change=on_change_rel_art_numero, disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r6:
+    st.text_input("Vigência da ART - início", key="rel_art_inicio", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_inicio"), disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r7:
+    st.text_input("Vigência da ART - fim", key="rel_art_fim", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_fim"), disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r8:
+    opcoes_status_agua = ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO"]
+    status_atual = st.session_state.get("rel_status_agua", "CONFORME")
+    if status_atual not in opcoes_status_agua:
+        status_atual = "CONFORME"
+    opcao_status = st.selectbox(
+        "Status geral da água",
+        opcoes_status_agua,
+        index=opcoes_status_agua.index(status_atual),
+        key="rel_status_agua_select",
+    )
+    st.session_state["rel_status_agua"] = opcao_status
 
-st.text_area(
-    "Diagnóstico / parecer técnico",
-    key="rel_diagnostico",
-    height=120,
-    placeholder="Descreva o parecer técnico mensal, condição operacional, não conformidades e medidas orientadas.",
-)
+if st.session_state.get("rel_art_status") != "Emitida":
+    st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-with st.expander("Análises físico-químicas (10 linhas)", expanded=False):
-    cab = st.columns([1.1, 0.7, 0.9, 0.9, 0.9, 0.9, 0.9, 1.2])
-    rot = ["Data", "pH", "Cl livre", "Cl total", "Alcalin.", "Dureza", "Cianúr.", "Operador"]
-    for c, r in zip(cab, rot):
-        c.markdown(f"**{r}**")
-    for i in range(10):
-        cols = st.columns([1.1, 0.7, 0.9, 0.9, 0.9, 0.9, 0.9, 1.2])
-        cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm")
-        cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed")
-        cols[2].text_input(f"Cl livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed")
-        cols[3].text_input(f"Cl total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed")
-        cols[4].text_input(f"Alcal {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed")
-        cols[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed")
-        cols[6].text_input(f"CYA {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed")
-        cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed")
+c_auto1, c_auto2 = st.columns([1,2])
+with c_auto1:
+    if st.button("Preencher parecer automático", use_container_width=True):
+        aplicar_textos_automaticos_relatorio()
+with c_auto2:
+    st.caption("O sistema calcula não conformidades e cloro combinado (cloraminas = CT - CL), preenche diagnóstico, observações e recomendações, e você ainda pode editar antes de gerar o relatório.")
 
-with st.expander("Dosagens químicas (7 linhas)", expanded=False):
-    cab = st.columns([1.4, 1.3, 0.8, 0.7, 1.6])
-    rot = ["Produto químico", "Fabricante/Lote", "Quantidade", "Unidade", "Finalidade técnica"]
-    for c, r in zip(cab, rot):
-        c.markdown(f"**{r}**")
-    for i in range(7):
-        cols = st.columns([1.4, 1.3, 0.8, 0.7, 1.6])
-        cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed")
-        cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed")
-        cols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed")
-        cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed")
-        cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed")
+st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeholder="Será preenchido automaticamente conforme os parâmetros, mas permanece editável.")
 
-with st.expander("Recomendações técnicas (5 linhas)", expanded=False):
-    cab = st.columns([2.2, 1.0, 1.1])
-    rot = ["Recomendação", "Prazo", "Responsável"]
-    for c, r in zip(cab, rot):
-        c.markdown(f"**{r}**")
-    for i in range(5):
-        cols = st.columns([2.2, 1.0, 1.1])
-        cols[0].text_input(f"Recomendação {i+1}", key=f"rel_rec_texto_{i}", label_visibility="collapsed")
-        cols[1].text_input(f"Prazo {i+1}", key=f"rel_rec_prazo_{i}", label_visibility="collapsed")
-        cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed")
+st.markdown("**Análises físico-químicas**")
+garantir_campos_analises(st.session_state.get("rel_analises_total", ANALISES_PADRAO))
+ctrl_a1, ctrl_a2 = st.columns([1, 3])
+with ctrl_a1:
+    if st.button("Adicionar análise extra", use_container_width=True):
+        adicionar_analise_extra()
+        st.rerun()
+with ctrl_a2:
+    st.caption(f"{st.session_state.get("rel_analises_total", ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Base padrão: 9 análises mensais.")
+for i in range(int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)):
+    cols = st.columns([1.05,0.7,0.8,0.8,0.9,0.9,0.9,1.1])
+    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
+    cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
+    cols[2].text_input(f"CRL {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
+    cols[3].text_input(f"CT {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
+    cols[4].text_input(f"ALC {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alc")
+    cols[5].text_input(f"DC {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="DC")
+    cols[6].text_input(f"CYA {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="CYA")
+    cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
 
-rc1, rc2, rc3 = st.columns(3)
-with rc1:
-    st.text_area("NBR 11238", key="rel_nbr_11238", height=90, placeholder="Informar condição de conformidade, observações e medidas necessárias.")
-with rc2:
-    st.text_area("NR-26 / GHS", key="rel_nr_26", height=90, placeholder="Sinalização, rotulagem, armazenamento e comunicação de risco.")
-with rc3:
-    st.text_area("NR-06 / EPI", key="rel_nr_06", height=90, placeholder="Condição de EPI, uso, exigências e orientações emitidas.")
+st.markdown("**Dosagens de produtos químicos**")
+ctrl_d1, ctrl_d2 = st.columns([1.1, 2.4])
+with ctrl_d1:
+    if st.button("Carregar usados pela última vez", use_container_width=True):
+        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+        if nome_rel:
+            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
+            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
+            aplicar_dosagens_ultimas_no_relatorio(dados_rel_salvos)
+        else:
+            aplicar_dosagens_ultimas_no_relatorio(obter_snapshot_relatorio_independente())
+        st.rerun()
+with ctrl_d2:
+    st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usados pela última vez.")
+for i in range(7):
+    cols = st.columns([1.4,1.1,0.7,0.7,1.3])
+    cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico")
+    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante/Lote")
+    cols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd")
+    cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unid.")
+    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica")
 
-relatorio_btn = st.button("Gerar relatório mensal DOCX + PDF", key="gerar_relatorio_mensal_btn", use_container_width=True)
+st.markdown("**Observações automáticas / editáveis**")
+for i in range(5):
+    st.text_area(f"Observação {i+1}", key=f"rel_obs_{i}", height=70)
+
+st.markdown("**Recomendações técnicas**")
+for i in range(5):
+    cols = st.columns([2.0,0.8,1.0])
+    cols[0].text_input(f"Recomendação {i+1}", key=f"rel_rec_texto_{i}", label_visibility="collapsed", placeholder="Recomendação técnica")
+    cols[1].text_input(f"Prazo {i+1}", key=f"rel_rec_prazo_{i}", label_visibility="collapsed", placeholder="Prazo")
+    cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
+
+cx1, cx2, cx3 = st.columns(3)
+with cx1:
+    st.text_area("ABNT NBR 10339 / segurança operacional – Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Profundidade, circulação, higienização, retrolavagem, condição geral operacional...")
+with cx2:
+    st.text_area("NR-26 / GHS – Checklist", key="rel_nr_26", height=90, placeholder="FISPQs/FDS, rótulos GHS, sinalização, incompatibilidade, emergência...")
+with cx3:
+    st.text_area("NR-06 / EPI – Checklist", key="rel_nr_06", height=90, placeholder="Fornecimento, fiscalização e uso dos EPIs...")
+
+st.markdown("**EPIs — preenchimento rápido**")
+status_epi_opcoes = ["Conforme", "Pendente", "Não informado", "N/A"]
+for rotulo, chave_base in [
+    ("Luvas", "luvas"),
+    ("Óculos", "oculos"),
+    ("Respirador", "respirador"),
+    ("Botas", "botas"),
+]:
+    c_status, c_ca = st.columns([1.2, 1])
+    with c_status:
+        st.selectbox(
+            f"{rotulo} — status",
+            options=status_epi_opcoes,
+            key=f"rel_epi_{chave_base}_status",
+        )
+    with c_ca:
+        st.text_input(f"{rotulo} — CA nº (opcional)", key=f"rel_epi_{chave_base}_ca")
+
+st.caption("O relatório mensal pode ser gerado independentemente de contrato. Basta preencher os dados do local neste próprio módulo.")
+
+# ---- Barra de rascunho ----
+_nome_rasc = (st.session_state.get("rel_nome_condominio") or "").strip()
+_pasta_rasc = GENERATED_DIR / slugify_nome(_nome_rasc) if _nome_rasc else None
+_rasc_existente = carregar_rascunho_relatorio(_pasta_rasc) if _pasta_rasc and _pasta_rasc.exists() else None
+
+col_rasc1, col_rasc2, col_rasc3 = st.columns([1.2, 1.2, 1.6])
+with col_rasc1:
+    if st.button("💾 Salvar rascunho", use_container_width=True):
+        if _nome_rasc:
+            _pasta_rasc.mkdir(parents=True, exist_ok=True)
+            salvar_rascunho_relatorio(_pasta_rasc)
+            st.success("Rascunho salvo! Os dados serão restaurados mesmo após reiniciar o sistema.")
+        else:
+            st.warning("Informe o nome do condomínio antes de salvar o rascunho.")
+
+with col_rasc2:
+    if _rasc_existente:
+        if st.button(f"↩️ Restaurar rascunho ({_rasc_existente.get('salvo_em','?')})", use_container_width=True):
+            aplicar_rascunho_no_formulario(_rasc_existente)
+            st.success("Rascunho restaurado!")
+            st.rerun()
+    else:
+        st.button("↩️ Sem rascunho salvo", disabled=True, use_container_width=True)
+
+with col_rasc3:
+    if _rasc_existente:
+        st.markdown(
+            f"<div style='font-size:0.82rem;color:#3a7a3a;padding:8px 0;'>"
+            f"✅ Rascunho disponível — salvo em {_rasc_existente.get('salvo_em','?')}</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.caption("Salve o rascunho para não perder dados ao reiniciar o sistema.")
+
+st.markdown("---")
+btn_col1, btn_col2 = st.columns([2, 1])
+with btn_col1:
+    rel_gerar = st.button("🚀 Gerar relatório mensal", use_container_width=True, type="primary")
+with btn_col2:
+    if st.button("🗑️ Limpar rascunho", use_container_width=True):
+        if _pasta_rasc and _pasta_rasc.exists():
+            excluir_rascunho_relatorio(_pasta_rasc)
+            st.success("Rascunho excluído.")
+            st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
+
 
 # =========================================
 # AÇÕES PRINCIPAIS
@@ -2884,30 +4511,6 @@ placeholders = {
     "{{DATA_INICIO}}": dados["DATA_INICIO"],
     "{{DATA_FIM}}": dados["DATA_FIM"],
 }
-
-col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.5, 1.5, 1, 1])
-
-with col_btn1:
-    gerar = st.button(
-        "Gerar contrato + aditivo",
-        type="primary",
-        use_container_width=True,
-    )
-
-with col_btn2:
-    gerar_aditivo_rapido = st.button(
-        "Gerar somente aditivo rápido",
-        use_container_width=True,
-    )
-
-with col_btn3:
-    if st.button("Limpar formulário", use_container_width=True):
-        limpar_formulario()
-        st.rerun()
-
-with col_btn4:
-    if st.button("Abrir pasta gerada", use_container_width=True):
-        abrir_pasta_windows(GENERATED_DIR)
 
 # =========================================
 # FUNÇÕES DE PROCESSAMENTO DE DOCUMENTOS
@@ -2991,8 +4594,10 @@ def gerar_contrato_e_aditivo():
                 template_path=TEMPLATE_CONTRATO,
                 output_docx=contrato_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=st.session_state.get("incluir_assinaturas", True),
+                incluir_assinaturas=True,
                 nome_sindico=nome_sindico,
+                nome_condominio=nome_condominio,
+                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
             )
 
         with st.spinner("Gerando aditivo..."):
@@ -3000,8 +4605,10 @@ def gerar_contrato_e_aditivo():
                 template_path=TEMPLATE_ADITIVO,
                 output_docx=aditivo_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=st.session_state.get("incluir_assinaturas", True),
+                incluir_assinaturas=True,
                 nome_sindico=nome_sindico,
+                nome_condominio=nome_condominio,
+                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
             )
 
         ok_contrato, erro_contrato = converter_docx_para_pdf(contrato_docx, contrato_pdf)
@@ -3015,9 +4622,8 @@ def gerar_contrato_e_aditivo():
             arquivo_pdf=contrato_pdf,
             pdf_gerado=ok_contrato,
             erro_pdf=erro_contrato,
-            dados_utilizados=placeholders,
+            dados_utilizados=dados,
         )
-
         registrar_documento_manifest(
             pasta_condominio=pasta_condominio,
             nome_condominio=nome_condominio,
@@ -3026,10 +4632,16 @@ def gerar_contrato_e_aditivo():
             arquivo_pdf=aditivo_pdf,
             pdf_gerado=ok_aditivo,
             erro_pdf=erro_aditivo,
-            dados_utilizados=placeholders,
+            dados_utilizados=dados,
         )
 
         st.session_state.ultima_pasta_gerada = str(pasta_condominio)
+        st.session_state.ultimos_docs_gerados = {
+            "contrato_docx": str(contrato_docx) if contrato_docx.exists() else None,
+            "contrato_pdf": str(contrato_pdf) if ok_contrato and contrato_pdf.exists() else None,
+            "aditivo_docx": str(aditivo_docx) if aditivo_docx.exists() else None,
+            "aditivo_pdf": str(aditivo_pdf) if ok_aditivo and aditivo_pdf.exists() else None,
+        }
 
         st.success("Contrato e aditivo gerados com sucesso.")
 
@@ -3139,8 +4751,10 @@ def gerar_somente_aditivo_rapido():
                 template_path=TEMPLATE_ADITIVO,
                 output_docx=aditivo_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=st.session_state.get("incluir_assinaturas", True),
+                incluir_assinaturas=True,
                 nome_sindico=nome_sindico,
+                nome_condominio=nome_condominio,
+                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
             )
 
         ok_aditivo, erro_aditivo = converter_docx_para_pdf(aditivo_docx, aditivo_pdf)
@@ -3153,10 +4767,15 @@ def gerar_somente_aditivo_rapido():
             arquivo_pdf=aditivo_pdf,
             pdf_gerado=ok_aditivo,
             erro_pdf=erro_aditivo,
-            dados_utilizados=placeholders,
+            dados_utilizados=dados,
         )
 
         st.session_state.ultima_pasta_gerada = str(pasta_condominio)
+        st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
+        st.session_state.ultimos_docs_gerados.update({
+            "aditivo_docx": str(aditivo_docx) if aditivo_docx.exists() else None,
+            "aditivo_pdf": str(aditivo_pdf) if ok_aditivo and aditivo_pdf.exists() else None,
+        })
 
         st.success("Aditivo rápido gerado com sucesso.")
 
@@ -3209,6 +4828,7 @@ def gerar_somente_aditivo_rapido():
     except Exception as e:
         st.error(f"Erro na geração do aditivo rápido: {e}")
 
+
 # =========================================
 # PROCESSAMENTO
 # =========================================
@@ -3219,7 +4839,7 @@ if gerar:
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
 
-if relatorio_btn:
+if rel_gerar:
     ok_rel, msg_rel = gerar_relatorio_mensal()
     if ok_rel:
         st.success(msg_rel)
@@ -3232,5 +4852,5 @@ if relatorio_btn:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TECNICO} • {CRQ} • Ambiente prioritário: Windows"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Ambiente prioritário: Windows"
 )
