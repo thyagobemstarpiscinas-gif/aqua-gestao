@@ -206,6 +206,72 @@ def sheets_listar_clientes() -> list[str]:
         return []
 
 
+def sheets_listar_clientes_completo() -> list[dict]:
+    """Retorna lista de dicts com dados completos de cada cliente do Sheets.
+    
+    Mapeamento das colunas da planilha:
+      B=ID, C=Nome, D=Volume_m3, E=Contato_Sindico/Telefone, 
+      F=Email_Sindico, G=Endereco, H=Data_Cadastro, I=Status
+    """
+    import re as _re
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return []
+        aba = sh.worksheet("👥 Clientes")
+        todos = aba.get_all_values()
+        clientes = []
+        for row in todos:
+            if not row or len(row) < 3:
+                continue
+            id_val = str(row[1]).strip() if len(row) > 1 else ""
+            if not _re.match(r"^C[0-9]+$", id_val):
+                continue
+            nome = str(row[2]).strip() if len(row) > 2 else ""
+            if not nome:
+                continue
+            # Detecta se col E é telefone ou email
+            col_e = str(row[4]).strip() if len(row) > 4 else ""
+            col_f = str(row[5]).strip() if len(row) > 5 else ""
+            # Se col_e tem @ é email do síndico; senão é telefone
+            if "@" in col_e:
+                telefone = ""
+                contato  = ""
+                email    = col_e
+            else:
+                telefone = formatar_telefone(col_e) if col_e else ""
+                contato  = col_f if col_f else ""
+                email    = ""
+            clientes.append({
+                "id":        id_val,
+                "nome":      nome,
+                "cnpj":      "",  # planilha não armazena CNPJ nesta versão
+                "telefone":  telefone,
+                "contato":   contato,
+                "email":     email,
+                "endereco":  str(row[6]).strip() if len(row) > 6 else "",
+                "status":    str(row[8]).strip() if len(row) > 8 else "Ativo",
+            })
+        return clientes
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_clientes_completo", e)
+        return []
+
+
+def sheets_carregar_cliente_por_nome(nome: str) -> dict:
+    """Retorna dict com dados do cliente pelo nome (busca parcial)."""
+    clientes = sheets_listar_clientes_completo()
+    nome_lower = nome.lower().strip()
+    for c in clientes:
+        if c["nome"].lower().strip() == nome_lower:
+            return c
+    # Busca parcial
+    for c in clientes:
+        if nome_lower in c["nome"].lower():
+            return c
+    return {}
+
+
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
     """Retorna lançamentos de visitas de um condomínio."""
     try:
@@ -4289,6 +4355,33 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
 
     clientes_sem_rt = carregar_clientes_sem_rt()
 
+    # ── Importar do Sheets ────────────────────────────────────────────────────
+    @st.cache_data(ttl=60)
+    def _clientes_sheets_csr():
+        return sheets_listar_clientes_completo()
+
+    _cls_sheets = _clientes_sheets_csr()
+    if _cls_sheets:
+        _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
+        _sel_csr_imp = st.selectbox(
+            "🔗 Importar cliente do Google Sheets",
+            _opcoes_csr_imp,
+            key="sel_importar_csr",
+            help="Importa os dados do cadastro principal para o formulário abaixo."
+        )
+        if _sel_csr_imp and _sel_csr_imp != "— Importar do cadastro principal (Sheets) —":
+            if st.button("⬇️ Importar dados", key="btn_imp_csr", use_container_width=False):
+                _d = next((c for c in _cls_sheets if c["nome"] == _sel_csr_imp), {})
+                if _d:
+                    st.session_state["csr_nome"]     = _d.get("nome", "")
+                    st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
+                    st.session_state["csr_endereco"] = _d.get("endereco", "")
+                    st.session_state["csr_contato"]  = _d.get("contato", "")
+                    st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
+                    st.success(f"✅ Dados de '{_sel_csr_imp}' importados!")
+                    st.rerun()
+        st.markdown("---")
+
     st.markdown("**Novo cliente sem RT:**")
 
     def _mask_csr_cnpj():
@@ -4619,6 +4712,36 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("Dados do contrato e aditivo")
 
+# ── Seletor de cliente do Sheets ──────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def _clientes_completos_cache():
+    return sheets_listar_clientes_completo()
+
+_clientes_rt = _clientes_completos_cache()
+if _clientes_rt:
+    _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
+    _sel_rt = st.selectbox(
+        "🔗 Carregar dados de cliente cadastrado",
+        _opcoes_rt,
+        key="sel_cliente_rt",
+        help="Selecione um cliente para preencher automaticamente os campos abaixo."
+    )
+    if _sel_rt and _sel_rt != "— Selecionar cliente cadastrado —":
+        if st.button("⬇️ Preencher formulário com dados deste cliente", key="btn_carregar_cliente_rt", use_container_width=True):
+            _dados_rt = next((c for c in _clientes_rt if c["nome"] == _sel_rt), {})
+            if _dados_rt:
+                st.session_state["nome_condominio"]   = _dados_rt.get("nome", "")
+                st.session_state["cnpj_condominio"]   = formatar_cnpj(_dados_rt.get("cnpj", ""))
+                st.session_state["endereco_condominio"] = _dados_rt.get("endereco", "")
+                st.session_state["nome_sindico"]      = _dados_rt.get("contato", "")
+                st.session_state["whatsapp_cliente"]  = formatar_telefone(_dados_rt.get("telefone", ""))
+                st.session_state["email_cliente"]     = _dados_rt.get("email", "")
+                st.success(f"✅ Dados de '{_sel_rt}' carregados! Ajuste o que precisar antes de gerar.")
+                st.rerun()
+else:
+    st.info("💡 Cadastre clientes na seção acima para carregar os dados automaticamente aqui.")
+
+st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
@@ -4828,6 +4951,37 @@ st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
 
 st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
+
+# ── Seletor de cliente do Sheets ──────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def _clientes_completos_rel_cache():
+    return sheets_listar_clientes_completo()
+
+_clientes_rel = _clientes_completos_rel_cache()
+if _clientes_rel:
+    _opcoes_rel = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rel]
+    _rel_col1, _rel_col2 = st.columns([3, 1])
+    with _rel_col1:
+        _sel_rel = st.selectbox(
+            "🔗 Carregar dados de cliente cadastrado",
+            _opcoes_rel,
+            key="sel_cliente_rel",
+            help="Selecione um cliente para preencher automaticamente os campos do relatório."
+        )
+    with _rel_col2:
+        st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
+        if st.button("⬇️ Carregar", key="btn_carregar_cliente_rel", use_container_width=True):
+            if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
+                _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
+                if _dados_rel:
+                    st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
+                    st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
+                    st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
+                    st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
+                    st.session_state["rel_cpf_cnpj_representante"] = ""
+                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório!")
+                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
