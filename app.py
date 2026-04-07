@@ -16,7 +16,7 @@ from PIL import Image, ImageOps
 # INTEGRAÇÃO GOOGLE SHEETS
 # =========================================
 
-SHEETS_ID = "1uvZ6qfYCYFl_feGGgvlIXMQlUWvx0MTzTuC8TwfPBlM"
+SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
 
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
