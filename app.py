@@ -2474,6 +2474,230 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
     doc.save(str(output_docx))
 
 
+
+def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
+    """Gera HTML profissional do relatório de visita para download como PDF."""
+
+    def fmt(val, sufixo=""):
+        return f"{val}{sufixo}" if val and str(val).strip() else "—"
+
+    def param_box(nome, val, mn, mx, quinzenal=False):
+        v = valor_float(val)
+        if v is None:
+            status_cls = "nd"
+            status_txt = "Quinzenal" if quinzenal else "Não medido"
+            val_txt = "—"
+        elif v < mn or v > mx:
+            status_cls = "warn"
+            status_txt = "Fora da faixa"
+            val_txt = str(val).replace(".", ",")
+        else:
+            status_cls = "ok"
+            status_txt = "Conforme"
+            val_txt = str(val).replace(".", ",")
+        badge = ' <span class="q15">15d</span>' if quinzenal else ""
+        return f"""
+        <div class="param-box {status_cls}">
+          <div class="pnm">{nome}{badge}</div>
+          <div class="pval">{val_txt}</div>
+          <div class="pst">{status_txt}</div>
+        </div>"""
+
+    # Alertas automáticos
+    alertas = []
+    checks = [
+        (lancamento.get("ph",""), 7.2, 7.8, "pH", "Fora da faixa ideal (7,2–7,8). Corrigir imediatamente."),
+        (lancamento.get("cloro_livre",""), 0.5, 3.0, "CRL", "Cloro livre fora da faixa (0,5–3,0 mg/L)."),
+        (lancamento.get("alcalinidade",""), 80, 120, "Alcalinidade", "Abaixo do ideal (80–120 mg/L). Aplicar bicarbonato de sódio."),
+        (lancamento.get("dureza",""), 150, 300, "Dureza DC", "Fora da faixa (150–300 mg/L)."),
+        (lancamento.get("cianurico",""), 30, 50, "CYA", "Ácido cianúrico fora da faixa (30–50 mg/L)."),
+    ]
+    for val, mn, mx, rot, msg in checks:
+        v = valor_float(val)
+        if v is not None and (v < mn or v > mx):
+            alertas.append(f"{rot}: {str(val).replace('.', ',')} mg/L — {msg}")
+    cloraminas = lancamento.get("cloraminas", "")
+    if cloraminas and valor_float(cloraminas) is not None and valor_float(cloraminas) > 0.2:
+        alertas.append(f"Cloraminas {str(cloraminas).replace('.', ',')} mg/L — acima do limite (0,2 mg/L). Chocar piscina.")
+
+    alertas_html = ""
+    if alertas:
+        for a in alertas:
+            alertas_html += f'<div class="alerta"><div class="alerta-icon">!</div><div class="alerta-txt">{a}</div></div>'
+    else:
+        alertas_html = '<div class="alerta ok-all"><div class="alerta-txt">Todos os parâmetros medidos dentro da faixa ideal.</div></div>'
+
+    # Dosagens
+    dosagens = lancamento.get("dosagens", [])
+    dos_html = ""
+    for d in dosagens:
+        if d.get("produto","").strip():
+            qtd = f"{d.get('quantidade','')} {d.get('unidade','')}".strip()
+            fin = d.get("finalidade","")
+            dos_html += f'<div class="dos-row"><span class="dos-nome">{d["produto"]}</span><span class="dos-detalhe">{qtd}{(" · " + fin) if fin else ""}</span></div>'
+    if not dos_html:
+        dos_html = '<p style="font-size:12px;color:#8a9ab0;font-style:italic;">Nenhuma dosagem registrada.</p>'
+
+    # Cloraminas box
+    clor_box = ""
+    if cloraminas and valor_float(cloraminas) is not None:
+        v_cl = valor_float(cloraminas)
+        cls_cl = "ok" if v_cl <= 0.2 else "warn"
+        st_cl = "Conforme" if v_cl <= 0.2 else "Fora da faixa"
+        clor_box = f"""
+        <div class="param-box {cls_cl}">
+          <div class="pnm">Cloraminas</div>
+          <div class="pval">{str(cloraminas).replace(".", ",")}</div>
+          <div class="pst">{st_cl}</div>
+        </div>"""
+
+    obs = lancamento.get("observacao","").strip()
+    obs_html = f'<div class="obs-txt">"{obs}"</div>' if obs else '<p style="font-size:12px;color:#8a9ab0;font-style:italic;">Sem observações.</p>'
+
+    data_hoje = date.today().strftime("%d/%m/%Y")
+    operador = lancamento.get("operador","") or "—"
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relatório de Visita — {nome_condominio}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0;}}
+  body{{font-family:Arial,Helvetica,sans-serif;background:#f4f6f9;color:#1a2a4a;}}
+  .page{{max-width:640px;margin:0 auto;padding:16px;}}
+  .card{{background:#fff;border:1px solid #d0d8e4;border-radius:12px;padding:18px 20px;margin-bottom:12px;}}
+  .hdr-top{{display:flex;justify-content:space-between;align-items:flex-start;}}
+  .hdr-logo{{display:flex;align-items:center;gap:12px;}}
+  .logo-ball{{width:48px;height:48px;border-radius:50%;background:#1e4d8c;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0;}}
+  .hdr-empresa{{font-size:16px;font-weight:700;color:#1a2a4a;letter-spacing:0.3px;}}
+  .hdr-sub{{font-size:10px;color:#8a9ab0;letter-spacing:0.8px;text-transform:uppercase;margin-top:2px;}}
+  .hdr-right{{text-align:right;}}
+  .doc-titulo{{font-size:14px;font-weight:700;color:#1e4d8c;}}
+  .doc-num{{font-size:10px;color:#8a9ab0;margin-top:2px;}}
+  hr{{border:none;border-top:1px solid #d0d8e4;margin:12px 0;}}
+  .info-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;}}
+  .info-lbl{{font-size:10px;color:#8a9ab0;text-transform:uppercase;letter-spacing:0.5px;}}
+  .info-val{{font-size:13px;color:#1a2a4a;font-weight:600;margin-top:2px;}}
+  .sec-title{{font-size:10px;font-weight:700;color:#1e4d8c;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #1e4d8c;}}
+  .param-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}}
+  .param-box{{border:1px solid #d0d8e4;border-radius:8px;padding:10px 8px;text-align:center;}}
+  .param-box.ok{{border-color:#2e7d32;background:#f1f8f1;}}
+  .param-box.warn{{border-color:#e65100;background:#fff8f0;}}
+  .param-box.nd{{border-color:#d0d8e4;background:#f8f9fb;}}
+  .pnm{{font-size:9px;color:#8a9ab0;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;}}
+  .q15{{background:#e8f0fb;color:#1e4d8c;border-radius:4px;padding:1px 4px;font-size:8px;font-weight:700;}}
+  .pval{{font-size:20px;font-weight:700;color:#1a2a4a;margin:2px 0;}}
+  .param-box.ok .pval{{color:#2e7d32;}}
+  .param-box.warn .pval{{color:#e65100;}}
+  .param-box.nd .pval{{color:#b0bec5;}}
+  .pst{{font-size:9px;}}
+  .param-box.ok .pst{{color:#388e3c;}}
+  .param-box.warn .pst{{color:#e65100;}}
+  .param-box.nd .pst{{color:#b0bec5;font-style:italic;}}
+  .alerta{{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;background:#fff8f0;border:1px solid #e65100;margin-bottom:8px;}}
+  .alerta.ok-all{{background:#f1f8f1;border-color:#2e7d32;}}
+  .alerta-icon{{width:16px;height:16px;border-radius:50%;background:#e65100;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;flex-shrink:0;margin-top:1px;}}
+  .alerta-txt{{font-size:12px;color:#b84200;line-height:1.5;}}
+  .alerta.ok-all .alerta-txt{{color:#2e7d32;}}
+  .dos-row{{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #eef1f5;}}
+  .dos-row:last-child{{border-bottom:none;}}
+  .dos-nome{{font-size:13px;color:#1a2a4a;font-weight:600;}}
+  .dos-detalhe{{font-size:11px;color:#8a9ab0;text-align:right;}}
+  .obs-txt{{font-size:13px;color:#4a5568;line-height:1.7;font-style:italic;padding:4px 0;}}
+  .assin-bloco{{display:flex;justify-content:space-between;align-items:flex-end;padding-top:12px;margin-top:6px;border-top:1px solid #d0d8e4;}}
+  .assin-esq{{font-size:11px;color:#4a5568;line-height:1.8;}}
+  .assin-esq strong{{color:#1a2a4a;font-size:13px;}}
+  .crq-badge{{display:inline-block;font-size:9px;color:#1e4d8c;background:#e8f0fb;border:1px solid #b5d0f0;border-radius:99px;padding:2px 8px;margin-top:4px;}}
+  .assin-dir{{text-align:center;}}
+  .assin-linha{{border-top:1px solid #1a2a4a;width:140px;margin-bottom:4px;}}
+  .assin-nome{{font-size:10px;color:#8a9ab0;}}
+  .rodape{{text-align:center;font-size:10px;color:#8a9ab0;padding:8px 0 4px;}}
+  @media print{{
+    body{{background:#fff;}}
+    .page{{padding:0;}}
+    .card{{border:1px solid #ccc;border-radius:0;box-shadow:none;page-break-inside:avoid;}}
+  }}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="card">
+    <div class="hdr-top">
+      <div class="hdr-logo">
+        <div class="logo-ball">RT</div>
+        <div>
+          <div class="hdr-empresa">AQUA GESTÃO</div>
+          <div class="hdr-sub">Controle Técnico de Piscinas</div>
+        </div>
+      </div>
+      <div class="hdr-right">
+        <div class="doc-titulo">Relatório de Visita</div>
+        <div class="doc-num">Emitido em {data_hoje}</div>
+      </div>
+    </div>
+    <hr>
+    <div class="info-grid">
+      <div><div class="info-lbl">Condomínio / Local</div><div class="info-val">{nome_condominio}</div></div>
+      <div><div class="info-lbl">Data da visita</div><div class="info-val">{fmt(lancamento.get("data",""))}</div></div>
+      <div><div class="info-lbl">Operador</div><div class="info-val">{operador}</div></div>
+      <div><div class="info-lbl">Responsável técnico</div><div class="info-val">Thyago F. Silveira</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec-title">Parâmetros analisados</div>
+    <div class="param-grid">
+      {param_box("pH", lancamento.get("ph",""), 7.2, 7.8)}
+      {param_box("CRL mg/L", lancamento.get("cloro_livre",""), 0.5, 3.0)}
+      {param_box("Alc. mg/L", lancamento.get("alcalinidade",""), 80, 120, quinzenal=True)}
+      {param_box("Dureza mg/L", lancamento.get("dureza",""), 150, 300, quinzenal=True)}
+      {param_box("CYA mg/L", lancamento.get("cianurico",""), 30, 50, quinzenal=True)}
+      {clor_box}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec-title">Alertas técnicos</div>
+    {alertas_html}
+  </div>
+
+  <div class="card">
+    <div class="sec-title">Dosagens aplicadas</div>
+    {dos_html}
+  </div>
+
+  <div class="card">
+    <div class="sec-title">Observações</div>
+    {obs_html}
+  </div>
+
+  <div class="card">
+    <div class="sec-title">Responsabilidade técnica</div>
+    <div class="assin-bloco">
+      <div class="assin-esq">
+        <strong>Thyago Fernando da Silveira</strong><br>
+        Técnico em Química · NR-26 · NR-6<br>
+        <span class="crq-badge">CRQ-MG 2ª Região · CRQ 024025748</span>
+      </div>
+      <div class="assin-dir">
+        <div class="assin-linha"></div>
+        <div class="assin-nome">Assinatura / carimbo RT</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rodape">
+    Aqua Gestão – Controle Técnico de Piscinas · Documento gerado automaticamente
+  </div>
+
+</div>
+</body>
+</html>"""
+    return html
+
 def gerar_relatorio_mensal() -> tuple[bool, str]:
     dados_relatorio = montar_dados_relatorio()
     erros = validar_relatorio_mensal(dados_relatorio)
@@ -3253,6 +3477,20 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             Total este mês: {_salvo['total']}
         </div>
         """, unsafe_allow_html=True)
+        # Botão de relatório do lançamento recém salvo
+        _ult_lanc = st.session_state.get("_op_ultimo_lancamento")
+        if _ult_lanc:
+            html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
+            nome_arq = limpar_nome_arquivo(f"Relatorio_Visita_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
+            st.download_button(
+                "📄 Baixar relatório desta visita (PDF/HTML)",
+                data=html_rel.encode("utf-8"),
+                file_name=f"{nome_arq}.html",
+                mime="text/html",
+                use_container_width=True,
+                key="btn_dl_relatorio_visita",
+            )
+            st.caption("Abra o arquivo no navegador e use Ctrl+P → Salvar como PDF para gerar o PDF final.")
 
     # Busca clientes do Google Sheets primeiro, fallback para pasta local
     @st.cache_data(ttl=60)
@@ -3327,19 +3565,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 | CYA mg/L | 30 – 50 |
             """)
 
-        def _num_op(chave, label, placeholder):
-            v = st.text_input(label, key=chave, placeholder=placeholder)
+        def _num_op(chave, label, placeholder, quinzenal=False):
+            lbl = f"{label} ⏱ 15d" if quinzenal else label
+            v = st.text_input(lbl, key=chave, placeholder=placeholder,
+                help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
             return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
         c1, c2 = st.columns(2)
         with c1:
             op_ph  = _num_op("op_ph",  "pH", "ex: 7.4")
-            op_alc = _num_op("op_alc", "Alcalinidade mg/L", "ex: 95")
-            op_dc  = _num_op("op_dc",  "Dureza DC mg/L", "ex: 200")
+            op_alc = _num_op("op_alc", "Alcalinidade mg/L", "ex: 95",  quinzenal=True)
+            op_dc  = _num_op("op_dc",  "Dureza DC mg/L",   "ex: 200", quinzenal=True)
         with c2:
-            op_crl = _num_op("op_crl", "CRL mg/L", "ex: 1.5")
-            op_ct  = _num_op("op_ct",  "Cloro Total CT mg/L", "ex: 1.8")
-            op_cya = _num_op("op_cya", "CYA mg/L", "ex: 40")
+            op_crl = _num_op("op_crl", "CRL mg/L",              "ex: 1.5")
+            op_ct  = _num_op("op_ct",  "Cloro Total CT mg/L",   "ex: 1.8")
+            op_cya = _num_op("op_cya", "CYA mg/L",              "ex: 40",  quinzenal=True)
 
         alertas_op = []
         for val, mn, mx, rot in [
@@ -3350,10 +3590,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             v = valor_float(val)
             if v is not None:
                 alertas_op.append(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
-        v_crl2 = valor_float(op_crl); v_ct2 = valor_float(op_ct)
+        # Cloraminas só calcula se CT foi preenchido
+        v_crl2 = valor_float(op_crl)
+        v_ct2  = valor_float(op_ct)
+        op_cloraminas = None
         if v_crl2 is not None and v_ct2 is not None:
-            clor2 = round(max(v_ct2 - v_crl2, 0), 2)
-            alertas_op.append(f"{'⚠️' if clor2 > 0.2 else '✅'} **Cloraminas: {clor2} mg/L**")
+            op_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
+            alertas_op.append(f"{'⚠️' if op_cloraminas > 0.2 else '✅'} **Cloraminas: {op_cloraminas} mg/L**")
         for a in alertas_op:
             st.markdown(a)
 
@@ -3415,9 +3658,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
+                    "cloraminas": str(op_cloraminas) if op_cloraminas is not None else "",
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
                     "observacao": op_obs.strip(), "dosagens": op_dosagens,
                     "fotos": fotos_salvas_op,
+                    "condominio": op_nome_cond.strip(),
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
                 pendentes = dados_ex.get("lancamentos_campo", [])
@@ -3441,6 +3686,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "operador": op_operador.strip() or "Não informado",
                     "total": len(pendentes),
                 }
+                # Guarda último lançamento para gerar relatório
+                st.session_state["_op_ultimo_lancamento"] = lancamento
                 # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
                 st.session_state["op_limpar_campos"] = True
                 st.rerun()
@@ -4043,14 +4290,21 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
     clientes_sem_rt = carregar_clientes_sem_rt()
 
     st.markdown("**Novo cliente sem RT:**")
+
+    def _mask_csr_cnpj():
+        st.session_state["csr_cnpj"] = formatar_cnpj(st.session_state.get("csr_cnpj", ""))
+
+    def _mask_csr_telefone():
+        st.session_state["csr_telefone"] = formatar_telefone(st.session_state.get("csr_telefone", ""))
+
     csr1, csr2 = st.columns(2)
     with csr1:
         csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
         csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
     with csr2:
-        csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00")
+        csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
         csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
-        csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999")
+        csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
 
     if st.button("➕ Salvar cliente sem RT", use_container_width=True):
         if not csr_nome.strip():
@@ -4058,10 +4312,10 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
         else:
             novo = {
                 "nome": csr_nome.strip(),
-                "cnpj": csr_cnpj.strip(),
+                "cnpj": formatar_cnpj(csr_cnpj.strip()),
                 "endereco": csr_endereco.strip(),
                 "contato": csr_contato.strip(),
-                "telefone": csr_telefone.strip(),
+                "telefone": formatar_telefone(csr_telefone.strip()),
                 "cadastrado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             }
             # Atualiza se já existe, senão adiciona
