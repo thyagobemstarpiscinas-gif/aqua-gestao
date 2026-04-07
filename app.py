@@ -128,8 +128,14 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str):
-    """Salva novo cliente na aba Clientes do Google Sheets."""
+    """Salva novo cliente na aba Clientes do Google Sheets.
+    
+    Insere sempre logo após o último cliente real (C001, C002...),
+    mantendo a formatação da planilha com cabeçalho e linha de total intactos.
+    """
     try:
+        import re as _re
+
         sh = conectar_sheets()
         if sh is None:
             return False
@@ -137,26 +143,27 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
         aba = sh.worksheet("👥 Clientes")
         todos = aba.get_all_values()
 
-        # Filtra apenas linhas reais de clientes (ID começa com C + número)
-        import re as _re
-        linhas_clientes = [
-            r for r in todos
-            if r and len(r) > 2
-            and _re.match(r"^C[0-9]+$", str(r[1]).strip())
-            and str(r[2]).strip()
-        ]
-
-        # Verifica duplicata pelo nome
-        for row in linhas_clientes:
-            if nome.lower().strip() == str(row[2]).lower().strip():
-                return True  # Já existe
-
-        # Gera próximo ID com base no maior número existente
+        # Identifica linhas reais de clientes: col B começa com C + dígitos
+        ultima_linha_cliente = 0  # índice 0-based
         nums = []
-        for r in linhas_clientes:
-            m = _re.match(r"^C([0-9]+)$", str(r[1]).strip())
-            if m:
-                nums.append(int(m.group(1)))
+        nomes_existentes = []
+
+        for i, row in enumerate(todos):
+            if len(row) > 2:
+                id_val = str(row[1]).strip()
+                nome_val = str(row[2]).strip()
+                if _re.match(r"^C[0-9]+$", id_val) and nome_val:
+                    ultima_linha_cliente = i
+                    nomes_existentes.append(nome_val.lower())
+                    m = _re.match(r"^C([0-9]+)$", id_val)
+                    if m:
+                        nums.append(int(m.group(1)))
+
+        # Verifica duplicata
+        if nome.lower().strip() in nomes_existentes:
+            return True  # Já existe, considera sucesso
+
+        # Próximo ID baseado no maior existente
         proximo_num = (max(nums) + 1) if nums else 1
         id_cliente = f"C{proximo_num:03d}"
 
@@ -172,7 +179,10 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             "Ativo",
         ]
 
-        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        # Insere logo após o último cliente real (linha do Sheets = índice + 2)
+        # Isso mantém o bloco de clientes agrupado antes do TOTAL
+        linha_insercao = ultima_linha_cliente + 2  # +1 índice→sheets, +1 para inserir abaixo
+        aba.insert_row(nova_linha, linha_insercao, value_input_option="USER_ENTERED")
         return True
     except Exception as e:
         _log_sheets_erro("sheets_salvar_cliente", e)
