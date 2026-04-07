@@ -18,12 +18,27 @@ from PIL import Image, ImageOps
 
 SHEETS_ID = "1uvZ6qfYCYFl_feGGgvlIXMQlUWvx0MTzTuC8TwfPBlM"
 
+def _log_sheets_erro(contexto: str, erro: Exception):
+    """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
+    import traceback
+    msg = f"[{contexto}] {type(erro).__name__}: {erro}\n{traceback.format_exc()}"
+    st.session_state["_sheets_ultimo_erro"] = msg
+
+
 def conectar_sheets():
     """Conecta ao Google Sheets usando as credenciais do st.secrets ou arquivo local."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
+    except ImportError as e:
+        _log_sheets_erro("conectar_sheets/import", e)
+        st.session_state["_sheets_ultimo_erro"] = (
+            "ERRO: gspread ou google-auth não está instalado no ambiente atual.\n"
+            "Verifique o requirements.txt e force um redeploy no Streamlit Cloud."
+        )
+        return None
 
+    try:
         SCOPES = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
@@ -37,12 +52,21 @@ def conectar_sheets():
             # Fallback: arquivo local (uso no computador)
             creds_path = Path(__file__).parent / "aqua-gestao-rt-87316ebf5331.json"
             if not creds_path.exists():
+                st.session_state["_sheets_ultimo_erro"] = (
+                    "ERRO: Nenhuma credencial encontrada.\n"
+                    "No Streamlit Cloud: verifique st.secrets['gcp_service_account'].\n"
+                    "Localmente: arquivo aqua-gestao-rt-87316ebf5331.json não encontrado."
+                )
                 return None
             creds = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
 
         gc = gspread.authorize(creds)
-        return gc.open_by_key(SHEETS_ID)
-    except Exception:
+        sh = gc.open_by_key(SHEETS_ID)
+        # Limpa erro anterior se conexão ok
+        st.session_state.pop("_sheets_ultimo_erro", None)
+        return sh
+    except Exception as e:
+        _log_sheets_erro("conectar_sheets", e)
         return None
 
 
@@ -98,7 +122,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         aba.append_row(nova_linha, value_input_option="USER_ENTERED")
         return True
-    except Exception:
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_lancamento_campo", e)
         return False
 
 
@@ -136,7 +161,8 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
 
         aba.append_row(nova_linha, value_input_option="USER_ENTERED")
         return True
-    except Exception:
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_cliente", e)
         return False
 
 
@@ -179,7 +205,8 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
                     "operador": row[19] if len(row) > 19 else "",
                 })
         return lancamentos
-    except Exception:
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_lancamentos", e)
         return []
 
 # =========================================
@@ -3379,7 +3406,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 salvar_dados_condominio(pasta_op, dados_ex)
 
                 # Salva também no Google Sheets
-                sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                if not ok_sheets:
+                    erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
+                    if erro_sh:
+                        st.warning(f"⚠️ Salvo localmente, mas falhou no Google Sheets.\n\nDiagnóstico:\n```\n{erro_sh[:600]}\n```")
+                    else:
+                        st.warning("⚠️ Salvo localmente, mas não foi possível enviar ao Google Sheets. Verifique a conexão.")
                 st.session_state["op_salvo_sucesso"] = {
                     "nome": op_nome_cond, "data": data_vis,
                     "operador": op_operador.strip() or "Não informado",
@@ -3579,6 +3612,41 @@ st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("👥 Cadastro de Clientes")
 st.caption("Clientes cadastrados aqui ficam disponíveis para o operador selecionar no celular.")
 
+# ── Diagnóstico de conexão (visível para admin) ──────────────────────────────
+with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
+    if st.button("▶ Executar teste de conexão agora", key="btn_teste_sheets"):
+        with st.spinner("Testando conexão..."):
+            sh_teste = conectar_sheets()
+        if sh_teste is not None:
+            try:
+                abas_disponiveis = [w.title for w in sh_teste.worksheets()]
+                st.success("✅ Conexão estabelecida com sucesso!")
+                st.write(f"**Abas encontradas na planilha:** {abas_disponiveis}")
+                abas_esperadas = ["👥 Clientes", "🔬 Visitas"]
+                faltando = [a for a in abas_esperadas if a not in abas_disponiveis]
+                if faltando:
+                    st.warning(
+                        f"⚠️ Aba(s) esperada(s) não encontrada(s): {faltando}\n\n"
+                        "Verifique se os nomes das abas na planilha estão escritos **exatamente** assim, "
+                        "incluindo os emojis."
+                    )
+                else:
+                    st.success("✅ Todas as abas necessárias foram encontradas.")
+            except Exception as ex:
+                st.warning(f"Conexão ok, mas erro ao listar abas: {ex}")
+        else:
+            st.error("❌ Falha na conexão com o Google Sheets.")
+            erro_detalhado = st.session_state.get("_sheets_ultimo_erro", "Sem detalhes.")
+            st.code(erro_detalhado, language="text")
+            st.markdown(
+                "**Próximos passos para resolver:**\n"
+                "1. Confirme que `gspread` e `google-auth` estão no `requirements.txt`\n"
+                "2. No Streamlit Cloud → Settings → Secrets → verifique se `[gcp_service_account]` está presente\n"
+                "3. Force redeploy: no painel do Streamlit Cloud clique em **Reboot app**\n"
+                "4. Verifique se a conta de serviço `aqua-gestao-sheets@aqua-gestao-rt.iam.gserviceaccount.com` tem acesso **Editor** à planilha"
+            )
+    st.caption("Use este botão sempre que a conexão com o Sheets falhar para identificar a causa exata.")
+
 # Mostra clientes já cadastrados no Sheets
 @st.cache_data(ttl=30)
 def _clientes_cadastrados():
@@ -3623,7 +3691,19 @@ with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadast
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.error("Não foi possível salvar no Google Sheets. Verifique a conexão.")
+                st.error("❌ Não foi possível salvar no Google Sheets.")
+                erro_detalhado = st.session_state.get("_sheets_ultimo_erro", "")
+                if erro_detalhado:
+                    with st.expander("🔍 Ver diagnóstico do erro (clique para expandir)", expanded=True):
+                        st.code(erro_detalhado, language="text")
+                        st.caption(
+                            "Copie esse texto e envie para suporte. "
+                            "Causas comuns: (1) gspread não instalado → force redeploy no Streamlit Cloud; "
+                            "(2) credencial inválida em st.secrets; "
+                            "(3) nome da aba na planilha diferente do esperado ('👥 Clientes')."
+                        )
+                else:
+                    st.caption("Não foi possível obter detalhes do erro. Verifique o requirements.txt e as credenciais nos Secrets do Streamlit Cloud.")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
