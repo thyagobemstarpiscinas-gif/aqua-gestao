@@ -13,6 +13,176 @@ from docx.shared import Inches
 from PIL import Image, ImageOps
 
 # =========================================
+# INTEGRAÇÃO GOOGLE SHEETS
+# =========================================
+
+SHEETS_ID = "1uvZ6qfYCYFl_feGGgvlIXMQlUWvx0MTzTuC8TwfPBlM"
+
+def conectar_sheets():
+    """Conecta ao Google Sheets usando as credenciais do st.secrets ou arquivo local."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+
+        # Tenta carregar do st.secrets (Streamlit Cloud)
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        else:
+            # Fallback: arquivo local (uso no computador)
+            creds_path = Path(__file__).parent / "aqua-gestao-rt-87316ebf5331.json"
+            if not creds_path.exists():
+                return None
+            creds = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
+
+        gc = gspread.authorize(creds)
+        return gc.open_by_key(SHEETS_ID)
+    except Exception:
+        return None
+
+
+def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
+    """Salva lançamento de campo na aba Visitas do Google Sheets."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+
+        aba = sh.worksheet("🔬 Visitas")
+        todos = aba.get_all_values()
+
+        # Encontra próxima linha vazia após o cabeçalho (linha 6 = índice 5)
+        proxima_linha = len(todos) + 1
+
+        # Gera ID da visita
+        visitas_existentes = [r for r in todos if r and r[1] and r[1].startswith("V")]
+        proximo_num = len(visitas_existentes) + 1
+        id_visita = f"V{proximo_num:05d}"
+
+        # Busca ID do cliente
+        aba_clientes = sh.worksheet("👥 Clientes")
+        clientes = aba_clientes.get_all_values()
+        id_cliente = ""
+        for row in clientes:
+            if len(row) > 2 and nome_condominio.lower() in str(row[2]).lower():
+                id_cliente = row[1]
+                break
+
+        nova_linha = [
+            "",  # col A vazia
+            id_visita,
+            lancamento.get("data", ""),
+            id_cliente,
+            nome_condominio,
+            lancamento.get("ph", ""),
+            lancamento.get("cloro_livre", ""),
+            lancamento.get("alcalinidade", ""),
+            lancamento.get("dureza", ""),
+            lancamento.get("cianurico", ""),
+            "",  # foto antes
+            "",  # foto depois
+            "",  # foto casa máquinas
+            lancamento.get("observacao", ""),
+            "",  # dosagem cloro (calculado)
+            "",  # dosagem bicarbonato (calculado)
+            "",  # alerta pH
+            "",  # alerta cloro
+            "Concluída",
+            lancamento.get("operador", ""),
+        ]
+
+        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        return False
+
+
+def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str):
+    """Salva novo cliente na aba Clientes do Google Sheets."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+
+        aba = sh.worksheet("👥 Clientes")
+        todos = aba.get_all_values()
+
+        # Verifica se já existe
+        for row in todos:
+            if len(row) > 2 and nome.lower() in str(row[2]).lower():
+                return True  # Já existe
+
+        # Gera próximo ID
+        clientes = [r for r in todos if r and len(r) > 1 and str(r[1]).startswith("C")]
+        proximo_num = len(clientes) + 1
+        id_cliente = f"C{proximo_num:03d}"
+
+        nova_linha = [
+            "",
+            id_cliente,
+            nome,
+            "",  # volume m3
+            telefone.replace("(","").replace(")","").replace(" ","").replace("-",""),
+            contato,
+            endereco,
+            datetime.now().strftime("%Y-%m-%d"),
+            "Ativo",
+        ]
+
+        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        return False
+
+
+def sheets_listar_clientes() -> list[str]:
+    """Retorna lista de nomes de clientes da aba Clientes."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return []
+        aba = sh.worksheet("👥 Clientes")
+        todos = aba.get_all_values()
+        nomes = []
+        for row in todos:
+            if len(row) > 2 and str(row[1]).startswith("C") and row[2].strip():
+                nomes.append(row[2].strip())
+        return nomes
+    except Exception:
+        return []
+
+
+def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
+    """Retorna lançamentos de visitas de um condomínio."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return []
+        aba = sh.worksheet("🔬 Visitas")
+        todos = aba.get_all_values()
+        lancamentos = []
+        for row in todos:
+            if len(row) > 4 and nome_condominio.lower() in str(row[4]).lower():
+                lancamentos.append({
+                    "data": row[2] if len(row) > 2 else "",
+                    "ph": row[5] if len(row) > 5 else "",
+                    "cloro_livre": row[6] if len(row) > 6 else "",
+                    "alcalinidade": row[7] if len(row) > 7 else "",
+                    "dureza": row[8] if len(row) > 8 else "",
+                    "cianurico": row[9] if len(row) > 9 else "",
+                    "observacao": row[13] if len(row) > 13 else "",
+                    "operador": row[19] if len(row) > 19 else "",
+                })
+        return lancamentos
+    except Exception:
+        return []
+
+# =========================================
 # CONFIGURAÇÃO GERAL
 # =========================================
 
@@ -3034,15 +3204,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         </div>
         """, unsafe_allow_html=True)
 
+    # Busca clientes do Google Sheets primeiro, fallback para pasta local
+    @st.cache_data(ttl=60)
+    def _buscar_clientes_sheets():
+        return sheets_listar_clientes()
+
+    clientes_sheets = _buscar_clientes_sheets()
+
+    # Combina clientes do Sheets com os locais
     pastas_disponiveis = sorted([
         p for p in GENERATED_DIR.iterdir() if p.is_dir()
     ], key=lambda p: p.name) if GENERATED_DIR.exists() else []
 
-    opcoes_cond = []
+    opcoes_cond_local = []
     for p in pastas_disponiveis:
         dados_c = carregar_dados_condominio(p)
         nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
-        opcoes_cond.append(nome_ex)
+        opcoes_cond_local.append(nome_ex)
+
+    # Une as duas listas sem duplicar
+    opcoes_cond = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
 
     op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -3050,8 +3231,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     else:
         if opcoes_cond:
             op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
+            if clientes_sheets:
+                st.caption(f"✅ {len(clientes_sheets)} cliente(s) carregado(s) do Google Sheets")
         else:
-            st.warning("Nenhum condomínio cadastrado.")
+            st.warning("Nenhum condomínio cadastrado. Peça ao administrador para cadastrar os clientes.")
             op_nome_cond = ""
 
     op_operador = st.text_input("Operador", key="op_operador", placeholder="Seu nome")
@@ -3194,6 +3377,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if op_dosagens:
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
+
+                # Salva também no Google Sheets
+                sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
                 st.session_state["op_salvo_sucesso"] = {
                     "nome": op_nome_cond, "data": data_vis,
                     "operador": op_operador.strip() or "Não informado",
@@ -3382,6 +3568,62 @@ with b2:
     )
 with b3:
     st.metric("Resultado da busca", len(painel_filtrado))
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# CADASTRO DE CLIENTES — GOOGLE SHEETS
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("👥 Cadastro de Clientes")
+st.caption("Clientes cadastrados aqui ficam disponíveis para o operador selecionar no celular.")
+
+# Mostra clientes já cadastrados no Sheets
+@st.cache_data(ttl=30)
+def _clientes_cadastrados():
+    return sheets_listar_clientes()
+
+clientes_cadastrados = _clientes_cadastrados()
+
+if clientes_cadastrados:
+    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) no Google Sheets:")
+    for c in clientes_cadastrados:
+        st.caption(f"• {c}")
+else:
+    st.info("Nenhum cliente cadastrado ainda. Use o formulário abaixo para adicionar.")
+
+with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadastrados)):
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        cc_nome = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+        cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+    with cc2:
+        cc_cnpj = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00")
+        cc_contato = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
+        cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999")
+
+    if st.button("💾 Salvar cliente no Google Sheets", type="primary", use_container_width=True):
+        if not cc_nome.strip():
+            st.error("Informe o nome do condomínio.")
+        else:
+            with st.spinner("Salvando no Google Sheets..."):
+                ok = sheets_salvar_cliente(
+                    nome=cc_nome.strip(),
+                    cnpj=cc_cnpj.strip(),
+                    endereco=cc_endereco.strip(),
+                    contato=cc_contato.strip(),
+                    telefone=cc_telefone.strip(),
+                )
+            if ok:
+                st.success(f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular.")
+                # Limpa os campos
+                for k in ["cc_nome","cc_cnpj","cc_endereco","cc_contato","cc_telefone"]:
+                    st.session_state[k] = ""
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Não foi possível salvar no Google Sheets. Verifique a conexão.")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
