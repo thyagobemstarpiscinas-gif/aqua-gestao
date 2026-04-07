@@ -172,7 +172,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             id_cliente,
             nome,
             "",  # volume m3
-            telefone.replace("(","").replace(")","").replace(" ","").replace("-",""),
+            formatar_telefone(telefone),
             contato,
             endereco,
             datetime.now().strftime("%Y-%m-%d"),
@@ -3690,14 +3690,22 @@ if st.session_state.pop("_cc_limpar", False):
         st.session_state[k] = ""
 
 with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadastrados)):
+
+    # Callbacks de máscara automática
+    def _mask_cc_cnpj():
+        st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj", ""))
+
+    def _mask_cc_telefone():
+        st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone", ""))
+
     cc1, cc2 = st.columns(2)
     with cc1:
         cc_nome = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
         cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
     with cc2:
-        cc_cnpj = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00")
+        cc_cnpj = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
         cc_contato = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
-        cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999")
+        cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
 
     if st.button("💾 Salvar cliente no Google Sheets", type="primary", use_container_width=True):
         if not cc_nome.strip():
