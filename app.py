@@ -3661,6 +3661,11 @@ if clientes_cadastrados:
 else:
     st.info("Nenhum cliente cadastrado ainda. Use o formulário abaixo para adicionar.")
 
+# Processa flag de limpeza ANTES de renderizar os widgets
+if st.session_state.pop("_cc_limpar", False):
+    for k in ["cc_nome", "cc_cnpj", "cc_endereco", "cc_contato", "cc_telefone"]:
+        st.session_state[k] = ""
+
 with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadastrados)):
     cc1, cc2 = st.columns(2)
     with cc1:
@@ -3685,10 +3690,9 @@ with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadast
                 )
             if ok:
                 st.success(f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular.")
-                # Limpa os campos
-                for k in ["cc_nome","cc_cnpj","cc_endereco","cc_contato","cc_telefone"]:
-                    st.session_state[k] = ""
                 st.cache_data.clear()
+                # Usa flag para limpar campos no próximo ciclo (evita StreamlitAPIException)
+                st.session_state["_cc_limpar"] = True
                 st.rerun()
             else:
                 st.error("❌ Não foi possível salvar no Google Sheets.")
