@@ -137,14 +137,27 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
         aba = sh.worksheet("👥 Clientes")
         todos = aba.get_all_values()
 
-        # Verifica se já existe
-        for row in todos:
-            if len(row) > 2 and nome.lower() in str(row[2]).lower():
+        # Filtra apenas linhas reais de clientes (ID começa com C + número)
+        import re as _re
+        linhas_clientes = [
+            r for r in todos
+            if r and len(r) > 2
+            and _re.match(r"^C[0-9]+$", str(r[1]).strip())
+            and str(r[2]).strip()
+        ]
+
+        # Verifica duplicata pelo nome
+        for row in linhas_clientes:
+            if nome.lower().strip() == str(row[2]).lower().strip():
                 return True  # Já existe
 
-        # Gera próximo ID
-        clientes = [r for r in todos if r and len(r) > 1 and str(r[1]).startswith("C")]
-        proximo_num = len(clientes) + 1
+        # Gera próximo ID com base no maior número existente
+        nums = []
+        for r in linhas_clientes:
+            m = _re.match(r"^C([0-9]+)$", str(r[1]).strip())
+            if m:
+                nums.append(int(m.group(1)))
+        proximo_num = (max(nums) + 1) if nums else 1
         id_cliente = f"C{proximo_num:03d}"
 
         nova_linha = [
