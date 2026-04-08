@@ -335,11 +335,13 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         return False
 
 
-def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str):
+def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
+                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
     mantendo a formatação da planilha com cabeçalho e linha de total intactos.
+    Colunas J/K/L = Vol_Adulto_m3, Vol_Infantil_m3, Vol_Family_m3
     """
     try:
         import re as _re
@@ -375,16 +377,20 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
         proximo_num = (max(nums) + 1) if nums else 1
         id_cliente = f"C{proximo_num:03d}"
 
+        vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
         nova_linha = [
-            "",
-            id_cliente,
-            nome,
-            "",  # volume m3
-            formatar_telefone(telefone),
-            contato,
-            endereco,
-            datetime.now().strftime("%Y-%m-%d"),
-            "Ativo",
+            "",                                    # A - vazia
+            id_cliente,                            # B - ID
+            nome,                                  # C - Nome
+            str(vol_total) if vol_total else "",   # D - Volume total m3
+            formatar_telefone(telefone),           # E - Telefone
+            contato,                               # F - Contato síndico
+            endereco,                              # G - Endereço
+            datetime.now().strftime("%Y-%m-%d"),   # H - Data cadastro
+            "Ativo",                               # I - Status
+            str(vol_adulto) if vol_adulto else "", # J - Vol Adulto m3
+            str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
+            str(vol_family) if vol_family else "", # L - Vol Family m3
         ]
 
         # Insere logo após o último cliente real (linha do Sheets = índice + 2)
@@ -450,21 +456,71 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 telefone = formatar_telefone(col_e) if col_e else ""
                 contato  = col_f if col_f else ""
                 email    = ""
+            # Volumes das piscinas (colunas J=9, K=10, L=11)
+            def _vol(r, idx):
+                try: return float(str(r[idx]).replace(",",".").strip() or 0) if len(r) > idx else 0.0
+                except: return 0.0
+            vol_adulto   = _vol(row, 9)
+            vol_infantil = _vol(row, 10)
+            vol_family   = _vol(row, 11)
+            vol_total    = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
+
             clientes.append({
-                "id":        id_val,
-                "nome":      nome,
-                "cnpj":      "",  # planilha não armazena CNPJ nesta versão
-                "telefone":  telefone,
-                "contato":   contato,
-                "email":     email,
-                "endereco":  str(row[6]).strip() if len(row) > 6 else "",
-                "status":    str(row[8]).strip() if len(row) > 8 else "Ativo",
+                "id":           id_val,
+                "nome":         nome,
+                "cnpj":         "",
+                "telefone":     telefone,
+                "contato":      contato,
+                "email":        email,
+                "endereco":     str(row[6]).strip() if len(row) > 6 else "",
+                "status":       str(row[8]).strip() if len(row) > 8 else "Ativo",
+                "vol_total":    vol_total,
+                "vol_adulto":   vol_adulto,
+                "vol_infantil": vol_infantil,
+                "vol_family":   vol_family,
             })
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
         return []
 
+
+
+def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
+                           contato: str, telefone: str,
+                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0) -> bool:
+    """Edita cliente existente na aba Clientes pelo ID."""
+    import re as _re
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        aba = sh.worksheet("👥 Clientes")
+        todos = aba.get_all_values()
+        vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        for i, row in enumerate(todos):
+            if len(row) > 1 and str(row[1]).strip() == id_cliente.strip():
+                linha_sheets = i + 1
+                nova = [
+                    "",
+                    id_cliente,
+                    nome,
+                    str(vol_total) if vol_total else "",
+                    formatar_telefone(telefone),
+                    contato,
+                    endereco,
+                    str(row[7]).strip() if len(row) > 7 else datetime.now().strftime("%Y-%m-%d"),
+                    str(row[8]).strip() if len(row) > 8 else "Ativo",
+                    str(vol_adulto) if vol_adulto else "",
+                    str(vol_infantil) if vol_infantil else "",
+                    str(vol_family) if vol_family else "",
+                ]
+                aba.update(f"A{linha_sheets}:L{linha_sheets}", [nova], value_input_option="USER_ENTERED")
+                return True
+        return False
+    except Exception as e:
+        _log_sheets_erro("sheets_editar_cliente", e)
+        return False
 
 def sheets_carregar_cliente_por_nome(nome: str) -> dict:
     """Retorna dict com dados do cliente pelo nome (busca parcial)."""
@@ -4790,11 +4846,27 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     except Exception:
                         _vol_m3 = 0.0
 
-                if _vol_m3 > 0:
-                    _sugestoes = calcular_sugestoes_dosagem(
-                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
-                        volume_m3=_vol_m3
-                    )
+                # Usa volume específico da piscina se disponível
+                    _vol_pisc = 0.0
+                    _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
+                    _vol_key = _slug_map2.get(pisc_nome, "")
+                    if _vol_key and _vol_m3:
+                        # Busca volume individual
+                        try:
+                            _clv = sheets_listar_clientes_completo()
+                            for _cv2 in _clv:
+                                if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                                    _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
+                                    break
+                        except Exception:
+                            pass
+                    _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
+
+                    if _vol_usar > 0:
+                        _sugestoes = calcular_sugestoes_dosagem(
+                            ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
+                            volume_m3=_vol_usar
+                        )
                     if _sugestoes:
                         st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_m3:.0f} m³):**")
                         for _s in _sugestoes:
@@ -5315,59 +5387,105 @@ else:
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
-    for k in ["cc_nome", "cc_cnpj", "cc_endereco", "cc_contato", "cc_telefone"]:
+    for k in ["cc_nome","cc_cnpj","cc_endereco","cc_contato","cc_telefone",
+              "cc_vol_adulto","cc_vol_infantil","cc_vol_family"]:
         st.session_state[k] = ""
 
-with st.expander("➕ Cadastrar novo cliente", expanded=not bool(clientes_cadastrados)):
+# ── Seletor de edição ────────────────────────────────────────────────────────
+_cc_modo = st.radio("Ação", ["➕ Novo cliente", "✏️ Editar cliente existente"],
+    key="cc_modo_acao", horizontal=True, label_visibility="collapsed")
 
-    # Callbacks de máscara automática
-    def _mask_cc_cnpj():
-        st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj", ""))
+_cc_cliente_editar = {}
+if _cc_modo == "✏️ Editar cliente existente":
+    @st.cache_data(ttl=30)
+    def _clientes_completos_edit():
+        return sheets_listar_clientes_completo()
+    _clientes_edit = _clientes_completos_edit()
+    if _clientes_edit:
+        _nomes_edit = [c["nome"] for c in _clientes_edit]
+        _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
+        _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
+        if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
+            st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
+            st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
+            st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
+            st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
+            st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
+            st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
+            st.session_state["cc_vol_infantil"] = str(_cc_cliente_editar.get("vol_infantil","") or "")
+            st.session_state["cc_vol_family"]   = str(_cc_cliente_editar.get("vol_family","") or "")
+            st.rerun()
+    else:
+        st.info("Nenhum cliente para editar.")
 
-    def _mask_cc_telefone():
-        st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone", ""))
+# ── Formulário ───────────────────────────────────────────────────────────────
+def _mask_cc_cnpj():
+    st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj",""))
 
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        cc_nome = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
-        cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
-    with cc2:
-        cc_cnpj = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
-        cc_contato = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
-        cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
+def _mask_cc_telefone():
+    st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-    if st.button("💾 Salvar cliente no Google Sheets", type="primary", use_container_width=True):
-        if not cc_nome.strip():
-            st.error("Informe o nome do condomínio.")
-        else:
-            with st.spinner("Salvando no Google Sheets..."):
-                ok = sheets_salvar_cliente(
-                    nome=cc_nome.strip(),
-                    cnpj=cc_cnpj.strip(),
-                    endereco=cc_endereco.strip(),
-                    contato=cc_contato.strip(),
+cc1, cc2 = st.columns(2)
+with cc1:
+    cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+    cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+with cc2:
+    cc_cnpj     = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
+    cc_contato  = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
+    cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
+
+# ── Volumes das piscinas ─────────────────────────────────────────────────────
+st.markdown("**🏊 Volume das piscinas (m³)**")
+cv1, cv2, cv3 = st.columns(3)
+with cv1:
+    cc_vol_adulto   = st.text_input("Piscina Adulto (m³)", key="cc_vol_adulto", placeholder="ex: 150")
+with cv2:
+    cc_vol_infantil = st.text_input("Piscina Infantil (m³)", key="cc_vol_infantil", placeholder="ex: 30")
+with cv3:
+    cc_vol_family   = st.text_input("Piscina Family (m³)", key="cc_vol_family", placeholder="ex: 50")
+
+def _parse_vol(v):
+    try: return float(str(v).replace(",",".").strip() or 0)
+    except: return 0.0
+
+# ── Botão salvar ─────────────────────────────────────────────────────────────
+_btn_label = "💾 Salvar cliente no Google Sheets" if _cc_modo == "➕ Novo cliente" else "💾 Salvar alterações"
+if st.button(_btn_label, type="primary", use_container_width=True):
+    if not cc_nome.strip():
+        st.error("Informe o nome do condomínio.")
+    else:
+        _vol_a = _parse_vol(cc_vol_adulto)
+        _vol_i = _parse_vol(cc_vol_infantil)
+        _vol_f = _parse_vol(cc_vol_family)
+        with st.spinner("Salvando no Google Sheets..."):
+            if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
+                ok = sheets_editar_cliente(
+                    id_cliente=_cc_cliente_editar["id"],
+                    nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
+                    endereco=cc_endereco.strip(), contato=cc_contato.strip(),
                     telefone=cc_telefone.strip(),
+                    vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                 )
-            if ok:
-                st.success(f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular.")
-                st.cache_data.clear()
-                # Usa flag para limpar campos no próximo ciclo (evita StreamlitAPIException)
-                st.session_state["_cc_limpar"] = True
-                st.rerun()
+                msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
-                st.error("❌ Não foi possível salvar no Google Sheets.")
-                erro_detalhado = st.session_state.get("_sheets_ultimo_erro", "")
-                if erro_detalhado:
-                    with st.expander("🔍 Ver diagnóstico do erro (clique para expandir)", expanded=True):
-                        st.code(erro_detalhado, language="text")
-                        st.caption(
-                            "Copie esse texto e envie para suporte. "
-                            "Causas comuns: (1) gspread não instalado → force redeploy no Streamlit Cloud; "
-                            "(2) credencial inválida em st.secrets; "
-                            "(3) nome da aba na planilha diferente do esperado ('👥 Clientes')."
-                        )
-                else:
-                    st.caption("Não foi possível obter detalhes do erro. Verifique o requirements.txt e as credenciais nos Secrets do Streamlit Cloud.")
+                ok = sheets_salvar_cliente(
+                    nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
+                    endereco=cc_endereco.strip(), contato=cc_contato.strip(),
+                    telefone=cc_telefone.strip(),
+                    vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
+                )
+                msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+        if ok:
+            st.success(msg_ok)
+            st.cache_data.clear()
+            st.session_state["_cc_limpar"] = True
+            st.rerun()
+        else:
+            st.error("❌ Não foi possível salvar no Google Sheets.")
+            erro_detalhado = st.session_state.get("_sheets_ultimo_erro","")
+            if erro_detalhado:
+                with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
+                    st.code(erro_detalhado, language="text")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
