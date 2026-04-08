@@ -3006,6 +3006,314 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
 </html>"""
     return html
 
+
+def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
+    """Gera PDF do relatório de visita usando ReportLab. Retorna bytes do PDF."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    import base64 as _b64
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=1.8*cm, rightMargin=1.8*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm,
+    )
+
+    # Cores da marca
+    AZUL_ESCURO = colors.HexColor("#1a2a4a")
+    AZUL_MEDIO  = colors.HexColor("#1e4d8c")
+    AZUL_CLARO  = colors.HexColor("#e8f0fb")
+    CINZA       = colors.HexColor("#8a9ab0")
+    VERDE_OK    = colors.HexColor("#2e7d32")
+    VERDE_BG    = colors.HexColor("#f1f8f1")
+    LARANJA     = colors.HexColor("#e65100")
+    LARANJA_BG  = colors.HexColor("#fff8f0")
+    BORDA       = colors.HexColor("#d0d8e4")
+
+    styles = getSampleStyleSheet()
+
+    def estilo(nome, **kw):
+        return ParagraphStyle(nome, **kw)
+
+    s_titulo    = estilo("titulo",    fontSize=16, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", spaceAfter=2)
+    s_sub       = estilo("sub",       fontSize=8,  textColor=CINZA,       fontName="Helvetica",      spaceAfter=6, leading=10)
+    s_sec       = estilo("sec",       fontSize=8,  textColor=AZUL_MEDIO,  fontName="Helvetica-Bold", spaceAfter=6, leading=10)
+    s_body      = estilo("body",      fontSize=9,  textColor=AZUL_ESCURO, fontName="Helvetica",      leading=13)
+    s_body_sm   = estilo("body_sm",   fontSize=8,  textColor=CINZA,       fontName="Helvetica",      leading=11)
+    s_alerta    = estilo("alerta",    fontSize=8,  textColor=LARANJA,     fontName="Helvetica",      leading=11)
+    s_ok        = estilo("ok",        fontSize=8,  textColor=VERDE_OK,    fontName="Helvetica",      leading=11)
+    s_center    = estilo("center",    fontSize=8,  textColor=CINZA,       fontName="Helvetica",      alignment=TA_CENTER)
+    s_bold      = estilo("bold",      fontSize=9,  textColor=AZUL_ESCURO, fontName="Helvetica-Bold", leading=13)
+
+    elems = []
+
+    # ── CABEÇALHO ─────────────────────────────────────────────────────────────
+    data_hoje = date.today().strftime("%d/%m/%Y")
+    operador  = lancamento.get("operador","") or "—"
+
+    hdr_data = [
+        [Paragraph("<b>AQUA GESTÃO</b>", estilo("hdr1", fontSize=14, textColor=AZUL_ESCURO, fontName="Helvetica-Bold")),
+         Paragraph(f"<b>Relatório de Visita</b><br/><font size=8 color='#8a9ab0'>Emitido em {data_hoje}</font>", estilo("hdr2", fontSize=11, textColor=AZUL_MEDIO, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
+        [Paragraph("Controle Técnico de Piscinas", s_sub), ""],
+    ]
+    t_hdr = Table(hdr_data, colWidths=["60%","40%"])
+    t_hdr.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LINEBELOW", (0,1), (-1,1), 0.5, BORDA),
+        ("BOTTOMPADDING", (0,1), (-1,1), 8),
+    ]))
+    elems.append(t_hdr)
+    elems.append(Spacer(1, 6))
+
+    # Info básica
+    info_data = [
+        [Paragraph("<font size=7 color='#8a9ab0'>CONDOMÍNIO / LOCAL</font><br/>" + f"<b>{nome_condominio}</b>", s_body),
+         Paragraph("<font size=7 color='#8a9ab0'>DATA DA VISITA</font><br/>" + f"<b>{lancamento.get('data','—')}</b>", s_body)],
+        [Paragraph("<font size=7 color='#8a9ab0'>OPERADOR</font><br/>" + f"<b>{operador}</b>", s_body),
+         Paragraph("<font size=7 color='#8a9ab0'>RESP. TÉCNICO</font><br/><b>Thyago F. Silveira</b>", s_body)],
+    ]
+    t_info = Table(info_data, colWidths=["50%","50%"])
+    t_info.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+        ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f8fafd")),
+        ("PADDING", (0,0), (-1,-1), 6),
+        ("ROWBACKGROUNDS", (0,0), (-1,-1), [colors.white, colors.HexColor("#f8fafd")]),
+    ]))
+    elems.append(t_info)
+    elems.append(Spacer(1, 10))
+
+    # ── PISCINAS ──────────────────────────────────────────────────────────────
+    piscinas_lista = lancamento.get("piscinas", [])
+    if not piscinas_lista:
+        piscinas_lista = [{
+            "nome": "Piscina", "ph": lancamento.get("ph",""),
+            "cloro_livre": lancamento.get("cloro_livre",""), "cloro_total": lancamento.get("cloro_total",""),
+            "cloraminas": lancamento.get("cloraminas",""), "alcalinidade": lancamento.get("alcalinidade",""),
+            "dureza": lancamento.get("dureza",""), "cianurico": lancamento.get("cianurico",""),
+        }]
+
+    PARAMS = [
+        ("pH",          "ph",          7.2, 7.8,  False),
+        ("CRL mg/L",    "cloro_livre", 0.5, 3.0,  False),
+        ("Alc. mg/L",   "alcalinidade",80, 120,   True),
+        ("Dureza mg/L", "dureza",      150, 300,   True),
+        ("CYA mg/L",    "cianurico",   30,  50,    True),
+    ]
+
+    for pisc in piscinas_lista:
+        elems.append(Paragraph(f"🏊 {pisc.get('nome','Piscina')} — Parâmetros analisados", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+
+        param_rows = []
+        header_row = [Paragraph("<b>Parâmetro</b>", s_body_sm),
+                      Paragraph("<b>Valor</b>", s_body_sm),
+                      Paragraph("<b>Faixa ideal</b>", s_body_sm),
+                      Paragraph("<b>Status</b>", s_body_sm),
+                      Paragraph("<b>Obs</b>", s_body_sm)]
+        param_rows.append(header_row)
+
+        faixas_txt = {"pH":"7,2–7,8","CRL mg/L":"0,5–3,0","Alc. mg/L":"80–120","Dureza mg/L":"150–300","CYA mg/L":"30–50"}
+        row_colors = []
+
+        for label, key, mn, mx, quinzenal in PARAMS:
+            val_raw = pisc.get(key, "")
+            v = valor_float(val_raw)
+            q_txt = " (15d)" if quinzenal else ""
+            if v is None:
+                status_txt = "Não medido"
+                val_fmt = "—"
+                bg = colors.white
+            elif v < mn or v > mx:
+                status_txt = "⚠ Fora da faixa"
+                val_fmt = str(val_raw).replace(".", ",")
+                bg = LARANJA_BG
+            else:
+                status_txt = "✓ Conforme"
+                val_fmt = str(val_raw).replace(".", ",")
+                bg = VERDE_BG
+            row_colors.append(bg)
+            param_rows.append([
+                Paragraph(f"{label}{q_txt}", s_body_sm),
+                Paragraph(f"<b>{val_fmt}</b>", s_body),
+                Paragraph(faixas_txt.get(label,"—"), s_body_sm),
+                Paragraph(status_txt, s_ok if "Conforme" in status_txt else (s_alerta if "Fora" in status_txt else s_body_sm)),
+                Paragraph("", s_body_sm),
+            ])
+
+        # Cloraminas
+        clor_raw = pisc.get("cloraminas","")
+        v_cl = valor_float(clor_raw)
+        if v_cl is not None:
+            bg_cl = VERDE_BG if v_cl <= 0.2 else LARANJA_BG
+            st_cl = "✓ Conforme" if v_cl <= 0.2 else "⚠ Fora da faixa"
+            row_colors.append(bg_cl)
+            param_rows.append([
+                Paragraph("Cloraminas", s_body_sm),
+                Paragraph(f"<b>{str(clor_raw).replace('.', ',')}</b>", s_body),
+                Paragraph("≤ 0,2", s_body_sm),
+                Paragraph(st_cl, s_ok if "Conforme" in st_cl else s_alerta),
+                Paragraph("", s_body_sm),
+            ])
+
+        t_param = Table(param_rows, colWidths=["22%","15%","20%","28%","15%"])
+        ts = [
+            ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+            ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
+            ("TEXTCOLOR", (0,0), (-1,0), AZUL_MEDIO),
+            ("PADDING", (0,0), (-1,-1), 5),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,0), 7),
+        ]
+        for i, bg in enumerate(row_colors):
+            ts.append(("BACKGROUND", (0, i+1), (-1, i+1), bg))
+        t_param.setStyle(TableStyle(ts))
+        elems.append(t_param)
+        elems.append(Spacer(1, 10))
+
+    # ── ALERTAS ───────────────────────────────────────────────────────────────
+    alertas_gerais = []
+    for pisc in piscinas_lista:
+        for val_r, mn, mx, rot in [
+            (pisc.get("ph",""), 7.2, 7.8, "pH"),
+            (pisc.get("cloro_livre",""), 0.5, 3.0, "CRL"),
+            (pisc.get("alcalinidade",""), 80, 120, "Alcalinidade"),
+            (pisc.get("dureza",""), 150, 300, "Dureza DC"),
+            (pisc.get("cianurico",""), 30, 50, "CYA"),
+        ]:
+            v = valor_float(val_r)
+            if v is not None and (v < mn or v > mx):
+                alertas_gerais.append(f"⚠ {pisc.get('nome','Piscina')} — {rot}: {str(val_r).replace('.', ',')} — fora da faixa ideal.")
+
+    if alertas_gerais:
+        elems.append(Paragraph("Alertas técnicos", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+        for a in alertas_gerais:
+            elems.append(Paragraph(a, s_alerta))
+            elems.append(Spacer(1, 3))
+        elems.append(Spacer(1, 6))
+
+    # ── DOSAGENS ──────────────────────────────────────────────────────────────
+    dosagens = lancamento.get("dosagens", [])
+    dosagens = [d for d in dosagens if d.get("produto","").strip()]
+    if dosagens:
+        elems.append(Paragraph("Dosagens aplicadas", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+        dos_rows = [[
+            Paragraph("<b>Produto</b>", s_body_sm),
+            Paragraph("<b>Quantidade</b>", s_body_sm),
+            Paragraph("<b>Finalidade</b>", s_body_sm),
+        ]]
+        for d in dosagens:
+            qtd = f"{d.get('quantidade','')} {d.get('unidade','')}".strip()
+            dos_rows.append([
+                Paragraph(d.get("produto",""), s_body),
+                Paragraph(qtd, s_body_sm),
+                Paragraph(d.get("finalidade",""), s_body_sm),
+            ])
+        t_dos = Table(dos_rows, colWidths=["40%","25%","35%"])
+        t_dos.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+            ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
+            ("TEXTCOLOR", (0,0), (-1,0), AZUL_MEDIO),
+            ("PADDING", (0,0), (-1,-1), 5),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafd")]),
+        ]))
+        elems.append(t_dos)
+        elems.append(Spacer(1, 10))
+
+    # ── PROBLEMAS ─────────────────────────────────────────────────────────────
+    problemas = lancamento.get("problemas","").strip()
+    if problemas:
+        elems.append(Paragraph("Problemas / Ocorrências", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+        t_prob = Table([[Paragraph(f"⚠ {problemas}", s_alerta)]], colWidths=["100%"])
+        t_prob.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), LARANJA_BG),
+            ("BOX", (0,0), (-1,-1), 0.5, LARANJA),
+            ("PADDING", (0,0), (-1,-1), 8),
+            ("RADIUS", (0,0), (-1,-1), 4),
+        ]))
+        elems.append(t_prob)
+        elems.append(Spacer(1, 10))
+
+    # ── OBSERVAÇÃO ────────────────────────────────────────────────────────────
+    obs = lancamento.get("observacao","").strip()
+    if obs:
+        elems.append(Paragraph("Observações", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+        elems.append(Paragraph(f'"{obs}"', s_body_sm))
+        elems.append(Spacer(1, 10))
+
+    # ── FOTOS ─────────────────────────────────────────────────────────────────
+    def _add_fotos_categoria(ids_list, titulo):
+        if not ids_list:
+            return
+        elems.append(Paragraph(titulo, s_body_sm))
+        foto_cols = []
+        for fid in ids_list[:6]:  # máx 6 fotos por categoria
+            try:
+                fb = drive_baixar_foto(fid)
+                if fb:
+                    import io as _io
+                    from reportlab.platypus import Image as RLImage
+                    img_io = _io.BytesIO(fb)
+                    img = RLImage(img_io, width=5.5*cm, height=4*cm)
+                    foto_cols.append(img)
+            except Exception:
+                pass
+        if foto_cols:
+            # Agrupa em linhas de 3
+            for i in range(0, len(foto_cols), 3):
+                row = foto_cols[i:i+3]
+                while len(row) < 3:
+                    row.append("")
+                t_foto = Table([row], colWidths=[5.8*cm, 5.8*cm, 5.8*cm])
+                t_foto.setStyle(TableStyle([
+                    ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                    ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                    ("PADDING", (0,0), (-1,-1), 3),
+                ]))
+                elems.append(t_foto)
+                elems.append(Spacer(1, 4))
+
+    fotos_antes_ids  = lancamento.get("fotos_antes_ids",  lancamento.get("fotos_drive_ids", []))
+    fotos_depois_ids = lancamento.get("fotos_depois_ids", [])
+    fotos_cmaq_ids   = lancamento.get("fotos_cmaq_ids",   [])
+
+    if fotos_antes_ids or fotos_depois_ids or fotos_cmaq_ids:
+        elems.append(Paragraph("Registro fotográfico", s_sec))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+        _add_fotos_categoria(fotos_antes_ids,  "Antes do tratamento:")
+        _add_fotos_categoria(fotos_depois_ids, "Depois do tratamento:")
+        _add_fotos_categoria(fotos_cmaq_ids,   "Casa de máquinas:")
+        elems.append(Spacer(1, 6))
+
+    # ── ASSINATURA RT ─────────────────────────────────────────────────────────
+    elems.append(HRFlowable(width="100%", thickness=0.5, color=BORDA, spaceAfter=8))
+    ass_data = [[
+        Paragraph("<b>Thyago Fernando da Silveira</b><br/>Técnico em Química · NR-26 · NR-6<br/><font size=7 color='#1e4d8c'>CRQ-MG 2ª Região · CRQ 024025748</font>", s_body),
+        Paragraph("<br/><br/>___________________________<br/><font size=7 color='#8a9ab0'>Assinatura / carimbo RT</font>", s_center),
+    ]]
+    t_ass = Table(ass_data, colWidths=["60%","40%"])
+    t_ass.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "BOTTOM"),
+        ("PADDING", (0,0), (-1,-1), 4),
+    ]))
+    elems.append(t_ass)
+
+    elems.append(Spacer(1, 4))
+    elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento gerado automaticamente", s_center))
+
+    doc.build(elems)
+    buffer.seek(0)
+    return buffer.read()
+
 def gerar_relatorio_mensal() -> tuple[bool, str]:
     dados_relatorio = montar_dados_relatorio()
     erros = validar_relatorio_mensal(dados_relatorio)
@@ -3804,17 +4112,30 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # Botão de relatório do lançamento recém salvo
         _ult_lanc = st.session_state.get("_op_ultimo_lancamento")
         if _ult_lanc:
-            html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
             nome_arq = limpar_nome_arquivo(f"Relatorio_Visita_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
-            st.download_button(
-                "📄 Baixar relatório desta visita (PDF/HTML)",
-                data=html_rel.encode("utf-8"),
-                file_name=f"{nome_arq}.html",
-                mime="text/html",
-                use_container_width=True,
-                key="btn_dl_relatorio_visita",
-            )
-            st.caption("Abra o arquivo no navegador e use Ctrl+P → Salvar como PDF para gerar o PDF final.")
+            with st.spinner("Gerando PDF..."):
+                try:
+                    pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
+                    st.download_button(
+                        "📄 Baixar PDF desta visita",
+                        data=pdf_bytes,
+                        file_name=f"{nome_arq}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_dl_relatorio_visita",
+                    )
+                    st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                except Exception as _e:
+                    st.warning(f"PDF não gerado: {_e}. Baixando versão HTML como alternativa.")
+                    html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
+                    st.download_button(
+                        "📄 Baixar relatório (HTML)",
+                        data=html_rel.encode("utf-8"),
+                        file_name=f"{nome_arq}.html",
+                        mime="text/html",
+                        use_container_width=True,
+                        key="btn_dl_relatorio_visita_html",
+                    )
 
     # Busca clientes do Google Sheets primeiro, fallback para pasta local
     @st.cache_data(ttl=60)
