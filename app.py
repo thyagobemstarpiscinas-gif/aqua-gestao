@@ -402,6 +402,110 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         return []
 
 # =========================================
+# OPERADORES — CONTROLE DE ACESSO
+# =========================================
+
+def sheets_listar_operadores() -> list[dict]:
+    """Retorna lista de operadores e seus condomínios permitidos da aba Operadores."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return []
+        try:
+            aba = sh.worksheet("👷 Operadores")
+        except Exception:
+            # Aba não existe ainda — cria automaticamente
+            sh.add_worksheet(title="👷 Operadores", rows=50, cols=3)
+            aba = sh.worksheet("👷 Operadores")
+            aba.update("A1:C1", [["Operador", "Condomínios_Permitidos", "Obs"]])
+            aba.format("A1:C1", {"textFormat": {"bold": True}})
+            return []
+        todos = aba.get_all_values()
+        operadores = []
+        for row in todos[1:]:  # pula cabeçalho
+            if row and len(row) > 0 and str(row[0]).strip():
+                nome = str(row[0]).strip()
+                conds_raw = str(row[1]).strip() if len(row) > 1 else ""
+                # "TODOS" = acesso a todos os condomínios
+                if conds_raw.upper() == "TODOS" or not conds_raw:
+                    conds = ["TODOS"]
+                else:
+                    conds = [c.strip() for c in conds_raw.split(",") if c.strip()]
+                operadores.append({"nome": nome, "condomínios": conds})
+        return operadores
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_operadores", e)
+        return []
+
+
+def sheets_salvar_operador(nome: str, condomínios: list[str]) -> bool:
+    """Salva ou atualiza operador na aba Operadores."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        try:
+            aba = sh.worksheet("👷 Operadores")
+        except Exception:
+            sh.add_worksheet(title="👷 Operadores", rows=50, cols=3)
+            aba = sh.worksheet("👷 Operadores")
+            aba.update("A1:C1", [["Operador", "Condomínios_Permitidos", "Obs"]])
+        todos = aba.get_all_values()
+        # Verifica se já existe
+        for i, row in enumerate(todos):
+            if row and str(row[0]).strip().lower() == nome.lower().strip():
+                # Atualiza linha existente
+                aba.update(f"A{i+1}:B{i+1}", [[nome, ", ".join(condomínios)]])
+                return True
+        # Adiciona novo
+        proxima = len(todos) + 1
+        aba.update(f"A{proxima}:B{proxima}", [[nome, ", ".join(condomínios)]])
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_operador", e)
+        return False
+
+
+def sheets_deletar_operador(nome: str) -> bool:
+    """Remove operador da aba Operadores."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        aba = sh.worksheet("👷 Operadores")
+        todos = aba.get_all_values()
+        for i, row in enumerate(todos):
+            if row and str(row[0]).strip().lower() == nome.lower().strip():
+                aba.delete_rows(i + 1)
+                return True
+        return False
+    except Exception as e:
+        _log_sheets_erro("sheets_deletar_operador", e)
+        return False
+
+
+def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: list[str]) -> list[str]:
+    """Retorna lista de condomínios que o operador tem permissão de ver."""
+    if not nome_operador.strip():
+        return todos_condomínios  # sem nome → mostra todos (modo antigo)
+    operadores = sheets_listar_operadores()
+    for op in operadores:
+        if op["nome"].lower().strip() == nome_operador.lower().strip():
+            if "TODOS" in op["condomínios"]:
+                return todos_condomínios
+            # Filtra os condomínios permitidos
+            permitidos = []
+            for cond in todos_condomínios:
+                for perm in op["condomínios"]:
+                    if perm.lower() in cond.lower() or cond.lower() in perm.lower():
+                        permitidos.append(cond)
+                        break
+            return permitidos if permitidos else todos_condomínios
+    # Operador não cadastrado → mostra todos (retrocompatibilidade)
+    return todos_condomínios
+
+
+# =========================================
 # CONFIGURAÇÃO GERAL
 # =========================================
 
@@ -3262,24 +3366,28 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         for b64_str in b64_list[:6]:
             try:
                 fb = _b64.b64decode(b64_str)
-                img_io = _io.BytesIO(fb)
-                img = RLImage(img_io, width=5.5*cm, height=4*cm)
+                # Detecta orientação para dimensionar corretamente
+                from PIL import Image as _PILR
+                _tmp_img = _PILR.open(_io.BytesIO(fb))
+                _iw, _ih = _tmp_img.size
+                if _ih > _iw:  # vertical (retrato)
+                    img = RLImage(_io.BytesIO(fb), width=10*cm, height=13*cm)
+                else:  # horizontal (paisagem)
+                    img = RLImage(_io.BytesIO(fb), width=15*cm, height=10*cm)
                 foto_cols.append(img)
             except Exception:
                 pass
         if foto_cols:
-            for i in range(0, len(foto_cols), 3):
-                row = foto_cols[i:i+3]
-                while len(row) < 3:
-                    row.append("")
-                t_foto = Table([row], colWidths=[5.8*cm, 5.8*cm, 5.8*cm])
+            # 1 foto por linha — maior e mais legível
+            for img_item in foto_cols:
+                t_foto = Table([[img_item]], colWidths=["100%"])
                 t_foto.setStyle(TableStyle([
                     ("ALIGN", (0,0), (-1,-1), "CENTER"),
                     ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-                    ("PADDING", (0,0), (-1,-1), 3),
+                    ("PADDING", (0,0), (-1,-1), 2),
                 ]))
                 elems.append(t_foto)
-                elems.append(Spacer(1, 4))
+                elems.append(Spacer(1, 6))
 
     fotos_antes_b64  = lancamento.get("fotos_antes_b64",  [])
     fotos_depois_b64 = lancamento.get("fotos_depois_b64", [])
@@ -4155,7 +4263,18 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         opcoes_cond_local.append(nome_ex)
 
     # Une as duas listas sem duplicar
-    opcoes_cond = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
+    opcoes_cond_todas = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
+
+    # Campo operador ANTES da seleção de condomínio para filtrar acesso
+    op_operador = st.text_input("Seu nome (operador)", key="op_operador", placeholder="Ex.: João Silva")
+
+    # Filtra condomínios pelo operador
+    if op_operador.strip():
+        opcoes_cond = filtrar_condomínios_por_operador(op_operador.strip(), opcoes_cond_todas)
+        if len(opcoes_cond) < len(opcoes_cond_todas):
+            st.caption(f"✅ {len(opcoes_cond)} condomínio(s) disponível(is) para você.")
+    else:
+        opcoes_cond = opcoes_cond_todas
 
     op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -4163,13 +4282,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     else:
         if opcoes_cond:
             op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
-            if clientes_sheets:
-                st.caption(f"✅ {len(clientes_sheets)} cliente(s) carregado(s) do Google Sheets")
         else:
-            st.warning("Nenhum condomínio cadastrado. Peça ao administrador para cadastrar os clientes.")
+            st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
             op_nome_cond = ""
-
-    op_operador = st.text_input("Operador", key="op_operador", placeholder="Seu nome")
 
     def _fmt_data_op():
         v = apenas_digitos(st.session_state.get("op_data_visita", ""))[:8]
@@ -4378,15 +4493,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         with open(pasta_fotos_op / nome_ff, "wb") as ff:
                             ff.write(foto_bytes)
                         nomes.append(nome_ff)
-                        # Guarda base64 para PDF imediato (não depende do Drive)
+                        # Guarda base64 para PDF — com rotação EXIF automática
                         try:
-                            # Reduz tamanho para não pesar no session_state
-                            from PIL import Image as _PILImg
+                            from PIL import Image as _PILImg, ImageOps as _IOps
                             import io as _io
                             _img = _PILImg.open(_io.BytesIO(foto_bytes))
-                            _img.thumbnail((800, 600), _PILImg.LANCZOS)
+                            # Corrige rotação EXIF (fotos tiradas na vertical pelo celular)
+                            _img = _IOps.exif_transpose(_img)
+                            # Reduz para não pesar mas mantém qualidade
+                            _img.thumbnail((1200, 1200), _PILImg.LANCZOS)
                             _buf = _io.BytesIO()
-                            _img.convert("RGB").save(_buf, format="JPEG", quality=75)
+                            _img.convert("RGB").save(_buf, format="JPEG", quality=82)
                             b64s.append(_b64.b64encode(_buf.getvalue()).decode("utf-8"))
                         except Exception:
                             b64s.append(_b64.b64encode(foto_bytes).decode("utf-8"))
@@ -4640,6 +4757,71 @@ with b2:
     )
 with b3:
     st.metric("Resultado da busca", len(painel_filtrado))
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# GESTÃO DE OPERADORES
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("👷 Gestão de Operadores")
+st.caption("Defina quais condomínios cada operador pode acessar no modo campo.")
+
+@st.cache_data(ttl=30)
+def _operadores_cache():
+    return sheets_listar_operadores()
+
+_ops_lista = _operadores_cache()
+_todos_conds = sheets_listar_clientes()
+
+if _ops_lista:
+    st.success(f"✅ {len(_ops_lista)} operador(es) cadastrado(s):")
+    for _op in _ops_lista:
+        _conds_txt = ", ".join(_op["condomínios"]) if _op["condomínios"] != ["TODOS"] else "🔓 Todos os condomínios"
+        col_op1, col_op2 = st.columns([3, 1])
+        with col_op1:
+            st.caption(f"**{_op['nome']}** → {_conds_txt}")
+        with col_op2:
+            if st.button("🗑️", key=f"del_op_{_op['nome']}", help=f"Remover {_op['nome']}"):
+                if sheets_deletar_operador(_op["nome"]):
+                    st.cache_data.clear()
+                    st.rerun()
+else:
+    st.info("Nenhum operador cadastrado. Use o formulário abaixo.")
+
+with st.expander("➕ Cadastrar / atualizar operador", expanded=not bool(_ops_lista)):
+    op_novo_nome = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
+
+    if _todos_conds:
+        op_acesso_todos = st.checkbox("Acesso a TODOS os condomínios", key="op_acesso_todos")
+        if not op_acesso_todos:
+            op_conds_sel = st.multiselect(
+                "Condomínios permitidos",
+                options=_todos_conds,
+                key="op_conds_sel",
+                help="Selecione os condomínios que este operador pode ver no celular."
+            )
+        else:
+            op_conds_sel = ["TODOS"]
+    else:
+        st.warning("Cadastre clientes primeiro para definir os acessos.")
+        op_conds_sel = ["TODOS"]
+
+    if st.button("💾 Salvar operador", type="primary", key="btn_salvar_op", use_container_width=True):
+        if not op_novo_nome.strip():
+            st.error("Informe o nome do operador.")
+        elif not op_conds_sel:
+            st.error("Selecione pelo menos um condomínio ou marque 'Todos'.")
+        else:
+            with st.spinner("Salvando..."):
+                ok_op = sheets_salvar_operador(op_novo_nome.strip(), op_conds_sel)
+            if ok_op:
+                st.success(f"✅ Operador '{op_novo_nome}' salvo com acesso a: {', '.join(op_conds_sel)}")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Erro ao salvar operador. Verifique a conexão com o Sheets.")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
