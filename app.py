@@ -560,98 +560,13 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
 # OPERADORES — CONTROLE DE ACESSO
 # =========================================
 
-def sheets_listar_operadores() -> list[dict]:
-    """Retorna lista de operadores com PIN e condomínios permitidos da aba Operadores.
-    
-    Colunas: A=Nome, B=PIN, C=Condomínios_Permitidos, D=Obs
-    """
-    try:
-        sh = conectar_sheets()
-        if sh is None:
-            return []
-        try:
-            aba = sh.worksheet("👷 Operadores")
-        except Exception:
-            # Aba não existe ainda — cria com colunas incluindo PIN
-            sh.add_worksheet(title="👷 Operadores", rows=50, cols=4)
-            aba = sh.worksheet("👷 Operadores")
-            aba.update("A1:D1", [["Nome_Operador", "PIN", "Condomínios_Permitidos", "Obs"]])
-            aba.format("A1:D1", {"textFormat": {"bold": True}})
-            return []
-        todos = aba.get_all_values()
-        operadores = []
-        for row in todos[1:]:  # pula cabeçalho
-            if not row or not str(row[0]).strip():
-                continue
-            nome = str(row[0]).strip()
-            # Detecta formato antigo (sem PIN) ou novo (com PIN)
-            if len(row) >= 3 and str(row[1]).strip() and not str(row[1]).strip().upper().startswith("TODOS"):
-                pin_val = str(row[1]).strip()
-                conds_raw = str(row[2]).strip()
-            else:
-                # Formato antigo: col B = condomínios
-                pin_val = ""
-                conds_raw = str(row[1]).strip() if len(row) > 1 else ""
-            if conds_raw.upper() == "TODOS" or not conds_raw:
-                conds = ["TODOS"]
-            else:
-                conds = [c.strip() for c in conds_raw.split(",") if c.strip()]
-            operadores.append({
-                "nome": nome,
-                "pin": pin_val,
-                "condomínios": conds,
-                "acesso_total": "TODOS" in conds,
-            })
-        return operadores
-    except Exception as e:
-        _log_sheets_erro("sheets_listar_operadores", e)
-        return []
 
 
-def sheets_salvar_operador(nome: str, condomínios: list[str], pin: str = "") -> bool:
-    """Salva ou atualiza operador na aba Operadores com PIN."""
-    try:
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-        try:
-            aba = sh.worksheet("👷 Operadores")
-        except Exception:
-            sh.add_worksheet(title="👷 Operadores", rows=50, cols=4)
-            aba = sh.worksheet("👷 Operadores")
-            aba.update("A1:D1", [["Nome_Operador", "PIN", "Condomínios_Permitidos", "Obs"]])
-        todos = aba.get_all_values()
-        conds_str = ", ".join(condomínios) if condomínios else "TODOS"
-        # Verifica se já existe
-        for i, row in enumerate(todos):
-            if row and str(row[0]).strip().lower() == nome.lower().strip():
-                aba.update(f"A{i+1}:C{i+1}", [[nome, pin, conds_str]])
-                return True
-        # Adiciona novo
-        proxima = len(todos) + 1
-        aba.update(f"A{proxima}:C{proxima}", [[nome, pin, conds_str]])
-        return True
-    except Exception as e:
-        _log_sheets_erro("sheets_salvar_operador", e)
-        return False
 
 
-def sheets_deletar_operador(nome: str) -> bool:
-    """Remove operador da aba Operadores."""
-    try:
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-        aba = sh.worksheet("👷 Operadores")
-        todos = aba.get_all_values()
-        for i, row in enumerate(todos):
-            if row and str(row[0]).strip().lower() == nome.lower().strip():
-                aba.delete_rows(i + 1)
-                return True
-        return False
-    except Exception as e:
-        _log_sheets_erro("sheets_deletar_operador", e)
-        return False
+
+
+
 
 
 def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: list[str]) -> list[str]:
