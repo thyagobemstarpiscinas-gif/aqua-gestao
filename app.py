@@ -3251,24 +3251,23 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         elems.append(Spacer(1, 10))
 
     # ── FOTOS ─────────────────────────────────────────────────────────────────
-    def _add_fotos_categoria(ids_list, titulo):
-        if not ids_list:
+    def _add_fotos_b64(b64_list, titulo):
+        """Adiciona fotos ao PDF a partir de lista de base64."""
+        if not b64_list:
             return
+        import io as _io
+        from reportlab.platypus import Image as RLImage
         elems.append(Paragraph(titulo, s_body_sm))
         foto_cols = []
-        for fid in ids_list[:6]:  # máx 6 fotos por categoria
+        for b64_str in b64_list[:6]:
             try:
-                fb = drive_baixar_foto(fid)
-                if fb:
-                    import io as _io
-                    from reportlab.platypus import Image as RLImage
-                    img_io = _io.BytesIO(fb)
-                    img = RLImage(img_io, width=5.5*cm, height=4*cm)
-                    foto_cols.append(img)
+                fb = _b64.b64decode(b64_str)
+                img_io = _io.BytesIO(fb)
+                img = RLImage(img_io, width=5.5*cm, height=4*cm)
+                foto_cols.append(img)
             except Exception:
                 pass
         if foto_cols:
-            # Agrupa em linhas de 3
             for i in range(0, len(foto_cols), 3):
                 row = foto_cols[i:i+3]
                 while len(row) < 3:
@@ -3282,16 +3281,16 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
                 elems.append(t_foto)
                 elems.append(Spacer(1, 4))
 
-    fotos_antes_ids  = lancamento.get("fotos_antes_ids",  lancamento.get("fotos_drive_ids", []))
-    fotos_depois_ids = lancamento.get("fotos_depois_ids", [])
-    fotos_cmaq_ids   = lancamento.get("fotos_cmaq_ids",   [])
+    fotos_antes_b64  = lancamento.get("fotos_antes_b64",  [])
+    fotos_depois_b64 = lancamento.get("fotos_depois_b64", [])
+    fotos_cmaq_b64   = lancamento.get("fotos_cmaq_b64",   [])
 
-    if fotos_antes_ids or fotos_depois_ids or fotos_cmaq_ids:
+    if fotos_antes_b64 or fotos_depois_b64 or fotos_cmaq_b64:
         elems.append(Paragraph("Registro fotográfico", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
-        _add_fotos_categoria(fotos_antes_ids,  "Antes do tratamento:")
-        _add_fotos_categoria(fotos_depois_ids, "Depois do tratamento:")
-        _add_fotos_categoria(fotos_cmaq_ids,   "Casa de máquinas:")
+        _add_fotos_b64(fotos_antes_b64,  "Antes do tratamento:")
+        _add_fotos_b64(fotos_depois_b64, "Depois do tratamento:")
+        _add_fotos_b64(fotos_cmaq_b64,   "Casa de máquinas:")
         elems.append(Spacer(1, 6))
 
     # ── ASSINATURA RT ─────────────────────────────────────────────────────────
@@ -4367,28 +4366,47 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
                 mes_ano = datetime.now().strftime("%Y-%m")
 
+                import base64 as _b64
+
                 def _salvar_categoria(lista_uploads, categoria):
-                    """Salva fotos de uma categoria localmente e no Drive."""
-                    nomes = []; ids = []
+                    """Salva fotos localmente, no Drive e retorna bytes para PDF."""
+                    nomes = []; ids = []; b64s = []
                     for idx_ff, foto_ff in enumerate(lista_uploads or [], 1):
                         nome_ff = limpar_nome_arquivo(f"{categoria}_{ts_f}_{idx_ff}_{foto_ff.name}")
-                        foto_bytes = foto_ff.getbuffer()
+                        foto_bytes = bytes(foto_ff.getbuffer())
+                        # Salva localmente
                         with open(pasta_fotos_op / nome_ff, "wb") as ff:
                             ff.write(foto_bytes)
                         nomes.append(nome_ff)
-                        drive_id = drive_upload_foto(
-                            arquivo_bytes=bytes(foto_bytes),
-                            nome_arquivo=f"{categoria}_{nome_ff}",
-                            nome_condominio=op_nome_cond.strip(),
-                            mes_ano=mes_ano,
-                        )
-                        if drive_id:
-                            ids.append(drive_id)
-                    return nomes, ids
+                        # Guarda base64 para PDF imediato (não depende do Drive)
+                        try:
+                            # Reduz tamanho para não pesar no session_state
+                            from PIL import Image as _PILImg
+                            import io as _io
+                            _img = _PILImg.open(_io.BytesIO(foto_bytes))
+                            _img.thumbnail((800, 600), _PILImg.LANCZOS)
+                            _buf = _io.BytesIO()
+                            _img.convert("RGB").save(_buf, format="JPEG", quality=75)
+                            b64s.append(_b64.b64encode(_buf.getvalue()).decode("utf-8"))
+                        except Exception:
+                            b64s.append(_b64.b64encode(foto_bytes).decode("utf-8"))
+                        # Upload para o Google Drive (async best-effort)
+                        try:
+                            drive_id = drive_upload_foto(
+                                arquivo_bytes=foto_bytes,
+                                nome_arquivo=f"{categoria}_{nome_ff}",
+                                nome_condominio=op_nome_cond.strip(),
+                                mes_ano=mes_ano,
+                            )
+                            if drive_id:
+                                ids.append(drive_id)
+                        except Exception:
+                            pass
+                    return nomes, ids, b64s
 
-                fotos_antes_nomes,  fotos_antes_ids  = _salvar_categoria(op_fotos_antes,  "antes")
-                fotos_depois_nomes, fotos_depois_ids = _salvar_categoria(op_fotos_depois, "depois")
-                fotos_cmaq_nomes,   fotos_cmaq_ids   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
+                fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(op_fotos_antes,  "antes")
+                fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(op_fotos_depois, "depois")
+                fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
 
                 fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes
                 fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids
@@ -4410,6 +4428,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_antes_ids": fotos_antes_ids,
                     "fotos_depois_ids": fotos_depois_ids,
                     "fotos_cmaq_ids": fotos_cmaq_ids,
+                    "fotos_antes_b64": fotos_antes_b64,
+                    "fotos_depois_b64": fotos_depois_b64,
+                    "fotos_cmaq_b64": fotos_cmaq_b64,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
