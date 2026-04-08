@@ -17,6 +17,109 @@ from PIL import Image, ImageOps
 # =========================================
 
 SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
+DRIVE_FOTOS_FOLDER_ID = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
+
+
+def conectar_drive():
+    """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
+    try:
+        from googleapiclient.discovery import build
+        from google.oauth2.service_account import Credentials
+
+        SCOPES = [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+        ]
+
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        else:
+            creds_path = Path(__file__).parent / "aqua-gestao-rt-87316ebf5331.json"
+            if not creds_path.exists():
+                return None
+            creds = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
+
+        service = build("drive", "v3", credentials=creds)
+        return service
+    except Exception as e:
+        _log_sheets_erro("conectar_drive", e)
+        return None
+
+
+def drive_criar_pasta(nome_pasta: str, pasta_pai_id: str) -> str | None:
+    """Cria pasta no Drive se não existir. Retorna o ID da pasta."""
+    try:
+        service = conectar_drive()
+        if not service:
+            return None
+
+        # Verifica se já existe
+        query = f"name='{nome_pasta}' and '{pasta_pai_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        resultado = service.files().list(q=query, fields="files(id,name)").execute()
+        arquivos = resultado.get("files", [])
+        if arquivos:
+            return arquivos[0]["id"]
+
+        # Cria nova
+        meta = {
+            "name": nome_pasta,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [pasta_pai_id],
+        }
+        pasta = service.files().create(body=meta, fields="id").execute()
+        return pasta.get("id")
+    except Exception as e:
+        _log_sheets_erro("drive_criar_pasta", e)
+        return None
+
+
+def drive_upload_foto(arquivo_bytes: bytes, nome_arquivo: str, nome_condominio: str, mes_ano: str = None) -> str | None:
+    """Faz upload de foto para o Drive. Retorna o ID do arquivo."""
+    try:
+        import io
+        from googleapiclient.http import MediaIoBaseUpload
+
+        service = conectar_drive()
+        if not service:
+            return None
+
+        if not mes_ano:
+            mes_ano = datetime.now().strftime("%Y-%m")
+
+        # Estrutura: Aqua Gestão – Fotos / Condomínio / Ano-Mês
+        pasta_cond = drive_criar_pasta(nome_condominio, DRIVE_FOTOS_FOLDER_ID)
+        if not pasta_cond:
+            return None
+        pasta_mes = drive_criar_pasta(mes_ano, pasta_cond)
+        if not pasta_mes:
+            return None
+
+        # Detecta tipo
+        ext = nome_arquivo.lower().split(".")[-1]
+        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "heic": "image/heic"}
+        mime = mime_map.get(ext, "image/jpeg")
+
+        meta = {"name": nome_arquivo, "parents": [pasta_mes]}
+        media = MediaIoBaseUpload(io.BytesIO(arquivo_bytes), mimetype=mime)
+        arquivo = service.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
+        return arquivo.get("id")
+    except Exception as e:
+        _log_sheets_erro("drive_upload_foto", e)
+        return None
+
+
+def drive_baixar_foto(file_id: str) -> bytes | None:
+    """Baixa foto do Drive pelo ID. Retorna bytes da imagem."""
+    try:
+        service = conectar_drive()
+        if not service:
+            return None
+        conteudo = service.files().get_media(fileId=file_id).execute()
+        return conteudo
+    except Exception as e:
+        _log_sheets_erro("drive_baixar_foto", e)
+        return None
 
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
@@ -2109,17 +2212,82 @@ def inserir_assinatura_rt_no_doc(doc: Document):
 
 
 def salvar_uploads_relatorio(pasta_condominio: Path):
+    """Salva fotos localmente E no Google Drive. Retorna caminhos locais para inserir no DOCX."""
     caminhos = []
     arquivos = st.session_state.get("rel_fotos_upload") or []
     pasta_fotos = pasta_condominio / "fotos_relatorio"
     pasta_fotos.mkdir(exist_ok=True)
+    nome_cond = (st.session_state.get("rel_nome_condominio") or
+                 st.session_state.get("nome_condominio") or
+                 pasta_condominio.name)
+    mes_ano = datetime.now().strftime("%Y-%m")
     for idx, arquivo in enumerate(arquivos, start=1):
         nome = limpar_nome_arquivo(f"foto_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
         destino = pasta_fotos / nome
+        foto_bytes = arquivo.getbuffer()
         with open(destino, "wb") as f:
-            f.write(arquivo.getbuffer())
+            f.write(foto_bytes)
         caminhos.append(destino)
+        # Upload paralelo para Google Drive
+        try:
+            drive_upload_foto(
+                arquivo_bytes=bytes(foto_bytes),
+                nome_arquivo=nome,
+                nome_condominio=nome_cond,
+                mes_ano=mes_ano,
+            )
+        except Exception:
+            pass  # Falha no Drive não impede gerar o relatório
     return caminhos
+
+
+def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None) -> list[Path]:
+    """Baixa fotos do Drive para pasta temporária e retorna caminhos locais para inserir no DOCX."""
+    import tempfile
+    if not mes_ano:
+        mes_ano = datetime.now().strftime("%Y-%m")
+    try:
+        service = conectar_drive()
+        if not service:
+            return []
+
+        # Busca pasta do condomínio
+        q_cond = f"name='{nome_condominio}' and '{DRIVE_FOTOS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        res_cond = service.files().list(q=q_cond, fields="files(id,name)").execute()
+        pastas_cond = res_cond.get("files", [])
+        if not pastas_cond:
+            return []
+        pasta_cond_id = pastas_cond[0]["id"]
+
+        # Busca pasta do mês
+        q_mes = f"name='{mes_ano}' and '{pasta_cond_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        res_mes = service.files().list(q=q_mes, fields="files(id,name)").execute()
+        pastas_mes = res_mes.get("files", [])
+        if not pastas_mes:
+            return []
+        pasta_mes_id = pastas_mes[0]["id"]
+
+        # Lista fotos
+        q_fotos = f"'{pasta_mes_id}' in parents and trashed=false"
+        res_fotos = service.files().list(q=q_fotos, fields="files(id,name,mimeType)").execute()
+        fotos = res_fotos.get("files", [])
+
+        # Baixa para pasta temp
+        caminhos = []
+        tmp_dir = Path(tempfile.mkdtemp())
+        for foto in fotos:
+            try:
+                conteudo = service.files().get_media(fileId=foto["id"]).execute()
+                dest = tmp_dir / foto["name"]
+                with open(dest, "wb") as f:
+                    f.write(conteudo)
+                caminhos.append(dest)
+            except Exception:
+                pass
+        return caminhos
+    except Exception as e:
+        _log_sheets_erro("buscar_fotos_drive_para_relatorio", e)
+        return []
 
 
 
@@ -2623,6 +2791,33 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     data_hoje = date.today().strftime("%d/%m/%Y")
     operador = lancamento.get("operador","") or "—"
 
+    # ── Fotos do Drive (base64 embutido) ──────────────────────────────────────
+    import base64 as _b64
+    fotos_html_section = ""
+    fotos_drive_ids = lancamento.get("fotos_drive_ids", [])
+    if fotos_drive_ids:
+        imgs_html = ""
+        for fid in fotos_drive_ids:
+            try:
+                foto_bytes = drive_baixar_foto(fid)
+                if foto_bytes:
+                    b64 = _b64.b64encode(foto_bytes).decode("utf-8")
+                    imgs_html += f'''<div style="margin-bottom:8px;"><img src="data:image/jpeg;base64,{b64}" style="width:100%;border-radius:8px;border:1px solid #d0d8e4;" /></div>'''
+            except Exception:
+                pass
+        if imgs_html:
+            fotos_html_section = f'''
+  <div class="card">
+    <div class="sec-title">Registro fotográfico</div>
+    {imgs_html}
+  </div>'''
+    else:
+        fotos_html_section = '''
+  <div class="card">
+    <div class="sec-title">Registro fotográfico</div>
+    <p style="font-size:12px;color:#8a9ab0;font-style:italic;">Nenhuma foto registrada nesta visita.</p>
+  </div>'''
+
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -2740,6 +2935,8 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     {obs_html}
   </div>
 
+  {fotos_html_section}
+
   <div class="card">
     <div class="sec-title">Responsabilidade técnica</div>
     <div class="assin-bloco">
@@ -2779,6 +2976,22 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
     else:
         salvar_dados_condominio(pasta_condominio, obter_snapshot_relatorio_independente())
     fotos_salvas = salvar_uploads_relatorio(pasta_condominio)
+
+    # Se não há fotos no upload atual, busca do Google Drive (fotos do mês)
+    if not fotos_salvas:
+        mes_ano_rel = datetime.now().strftime("%Y-%m")
+        fotos_drive = buscar_fotos_drive_para_relatorio(nome_condominio, mes_ano_rel)
+        if fotos_drive:
+            fotos_salvas = fotos_drive
+
+    # Também busca fotos dos lançamentos de campo salvos localmente
+    if not fotos_salvas and pasta_condominio.exists():
+        pasta_fotos_campo = pasta_condominio / "fotos_campo"
+        if pasta_fotos_campo.exists():
+            fotos_campo = sorted(pasta_fotos_campo.glob("*"))
+            fotos_campo = [f for f in fotos_campo if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+            if fotos_campo:
+                fotos_salvas = fotos_campo
 
     data_nome = datetime.now().strftime("%Y%m%d")
     base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_RELATORIO_RT")
@@ -3710,16 +3923,29 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             else:
                 pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
                 pasta_op.mkdir(parents=True, exist_ok=True)
-                fotos_salvas_op = []
+                fotos_salvas_op = []   # nomes locais
+                fotos_drive_ids = []   # IDs no Google Drive
                 if op_fotos:
                     pasta_fotos_op = pasta_op / "fotos_campo"
                     pasta_fotos_op.mkdir(exist_ok=True)
                     ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    mes_ano = datetime.now().strftime("%Y-%m")
                     for idx_ff, foto_ff in enumerate(op_fotos, 1):
                         nome_ff = limpar_nome_arquivo(f"campo_{ts_f}_{idx_ff}_{foto_ff.name}")
+                        foto_bytes = foto_ff.getbuffer()
+                        # Salva localmente (fallback)
                         with open(pasta_fotos_op / nome_ff, "wb") as ff:
-                            ff.write(foto_ff.getbuffer())
+                            ff.write(foto_bytes)
                         fotos_salvas_op.append(nome_ff)
+                        # Upload para o Google Drive
+                        drive_id = drive_upload_foto(
+                            arquivo_bytes=bytes(foto_bytes),
+                            nome_arquivo=nome_ff,
+                            nome_condominio=op_nome_cond.strip(),
+                            mes_ano=mes_ano,
+                        )
+                        if drive_id:
+                            fotos_drive_ids.append(drive_id)
                 dados_ex = carregar_dados_condominio(pasta_op) or {}
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
@@ -3728,6 +3954,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
                     "observacao": op_obs.strip(), "dosagens": op_dosagens,
                     "fotos": fotos_salvas_op,
+                    "fotos_drive_ids": fotos_drive_ids,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
