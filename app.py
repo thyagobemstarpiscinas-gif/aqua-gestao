@@ -121,6 +121,111 @@ def drive_baixar_foto(file_id: str) -> bytes | None:
         _log_sheets_erro("drive_baixar_foto", e)
         return None
 
+
+
+# =========================================
+# GESTÃO DE OPERADORES
+# =========================================
+
+def sheets_listar_operadores() -> list[dict]:
+    """Lista operadores da aba 👷 Operadores do Sheets."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return []
+        try:
+            aba = sh.worksheet("👷 Operadores")
+        except Exception:
+            return []
+        todos = aba.get_all_values()
+        operadores = []
+        for row in todos:
+            if len(row) >= 4 and str(row[0]).strip() and str(row[0]).strip() != "Nome":
+                nome = str(row[0]).strip()
+                pin  = str(row[1]).strip()
+                conds_raw = str(row[2]).strip()
+                ativo = str(row[3]).strip().lower() in ("sim", "ativo", "1", "true", "yes")
+                conds = [c.strip() for c in conds_raw.split("|") if c.strip()] if conds_raw else []
+                operadores.append({"nome": nome, "pin": pin, "condomínios": conds, "ativo": ativo})
+        return operadores
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_operadores", e)
+        return []
+
+
+def sheets_criar_aba_operadores():
+    """Cria a aba 👷 Operadores no Sheets se não existir."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        try:
+            sh.worksheet("👷 Operadores")
+            return True  # já existe
+        except Exception:
+            pass
+        aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
+        # Cabeçalho
+        aba.update("A1:F1", [["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
+        aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_criar_aba_operadores", e)
+        return False
+
+
+def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool = True) -> bool:
+    """Salva ou atualiza operador na aba 👷 Operadores."""
+    import re as _re
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        sheets_criar_aba_operadores()
+        aba = sh.worksheet("👷 Operadores")
+        todos = aba.get_all_values()
+        conds_str = " | ".join(condomínios)
+        ativo_str = "Sim" if ativo else "Não"
+        nova_linha = [nome, pin, conds_str, ativo_str, datetime.now().strftime("%Y-%m-%d"), ""]
+        # Verifica se já existe (pelo nome)
+        for i, row in enumerate(todos):
+            if len(row) > 0 and str(row[0]).strip().lower() == nome.lower().strip():
+                aba.update(f"A{i+1}:F{i+1}", [nova_linha])
+                return True
+        # Insere novo
+        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_operador", e)
+        return False
+
+
+def sheets_deletar_operador(nome: str) -> bool:
+    """Remove operador da aba 👷 Operadores."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        aba = sh.worksheet("👷 Operadores")
+        todos = aba.get_all_values()
+        for i, row in enumerate(todos):
+            if len(row) > 0 and str(row[0]).strip().lower() == nome.lower().strip():
+                aba.delete_rows(i + 1)
+                return True
+        return False
+    except Exception as e:
+        _log_sheets_erro("sheets_deletar_operador", e)
+        return False
+
+
+def verificar_pin_operador(pin_digitado: str) -> dict | None:
+    """Verifica PIN e retorna dados do operador, ou None se inválido."""
+    operadores = sheets_listar_operadores()
+    for op in operadores:
+        if op["pin"] == pin_digitado.strip() and op["ativo"]:
+            return op
+    return None
+
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
     import traceback
@@ -375,6 +480,56 @@ def sheets_carregar_cliente_por_nome(nome: str) -> dict:
     return {}
 
 
+
+
+# =========================================
+# GESTÃO DE OPERADORES
+# =========================================
+
+OPERADORES_JSON = None  # será inicializado após BASE_DIR
+
+def _get_operadores_path():
+    return BASE_DIR / "_operadores.json"
+
+def carregar_operadores() -> list[dict]:
+    """Carrega lista de operadores do arquivo JSON local."""
+    try:
+        p = _get_operadores_path()
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+        return []
+    except Exception:
+        return []
+
+def salvar_operadores(lista: list):
+    """Salva lista de operadores no arquivo JSON local."""
+    try:
+        p = _get_operadores_path()
+        p.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def validar_pin_operador(pin: str) -> dict | None:
+    """Valida PIN do operador. Retorna dict do operador ou None se inválido.
+    Também aceita PIN global 5010 (acesso total)."""
+    # PIN global continua funcionando — acesso total
+    if pin == PIN_OPERADOR:
+        return {"nome": "Operador", "pin": pin, "condomínios": ["TODOS"], "acesso_total": True}
+    # Busca nos operadores do Sheets
+    try:
+        operadores = sheets_listar_operadores()
+        for op in operadores:
+            if op.get("pin","").strip() == pin.strip() and op.get("pin","").strip():
+                return op
+    except Exception:
+        pass
+    # Fallback: JSON local
+    operadores_local = carregar_operadores()
+    for op in operadores_local:
+        if op.get("pin","") == pin:
+            return op
+    return None
+
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
     """Retorna lançamentos de visitas de um condomínio."""
     try:
@@ -406,7 +561,10 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
 # =========================================
 
 def sheets_listar_operadores() -> list[dict]:
-    """Retorna lista de operadores e seus condomínios permitidos da aba Operadores."""
+    """Retorna lista de operadores com PIN e condomínios permitidos da aba Operadores.
+    
+    Colunas: A=Nome, B=PIN, C=Condomínios_Permitidos, D=Obs
+    """
     try:
         sh = conectar_sheets()
         if sh is None:
@@ -414,32 +572,44 @@ def sheets_listar_operadores() -> list[dict]:
         try:
             aba = sh.worksheet("👷 Operadores")
         except Exception:
-            # Aba não existe ainda — cria automaticamente
-            sh.add_worksheet(title="👷 Operadores", rows=50, cols=3)
+            # Aba não existe ainda — cria com colunas incluindo PIN
+            sh.add_worksheet(title="👷 Operadores", rows=50, cols=4)
             aba = sh.worksheet("👷 Operadores")
-            aba.update("A1:C1", [["Operador", "Condomínios_Permitidos", "Obs"]])
-            aba.format("A1:C1", {"textFormat": {"bold": True}})
+            aba.update("A1:D1", [["Nome_Operador", "PIN", "Condomínios_Permitidos", "Obs"]])
+            aba.format("A1:D1", {"textFormat": {"bold": True}})
             return []
         todos = aba.get_all_values()
         operadores = []
         for row in todos[1:]:  # pula cabeçalho
-            if row and len(row) > 0 and str(row[0]).strip():
-                nome = str(row[0]).strip()
+            if not row or not str(row[0]).strip():
+                continue
+            nome = str(row[0]).strip()
+            # Detecta formato antigo (sem PIN) ou novo (com PIN)
+            if len(row) >= 3 and str(row[1]).strip() and not str(row[1]).strip().upper().startswith("TODOS"):
+                pin_val = str(row[1]).strip()
+                conds_raw = str(row[2]).strip()
+            else:
+                # Formato antigo: col B = condomínios
+                pin_val = ""
                 conds_raw = str(row[1]).strip() if len(row) > 1 else ""
-                # "TODOS" = acesso a todos os condomínios
-                if conds_raw.upper() == "TODOS" or not conds_raw:
-                    conds = ["TODOS"]
-                else:
-                    conds = [c.strip() for c in conds_raw.split(",") if c.strip()]
-                operadores.append({"nome": nome, "condomínios": conds})
+            if conds_raw.upper() == "TODOS" or not conds_raw:
+                conds = ["TODOS"]
+            else:
+                conds = [c.strip() for c in conds_raw.split(",") if c.strip()]
+            operadores.append({
+                "nome": nome,
+                "pin": pin_val,
+                "condomínios": conds,
+                "acesso_total": "TODOS" in conds,
+            })
         return operadores
     except Exception as e:
         _log_sheets_erro("sheets_listar_operadores", e)
         return []
 
 
-def sheets_salvar_operador(nome: str, condomínios: list[str]) -> bool:
-    """Salva ou atualiza operador na aba Operadores."""
+def sheets_salvar_operador(nome: str, condomínios: list[str], pin: str = "") -> bool:
+    """Salva ou atualiza operador na aba Operadores com PIN."""
     try:
         sh = conectar_sheets()
         if sh is None:
@@ -447,19 +617,19 @@ def sheets_salvar_operador(nome: str, condomínios: list[str]) -> bool:
         try:
             aba = sh.worksheet("👷 Operadores")
         except Exception:
-            sh.add_worksheet(title="👷 Operadores", rows=50, cols=3)
+            sh.add_worksheet(title="👷 Operadores", rows=50, cols=4)
             aba = sh.worksheet("👷 Operadores")
-            aba.update("A1:C1", [["Operador", "Condomínios_Permitidos", "Obs"]])
+            aba.update("A1:D1", [["Nome_Operador", "PIN", "Condomínios_Permitidos", "Obs"]])
         todos = aba.get_all_values()
+        conds_str = ", ".join(condomínios) if condomínios else "TODOS"
         # Verifica se já existe
         for i, row in enumerate(todos):
             if row and str(row[0]).strip().lower() == nome.lower().strip():
-                # Atualiza linha existente
-                aba.update(f"A{i+1}:B{i+1}", [[nome, ", ".join(condomínios)]])
+                aba.update(f"A{i+1}:C{i+1}", [[nome, pin, conds_str]])
                 return True
         # Adiciona novo
         proxima = len(todos) + 1
-        aba.update(f"A{proxima}:B{proxima}", [[nome, ", ".join(condomínios)]])
+        aba.update(f"A{proxima}:C{proxima}", [[nome, pin, conds_str]])
         return True
     except Exception as e:
         _log_sheets_erro("sheets_salvar_operador", e)
@@ -3356,38 +3526,47 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
 
     # ── FOTOS ─────────────────────────────────────────────────────────────────
     def _add_fotos_b64(b64_list, titulo):
-        """Adiciona fotos ao PDF a partir de lista de base64."""
+        """Adiciona fotos ao PDF a partir de lista de base64 — 1 por linha, tamanho máximo."""
         if not b64_list:
             return
         import io as _io
         from reportlab.platypus import Image as RLImage
+        from PIL import Image as _PILR, ImageOps as _IOps
         elems.append(Paragraph(titulo, s_body_sm))
-        foto_cols = []
+        LARGURA_MAX = 15 * cm   # largura útil da página
+        ALTURA_MAX  = 18 * cm   # altura máxima por foto
         for b64_str in b64_list[:6]:
             try:
                 fb = _b64.b64decode(b64_str)
-                # Detecta orientação para dimensionar corretamente
-                from PIL import Image as _PILR
-                _tmp_img = _PILR.open(_io.BytesIO(fb))
-                _iw, _ih = _tmp_img.size
-                if _ih > _iw:  # vertical (retrato)
-                    img = RLImage(_io.BytesIO(fb), width=10*cm, height=13*cm)
-                else:  # horizontal (paisagem)
-                    img = RLImage(_io.BytesIO(fb), width=15*cm, height=10*cm)
-                foto_cols.append(img)
-            except Exception:
-                pass
-        if foto_cols:
-            # 1 foto por linha — maior e mais legível
-            for img_item in foto_cols:
-                t_foto = Table([[img_item]], colWidths=["100%"])
+                # Aplica rotação EXIF antes de medir
+                _pil = _PILR.open(_io.BytesIO(fb))
+                _pil = _IOps.exif_transpose(_pil)
+                _iw, _ih = _pil.size
+                # Salva versão corrigida
+                _buf_corr = _io.BytesIO()
+                _pil.convert("RGB").save(_buf_corr, format="JPEG", quality=85)
+                _buf_corr.seek(0)
+                # Calcula dimensões mantendo proporção
+                ratio = _iw / _ih
+                if ratio >= 1:  # paisagem
+                    w = LARGURA_MAX
+                    h = min(w / ratio, ALTURA_MAX)
+                    w = h * ratio
+                else:  # retrato
+                    h = ALTURA_MAX
+                    w = min(h * ratio, LARGURA_MAX)
+                    h = w / ratio
+                img = RLImage(_buf_corr, width=w, height=h)
+                t_foto = Table([[img]], colWidths=[LARGURA_MAX])
                 t_foto.setStyle(TableStyle([
-                    ("ALIGN", (0,0), (-1,-1), "CENTER"),
-                    ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                    ("ALIGN",   (0,0), (-1,-1), "CENTER"),
+                    ("VALIGN",  (0,0), (-1,-1), "MIDDLE"),
                     ("PADDING", (0,0), (-1,-1), 2),
                 ]))
                 elems.append(t_foto)
-                elems.append(Spacer(1, 6))
+                elems.append(Spacer(1, 8))
+            except Exception:
+                pass
 
     fotos_antes_b64  = lancamento.get("fotos_antes_b64",  [])
     fotos_depois_b64 = lancamento.get("fotos_depois_b64", [])
@@ -4187,22 +4366,31 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown("**Aqua Gestão – Controle Técnico de Piscinas**")
         st.markdown("Digite o PIN para acessar o lançamento de campo.")
         pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
-            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=6)
+            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
         if st.button("Entrar", type="primary", use_container_width=True):
-            if pin_digitado == PIN_OPERADOR:
+            op_dados = validar_pin_operador(pin_digitado.strip())
+            if op_dados:
                 st.session_state["op_pin_ok"] = True
+                st.session_state["op_dados_atual"] = op_dados
                 st.rerun()
             else:
                 st.error("PIN incorreto. Tente novamente.")
         st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
+    # Dados do operador logado
+    _op_atual = st.session_state.get("op_dados_atual", {"nome": "Operador", "acesso_total": True, "condomínios": []})
+    _op_nome_logado = _op_atual.get("nome", "Operador")
+    _op_acesso_total = _op_atual.get("acesso_total", False)
+    _op_conds_permitidos = _op_atual.get("condomínios", [])
+
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
         st.session_state["op_pin_ok"] = False
+        st.session_state.pop("op_dados_atual", None)
         st.rerun()
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
-    st.markdown('<div class="op-title">📱 Lançamento de Campo</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-title">📱 Lançamento de Campo — {_op_nome_logado}</div>', unsafe_allow_html=True)
     st.markdown('<div class="op-sub">Aqua Gestão – Controle Técnico de Piscinas | Thyago Fernando da Silveira</div>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
@@ -4265,16 +4453,28 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     # Une as duas listas sem duplicar
     opcoes_cond_todas = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
 
-    # Campo operador ANTES da seleção de condomínio para filtrar acesso
-    op_operador = st.text_input("Seu nome (operador)", key="op_operador", placeholder="Ex.: João Silva")
+    # Operador logado via PIN — nome vem do cadastro, não digitado
+    _op_nome_logado_disp = _op_nome_logado if _op_nome_logado != "Operador" else ""
+    op_operador = st.text_input(
+        "Seu nome (operador)",
+        key="op_operador",
+        value=_op_nome_logado_disp,
+        placeholder="Ex.: João Silva",
+        help="Preenchido automaticamente pelo seu PIN de acesso."
+    )
 
-    # Filtra condomínios pelo operador
-    if op_operador.strip():
-        opcoes_cond = filtrar_condomínios_por_operador(op_operador.strip(), opcoes_cond_todas)
-        if len(opcoes_cond) < len(opcoes_cond_todas):
-            st.caption(f"✅ {len(opcoes_cond)} condomínio(s) disponível(is) para você.")
-    else:
+    # Filtra condomínios pelo PIN do operador logado
+    if _op_acesso_total or not _op_conds_permitidos or "TODOS" in _op_conds_permitidos:
         opcoes_cond = opcoes_cond_todas
+    else:
+        opcoes_cond = [c for c in opcoes_cond_todas if any(
+            perm.lower().strip() in c.lower() or c.lower() in perm.lower().strip()
+            for perm in _op_conds_permitidos
+        )]
+        if opcoes_cond:
+            st.caption(f"✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).")
+        else:
+            st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
 
     op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -4822,6 +5022,95 @@ with st.expander("➕ Cadastrar / atualizar operador", expanded=not bool(_ops_li
                 st.rerun()
             else:
                 st.error("Erro ao salvar operador. Verifique a conexão com o Sheets.")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# GESTÃO DE OPERADORES
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("👷 Gestão de Operadores")
+st.caption("Cadastre operadores com PIN exclusivo e defina quais condomínios cada um pode acessar.")
+
+# Cria aba no Sheets se não existir
+if st.button("🔧 Inicializar aba de Operadores no Sheets", key="btn_init_op_aba"):
+    ok_aba = sheets_criar_aba_operadores()
+    if ok_aba:
+        st.success("✅ Aba '👷 Operadores' criada/confirmada no Google Sheets!")
+    else:
+        st.error("❌ Erro ao criar aba. Verifique a conexão com o Sheets.")
+
+# Lista operadores cadastrados
+@st.cache_data(ttl=30)
+def _listar_ops():
+    return sheets_listar_operadores()
+
+ops_cadastrados = _listar_ops()
+
+if ops_cadastrados:
+    st.success(f"✅ {len(ops_cadastrados)} operador(es) cadastrado(s):")
+    for op in ops_cadastrados:
+        conds_txt = ", ".join(op.get("condomínios", [])) or "Todos"
+        status = "🟢 Ativo" if op.get("ativo") else "🔴 Inativo"
+        with st.expander(f"{status} — {op['nome']} | PIN: {op['pin'][:2]}{'*' * (len(op['pin'])-2)}"):
+            st.write(f"**Condomínios:** {conds_txt}")
+            if st.button(f"🗑 Remover {op['nome']}", key=f"del_op_{op['nome']}"):
+                if sheets_deletar_operador(op["nome"]):
+                    st.success(f"Operador '{op['nome']}' removido.")
+                    st.cache_data.clear()
+                    st.rerun()
+else:
+    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 5010 continua funcionando como acesso geral.")
+
+with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadastrados)):
+    # Carrega lista de clientes para selecionar condomínios
+    @st.cache_data(ttl=60)
+    def _clientes_para_op():
+        return sheets_listar_clientes()
+    _clientes_op = _clientes_para_op()
+
+    op_col1, op_col2 = st.columns(2)
+    with op_col1:
+        op_nome_novo = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
+        op_pin_novo  = st.text_input("PIN exclusivo *", key="op_novo_pin", placeholder="Ex.: 1234", max_chars=10,
+            help="Mínimo 4 caracteres. Não use 5010 (reservado para acesso geral).")
+    with op_col2:
+        op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
+        op_acesso_total_novo = st.checkbox("Acesso a todos os condomínios", value=False, key="op_novo_acesso_total")
+
+    if not op_acesso_total_novo and _clientes_op:
+        op_conds_novo = st.multiselect(
+            "Condomínios que este operador pode acessar",
+            options=_clientes_op,
+            key="op_novo_conds",
+            help="Deixe vazio + marque 'Acesso total' para liberar tudo."
+        )
+    else:
+        op_conds_novo = _clientes_op if op_acesso_total_novo else []
+
+    if st.button("💾 Salvar operador", type="primary", use_container_width=True, key="btn_salvar_op"):
+        if not op_nome_novo.strip():
+            st.error("Informe o nome do operador.")
+        elif not op_pin_novo.strip() or len(op_pin_novo.strip()) < 4:
+            st.error("PIN deve ter pelo menos 4 caracteres.")
+        elif op_pin_novo.strip() == "5010":
+            st.error("O PIN 5010 é reservado para acesso geral. Escolha outro.")
+        else:
+            with st.spinner("Salvando operador..."):
+                ok_op = sheets_salvar_operador(
+                    nome=op_nome_novo.strip(),
+                    pin=op_pin_novo.strip(),
+                    condomínios=op_conds_novo,
+                    ativo=op_ativo_novo,
+                )
+            if ok_op:
+                st.success(f"✅ Operador '{op_nome_novo}' salvo! PIN: {op_pin_novo}")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("❌ Erro ao salvar operador. Verifique a conexão com o Sheets.")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
