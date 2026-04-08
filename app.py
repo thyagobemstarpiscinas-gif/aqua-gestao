@@ -2791,31 +2791,84 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     data_hoje = date.today().strftime("%d/%m/%Y")
     operador = lancamento.get("operador","") or "—"
 
-    # ── Fotos do Drive (base64 embutido) ──────────────────────────────────────
+    # ── Seção de piscinas (múltiplas ou única) ────────────────────────────────
+    piscinas_lista = lancamento.get("piscinas", [])
+    if not piscinas_lista:
+        # Compatibilidade com lançamentos antigos (sem múltiplas piscinas)
+        piscinas_lista = [{
+            "nome": "Piscina",
+            "ph": lancamento.get("ph",""),
+            "cloro_livre": lancamento.get("cloro_livre",""),
+            "cloro_total": lancamento.get("cloro_total",""),
+            "cloraminas": lancamento.get("cloraminas",""),
+            "alcalinidade": lancamento.get("alcalinidade",""),
+            "dureza": lancamento.get("dureza",""),
+            "cianurico": lancamento.get("cianurico",""),
+        }]
+
+    piscinas_html_section = ""
+    for pisc in piscinas_lista:
+        p_clor_box = ""
+        p_clor_val = pisc.get("cloraminas","")
+        if p_clor_val and valor_float(p_clor_val) is not None:
+            v_cl = valor_float(p_clor_val)
+            cls_cl = "ok" if v_cl <= 0.2 else "warn"
+            st_cl = "Conforme" if v_cl <= 0.2 else "Fora da faixa"
+            p_clor_box = f'''<div class="param-box {cls_cl}"><div class="pnm">Cloraminas</div><div class="pval">{str(p_clor_val).replace(".", ",")}</div><div class="pst">{st_cl}</div></div>'''
+        piscinas_html_section += f'''
+  <div class="card">
+    <div class="sec-title">🏊 {pisc.get("nome","Piscina")} — Parâmetros</div>
+    <div class="param-grid">
+      {param_box("pH", pisc.get("ph",""), 7.2, 7.8)}
+      {param_box("CRL mg/L", pisc.get("cloro_livre",""), 0.5, 3.0)}
+      {param_box("Alc. mg/L", pisc.get("alcalinidade",""), 80, 120, quinzenal=True)}
+      {param_box("Dureza mg/L", pisc.get("dureza",""), 150, 300, quinzenal=True)}
+      {param_box("CYA mg/L", pisc.get("cianurico",""), 30, 50, quinzenal=True)}
+      {p_clor_box}
+    </div>
+  </div>'''
+
+    # Problemas / ocorrências
+    problemas = lancamento.get("problemas","").strip()
+    problemas_html = f'''
+  <div class="card">
+    <div class="sec-title">Problemas / Ocorrências</div>
+    <div class="obs-txt">"{problemas}"</div>
+  </div>''' if problemas else ""
+
+    # ── Fotos do Drive (base64 embutido por categoria) ───────────────────────
     import base64 as _b64
-    fotos_html_section = ""
-    fotos_drive_ids = lancamento.get("fotos_drive_ids", [])
-    if fotos_drive_ids:
-        imgs_html = ""
-        for fid in fotos_drive_ids:
+
+    def _ids_to_html(ids_list, titulo):
+        if not ids_list:
+            return ""
+        imgs = ""
+        for fid in ids_list:
             try:
-                foto_bytes = drive_baixar_foto(fid)
-                if foto_bytes:
-                    b64 = _b64.b64encode(foto_bytes).decode("utf-8")
-                    imgs_html += f'''<div style="margin-bottom:8px;"><img src="data:image/jpeg;base64,{b64}" style="width:100%;border-radius:8px;border:1px solid #d0d8e4;" /></div>'''
+                fb = drive_baixar_foto(fid)
+                if fb:
+                    b64 = _b64.b64encode(fb).decode("utf-8")
+                    imgs += f'<div style="margin-bottom:6px;"><img src="data:image/jpeg;base64,{b64}" style="width:100%;border-radius:6px;border:1px solid #d0d8e4;" /></div>'
             except Exception:
                 pass
-        if imgs_html:
-            fotos_html_section = f'''
+        if not imgs:
+            return ""
+        return f'<div style="margin-bottom:12px;"><div style="font-size:10px;color:#1e4d8c;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">{titulo}</div>{imgs}</div>'
+
+    fotos_antes_ids  = lancamento.get("fotos_antes_ids",  lancamento.get("fotos_drive_ids", []))
+    fotos_depois_ids = lancamento.get("fotos_depois_ids", [])
+    fotos_cmaq_ids   = lancamento.get("fotos_cmaq_ids",   [])
+
+    _fotos_content = (
+        _ids_to_html(fotos_antes_ids,  "Antes do tratamento") +
+        _ids_to_html(fotos_depois_ids, "Depois do tratamento") +
+        _ids_to_html(fotos_cmaq_ids,   "Casa de máquinas")
+    )
+
+    fotos_html_section = f'''
   <div class="card">
     <div class="sec-title">Registro fotográfico</div>
-    {imgs_html}
-  </div>'''
-    else:
-        fotos_html_section = '''
-  <div class="card">
-    <div class="sec-title">Registro fotográfico</div>
-    <p style="font-size:12px;color:#8a9ab0;font-style:italic;">Nenhuma foto registrada nesta visita.</p>
+    {_fotos_content if _fotos_content else '<p style="font-size:12px;color:#8a9ab0;font-style:italic;">Nenhuma foto registrada nesta visita.</p>'}
   </div>'''
 
     html = f"""<!DOCTYPE html>
@@ -2908,17 +2961,7 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     </div>
   </div>
 
-  <div class="card">
-    <div class="sec-title">Parâmetros analisados</div>
-    <div class="param-grid">
-      {param_box("pH", lancamento.get("ph",""), 7.2, 7.8)}
-      {param_box("CRL mg/L", lancamento.get("cloro_livre",""), 0.5, 3.0)}
-      {param_box("Alc. mg/L", lancamento.get("alcalinidade",""), 80, 120, quinzenal=True)}
-      {param_box("Dureza mg/L", lancamento.get("dureza",""), 150, 300, quinzenal=True)}
-      {param_box("CYA mg/L", lancamento.get("cianurico",""), 30, 50, quinzenal=True)}
-      {clor_box}
-    </div>
-  </div>
+  {piscinas_html_section}
 
   <div class="card">
     <div class="sec-title">Alertas técnicos</div>
@@ -2936,6 +2979,8 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
   </div>
 
   {fotos_html_section}
+
+  {problemas_html}
 
   <div class="card">
     <div class="sec-title">Responsabilidade técnica</div>
@@ -3822,18 +3867,57 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     if op_nome_cond:
 
-        # Limpa campos SE houver limpeza pendente (definida após o salvar + rerun)
+        # ── Piscinas deste condomínio ─────────────────────────────────────────
+        # Carrega configuração de piscinas salva ou usa padrão
+        _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+        _dados_cond_op = carregar_dados_condominio(_pasta_cond_op) if _pasta_cond_op.exists() else {}
+        _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
+
+        # Admin pode definir piscinas pelo painel — operador vê as já configuradas
+        with st.expander("🏊 Piscinas deste condomínio", expanded=False):
+            st.caption("Configure as piscinas deste condomínio. Salvo automaticamente.")
+            _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
+            _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
+            _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
+            _pisc_outra_check = st.checkbox("Outra piscina", value=any(p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"] for p in _piscinas_config), key="op_pisc_outra_check")
+            _pisc_outra_nome = ""
+            if _pisc_outra_check:
+                _outra_default = next((p for p in _piscinas_config if p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"]), "")
+                _pisc_outra_nome = st.text_input("Nome da outra piscina", value=_outra_default, key="op_pisc_outra_nome", placeholder="Ex.: Piscina Olímpica")
+            _piscinas_ativas = []
+            if _pisc_adulto: _piscinas_ativas.append("Piscina Adulto")
+            if _pisc_infant: _piscinas_ativas.append("Piscina Infantil")
+            if _pisc_family: _piscinas_ativas.append("Piscina Family")
+            if _pisc_outra_check and _pisc_outra_nome.strip(): _piscinas_ativas.append(_pisc_outra_nome.strip())
+            if not _piscinas_ativas: _piscinas_ativas = ["Piscina Adulto"]
+            if st.button("💾 Salvar configuração de piscinas", key="btn_salvar_piscinas"):
+                _pasta_cond_op.mkdir(parents=True, exist_ok=True)
+                _dados_upd = carregar_dados_condominio(_pasta_cond_op) or {}
+                _dados_upd["piscinas"] = _piscinas_ativas
+                _dados_upd["nome_condominio"] = op_nome_cond.strip()
+                salvar_dados_condominio(_pasta_cond_op, _dados_upd)
+                st.success(f"✅ Piscinas salvas: {', '.join(_piscinas_ativas)}")
+                st.rerun()
+        piscinas_ativas = _piscinas_ativas
+
+        # Limpa campos SE houver limpeza pendente
         if st.session_state.pop("op_limpar_campos", False):
-            for k in ["op_ph","op_crl","op_ct","op_alc","op_dc","op_cya","op_obs_campo","op_data_visita"]:
-                st.session_state[k] = ""
+            for pisc in ["adulto","infantil","family","outra"]:
+                for k in ["ph","crl","ct","alc","dc","cya"]:
+                    st.session_state[f"op_{pisc}_{k}"] = ""
             for i in range(5):
                 for s in ["prod","qtd","un","fin"]:
                     st.session_state[f"op_dos_{s}_{i}"] = ""
+            st.session_state["op_obs_campo"] = ""
+            st.session_state["op_problemas"] = ""
 
-        st.markdown('<div class="op-card">', unsafe_allow_html=True)
-        st.markdown('<div class="op-title">🧪 Parâmetros da água</div>', unsafe_allow_html=True)
+        def _num_op(chave, label, placeholder, quinzenal=False):
+            lbl = f"{label} ⏱ 15d" if quinzenal else label
+            v = st.text_input(lbl, key=chave, placeholder=placeholder,
+                help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
+            return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
-        with st.expander("📋 Faixas de referência"):
+        with st.expander("📋 Faixas de referência", expanded=False):
             st.markdown("""
 | Parâmetro | Faixa ideal |
 |---|---|
@@ -3844,43 +3928,59 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 | CYA mg/L | 30 – 50 |
             """)
 
-        def _num_op(chave, label, placeholder, quinzenal=False):
-            lbl = f"{label} ⏱ 15d" if quinzenal else label
-            v = st.text_input(lbl, key=chave, placeholder=placeholder,
-                help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
-            return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
+        # ── Parâmetros por piscina ────────────────────────────────────────────
+        op_piscinas_dados = []
+        _slug_map = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
 
-        c1, c2 = st.columns(2)
-        with c1:
-            op_ph  = _num_op("op_ph",  "pH", "ex: 7.4")
-            op_alc = _num_op("op_alc", "Alcalinidade mg/L", "ex: 95",  quinzenal=True)
-            op_dc  = _num_op("op_dc",  "Dureza DC mg/L",   "ex: 200", quinzenal=True)
-        with c2:
-            op_crl = _num_op("op_crl", "CRL mg/L",              "ex: 1.5")
-            op_ct  = _num_op("op_ct",  "Cloro Total CT mg/L",   "ex: 1.8")
-            op_cya = _num_op("op_cya", "CYA mg/L",              "ex: 40",  quinzenal=True)
+        for pisc_nome in piscinas_ativas:
+            pisc_slug = _slug_map.get(pisc_nome, slugify_nome(pisc_nome)[:12])
+            st.markdown('<div class="op-card">', unsafe_allow_html=True)
+            st.markdown(f'<div class="op-title">🧪 {pisc_nome}</div>', unsafe_allow_html=True)
 
-        alertas_op = []
-        for val, mn, mx, rot in [
-            (op_ph, 7.2, 7.8, "pH"), (op_crl, 0.5, 3.0, "CRL"),
-            (op_alc, 80, 120, "Alcalinidade"), (op_dc, 150, 300, "Dureza DC"),
-            (op_cya, 30, 50, "CYA"),
-        ]:
-            v = valor_float(val)
-            if v is not None:
-                alertas_op.append(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
-        # Cloraminas só calcula se CT foi preenchido
-        v_crl2 = valor_float(op_crl)
-        v_ct2  = valor_float(op_ct)
-        op_cloraminas = None
-        if v_crl2 is not None and v_ct2 is not None:
-            op_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
-            alertas_op.append(f"{'⚠️' if op_cloraminas > 0.2 else '✅'} **Cloraminas: {op_cloraminas} mg/L**")
-        for a in alertas_op:
-            st.markdown(a)
+            c1, c2 = st.columns(2)
+            with c1:
+                p_ph  = _num_op(f"op_{pisc_slug}_ph",  "pH", "ex: 7.4")
+                p_alc = _num_op(f"op_{pisc_slug}_alc", "Alcalinidade mg/L", "ex: 95",  quinzenal=True)
+                p_dc  = _num_op(f"op_{pisc_slug}_dc",  "Dureza DC mg/L",   "ex: 200", quinzenal=True)
+            with c2:
+                p_crl = _num_op(f"op_{pisc_slug}_crl", "CRL mg/L",            "ex: 1.5")
+                p_ct  = _num_op(f"op_{pisc_slug}_ct",  "Cloro Total CT mg/L", "ex: 1.8")
+                p_cya = _num_op(f"op_{pisc_slug}_cya", "CYA mg/L",            "ex: 40",  quinzenal=True)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+            # Alertas em tempo real
+            for val, mn, mx, rot in [
+                (p_ph, 7.2, 7.8, "pH"), (p_crl, 0.5, 3.0, "CRL"),
+                (p_alc, 80, 120, "Alcalinidade"), (p_dc, 150, 300, "Dureza DC"),
+                (p_cya, 30, 50, "CYA"),
+            ]:
+                v = valor_float(val)
+                if v is not None:
+                    st.markdown(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
 
+            p_cloraminas = None
+            v_crl2 = valor_float(p_crl); v_ct2 = valor_float(p_ct)
+            if v_crl2 is not None and v_ct2 is not None:
+                p_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
+                st.markdown(f"{'⚠️' if p_cloraminas > 0.2 else '✅'} **Cloraminas: {p_cloraminas} mg/L**")
+
+            op_piscinas_dados.append({
+                "nome": pisc_nome,
+                "ph": p_ph, "cloro_livre": p_crl, "cloro_total": p_ct,
+                "cloraminas": str(p_cloraminas) if p_cloraminas is not None else "",
+                "alcalinidade": p_alc, "dureza": p_dc, "cianurico": p_cya,
+            })
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Compatibilidade com código legado (usa dados da primeira piscina)
+        op_ph  = op_piscinas_dados[0]["ph"]        if op_piscinas_dados else ""
+        op_crl = op_piscinas_dados[0]["cloro_livre"] if op_piscinas_dados else ""
+        op_ct  = op_piscinas_dados[0]["cloro_total"] if op_piscinas_dados else ""
+        op_alc = op_piscinas_dados[0]["alcalinidade"] if op_piscinas_dados else ""
+        op_dc  = op_piscinas_dados[0]["dureza"]      if op_piscinas_dados else ""
+        op_cya = op_piscinas_dados[0]["cianurico"]   if op_piscinas_dados else ""
+        op_cloraminas = valor_float(op_piscinas_dados[0]["cloraminas"]) if op_piscinas_dados else None
+
+        # ── Dosagens ──────────────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">⚗️ Dosagens aplicadas</div>', unsafe_allow_html=True)
         op_dosagens = []
@@ -3896,21 +3996,39 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     op_dosagens.append({"produto": prod.strip(), "fabricante_lote": "", "quantidade": qtd.strip(), "unidade": un.strip(), "finalidade": fin.strip()})
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # ── Fotos categorizadas ───────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">📸 Fotos da visita</div>', unsafe_allow_html=True)
-        op_fotos = st.file_uploader("Fotos", type=["jpg","jpeg","png","webp","heic"],
-            accept_multiple_files=True, key="op_fotos_campo", label_visibility="collapsed")
-        if op_fotos:
-            cols_f = st.columns(min(len(op_fotos), 3))
-            for idx_f, foto_f in enumerate(op_fotos):
-                with cols_f[idx_f % 3]:
-                    st.image(foto_f, caption=foto_f.name, use_container_width=True)
+        st.caption("Faça upload de cada foto na categoria correta.")
+
+        op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_antes")
+        op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_depois")
+        op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_cmaq")
+
+        # Preview
+        _todas_fotos_preview = [("Antes", op_fotos_antes), ("Depois", op_fotos_depois), ("Casa máq.", op_fotos_cmaq)]
+        for _cat, _flist in _todas_fotos_preview:
+            if _flist:
+                st.caption(f"**{_cat}:**")
+                _cols = st.columns(min(len(_flist), 3))
+                for _i, _f in enumerate(_flist):
+                    with _cols[_i % 3]:
+                        st.image(_f, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # ── Problemas / Ocorrências ───────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
-        st.markdown('<div class="op-title">📝 Observação</div>', unsafe_allow_html=True)
-        op_obs = st.text_area("Obs", key="op_obs_campo", height=90,
-            label_visibility="collapsed", placeholder="Ex.: água turva, bomba com ruído...")
+        st.markdown('<div class="op-title">⚠️ Problemas / Ocorrências</div>', unsafe_allow_html=True)
+        op_problemas = st.text_area("Problemas", key="op_problemas", height=80,
+            label_visibility="collapsed",
+            placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Observação geral ──────────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">📝 Observação geral</div>', unsafe_allow_html=True)
+        op_obs = st.text_area("Obs", key="op_obs_campo", height=80,
+            label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...")
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -3923,38 +4041,54 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             else:
                 pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
                 pasta_op.mkdir(parents=True, exist_ok=True)
-                fotos_salvas_op = []   # nomes locais
-                fotos_drive_ids = []   # IDs no Google Drive
-                if op_fotos:
-                    pasta_fotos_op = pasta_op / "fotos_campo"
-                    pasta_fotos_op.mkdir(exist_ok=True)
-                    ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    mes_ano = datetime.now().strftime("%Y-%m")
-                    for idx_ff, foto_ff in enumerate(op_fotos, 1):
-                        nome_ff = limpar_nome_arquivo(f"campo_{ts_f}_{idx_ff}_{foto_ff.name}")
+                pasta_fotos_op = pasta_op / "fotos_campo"
+                pasta_fotos_op.mkdir(exist_ok=True)
+                ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mes_ano = datetime.now().strftime("%Y-%m")
+
+                def _salvar_categoria(lista_uploads, categoria):
+                    """Salva fotos de uma categoria localmente e no Drive."""
+                    nomes = []; ids = []
+                    for idx_ff, foto_ff in enumerate(lista_uploads or [], 1):
+                        nome_ff = limpar_nome_arquivo(f"{categoria}_{ts_f}_{idx_ff}_{foto_ff.name}")
                         foto_bytes = foto_ff.getbuffer()
-                        # Salva localmente (fallback)
                         with open(pasta_fotos_op / nome_ff, "wb") as ff:
                             ff.write(foto_bytes)
-                        fotos_salvas_op.append(nome_ff)
-                        # Upload para o Google Drive
+                        nomes.append(nome_ff)
                         drive_id = drive_upload_foto(
                             arquivo_bytes=bytes(foto_bytes),
-                            nome_arquivo=nome_ff,
+                            nome_arquivo=f"{categoria}_{nome_ff}",
                             nome_condominio=op_nome_cond.strip(),
                             mes_ano=mes_ano,
                         )
                         if drive_id:
-                            fotos_drive_ids.append(drive_id)
+                            ids.append(drive_id)
+                    return nomes, ids
+
+                fotos_antes_nomes,  fotos_antes_ids  = _salvar_categoria(op_fotos_antes,  "antes")
+                fotos_depois_nomes, fotos_depois_ids = _salvar_categoria(op_fotos_depois, "depois")
+                fotos_cmaq_nomes,   fotos_cmaq_ids   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
+
+                fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes
+                fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids
+
                 dados_ex = carregar_dados_condominio(pasta_op) or {}
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
                     "cloraminas": str(op_cloraminas) if op_cloraminas is not None else "",
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
+                    "piscinas": op_piscinas_dados,
+                    "problemas": op_problemas.strip(),
                     "observacao": op_obs.strip(), "dosagens": op_dosagens,
                     "fotos": fotos_salvas_op,
+                    "fotos_antes": fotos_antes_nomes,
+                    "fotos_depois": fotos_depois_nomes,
+                    "fotos_cmaq": fotos_cmaq_nomes,
                     "fotos_drive_ids": fotos_drive_ids,
+                    "fotos_antes_ids": fotos_antes_ids,
+                    "fotos_depois_ids": fotos_depois_ids,
+                    "fotos_cmaq_ids": fotos_cmaq_ids,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
