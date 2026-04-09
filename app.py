@@ -4525,9 +4525,11 @@ if pasta_formulario_atual and pasta_formulario_atual.exists():
 # TOPO
 # =========================================
 
-# Logo do topo — muda conforme empresa selecionada
+# Logo do topo — padrão Aqua Gestão, muda só se Bem Star foi explicitamente escolhida
 _empresa_ativa_top = st.session_state.get("empresa_ativa", "aqua_gestao")
-if _empresa_ativa_top == "bem_star":
+_empresa_radio_val  = st.session_state.get("empresa_selecionada", "🔵 Aqua Gestão")
+_topo_bem_star = (_empresa_ativa_top == "bem_star") and ("Bem Star" in str(_empresa_radio_val))
+if _topo_bem_star:
     logo = next((p for p in LOGO_BEM_STAR_CANDIDATOS if p.exists()), None)
 else:
     logo = encontrar_logo()
