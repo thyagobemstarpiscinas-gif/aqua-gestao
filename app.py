@@ -4525,38 +4525,35 @@ if pasta_formulario_atual and pasta_formulario_atual.exists():
 # TOPO
 # =========================================
 
-# Logo do topo — garante padrão Aqua Gestão se ainda não foi escolhida empresa
+# Inicializa empresa como Aqua Gestão se sessão nova
 if "empresa_selecionada" not in st.session_state:
     st.session_state["empresa_selecionada"] = "🔵 Aqua Gestão"
-_radio_empresa_top = st.session_state.get("empresa_selecionada", "🔵 Aqua Gestão")
-if "Bem Star" in str(_radio_empresa_top):
-    logo = next((p for p in LOGO_BEM_STAR_CANDIDATOS if p.exists()), None) or encontrar_logo()
-else:
-    logo = encontrar_logo()
 
-col_top1, col_top2 = st.columns([1, 5])
+logo = encontrar_logo()
 
-with col_top1:
-    if logo:
-        st.image(str(logo), width=150)
-
-with col_top2:
-    st.markdown(
-        f"""
-        <div class="top-card">
-            <div class="top-title">{APP_TITLE}</div>
-            <div class="top-subtitle">
-                Sistema profissional para geração automatizada de contrato e aditivo de RT
+# Topo só aparece fora da tela de entrada
+if st.session_state.get("modo_atual", "entrada") != "entrada":
+    col_top1, col_top2 = st.columns([1, 5])
+    with col_top1:
+        if logo:
+            st.image(str(logo), width=150)
+    with col_top2:
+        st.markdown(
+            f"""
+            <div class="top-card">
+                <div class="top-title">{APP_TITLE}</div>
+                <div class="top-subtitle">
+                    Sistema profissional para geração automatizada de contrato e aditivo de RT
+                </div>
+                <div>
+                    <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
+                    <span class="info-badge">{CRQ}</span>
+                    <span class="info-badge">Windows + Word + DOCX/PDF</span>
+                </div>
             </div>
-            <div>
-                <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
-                <span class="info-badge">{CRQ}</span>
-                <span class="info-badge">Windows + Word + DOCX/PDF</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
 # =========================================
 # SIDEBAR – CONFIG + HISTÓRICO
