@@ -900,11 +900,6 @@ EMPRESA_RT = "Aqua Gestão – Controle Técnico de Piscinas"
 EMPRESA_BEM_STAR     = "Bem Star Piscinas"
 CNPJ_BEM_STAR        = "26.799.958/0001-88"
 ENDERECO_BEM_STAR    = "Avenida Getúlio Vargas, 4411 — CEP 38.412-316 — Uberlândia/MG"
-LOGO_BEM_STAR_CANDIDATOS = [
-    BASE_DIR / "bem_star_logo.png",
-    BASE_DIR / "bem_star_logo.jpg",
-    BASE_DIR / "assets" / "bem_star_logo.png",
-]
 
 # ── Texto RT para relatório sem RT ──────────────────────────────────────────
 TEXTO_RT_SEM_RT = """SOBRE RESPONSABILIDADE TÉCNICA (RT)
@@ -923,6 +918,12 @@ Aqua Gestão – Controle Técnico de Piscinas"""
 
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "generated"
+
+LOGO_BEM_STAR_CANDIDATOS = [
+    BASE_DIR / "bem_star_logo.png",
+    BASE_DIR / "bem_star_logo.jpg",
+    BASE_DIR / "assets" / "bem_star_logo.png",
+]
 TEMPLATE_CONTRATO = BASE_DIR / "template.docx"
 TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
