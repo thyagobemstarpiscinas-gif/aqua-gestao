@@ -1203,7 +1203,7 @@ def encontrar_logo() -> Path | None:
             if pasta.exists():
                 encontrados = list(pasta.glob(extensao))
                 for arq in encontrados:
-                    if "logo" in arq.name.lower():
+                    if "logo" in arq.name.lower() and "bem_star" not in arq.name.lower():
                         return arq
     return None
 
