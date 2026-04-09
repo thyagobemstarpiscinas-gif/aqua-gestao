@@ -567,7 +567,7 @@ def salvar_operadores(lista: list):
 
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global 5010 (acesso total)."""
+    Também aceita PIN global 2940 (acesso total)."""
     # PIN global continua funcionando — acesso total
     if pin == PIN_OPERADOR:
         return {"nome": "Operador", "pin": pin, "condomínios": ["TODOS"], "acesso_total": True}
@@ -1234,6 +1234,23 @@ def logo_para_base64(path) -> str:
         return f"data:image/{mime};base64,{dados}"
     except Exception:
         return ""
+
+
+def buscar_cep(cep: str) -> dict:
+    """Consulta ViaCEP e retorna dict com logradouro, bairro, localidade, uf ou {} em caso de erro."""
+    try:
+        import urllib.request, json
+        cep_limpo = re.sub(r"\D", "", cep or "")
+        if len(cep_limpo) != 8:
+            return {}
+        url = f"https://viacep.com.br/ws/{cep_limpo}/json/"
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            dados = json.loads(resp.read().decode())
+        if dados.get("erro"):
+            return {}
+        return dados
+    except Exception:
+        return {}
 
 
 def slugify_nome(texto: str) -> str:
@@ -2371,6 +2388,116 @@ def montar_mensagem_envio(
     ]
 
     return "\n".join(partes)
+
+
+def montar_mensagem_bem_star(
+    nome_local: str,
+    responsavel: str,
+    tipo: str = "contrato",          # "contrato" | "relatorio" | "ambos"
+    mes: str = "",
+    ano: str = "",
+) -> str:
+    """Monta mensagem de envio com identidade Bem Star Piscinas."""
+    saudacao = f"Prezado(a) {responsavel}," if responsavel else "Prezado(a),"
+    partes = [saudacao, ""]
+
+    if tipo == "contrato":
+        partes += [
+            f"Segue em anexo o contrato de prestação de serviços de limpeza e manutenção "
+            f"de piscinas referente a {nome_local}.",
+            "",
+            "Por favor, verifique as condições acordadas e, havendo qualquer dúvida, "
+            "estamos à disposição para esclarecimentos.",
+        ]
+    elif tipo == "relatorio":
+        periodo = f" — {mes}/{ano}" if mes and ano else ""
+        partes += [
+            f"Segue em anexo o relatório técnico-operacional de piscinas{periodo} "
+            f"referente a {nome_local}.",
+            "",
+            "O documento registra os parâmetros analisados, produtos aplicados, "
+            "dosagens e observações das visitas realizadas no período.",
+        ]
+    else:  # ambos
+        partes += [
+            f"Segue em anexo a documentação referente a {nome_local}:",
+            "",
+            "— Contrato de prestação de serviços",
+            "— Relatório técnico-operacional de piscinas",
+        ]
+
+    partes += [
+        "",
+        "Permanecemos à disposição para quaisquer esclarecimentos.",
+        "",
+        "Atenciosamente,",
+        "Bem Star Piscinas",
+        f"CNPJ: {CNPJ_BEM_STAR}",
+        "Av. Getúlio Vargas, 4411 — Uberlândia/MG",
+        "(34) 9 9999-9999",
+    ]
+    return "
+".join(partes)
+
+
+def exibir_bloco_envio_bem_star(
+    nome_local: str,
+    pasta: Path,
+    telefone: str,
+    email: str,
+    mensagem: str,
+    key_suffix: str = "",
+):
+    """Bloco de envio com identidade Bem Star (WhatsApp + email + copiar)."""
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("📤 Enviar para o cliente")
+
+    # Editor da mensagem
+    msg_editada = st.text_area(
+        "Mensagem",
+        value=mensagem,
+        height=200,
+        key=f"bs_msg_envio_{key_suffix}",
+        label_visibility="collapsed",
+    )
+    componente_copiar(msg_editada)
+
+    _ec1, _ec2, _ec3 = st.columns(3)
+    with _ec1:
+        _tel = (telefone or "").strip()
+        if _tel:
+            _url_wa = link_whatsapp(_tel, msg_editada)
+            st.link_button("💬 Abrir WhatsApp", _url_wa, use_container_width=True)
+        else:
+            st.text_input("WhatsApp", placeholder="(34) 99999-9999",
+                key=f"bs_tel_envio_{key_suffix}")
+            _tel2 = st.session_state.get(f"bs_tel_envio_{key_suffix}", "").strip()
+            if _tel2:
+                st.link_button("💬 Abrir WhatsApp",
+                    link_whatsapp(_tel2, msg_editada), use_container_width=True)
+
+    with _ec2:
+        _eml = (email or "").strip()
+        if _eml:
+            _assunto = f"Documentação Bem Star Piscinas – {nome_local}"
+            _url_mail = link_email(_eml, _assunto, msg_editada)
+            st.link_button("✉️ Abrir e-mail", _url_mail, use_container_width=True)
+        else:
+            st.text_input("E-mail", placeholder="email@cliente.com.br",
+                key=f"bs_email_envio_{key_suffix}")
+            _eml2 = st.session_state.get(f"bs_email_envio_{key_suffix}", "").strip()
+            if _eml2:
+                _assunto = f"Documentação Bem Star Piscinas – {nome_local}"
+                st.link_button("✉️ Abrir e-mail",
+                    link_email(_eml2, _assunto, msg_editada), use_container_width=True)
+
+    with _ec3:
+        if pasta and pasta.exists():
+            if st.button("📁 Abrir pasta", key=f"bs_pasta_{key_suffix}",
+                    use_container_width=True):
+                abrir_pasta_windows(pasta)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def link_whatsapp(telefone: str, mensagem: str) -> str:
@@ -3903,32 +4030,80 @@ def gerar_relatorio_visita_docx(
             return p
 
         def _tabela_info(dados: list):
-            """Cria tabela de 2 colunas com rótulo → valor."""
+            """Cria tabela de 2 colunas com rótulo → valor, com estilo visual."""
+            from docx.oxml.ns import qn
+            from docx.oxml import OxmlElement
             t = doc.add_table(rows=len(dados), cols=2)
             t.style = "Table Grid"
+            # Largura das colunas
+            for row in t.rows:
+                row.cells[0].width = __import__("docx.shared", fromlist=["Cm"]).Cm(5)
+                row.cells[1].width = __import__("docx.shared", fromlist=["Cm"]).Cm(12)
             for i, (rot, val) in enumerate(dados):
-                t.cell(i,0).paragraphs[0].add_run(rot).bold = True
-                t.cell(i,0).paragraphs[0].runs[0].font.size = Pt(10)
-                t.cell(i,1).paragraphs[0].add_run(str(val or "—"))
-                t.cell(i,1).paragraphs[0].runs[0].font.size = Pt(10)
+                c0 = t.cell(i, 0)
+                c1 = t.cell(i, 1)
+                # Fundo azul claro na coluna de rótulos
+                tc_pr = c0._tc.get_or_add_tcPr()
+                shd = OxmlElement("w:shd")
+                shd.set(qn("w:val"), "clear")
+                shd.set(qn("w:color"), "auto")
+                shd.set(qn("w:fill"), "EEF3FB")
+                tc_pr.append(shd)
+                r0 = c0.paragraphs[0].add_run(rot)
+                r0.bold = True
+                r0.font.size = Pt(10)
+                r1 = c1.paragraphs[0].add_run(str(val or "—"))
+                r1.font.size = Pt(10)
+                # Padding
+                for cell in [c0, c1]:
+                    tc = cell._tc.get_or_add_tcPr()
+                    tcMar = OxmlElement("w:tcMar")
+                    for side in ["top","bottom","left","right"]:
+                        m = OxmlElement(f"w:{side}")
+                        m.set(qn("w:w"), "80")
+                        m.set(qn("w:type"), "dxa")
+                        tcMar.append(m)
+                    tc.append(tcMar)
             doc.add_paragraph()
 
         # ── CABEÇALHO ─────────────────────────────────────────────────────────
-        _par("AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
         if incluir_rt:
+            _par("AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
             _par(f"Responsável Técnico: {RESPONSAVEL_TÉCNICO} | {CRQ}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
             _par(f"{QUALIFICACAO_RT} | Certificações: {CERTIFICACOES_RT}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
         else:
-            _par("Relatório Técnico de Visitas", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+            # Cabeçalho Bem Star com logo
+            _logo_bs_hdr = encontrar_logo_bem_star()
+            if _logo_bs_hdr and _logo_bs_hdr.exists():
+                try:
+                    p_hdr_logo = doc.add_paragraph()
+                    p_hdr_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_hdr_logo.add_run().add_picture(str(_logo_bs_hdr), width=Inches(3.2))
+                except Exception:
+                    _par("BEM STAR PISCINAS", bold=True, size=14, align=WD_ALIGN_PARAGRAPH.CENTER)
+            else:
+                _par("BEM STAR PISCINAS", bold=True, size=14, align=WD_ALIGN_PARAGRAPH.CENTER)
+            _par("RELATÓRIO TÉCNICO-OPERACIONAL DE PISCINAS", bold=True, size=11, align=WD_ALIGN_PARAGRAPH.CENTER)
+            _par(f"CNPJ: {CNPJ_BEM_STAR}  |  Uberlândia/MG", size=9, align=WD_ALIGN_PARAGRAPH.CENTER)
+            # Linha separadora visual
+            p_linha = doc.add_paragraph()
+            p_linha.paragraph_format.space_after = Pt(2)
+            p_linha.add_run("─" * 72).font.color.rgb = __import__("docx.shared", fromlist=["RGBColor"]).RGBColor(0x0d, 0x3d, 0x75)
         doc.add_paragraph()
 
         # ── IDENTIFICAÇÃO ─────────────────────────────────────────────────────
         _par("1. IDENTIFICAÇÃO DO LOCAL", bold=True, size=11)
+        # Coleta responsáveis no local das visitas (se disponível)
+        _resps_locais = list(dict.fromkeys(
+            lc.get("resp_local","") for lc in lancamentos if lc.get("resp_local","").strip()
+        ))
+        _resp_local_txt = " / ".join(_resps_locais) if _resps_locais else responsavel or "Não informado"
         _tabela_info([
             ("Local / Condomínio", nome_local),
             ("CNPJ", cnpj or "Não informado"),
             ("Endereço", endereco or "Não informado"),
             ("Responsável / Síndico", responsavel or "Não informado"),
+            ("Responsável no local", _resp_local_txt),
             ("Operador de campo", operador or "Não informado"),
             ("Período de referência", f"{mes}/{ano}"),
         ])
@@ -3940,19 +4115,39 @@ def gerar_relatorio_visita_docx(
         t_anal = doc.add_table(rows=1 + len(lancamentos), cols=len(cabecalho))
         t_anal.style = "Table Grid"
 
-        # Cabeçalho
+        # Estilo header e zebra
+        from docx.oxml.ns import qn as _qn
+        from docx.oxml import OxmlElement as _OXE
+        def _shd_cell(cell, fill_hex):
+            tc_pr = cell._tc.get_or_add_tcPr()
+            shd = _OXE("w:shd")
+            shd.set(_qn("w:val"), "clear")
+            shd.set(_qn("w:color"), "auto")
+            shd.set(_qn("w:fill"), fill_hex)
+            tc_pr.append(shd)
+
+        # Cabeçalho com fundo azul
+        from docx.oxml.ns import qn as _qn2
+        from docx.oxml import OxmlElement as _OXE2
+        from docx.shared import RGBColor as _RGB
+
+        def _shd(cell, fill):
+            tc = cell._tc.get_or_add_tcPr()
+            s = _OXE2("w:shd")
+            s.set(_qn2("w:val"), "clear"); s.set(_qn2("w:color"), "auto")
+            s.set(_qn2("w:fill"), fill); tc.append(s)
+
         for j, cab in enumerate(cabecalho):
             cell = t_anal.cell(0, j)
-            cell.paragraphs[0].add_run(cab).bold = True
-            cell.paragraphs[0].runs[0].font.size = Pt(9)
+            r = cell.paragraphs[0].add_run(cab)
+            r.bold = True; r.font.size = Pt(9)
+            r.font.color.rgb = _RGB(0xFF,0xFF,0xFF)
+            _shd(cell, "0D3D75")
 
-        # Dados
+        # Dados com zebra
         for i, lc in enumerate(lancamentos):
             piscinas = lc.get("piscinas", [])
-            if piscinas:
-                lc_d = piscinas[0]
-            else:
-                lc_d = lc
+            lc_d = piscinas[0] if piscinas else lc
             valores = [
                 lc.get("data",""),
                 lc_d.get("ph", lc.get("ph","")),
@@ -3963,10 +4158,12 @@ def gerar_relatorio_visita_docx(
                 lc_d.get("cianurico", lc.get("cianurico","")),
                 lc.get("operador",""),
             ]
+            _fill = "EEF3FB" if i % 2 == 0 else "FFFFFF"
             for j, val in enumerate(valores):
                 cell = t_anal.cell(i+1, j)
                 cell.paragraphs[0].add_run(str(val or "—"))
                 cell.paragraphs[0].runs[0].font.size = Pt(9)
+                _shd(cell, _fill)
 
         doc.add_paragraph()
 
@@ -4011,9 +4208,15 @@ def gerar_relatorio_visita_docx(
         if todas_dosagens:
             t_dos = doc.add_table(rows=1 + len(todas_dosagens), cols=5)
             t_dos.style = "Table Grid"
-            for j, cab in enumerate(["Data", "Produto", "Quantidade", "Unidade", "Finalidade"]):
-                t_dos.cell(0,j).paragraphs[0].add_run(cab).bold = True
-                t_dos.cell(0,j).paragraphs[0].runs[0].font.size = Pt(9)
+            for j, cab in enumerate(["Data", "Produto", "Qtd.", "Unidade", "Finalidade / Motivo"]):
+                _c = t_dos.cell(0,j)
+                _r = _c.paragraphs[0].add_run(cab)
+                _r.bold = True; _r.font.size = Pt(9)
+                try:
+                    _r.font.color.rgb = _RGB(0xFF,0xFF,0xFF)
+                    _shd(_c, "0D3D75")
+                except Exception:
+                    pass
             for i, d in enumerate(todas_dosagens):
                 for j, val in enumerate([
                     d.get("data",""), d.get("produto",""),
@@ -4066,6 +4269,22 @@ def gerar_relatorio_visita_docx(
             secao_aviso = secao_fotos + 1
         else:
             secao_aviso = secao_fotos
+
+        # ── PARECER TÉCNICO ───────────────────────────────────────────────────
+        _pareceres = [lc.get("parecer","") for lc in lancamentos if lc.get("parecer","").strip()]
+        if _pareceres:
+            _par(f"{secao_aviso}. PARECER TÉCNICO-OPERACIONAL", bold=True, size=11)
+            # Parecer da última visita
+            _parecer_final = _pareceres[-1]
+            _cor_parecer = "#1a7a1a" if "Satisfatório" in _parecer_final else (
+                "#b86800" if "Aceitável" in _parecer_final else "#aa0000")
+            doc.add_paragraph()
+            _p_parecer = doc.add_paragraph()
+            _r_parecer = _p_parecer.add_run(f"Parecer da última visita: {_parecer_final}")
+            _r_parecer.font.size = Pt(11)
+            _r_parecer.bold = True
+            doc.add_paragraph()
+            secao_aviso += 1
 
         # ── AVISO LEGAL ───────────────────────────────────────────────────────
         _par(f"{secao_aviso}. AVISO LEGAL E GUARDA DOCUMENTAL", bold=True, size=10)
@@ -4772,7 +4991,7 @@ with st.sidebar:
 # =========================================
 
 # PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "5010"
+PIN_OPERADOR = "2940"
 
 # Inicializa o modo se não estiver definido
 if "modo_atual" not in st.session_state:
@@ -4853,6 +5072,16 @@ if _modo_interno == "entrada":
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
+
+
+# CSS dinâmico: oculta seções Aqua Gestão quando empresa Bem Star está ativa
+_empresa_css_flag = st.session_state.get("empresa_ativa", "aqua_gestao")
+if _empresa_css_flag == "bem_star":
+    st.markdown("""
+    <style>
+    div.aq-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # Alias para compatibilidade
 modo = "Modo Escritório" if _modo_interno == "escritorio" else (
@@ -5110,6 +5339,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.session_state[f"op_dos_{s}_{i}"] = ""
             st.session_state["op_obs_campo"] = ""
             st.session_state["op_problemas"] = ""
+            st.session_state["op_resp_local"] = ""
+            st.session_state["op_parecer_visita"] = "✅ Satisfatório"
 
         def _num_op(chave, label, placeholder, quinzenal=False):
             lbl = f"{label} ⏱ 15d" if quinzenal else label
@@ -5303,6 +5534,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...")
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # ── Responsável no local ──────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">👤 Responsável no local</div>', unsafe_allow_html=True)
+        op_resp_local = st.text_input("Responsável no local", key="op_resp_local",
+            label_visibility="collapsed",
+            placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Parecer da visita ─────────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">✅ Parecer da visita</div>', unsafe_allow_html=True)
+        op_parecer = st.radio(
+            "Parecer",
+            ["✅ Satisfatório", "⚠️ Aceitável com ajustes pontuais", "❌ Insatisfatório"],
+            key="op_parecer_visita",
+            label_visibility="collapsed",
+            horizontal=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         if st.button("💾 Salvar lançamento", type="primary", use_container_width=True):
             data_vis = (st.session_state.get("op_data_visita") or "").strip()
@@ -5374,6 +5625,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "piscinas": op_piscinas_dados,
                     "problemas": op_problemas.strip(),
                     "observacao": op_obs.strip(), "dosagens": op_dosagens,
+                    "resp_local": (st.session_state.get("op_resp_local") or "").strip(),
+                    "parecer": st.session_state.get("op_parecer_visita", "✅ Satisfatório"),
                     "fotos": fotos_salvas_op,
                     "fotos_antes": fotos_antes_nomes,
                     "fotos_depois": fotos_depois_nomes,
@@ -5625,15 +5878,36 @@ if ops_cadastrados:
     for op in ops_cadastrados:
         conds_txt = ", ".join(op.get("condomínios", [])) or "Todos"
         status = "🟢 Ativo" if op.get("ativo") else "🔴 Inativo"
-        with st.expander(f"{status} — {op['nome']} | PIN: {op['pin'][:2]}{'*' * (len(op['pin'])-2)}"):
+        _pin_raw = op["pin"]
+        _pin_mask = f"{_pin_raw[:2]}{'*' * (len(_pin_raw)-2)}"
+        with st.expander(f"{status} — {op['nome']} | PIN: {_pin_mask}"):
             st.write(f"**Condomínios:** {conds_txt}")
+
+            # Revelar / ocultar PIN
+            _key_rev = f"revelar_pin_{op['nome']}"
+            _revelado = st.session_state.get(_key_rev, False)
+            _col_pin1, _col_pin2 = st.columns([2, 1])
+            with _col_pin1:
+                if _revelado:
+                    st.info(f"🔑 PIN: **{_pin_raw}**")
+                else:
+                    st.caption(f"PIN: {_pin_mask}")
+            with _col_pin2:
+                if st.button(
+                    "👁 Ocultar" if _revelado else "👁 Revelar PIN",
+                    key=f"btn_rev_{op['nome']}",
+                    use_container_width=True,
+                ):
+                    st.session_state[_key_rev] = not _revelado
+                    st.rerun()
+
             if st.button(f"🗑 Remover {op['nome']}", key=f"del_op_{op['nome']}"):
                 if sheets_deletar_operador(op["nome"]):
                     st.success(f"Operador '{op['nome']}' removido.")
                     st.cache_data.clear()
                     st.rerun()
 else:
-    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 5010 continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 2940 continua funcionando como acesso geral.")
 
 with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadastrados)):
     # Carrega lista de clientes para selecionar condomínios
@@ -5646,7 +5920,7 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
     with op_col1:
         op_nome_novo = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
         op_pin_novo  = st.text_input("PIN exclusivo *", key="op_novo_pin", placeholder="Ex.: 1234", max_chars=10,
-            help="Mínimo 4 caracteres. Não use 5010 (reservado para acesso geral).")
+            help="Mínimo 4 caracteres. Não use 2940 (reservado para acesso geral).")
     with op_col2:
         op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
         op_acesso_total_novo = st.checkbox("Acesso a todos os condomínios", value=False, key="op_novo_acesso_total")
@@ -5666,8 +5940,8 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
             st.error("Informe o nome do operador.")
         elif not op_pin_novo.strip() or len(op_pin_novo.strip()) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif op_pin_novo.strip() == "5010":
-            st.error("O PIN 5010 é reservado para acesso geral. Escolha outro.")
+        elif op_pin_novo.strip() == "2940":
+            st.error("O PIN 2940 é reservado para acesso geral. Escolha outro.")
         else:
             with st.spinner("Salvando operador..."):
                 ok_op = sheets_salvar_operador(
@@ -5744,7 +6018,7 @@ else:
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
-    for k in ["cc_nome","cc_cnpj","cc_endereco","cc_contato","cc_telefone",
+    for k in ["cc_nome","cc_cnpj","cc_cep","cc_endereco","cc_contato","cc_telefone",
               "cc_vol_adulto","cc_vol_infantil","cc_vol_family"]:
         st.session_state[k] = ""
 
@@ -5765,6 +6039,7 @@ if _cc_modo == "✏️ Editar cliente existente":
         if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
             st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
+            st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
@@ -5785,6 +6060,33 @@ def _mask_cc_telefone():
 cc1, cc2 = st.columns(2)
 with cc1:
     cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+    # CEP com busca automática ViaCEP
+    _cep_col1, _cep_col2 = st.columns([3, 1])
+    with _cep_col1:
+        cc_cep = st.text_input("CEP", key="cc_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _cep_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_cep = st.button("🔍", key="btn_buscar_cep", help="Buscar CEP")
+    if _btn_cep:
+        _cep_valor = re.sub(r"\D", "", st.session_state.get("cc_cep", ""))
+        if len(_cep_valor) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dados_cep = buscar_cep(_cep_valor)
+            if _dados_cep:
+                _logradouro = _dados_cep.get("logradouro", "")
+                _bairro     = _dados_cep.get("bairro", "")
+                _cidade     = _dados_cep.get("localidade", "")
+                _uf         = _dados_cep.get("uf", "")
+                _cep_fmt    = f"{_cep_valor[:5]}-{_cep_valor[5:]}"
+                _end_auto   = ", ".join(p for p in [_logradouro, _bairro, f"{_cidade}/{_uf}", _cep_fmt] if p)
+                st.session_state["cc_endereco"] = _end_auto
+                st.session_state["cc_cep"] = _cep_fmt
+                st.success(f"✅ {_cidade}/{_uf} — {_logradouro}")
+            else:
+                st.error("CEP não encontrado. Verifique e tente novamente.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
     cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
 with cc2:
     cc_cnpj     = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
@@ -6184,6 +6486,27 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
     csr1, csr2 = st.columns(2)
     with csr1:
         csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+        _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
+        with _csr_cep_c1:
+            st.text_input("CEP", key="csr_cep", placeholder="00000-000",
+                help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+        with _csr_cep_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _btn_csr_cep = st.button("🔍", key="btn_buscar_cep_csr", help="Buscar CEP")
+        if _btn_csr_cep:
+            _cep_v = re.sub(r"\D", "", st.session_state.get("csr_cep", ""))
+            if len(_cep_v) == 8:
+                with st.spinner("Buscando CEP..."):
+                    _dc = buscar_cep(_cep_v)
+                if _dc:
+                    _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                    st.session_state["csr_endereco"] = _end
+                    st.session_state["csr_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                    st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+                else:
+                    st.error("CEP não encontrado.")
+            else:
+                st.warning("Digite um CEP válido com 8 dígitos.")
         csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
     with csr2:
         csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
@@ -6232,7 +6555,7 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
 
 # ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
 st.markdown("---")
-st.markdown("**Gerar relatório técnico simples (sem RT)**")
+st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
 
 clientes_sem_rt_reload = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
 opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
@@ -6244,255 +6567,585 @@ else:
     with rts1:
         csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
     with rts2:
-        csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder="04")
+        csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
     with rts3:
-        csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder="2026")
+        csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
 
     csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
 
-    # Carrega lançamentos de campo do cliente selecionado
+    # ── Busca lançamentos: JSON local + Google Sheets ──────────────────────
     pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
-    lancamentos_csr = []
+    _lanc_local_csr = []
     if pasta_csr_sel and pasta_csr_sel.exists():
-        dados_csr_json = carregar_dados_condominio(pasta_csr_sel)
-        lancamentos_csr = (dados_csr_json or {}).get("lancamentos_campo", [])
+        _dados_json_csr = carregar_dados_condominio(pasta_csr_sel)
+        _lanc_local_csr = (_dados_json_csr or {}).get("lancamentos_campo", [])
 
+    _lanc_sheets_csr = []
+    if csr_sel:
+        try:
+            _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+        except Exception:
+            _lanc_sheets_csr = []
+
+    # Deduplica local + Sheets
+    _vistos_csr = set()
+    _lanc_todos_csr = []
+    for _lc in _lanc_local_csr + _lanc_sheets_csr:
+        _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
+        if _ch not in _vistos_csr:
+            _vistos_csr.add(_ch)
+            _lanc_todos_csr.append(_lc)
+
+    # Filtra por mês/ano
+    def _filtrar_mes_csr(lancamentos, mes, ano):
+        if not mes or not ano:
+            return lancamentos
+        filtrados = []
+        for lc in lancamentos:
+            data = lc.get("data", "")
+            try:
+                if "/" in data:
+                    p = data.split("/")
+                    if len(p) == 3 and p[1] == mes.zfill(2) and p[2] == ano:
+                        filtrados.append(lc)
+                elif "-" in data:
+                    p = data.split("-")
+                    if len(p) == 3 and p[1] == mes.zfill(2) and p[0] == ano:
+                        filtrados.append(lc)
+            except Exception:
+                filtrados.append(lc)
+        return filtrados if filtrados else lancamentos
+
+    _mes_csr  = (csr_mes or "").strip()
+    _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
+    lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
+
+    # ── Painel de lançamentos disponíveis ────────────────────────────────
     if lancamentos_csr:
-        st.markdown(f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:10px;padding:10px;background:rgba(20,120,60,0.07);'>"
-            f"📱 <strong>{len(lancamentos_csr)} lançamento(s) de campo disponível(is)</strong> — "
-            f"período: {lancamentos_csr[0].get('data','?')} a {lancamentos_csr[-1].get('data','?')}</div>",
-            unsafe_allow_html=True)
+        _fonte_csr = "📱 local + Sheets" if _lanc_sheets_csr else "📱 local"
+        _periodo_csr = f"{lancamentos_csr[0].get('data','?')} → {lancamentos_csr[-1].get('data','?')}"
+        st.markdown(
+            f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;"
+            f"background:rgba(20,120,60,0.07);margin-bottom:12px;'>"
+            f"<strong>📱 {len(lancamentos_csr)} lançamento(s) encontrado(s) — {_fonte_csr}</strong><br>"
+            f"<span style='font-size:0.85rem;color:#3a6a3a;'>Período: {_periodo_csr}</span></div>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("👁 Ver lançamentos"):
+            for _lc in lancamentos_csr:
+                st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
+    else:
+        st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
 
     csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
-    csr_obs_geral = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
+    csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
         placeholder="Condições gerais da piscina, ocorrências, recomendações...")
 
-    if st.button("📄 Gerar relatório técnico simples", type="primary", use_container_width=True):
-        if not csr_sel or not csr_mes.strip() or not csr_ano.strip():
+    # ── Coleta fotos das visitas ─────────────────────────────────────────
+    pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+    fotos_csr = []
+    if pasta_fotos_csr and pasta_fotos_csr.exists():
+        for _lc in lancamentos_csr:
+            for _nf in _lc.get("fotos", []):
+                _pf = pasta_fotos_csr / _nf
+                if _pf.exists():
+                    fotos_csr.append((_lc.get("data",""), _pf))
+
+    if fotos_csr:
+        st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
+
+    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+        if not csr_sel or not _mes_csr or not _ano_csr:
             st.error("Selecione o cliente, mês e ano.")
         else:
             try:
-                from docx import Document as DocxDoc
-                from docx.shared import Pt, Cm, Inches
-                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                # Monta lista de lançamentos no formato esperado pela função
+                _lanc_para_relatorio = []
+                for _lc in lancamentos_csr:
+                    piscinas = _lc.get("piscinas", [])
+                    if piscinas:
+                        _dados = piscinas[0]
+                    else:
+                        _dados = _lc
+                    _lanc_para_relatorio.append({
+                        "data":         _lc.get("data", ""),
+                        "ph":           _dados.get("ph", _lc.get("ph", "")),
+                        "cloro_livre":  _dados.get("cloro_livre", _lc.get("cloro_livre", "")),
+                        "cloro_total":  _dados.get("cloro_total", _lc.get("cloro_total", "")),
+                        "alcalinidade": _dados.get("alcalinidade", _lc.get("alcalinidade", "")),
+                        "dureza":       _dados.get("dureza", _lc.get("dureza", "")),
+                        "cianurico":    _dados.get("cianurico", _lc.get("cianurico", "")),
+                        "operador":     _lc.get("operador", csr_operador_nome),
+                        "observacao":   _lc.get("observacao", ""),
+                        "problemas":    _lc.get("problemas", ""),
+                        "dosagens":     _dados.get("dosagens", _lc.get("dosagens", [])),
+                    })
 
-                doc_rt = DocxDoc()
+                # Concatena observações e problemas
+                _obs_lista = []
+                for _lc in lancamentos_csr:
+                    if (_lc.get("problemas") or "").strip():
+                        _obs_lista.append(f"[{_lc.get('data','')}] ⚠️ {_lc['problemas']}")
+                    if (_lc.get("observacao") or "").strip():
+                        _obs_lista.append(f"[{_lc.get('data','')}] {_lc['observacao']}")
+                _obs_final = csr_obs_geral.strip()
+                if _obs_lista:
+                    _obs_final = (_obs_final + "\n" if _obs_final else "") + "\n".join(_obs_lista[:10])
 
-                for section in doc_rt.sections:
-                    section.top_margin = Cm(2)
-                    section.bottom_margin = Cm(2)
-                    section.left_margin = Cm(2.5)
-                    section.right_margin = Cm(2.5)
-
-                def add_par(doc, texto, bold=False, size=11, align=None):
-                    p = doc.add_paragraph()
-                    if align:
-                        p.alignment = align
-                    run = p.add_run(texto)
-                    run.bold = bold
-                    run.font.size = Pt(size)
-                    return p
-
-                # ── Cabeçalho ──
-                add_par(doc_rt, "AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
-                add_par(doc_rt, "RELATÓRIO TÉCNICO DE QUALIDADE DA ÁGUA", bold=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
-                add_par(doc_rt, f"Mês de Referência: {csr_mes.strip()}/{csr_ano.strip()}  |  Emissão: {hoje_br()}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
-                doc_rt.add_paragraph()
-
-                # ── 1. Identificação ──
-                add_par(doc_rt, "1. IDENTIFICAÇÃO DO LOCAL", bold=True, size=11)
-                tab_id = doc_rt.add_table(rows=5, cols=2)
-                tab_id.autofit = True
-                dados_id = [
-                    ("Local / Condomínio", csr_dados_sel.get("nome", csr_sel)),
-                    ("CNPJ", csr_dados_sel.get("cnpj", "Não informado") or "Não informado"),
-                    ("Endereço", csr_dados_sel.get("endereco", "Não informado") or "Não informado"),
-                    ("Responsável", csr_dados_sel.get("contato", "Não informado") or "Não informado"),
-                    ("Operador de campo", csr_operador_nome or "Não informado"),
-                ]
-                for i, (k, v) in enumerate(dados_id):
-                    tab_id.cell(i, 0).text = k
-                    tab_id.cell(i, 1).text = v
-                    tab_id.cell(i, 0).paragraphs[0].runs[0].bold = True
-                doc_rt.add_paragraph()
-
-                # ── 2. Base normativa ──
-                add_par(doc_rt, "2. BASE NORMATIVA E FAIXAS DE REFERÊNCIA", bold=True, size=11)
-                normas_texto = (
-                    "As análises físico-químicas registradas neste relatório seguem as faixas operacionais "
-                    "estabelecidas pela ABNT NBR 10339 (Piscinas — Projeto, execução e manutenção), "
-                    "com referência complementar à Portaria GM/MS nº 888/2021 (padrão sanitário de água). "
-                    "Os procedimentos de segurança química observam a NR-26 (Sinalização de Segurança) "
-                    "e NR-6 (Equipamentos de Proteção Individual — EPI)."
-                )
-                p_normas = doc_rt.add_paragraph()
-                p_normas.add_run(normas_texto).font.size = Pt(10)
-
-                # Tabela de faixas de referência
-                faixas_header = ["Parâmetro", "Unidade", "Faixa Mínima", "Faixa Máxima", "Referência"]
-                faixas_data = [
-                    ["pH", "—", "7,2", "7,8", "ABNT NBR 10339"],
-                    ["Cloro Residual Livre (CRL)", "mg/L", "0,5", "3,0", "ABNT NBR 10339"],
-                    ["Cloro Total (CT)", "mg/L", "—", "CRL + 0,5", "ABNT NBR 10339"],
-                    ["Alcalinidade Total", "mg/L", "80", "120", "ABNT NBR 10339"],
-                    ["Dureza Cálcica (DC)", "mg/L", "150", "300", "ABNT NBR 10339"],
-                    ["Ácido Cianúrico (CYA)", "mg/L", "30", "50", "ABNT NBR 10339"],
-                ]
-                tab_faixas = doc_rt.add_table(rows=1 + len(faixas_data), cols=5)
-                tab_faixas.style = "Table Grid"
-                for j, h in enumerate(faixas_header):
-                    c = tab_faixas.cell(0, j)
-                    c.text = h
-                    c.paragraphs[0].runs[0].bold = True
-                    c.paragraphs[0].runs[0].font.size = Pt(9)
-                for i, row in enumerate(faixas_data, 1):
-                    for j, v in enumerate(row):
-                        tab_faixas.cell(i, j).text = v
-                        tab_faixas.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
-                doc_rt.add_paragraph()
-
-                # ── 3. Análises ──
-                add_par(doc_rt, "3. ANÁLISES FÍSICO-QUÍMICAS REGISTRADAS", bold=True, size=11)
-                if lancamentos_csr:
-                    headers_an = ["Data", "pH", "CRL", "CT", "Alc.", "DC", "CYA", "Operador"]
-                    tab_an = doc_rt.add_table(rows=1 + len(lancamentos_csr), cols=len(headers_an))
-                    tab_an.style = "Table Grid"
-                    for j, h in enumerate(headers_an):
-                        c = tab_an.cell(0, j)
-                        c.text = h
-                        c.paragraphs[0].runs[0].bold = True
-                        c.paragraphs[0].runs[0].font.size = Pt(9)
-                    for i, lc in enumerate(lancamentos_csr, 1):
-                        vals = [lc.get("data",""), lc.get("ph",""), lc.get("cloro_livre",""),
-                                lc.get("cloro_total",""), lc.get("alcalinidade",""),
-                                lc.get("dureza",""), lc.get("cianurico",""), lc.get("operador","")]
-                        for j, v in enumerate(vals):
-                            tab_an.cell(i, j).text = str(v)
-                            tab_an.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
-                else:
-                    add_par(doc_rt, "Nenhuma análise registrada neste período.", size=10)
-                doc_rt.add_paragraph()
-
-                # ── 4. Dosagens ──
-                add_par(doc_rt, "4. DOSAGENS DE PRODUTOS QUÍMICOS", bold=True, size=11)
-                todas_dosagens = []
-                for lc in lancamentos_csr:
-                    for d in lc.get("dosagens", []):
-                        if d.get("produto") and d["produto"] not in [x.get("produto") for x in todas_dosagens]:
-                            todas_dosagens.append(d)
-                if todas_dosagens:
-                    tab_dos = doc_rt.add_table(rows=1 + len(todas_dosagens), cols=4)
-                    tab_dos.style = "Table Grid"
-                    for j, h in enumerate(["Produto", "Quantidade", "Unidade", "Finalidade"]):
-                        c = tab_dos.cell(0, j)
-                        c.text = h
-                        c.paragraphs[0].runs[0].bold = True
-                        c.paragraphs[0].runs[0].font.size = Pt(9)
-                    for i, d in enumerate(todas_dosagens, 1):
-                        for j, v in enumerate([d.get("produto",""), d.get("quantidade",""), d.get("unidade",""), d.get("finalidade","")]):
-                            tab_dos.cell(i, j).text = v
-                            tab_dos.cell(i, j).paragraphs[0].runs[0].font.size = Pt(9)
-                else:
-                    add_par(doc_rt, "Nenhuma dosagem registrada neste período.", size=10)
-                doc_rt.add_paragraph()
-
-                # ── 5. Observações ──
-                add_par(doc_rt, "5. OBSERVAÇÕES TÉCNICAS", bold=True, size=11)
-                obs_unidas = csr_obs_geral.strip()
-                for lc in lancamentos_csr:
-                    if lc.get("observacao"):
-                        obs_unidas += f"\n• {lc.get('data','')}: {lc['observacao']}"
-                p_obs = doc_rt.add_paragraph()
-                p_obs.add_run(obs_unidas or "Sem observações registradas.").font.size = Pt(10)
-                doc_rt.add_paragraph()
-
-                # ── 6. Registro fotográfico ──
-                pasta_csr_out_pre = GENERATED_DIR / slugify_nome(csr_sel)
-                pasta_fotos_csr = pasta_csr_out_pre / "fotos_campo"
-                fotos_encontradas = []
-                if pasta_fotos_csr.exists():
-                    for lc in lancamentos_csr:
-                        for nome_foto in lc.get("fotos", []):
-                            caminho_foto = pasta_fotos_csr / nome_foto
-                            if caminho_foto.exists():
-                                fotos_encontradas.append((lc.get("data",""), caminho_foto))
-
-                if fotos_encontradas:
-                    add_par(doc_rt, "6. REGISTRO FOTOGRÁFICO", bold=True, size=11)
-                    for data_foto, caminho_foto in fotos_encontradas:
-                        try:
-                            p_foto_leg = doc_rt.add_paragraph()
-                            p_foto_leg.add_run(f"Visita: {data_foto}").font.size = Pt(9)
-                            p_foto = doc_rt.add_paragraph()
-                            p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            run_foto = p_foto.add_run()
-                            run_foto.add_picture(str(caminho_foto), width=Inches(5.5))
-                        except Exception:
-                            add_par(doc_rt, f"[Foto não pôde ser inserida: {caminho_foto.name}]", size=9)
-                    doc_rt.add_paragraph()
-                    secao_aviso = 7
-                else:
-                    secao_aviso = 6
-
-                # ── Aviso legal ──
-                add_par(doc_rt, f"{secao_aviso}. AVISO LEGAL E GUARDA DOCUMENTAL", bold=True, size=10)
-                p_aviso = doc_rt.add_paragraph()
-                p_aviso.add_run(
-                    "Recomenda-se a guarda e organização deste documento e de seus registros correlatos por prazo "
-                    "mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental e "
-                    "segurança jurídica. Este relatório é de caráter técnico-informativo e não substitui laudo "
-                    "laboratorial microbiológico, cuja contratação é de responsabilidade do estabelecimento."
-                ).font.size = Pt(9)
-                doc_rt.add_paragraph()
-
-                # ── Assinatura ──
-                add_par(doc_rt, f"Uberlândia/MG, {hoje_br()}.", size=11, align=WD_ALIGN_PARAGRAPH.CENTER)
-                doc_rt.add_paragraph()
-                tab_ass = doc_rt.add_table(rows=1, cols=2)
-                tab_ass.autofit = True
-                c_ass1 = tab_ass.cell(0, 0)
-                c_ass2 = tab_ass.cell(0, 1)
-                for cell_a, texto_a in [
-                    (c_ass1, f"___________________________\n{csr_operador_nome or 'Operador'}\nAqua Gestão – Controle Técnico de Piscinas"),
-                    (c_ass2, f"___________________________\n{csr_dados_sel.get('contato','Responsável')}\n{csr_sel}"),
-                ]:
-                    cell_a.paragraphs[0].clear()
-                    cell_a.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    cell_a.paragraphs[0].add_run(texto_a).font.size = Pt(9)
-
-                # ── Salva ──
                 pasta_csr_out = GENERATED_DIR / slugify_nome(csr_sel)
                 pasta_csr_out.mkdir(parents=True, exist_ok=True)
-                data_nome_csr = datetime.now().strftime("%Y%m%d_%H%M%S")
-                docx_csr = pasta_csr_out / f"{data_nome_csr}_{slugify_nome(csr_sel)}_RELATORIO_TECNICO.docx"
-                pdf_csr  = pasta_csr_out / f"{data_nome_csr}_{slugify_nome(csr_sel)}_RELATORIO_TECNICO.pdf"
-                doc_rt.save(str(docx_csr))
-                ok_pdf_csr, err_pdf_csr = converter_docx_para_pdf(docx_csr, pdf_csr)
+                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                docx_csr = pasta_csr_out / f"{_ts}_{slugify_nome(csr_sel)}_RELATORIO_BS.docx"
+                pdf_csr  = pasta_csr_out / f"{_ts}_{slugify_nome(csr_sel)}_RELATORIO_BS.pdf"
 
-                registrar_documento_manifest(pasta_csr_out, csr_sel, "Relatório", docx_csr, pdf_csr, ok_pdf_csr, err_pdf_csr)
-                st.session_state["ultimos_docs_gerados"] = st.session_state.get("ultimos_docs_gerados") or {}
-                st.session_state["ultimos_docs_gerados"].update({
-                    "relatorio_docx": str(docx_csr),
-                    "relatorio_pdf": str(pdf_csr) if ok_pdf_csr else None,
-                })
+                with st.spinner("Gerando relatório Bem Star..."):
+                    # fotos_csr é list[(data_str, Path)] — extrai só os Paths
+                    _fotos_paths = [_fp for _, _fp in fotos_csr] if fotos_csr else []
+                    _ok_docx, _err_docx = gerar_relatorio_visita_docx(
+                        output_path   = docx_csr,
+                        nome_local    = csr_dados_sel.get("nome", csr_sel),
+                        cnpj          = csr_dados_sel.get("cnpj", ""),
+                        endereco      = csr_dados_sel.get("endereco", ""),
+                        responsavel   = csr_dados_sel.get("contato", ""),
+                        operador      = csr_operador_nome,
+                        mes           = _mes_csr,
+                        ano           = _ano_csr,
+                        lancamentos   = _lanc_para_relatorio,
+                        obs_geral     = _obs_final,
+                        incluir_rt    = False,
+                        fotos         = _fotos_paths,
+                    )
 
-                st.success(f"✅ Relatório técnico gerado para {csr_sel}! {len(fotos_encontradas)} foto(s) incluída(s).")
-                dl1, dl2 = st.columns(2)
-                with dl1:
-                    with open(docx_csr, "rb") as f:
-                        st.download_button("⬇️ Baixar DOCX", data=f, file_name=docx_csr.name,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True)
-                with dl2:
-                    if ok_pdf_csr and pdf_csr.exists():
-                        with open(pdf_csr, "rb") as f:
-                            st.download_button("⬇️ Baixar PDF", data=f, file_name=pdf_csr.name,
-                                mime="application/pdf", use_container_width=True)
-                    else:
-                        st.warning(f"PDF não gerado: {err_pdf_csr}")
+                if not _ok_docx:
+                    st.error(f"Erro ao gerar DOCX: {_err_docx}")
+                else:
+                    ok_pdf_csr, err_pdf_csr = converter_docx_para_pdf(docx_csr, pdf_csr)
+                    registrar_documento_manifest(pasta_csr_out, csr_sel, "Relatório", docx_csr, pdf_csr, ok_pdf_csr, err_pdf_csr)
+                    st.success(f"✅ Relatório Bem Star gerado! {len(fotos_csr)} foto(s) incluída(s).")
+                    dl1, dl2 = st.columns(2)
+                    with dl1:
+                        with open(docx_csr, "rb") as _f:
+                            st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                use_container_width=True)
+                    with dl2:
+                        if ok_pdf_csr and pdf_csr.exists():
+                            with open(pdf_csr, "rb") as _f:
+                                st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
+                                    mime="application/pdf", use_container_width=True)
+                        else:
+                            st.warning(f"PDF não gerado: {err_pdf_csr}")
+
+                    # ── Bloco de envio ────────────────────────────────────
+                    _msg_rel = montar_mensagem_bem_star(
+                        nome_local  = csr_dados_sel.get("nome", csr_sel),
+                        responsavel = csr_dados_sel.get("contato", ""),
+                        tipo        = "relatorio",
+                        mes         = _mes_csr,
+                        ano         = _ano_csr,
+                    )
+                    exibir_bloco_envio_bem_star(
+                        nome_local  = csr_dados_sel.get("nome", csr_sel),
+                        pasta       = pasta_csr_out,
+                        telefone    = csr_dados_sel.get("telefone", ""),
+                        email       = csr_dados_sel.get("email", ""),
+                        mensagem    = _msg_rel,
+                        key_suffix  = "relatorio",
+                    )
 
             except Exception as e:
-                st.error(f"Erro ao gerar relatório: {e}")
+                st.error(f"Erro ao gerar relatório Bem Star: {e}")
+                import traceback
+                st.code(traceback.format_exc(), language="text")
+
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# CONTRATO BEM STAR PISCINAS
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("📝 Contrato Bem Star Piscinas")
+st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
+
+with st.expander("📋 Preencher e gerar contrato", expanded=False):
+
+    # ── Seletor de cliente ────────────────────────────────────────────────────
+    @st.cache_data(ttl=30)
+    def _clientes_bs_contrato():
+        _todos = sheets_listar_clientes_completo()
+        _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+        _nomes_sheets = [c["nome"] for c in _todos]
+        for _cl in _locais:
+            if _cl["nome"] not in _nomes_sheets:
+                _todos.append(_cl)
+        return _todos
+
+    _bs_clientes = _clientes_bs_contrato()
+    _bs_nomes = ["— selecione ou preencha manualmente —"] + [c["nome"] for c in _bs_clientes]
+
+    _bs_sel = st.selectbox("Carregar dados de cliente cadastrado", _bs_nomes,
+        key="bs_cont_cliente_sel")
+
+    if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
+        _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
+        if _bs_dado:
+            st.session_state["bs_cont_nome"]     = _bs_dado.get("nome", "")
+            st.session_state["bs_cont_cnpj"]     = _bs_dado.get("cnpj", "")
+            st.session_state["bs_cont_endereco"] = _bs_dado.get("endereco", "")
+            st.session_state["bs_cont_contato"]  = _bs_dado.get("contato", "")
+            st.session_state["bs_cont_telefone"] = _bs_dado.get("telefone", "")
+            st.success(f"✅ Dados de '{_bs_dado['nome']}' carregados.")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Dados do Contratante**")
+
+    _bc1, _bc2 = st.columns(2)
+    with _bc1:
+        bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
+            placeholder="Ex.: Condomínio Residencial Bella Vista")
+        bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
+            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
+    with _bc2:
+        bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
+            placeholder="00.000.000/0000-00")
+        bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
+            placeholder="Nome completo do responsável")
+        bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
+            placeholder="(34) 99999-9999")
+
+    st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
+    bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
+        height=60,
+        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
+
+    st.markdown("**Condições do serviço**")
+    _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
+    with _bs_c1:
+        bs_frequencia = st.selectbox("Frequência de visitas", 
+            ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Outra"],
+            key="bs_cont_frequencia")
+        if bs_frequencia == "Outra":
+            bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
+                placeholder="Ex.: quinzenal")
+    with _bs_c2:
+        bs_produtos = st.radio("Produtos químicos", 
+            ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
+            key="bs_cont_produtos")
+    with _bs_c3:
+        bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
+            placeholder="Ex.: 12")
+
+    st.markdown("**Valores e pagamento**")
+    _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
+    with _bs_v1:
+        bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
+            placeholder="Ex.: 350,00")
+    with _bs_v2:
+        bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
+            placeholder="Ex.: trezentos e cinquenta reais")
+    with _bs_v3:
+        bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
+            placeholder="Ex.: 10")
+    with _bs_v4:
+        bs_pagamento = st.selectbox("Forma de pagamento",
+            ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
+            key="bs_cont_pagamento")
+
+    st.markdown("**Datas**")
+    _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
+    with _bs_d1:
+        bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
+            placeholder="dd/mm/aaaa", value=hoje_br())
+    with _bs_d2:
+        bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
+            placeholder="dd/mm/aaaa")
+    with _bs_d3:
+        bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
+            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
+    bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
+        placeholder="dd/mm/aaaa", value=hoje_br())
+
+    st.markdown("---")
+
+    if st.button("📄 Gerar Contrato Bem Star (PDF)", type="primary", use_container_width=True,
+            key="btn_gerar_contrato_bs"):
+        if not (st.session_state.get("bs_cont_nome","")).strip():
+            st.error("Informe o nome do contratante.")
+        elif not (st.session_state.get("bs_cont_valor","")).strip():
+            st.error("Informe o valor mensal.")
+        else:
+            try:
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import cm
+                from reportlab.lib import colors
+                from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                    Table, TableStyle, HRFlowable)
+                from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+                import io as _io
+
+                # ── Coleta valores ─────────────────────────────────────────
+                _nome     = (st.session_state.get("bs_cont_nome","")).strip()
+                _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
+                _end      = (st.session_state.get("bs_cont_endereco","")).strip()
+                _contato  = (st.session_state.get("bs_cont_contato","")).strip()
+                _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
+                _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
+                _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
+                _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                _prazo    = (st.session_state.get("bs_cont_prazo","")).strip() or "12"
+                _valor    = (st.session_state.get("bs_cont_valor","")).strip()
+                _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
+                _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
+                _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
+                _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
+                _fim      = (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
+                _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
+                _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
+                _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
+                _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
+                _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
+
+                # ── Estilos ReportLab ──────────────────────────────────────
+                styles = getSampleStyleSheet()
+                s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
+                    fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
+                s_sub = ParagraphStyle("sub", parent=styles["Normal"],
+                    fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
+                s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
+                    fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
+                    textColor=colors.HexColor("#0d3d75"),
+                    borderPad=4, borderColor=colors.HexColor("#0d3d75"),
+                    leftIndent=0)
+                s_body = ParagraphStyle("body", parent=styles["Normal"],
+                    fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
+                    leading=14, leftIndent=8)
+                s_center = ParagraphStyle("center", parent=styles["Normal"],
+                    fontSize=10, alignment=TA_CENTER, spaceBefore=4)
+                s_small = ParagraphStyle("small", parent=styles["Normal"],
+                    fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+
+                # ── Monta story ────────────────────────────────────────────
+                story = []
+
+                # Logo Bem Star se disponível
+                _logo_bs = encontrar_logo_bem_star()
+                if _logo_bs and _logo_bs.exists():
+                    from reportlab.platypus import Image as RLImage
+                    _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
+                        kind="proportional")
+                    _img.hAlign = "CENTER"
+                    story.append(_img)
+                    story.append(Spacer(1, 0.4*cm))
+
+                story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
+                story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
+                    "sub2", parent=styles["Normal"], fontSize=10,
+                    alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
+                story.append(Spacer(1, 0.3*cm))
+                story.append(HRFlowable(width="100%", thickness=2,
+                    color=colors.HexColor("#0d3d75")))
+                story.append(Spacer(1, 0.3*cm))
+
+                # Tabela identificação
+                id_data = [
+                    ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88
+Av. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
+                    ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
+                ]
+                t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
+                t_id.setStyle(TableStyle([
+                    ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
+                    ("FONTSIZE",  (0,0), (-1,-1), 9),
+                    ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
+                    ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
+                    ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
+                    ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
+                    ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+                    ("TOPPADDING",(0,0),(-1,-1), 7),
+                    ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                    ("LEFTPADDING",(0,0),(-1,-1), 8),
+                    ("RIGHTPADDING",(0,0),(-1,-1), 8),
+                ]))
+                story.append(t_id)
+                story.append(Spacer(1, 0.3*cm))
+                story.append(Paragraph(
+                    "As partes acima identificadas têm entre si justo e contratado o presente "
+                    "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
+
+                # Cláusulas
+                clausulas = [
+                    ("CLÁUSULA 1 — DO OBJETO",
+                     "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
+                     "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
+                     f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
+                     "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
+                     "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
+                     "condições da água e operações rotineiras de circulação e filtração. Este contrato "
+                     "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
+                     "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
+
+                    ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
+                     f"Os serviços serão executados com a seguinte frequência: {_freq}. "
+                     "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
+                     "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
+                     "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
+                     "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
+
+                    ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
+                     f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
+                     + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
+                        "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
+                        "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
+                        "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
+                        if not _prods_inc else "")),
+
+                    ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
+                     f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
+                     f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
+                     f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
+                     "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
+                     "poderá suspender os serviços após comunicação prévia."),
+
+                    ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
+                     f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
+                     f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
+                     "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
+                     "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
+
+                    ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
+                     "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
+                     "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
+                     "manterá sigilo sobre informações não públicas. "
+                     "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
+                     "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
+                     "e efetuará o pagamento na forma e prazo pactuados."),
+
+                    ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+                     "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
+                     "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
+                     "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
+                     "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
+
+                    ("CLÁUSULA 8 — DA RESCISÃO",
+                     "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
+                     "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
+                     "descumprimento contratual relevante após notificação sem saneamento; ou por "
+                     "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
+                     "serviços efetivamente prestados."),
+
+                    ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
+                     "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
+                     "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
+                     "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
+                     "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
+                     "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
+                ]
+
+                for titulo_cl, texto_cl in clausulas:
+                    story.append(Paragraph(titulo_cl, s_clausula))
+                    story.append(Paragraph(texto_cl, s_body))
+
+                story.append(Spacer(1, 0.5*cm))
+                story.append(HRFlowable(width="100%", thickness=0.5,
+                    color=colors.HexColor("#c0c8d8")))
+                story.append(Spacer(1, 0.3*cm))
+                story.append(Paragraph(
+                    f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
+                    f"vias de igual teor e forma.", s_body))
+                story.append(Spacer(1, 0.2*cm))
+                story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
+                story.append(Spacer(1, 1*cm))
+
+                # Tabela de assinaturas
+                ass_data = [
+                    ["___________________________________",
+                     "___________________________________"],
+                    ["BEM STAR PISCINAS LTDA.
+CONTRATADA",
+                     f"{_nome}
+CONTRATANTE"],
+                    ["", ""],
+                    ["___________________________________",
+                     "___________________________________"],
+                    ["TESTEMUNHA 1
+Nome:
+CPF:",
+                     "TESTEMUNHA 2
+Nome:
+CPF:"],
+                ]
+                t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
+                t_ass.setStyle(TableStyle([
+                    ("ALIGN",    (0,0), (-1,-1), "CENTER"),
+                    ("FONTSIZE", (0,0), (-1,-1), 9),
+                    ("VALIGN",   (0,0), (-1,-1), "TOP"),
+                    ("TOPPADDING", (0,0),(-1,-1), 4),
+                ]))
+                story.append(t_ass)
+                story.append(Spacer(1, 0.3*cm))
+                story.append(HRFlowable(width="100%", thickness=0.5,
+                    color=colors.HexColor("#0d3d75")))
+                story.append(Spacer(1, 0.15*cm))
+                story.append(Paragraph(
+                    "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
+                    "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
+                    s_small))
+
+                # ── Gera PDF ───────────────────────────────────────────────
+                pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
+                pasta_bs_cont.mkdir(parents=True, exist_ok=True)
+                _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
+
+                _buf = _io.BytesIO()
+                doc_rl = SimpleDocTemplate(
+                    _buf,
+                    pagesize=A4,
+                    topMargin=2*cm, bottomMargin=2*cm,
+                    leftMargin=2.5*cm, rightMargin=2.5*cm,
+                    title=f"Contrato Bem Star — {_nome}",
+                    author="Bem Star Piscinas",
+                )
+                doc_rl.build(story)
+                _pdf_bytes = _buf.getvalue()
+
+                with open(pdf_bs_path, "wb") as _pf:
+                    _pf.write(_pdf_bytes)
+
+                st.success(f"✅ Contrato gerado para {_nome}!")
+                st.download_button(
+                    "⬇️ Baixar Contrato PDF",
+                    data=_pdf_bytes,
+                    file_name=pdf_bs_path.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_dl_contrato_bs",
+                )
+
+                # ── Bloco de envio ────────────────────────────────────────
+                _msg_cont = montar_mensagem_bem_star(
+                    nome_local   = _nome,
+                    responsavel  = _contato,
+                    tipo         = "contrato",
+                )
+                exibir_bloco_envio_bem_star(
+                    nome_local   = _nome,
+                    pasta        = pasta_bs_cont,
+                    telefone     = _tel,
+                    email        = "",
+                    mensagem     = _msg_cont,
+                    key_suffix   = "contrato",
+                )
+
+            except Exception as _e:
+                st.error(f"Erro ao gerar contrato: {_e}")
+                import traceback as _tb
+                st.code(_tb.format_exc(), language="text")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -6500,7 +7153,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 # FORMULÁRIO
 # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_allow_html=True)
 st.subheader("Dados do contrato e aditivo")
 
 # ── Seletor de cliente do Sheets ──────────────────────────────────────────────
@@ -6543,6 +7196,27 @@ with col1:
         on_change=on_change_cnpj,
         placeholder="00.000.000/0000-00",
     )
+    _rt_cep_c1, _rt_cep_c2 = st.columns([3, 1])
+    with _rt_cep_c1:
+        st.text_input("CEP", key="rt_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _rt_cep_c2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_rt_cep = st.button("🔍", key="btn_buscar_cep_rt", help="Buscar CEP")
+    if _btn_rt_cep:
+        _cep_v = re.sub(r"\D", "", st.session_state.get("rt_cep", ""))
+        if len(_cep_v) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dc = buscar_cep(_cep_v)
+            if _dc:
+                _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                st.session_state["endereco_condominio"] = _end
+                st.session_state["rt_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+            else:
+                st.error("CEP não encontrado.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
     st.text_area("Endereço do condomínio", key="endereco_condominio", height=100)
     st.text_input("Nome do síndico / representante", key="nome_sindico")
     st.text_input(
@@ -6622,7 +7296,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 # AÇÕES DE CADASTRO / RENOVAÇÃO
 # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-card aq-only" id="sec-cadastro-renovacao">', unsafe_allow_html=True)
 st.subheader("Cadastro e renovação")
 
 r1, r2, r3 = st.columns([1.15, 1.15, 2])
@@ -6738,8 +7412,9 @@ if _ultimos:
 # RELATÓRIO MENSAL DE RT
 # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-card aq-only" id="sec-relatorio-rt">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
+
 
 st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
 
@@ -6920,6 +7595,27 @@ st.markdown("**Dados do condomínio / local atendido**")
 rd1, rd2 = st.columns(2)
 with rd1:
     st.text_input("Condomínio / estabelecimento", key="rel_nome_condominio")
+    _rel_cep_c1, _rel_cep_c2 = st.columns([3, 1])
+    with _rel_cep_c1:
+        st.text_input("CEP", key="rel_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _rel_cep_c2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_rel_cep = st.button("🔍", key="btn_buscar_cep_rel", help="Buscar CEP")
+    if _btn_rel_cep:
+        _cep_v = re.sub(r"\D", "", st.session_state.get("rel_cep", ""))
+        if len(_cep_v) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dc = buscar_cep(_cep_v)
+            if _dc:
+                _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                st.session_state["rel_endereco_condominio"] = _end
+                st.session_state["rel_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+            else:
+                st.error("CEP não encontrado.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
     st.text_area("Endereço do local", key="rel_endereco_condominio", height=90)
     st.text_input("Representante / síndico / contato local", key="rel_representante")
 with rd2:
