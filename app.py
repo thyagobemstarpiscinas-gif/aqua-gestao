@@ -2436,8 +2436,7 @@ def montar_mensagem_bem_star(
         "Av. Getúlio Vargas, 4411 — Uberlândia/MG",
         "(34) 9 9999-9999",
     ]
-    return "
-".join(partes)
+    return "\n".join(partes)
 
 
 def exibir_bloco_envio_bem_star(
@@ -6953,8 +6952,7 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
 
                 # Tabela identificação
                 id_data = [
-                    ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88
-Av. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
+                    ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
                     ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
                 ]
                 t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
@@ -7065,19 +7063,13 @@ Av. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"
                 ass_data = [
                     ["___________________________________",
                      "___________________________________"],
-                    ["BEM STAR PISCINAS LTDA.
-CONTRATADA",
-                     f"{_nome}
-CONTRATANTE"],
+                    ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
+                     f"{_nome}\nCONTRATANTE"],
                     ["", ""],
                     ["___________________________________",
                      "___________________________________"],
-                    ["TESTEMUNHA 1
-Nome:
-CPF:",
-                     "TESTEMUNHA 2
-Nome:
-CPF:"],
+                    ["TESTEMUNHA 1\nNome:\nCPF:",
+                     "TESTEMUNHA 2\nNome:\nCPF:"],
                 ]
                 t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
                 t_ass.setStyle(TableStyle([
