@@ -4525,7 +4525,12 @@ if pasta_formulario_atual and pasta_formulario_atual.exists():
 # TOPO
 # =========================================
 
-logo = encontrar_logo()
+# Logo do topo — muda conforme empresa selecionada
+_empresa_ativa_top = st.session_state.get("empresa_ativa", "aqua_gestao")
+if _empresa_ativa_top == "bem_star":
+    logo = next((p for p in LOGO_BEM_STAR_CANDIDATOS if p.exists()), None)
+else:
+    logo = encontrar_logo()
 
 col_top1, col_top2 = st.columns([1, 5])
 
@@ -4784,20 +4789,9 @@ if _modo_interno == "entrada":
         st.session_state["empresa_ativa"] = "bem_star" if _eh_bem_star else "aqua_gestao"
 
         if _eh_bem_star:
-            # Logo Bem Star
-            _logo_bs = None
-            for _lp in LOGO_BEM_STAR_CANDIDATOS:
-                if _lp.exists():
-                    _logo_bs = _lp
-                    break
-            if _logo_bs:
-                st.image(str(_logo_bs), width=180)
             st.markdown('<div class="entrada-title">Bem Star Piscinas</div>', unsafe_allow_html=True)
             st.markdown('<div class="entrada-sub">Manutenção e Tratamento de Piscinas<br>CNPJ: 26.799.958/0001-88</div>', unsafe_allow_html=True)
         else:
-            _logo_aq = encontrar_logo()
-            if _logo_aq:
-                st.image(str(_logo_aq), width=160)
             st.markdown('<div class="entrada-title">Aqua Gestão</div>', unsafe_allow_html=True)
             st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
 
