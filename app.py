@@ -1208,6 +1208,34 @@ def encontrar_logo() -> Path | None:
     return None
 
 
+def encontrar_logo_bem_star() -> Path | None:
+    for caminho in LOGO_BEM_STAR_CANDIDATOS:
+        if caminho.exists() and caminho.is_file():
+            return caminho
+    for extensao in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+        for pasta in [BASE_DIR, BASE_DIR / "assets", BASE_DIR / "images"]:
+            if pasta.exists():
+                for arq in pasta.glob(extensao):
+                    if "bem_star" in arq.name.lower() and "logo" in arq.name.lower():
+                        return arq
+    return None
+
+
+def logo_para_base64(path) -> str:
+    """Converte imagem para string base64 para exibicao HTML inline."""
+    if path is None or not path.exists():
+        return ""
+    try:
+        import base64 as _b64
+        ext = path.suffix.lower().lstrip(".")
+        mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp"}.get(ext, "png")
+        with open(path, "rb") as f:
+            dados = _b64.b64encode(f.read()).decode()
+        return f"data:image/{mime};base64,{dados}"
+    except Exception:
+        return ""
+
+
 def slugify_nome(texto: str) -> str:
     texto = (texto or "").strip()
     texto = re.sub(r"[^\w\s-]", "", texto, flags=re.UNICODE)
@@ -4788,10 +4816,18 @@ if _modo_interno == "entrada":
         st.session_state["empresa_ativa"] = "bem_star" if _eh_bem_star else "aqua_gestao"
 
         if _eh_bem_star:
-            st.markdown('<div class="entrada-title">Bem Star Piscinas</div>', unsafe_allow_html=True)
+            _logo_bs_b64 = logo_para_base64(encontrar_logo_bem_star())
+            if _logo_bs_b64:
+                st.markdown(f'<img src="{_logo_bs_b64}" style="max-width:220px;max-height:90px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="entrada-title">⭐ Bem Star Piscinas</div>', unsafe_allow_html=True)
             st.markdown('<div class="entrada-sub">Manutenção e Tratamento de Piscinas<br>CNPJ: 26.799.958/0001-88</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="entrada-title">Aqua Gestão</div>', unsafe_allow_html=True)
+            _logo_aq_b64 = logo_para_base64(encontrar_logo())
+            if _logo_aq_b64:
+                st.markdown(f'<img src="{_logo_aq_b64}" style="max-width:220px;max-height:120px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="entrada-title">🔵 Aqua Gestão</div>', unsafe_allow_html=True)
             st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
 
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
