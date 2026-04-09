@@ -896,6 +896,31 @@ QUALIFICACAO_RT = "Técnico em Química"
 CERTIFICACOES_RT = "NR-26 e NR-6"
 EMPRESA_RT = "Aqua Gestão – Controle Técnico de Piscinas"
 
+# ── Dados da Bem Star Piscinas ──────────────────────────────────────────────
+EMPRESA_BEM_STAR     = "Bem Star Piscinas"
+CNPJ_BEM_STAR        = "26.799.958/0001-88"
+ENDERECO_BEM_STAR    = "Avenida Getúlio Vargas, 4411 — CEP 38.412-316 — Uberlândia/MG"
+LOGO_BEM_STAR_CANDIDATOS = [
+    BASE_DIR / "bem_star_logo.png",
+    BASE_DIR / "bem_star_logo.jpg",
+    BASE_DIR / "assets" / "bem_star_logo.png",
+]
+
+# ── Texto RT para relatório sem RT ──────────────────────────────────────────
+TEXTO_RT_SEM_RT = """SOBRE RESPONSABILIDADE TÉCNICA (RT)
+
+Este relatório foi elaborado pela Bem Star Piscinas como registro técnico das análises e dosagens realizadas durante a visita de manutenção.
+
+A Responsabilidade Técnica (RT) é um serviço de supervisão especializada, regulamentado pela Resolução CFQ nº 332/2025 — publicada pelo Conselho Federal de Química em 24 de junho de 2025 — e complementada pela Resolução CFQ nº 345/2026, que tornam obrigatória a Anotação de Responsabilidade Técnica (ART) para o tratamento químico e controle de qualidade da água de piscinas de uso público e coletivo, abrangendo condomínios residenciais, clubes, academias, hotéis e escolas.
+
+A RT consiste na supervisão e assinatura de profissional habilitado e registrado no Conselho Regional de Química (CRQ), garantindo que todos os procedimentos estejam em conformidade com os padrões técnicos e sanitários vigentes, incluindo a ABNT NBR 10339. A ART deve ser emitida anualmente e afixada em local visível, podendo o CRQ realizar fiscalizações preventivas e, em caso de irregularidade, acionar a Vigilância Sanitária municipal.
+
+A Aqua Gestão — empresa parceira especializada em Responsabilidade Técnica — oferece o serviço completo de RT com profissional habilitado pelo CRQ-MG, emissão de laudos mensais, ART anual e total suporte documental, garantindo segurança jurídica e conformidade normativa ao seu condomínio.
+
+Saiba mais sobre o serviço de RT:
+Thyago Fernando da Silveira | CRQ-MG 2ª Região | CRQ 024025748
+Aqua Gestão – Controle Técnico de Piscinas"""
+
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "generated"
 TEMPLATE_CONTRATO = BASE_DIR / "template.docx"
@@ -3808,6 +3833,281 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     buffer.seek(0)
     return buffer.read()
 
+
+def gerar_relatorio_visita_docx(
+    output_path: Path,
+    nome_local: str,
+    cnpj: str,
+    endereco: str,
+    responsavel: str,
+    operador: str,
+    mes: str,
+    ano: str,
+    lancamentos: list,
+    obs_geral: str = "",
+    incluir_rt: bool = True,
+    fotos: list = None,
+) -> tuple[bool, str]:
+    """
+    Gera relatório técnico de visitas em DOCX — unificado para RT e sem RT.
+    Se incluir_rt=True: inclui assinatura e dados do RT.
+    Se incluir_rt=False: omite dados do RT (relatório sem RT).
+    """
+    try:
+        from docx import Document as _DocxDoc
+        from docx.shared import Pt, Cm, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        doc = _DocxDoc()
+        for section in doc.sections:
+            section.top_margin    = Cm(2)
+            section.bottom_margin = Cm(2)
+            section.left_margin   = Cm(2.5)
+            section.right_margin  = Cm(2.5)
+
+        def _par(texto, bold=False, size=11, align=None, italic=False):
+            p = doc.add_paragraph()
+            if align: p.alignment = align
+            r = p.add_run(texto)
+            r.bold = bold; r.italic = italic
+            r.font.size = Pt(size)
+            return p
+
+        def _tabela_info(dados: list):
+            """Cria tabela de 2 colunas com rótulo → valor."""
+            t = doc.add_table(rows=len(dados), cols=2)
+            t.style = "Table Grid"
+            for i, (rot, val) in enumerate(dados):
+                t.cell(i,0).paragraphs[0].add_run(rot).bold = True
+                t.cell(i,0).paragraphs[0].runs[0].font.size = Pt(10)
+                t.cell(i,1).paragraphs[0].add_run(str(val or "—"))
+                t.cell(i,1).paragraphs[0].runs[0].font.size = Pt(10)
+            doc.add_paragraph()
+
+        # ── CABEÇALHO ─────────────────────────────────────────────────────────
+        _par("AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
+        if incluir_rt:
+            _par(f"Responsável Técnico: {RESPONSAVEL_TÉCNICO} | {CRQ}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+            _par(f"{QUALIFICACAO_RT} | Certificações: {CERTIFICACOES_RT}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+        else:
+            _par("Relatório Técnico de Visitas", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+        doc.add_paragraph()
+
+        # ── IDENTIFICAÇÃO ─────────────────────────────────────────────────────
+        _par("1. IDENTIFICAÇÃO DO LOCAL", bold=True, size=11)
+        _tabela_info([
+            ("Local / Condomínio", nome_local),
+            ("CNPJ", cnpj or "Não informado"),
+            ("Endereço", endereco or "Não informado"),
+            ("Responsável / Síndico", responsavel or "Não informado"),
+            ("Operador de campo", operador or "Não informado"),
+            ("Período de referência", f"{mes}/{ano}"),
+        ])
+
+        # ── ANÁLISES ──────────────────────────────────────────────────────────
+        _par("2. ANÁLISES FÍSICO-QUÍMICAS", bold=True, size=11)
+
+        cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
+        t_anal = doc.add_table(rows=1 + len(lancamentos), cols=len(cabecalho))
+        t_anal.style = "Table Grid"
+
+        # Cabeçalho
+        for j, cab in enumerate(cabecalho):
+            cell = t_anal.cell(0, j)
+            cell.paragraphs[0].add_run(cab).bold = True
+            cell.paragraphs[0].runs[0].font.size = Pt(9)
+
+        # Dados
+        for i, lc in enumerate(lancamentos):
+            piscinas = lc.get("piscinas", [])
+            if piscinas:
+                lc_d = piscinas[0]
+            else:
+                lc_d = lc
+            valores = [
+                lc.get("data",""),
+                lc_d.get("ph", lc.get("ph","")),
+                lc_d.get("cloro_livre", lc.get("cloro_livre","")),
+                lc_d.get("cloro_total", lc.get("cloro_total","")),
+                lc_d.get("alcalinidade", lc.get("alcalinidade","")),
+                lc_d.get("dureza", lc.get("dureza","")),
+                lc_d.get("cianurico", lc.get("cianurico","")),
+                lc.get("operador",""),
+            ]
+            for j, val in enumerate(valores):
+                cell = t_anal.cell(i+1, j)
+                cell.paragraphs[0].add_run(str(val or "—"))
+                cell.paragraphs[0].runs[0].font.size = Pt(9)
+
+        doc.add_paragraph()
+
+        # Se múltiplas piscinas, adiciona tabelas extras
+        todas_piscinas = set()
+        for lc in lancamentos:
+            for p in lc.get("piscinas",[]):
+                if p.get("nome","") and p["nome"] != "Piscina":
+                    todas_piscinas.add(p["nome"])
+
+        for pisc_nome in sorted(todas_piscinas):
+            if pisc_nome == lancamentos[0].get("piscinas",[{}])[0].get("nome","") if lancamentos and lancamentos[0].get("piscinas") else True:
+                continue
+            _par(f"Análises — {pisc_nome}", bold=True, size=10)
+            t_p = doc.add_table(rows=1, cols=len(cabecalho))
+            t_p.style = "Table Grid"
+            for j, cab in enumerate(cabecalho):
+                t_p.cell(0,j).paragraphs[0].add_run(cab).bold = True
+                t_p.cell(0,j).paragraphs[0].runs[0].font.size = Pt(8)
+            for lc in lancamentos:
+                for p in lc.get("piscinas",[]):
+                    if p.get("nome","") == pisc_nome:
+                        row = t_p.add_row()
+                        for j, val in enumerate([
+                            lc.get("data",""), p.get("ph",""), p.get("cloro_livre",""),
+                            p.get("cloro_total",""), p.get("alcalinidade",""),
+                            p.get("dureza",""), p.get("cianurico",""), lc.get("operador",""),
+                        ]):
+                            row.cells[j].paragraphs[0].add_run(str(val or "—"))
+                            row.cells[j].paragraphs[0].runs[0].font.size = Pt(8)
+            doc.add_paragraph()
+
+        # ── DOSAGENS ──────────────────────────────────────────────────────────
+        _par("3. DOSAGENS APLICADAS", bold=True, size=11)
+        todas_dosagens = []
+        for lc in lancamentos:
+            data_lc = lc.get("data","")
+            for d in lc.get("dosagens",[]):
+                if d.get("produto","").strip():
+                    todas_dosagens.append({**d, "data": data_lc})
+
+        if todas_dosagens:
+            t_dos = doc.add_table(rows=1 + len(todas_dosagens), cols=5)
+            t_dos.style = "Table Grid"
+            for j, cab in enumerate(["Data", "Produto", "Quantidade", "Unidade", "Finalidade"]):
+                t_dos.cell(0,j).paragraphs[0].add_run(cab).bold = True
+                t_dos.cell(0,j).paragraphs[0].runs[0].font.size = Pt(9)
+            for i, d in enumerate(todas_dosagens):
+                for j, val in enumerate([
+                    d.get("data",""), d.get("produto",""),
+                    d.get("quantidade",""), d.get("unidade",""), d.get("finalidade",""),
+                ]):
+                    t_dos.cell(i+1,j).paragraphs[0].add_run(str(val or "—"))
+                    t_dos.cell(i+1,j).paragraphs[0].runs[0].font.size = Pt(9)
+        else:
+            _par("Nenhuma dosagem registrada no período.", size=10, italic=True)
+        doc.add_paragraph()
+
+        # ── PROBLEMAS / OCORRÊNCIAS ───────────────────────────────────────────
+        problemas_lista = [f"{lc.get('data','')}: {lc['problemas']}"
+                           for lc in lancamentos if lc.get("problemas","").strip()]
+        if problemas_lista:
+            _par("4. PROBLEMAS / OCORRÊNCIAS", bold=True, size=11)
+            for prob in problemas_lista:
+                _par(f"⚠ {prob}", size=10)
+            doc.add_paragraph()
+            secao_obs = 5
+        else:
+            secao_obs = 4
+
+        # ── OBSERVAÇÕES ───────────────────────────────────────────────────────
+        obs_lista = [f"{lc.get('data','')}: {lc['observacao']}"
+                     for lc in lancamentos if lc.get("observacao","").strip()]
+        if obs_geral:
+            obs_lista.insert(0, obs_geral)
+        if obs_lista:
+            _par(f"{secao_obs}. OBSERVAÇÕES GERAIS", bold=True, size=11)
+            for obs in obs_lista:
+                _par(obs, size=10)
+            doc.add_paragraph()
+            secao_fotos = secao_obs + 1
+        else:
+            secao_fotos = secao_obs
+
+        # ── FOTOS ─────────────────────────────────────────────────────────────
+        if fotos:
+            _par(f"{secao_fotos}. REGISTRO FOTOGRÁFICO", bold=True, size=11)
+            for foto_path in fotos:
+                try:
+                    _par(foto_path.name, size=9)
+                    p_foto = doc.add_paragraph()
+                    p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_foto.add_run().add_picture(str(foto_path), width=Inches(5.5))
+                except Exception:
+                    _par(f"[Foto não inserida: {foto_path.name}]", size=9, italic=True)
+            doc.add_paragraph()
+            secao_aviso = secao_fotos + 1
+        else:
+            secao_aviso = secao_fotos
+
+        # ── AVISO LEGAL ───────────────────────────────────────────────────────
+        _par(f"{secao_aviso}. AVISO LEGAL E GUARDA DOCUMENTAL", bold=True, size=10)
+        _par(
+            "Recomenda-se a guarda e organização deste documento por prazo mínimo de 5 anos, "
+            "para fins de rastreabilidade, auditoria e segurança jurídica. "
+            "Este relatório é de caráter técnico-informativo e não substitui laudo laboratorial microbiológico.",
+            size=9
+        )
+        doc.add_paragraph()
+
+        # ── TEXTO RT (apenas no relatório sem RT — Bem Star) ──────────────────
+        if not incluir_rt:
+            doc.add_page_break()
+            _par("SOBRE RESPONSABILIDADE TÉCNICA (RT)", bold=True, size=11)
+            doc.add_paragraph()
+            for linha in TEXTO_RT_SEM_RT.strip().split("\n\n"):
+                if linha.startswith("SOBRE"):
+                    continue
+                _par(linha.strip(), size=10)
+                doc.add_paragraph()
+            # Logo Bem Star
+            _logo_bs_path = None
+            for _lp in LOGO_BEM_STAR_CANDIDATOS:
+                if _lp.exists():
+                    _logo_bs_path = _lp
+                    break
+            if _logo_bs_path:
+                try:
+                    p_logo = doc.add_paragraph()
+                    p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_logo.add_run().add_picture(str(_logo_bs_path), width=Inches(3.5))
+                except Exception:
+                    pass
+
+        # ── ASSINATURA ────────────────────────────────────────────────────────
+        _par(f"Uberlândia/MG, {hoje_br()}.", size=11, align=WD_ALIGN_PARAGRAPH.CENTER)
+        doc.add_paragraph()
+        t_ass = doc.add_table(rows=1, cols=2)
+        t_ass.autofit = True
+
+        if incluir_rt:
+            ass_rt = (
+                f"___________________________\n"
+                f"{RESPONSAVEL_TÉCNICO}\n"
+                f"{CRQ}\n"
+                f"Aqua Gestão – Controle Técnico de Piscinas"
+            )
+        else:
+            ass_rt = (
+                f"___________________________\n"
+                f"Bem Star Piscinas\n"
+                f"CNPJ: {CNPJ_BEM_STAR}"
+            )
+
+        ass_resp = (
+            f"___________________________\n"
+            f"{responsavel or 'Responsável local'}\n"
+            f"{nome_local}"
+        )
+
+        for cell_a, texto_a in [(t_ass.cell(0,0), ass_rt), (t_ass.cell(0,1), ass_resp)]:
+            cell_a.paragraphs[0].clear()
+            cell_a.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cell_a.paragraphs[0].add_run(texto_a).font.size = Pt(9)
+
+        doc.save(str(output_path))
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
 def gerar_relatorio_mensal() -> tuple[bool, str]:
     dados_relatorio = montar_dados_relatorio()
     erros = validar_relatorio_mensal(dados_relatorio)
@@ -4470,8 +4770,35 @@ if _modo_interno == "entrada":
     col_e1, col_e2, col_e3 = st.columns([1, 2, 1])
     with col_e2:
         st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
-        st.markdown('<div class="entrada-title">Aqua Gestão</div>', unsafe_allow_html=True)
-        st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
+
+        # Seleção de empresa
+        _empresa_sel = st.radio(
+            "Empresa",
+            ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+            key="empresa_selecionada",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        _eh_bem_star = "Bem Star" in _empresa_sel
+        st.session_state["empresa_ativa"] = "bem_star" if _eh_bem_star else "aqua_gestao"
+
+        if _eh_bem_star:
+            # Logo Bem Star
+            _logo_bs = None
+            for _lp in LOGO_BEM_STAR_CANDIDATOS:
+                if _lp.exists():
+                    _logo_bs = _lp
+                    break
+            if _logo_bs:
+                st.image(str(_logo_bs), width=180)
+            st.markdown('<div class="entrada-title">Bem Star Piscinas</div>', unsafe_allow_html=True)
+            st.markdown('<div class="entrada-sub">Manutenção e Tratamento de Piscinas<br>CNPJ: 26.799.958/0001-88</div>', unsafe_allow_html=True)
+        else:
+            _logo_aq = encontrar_logo()
+            if _logo_aq:
+                st.image(str(_logo_aq), width=160)
+            st.markdown('<div class="entrada-title">Aqua Gestão</div>', unsafe_allow_html=True)
+            st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
 
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
             st.session_state["modo_atual"] = "operador"
@@ -6427,66 +6754,137 @@ with rr0b:
 with rr0c:
     st.checkbox("Salvar alterações deste relatório no cadastro principal", key="rel_salvar_alteracoes_cadastro")
 
-# ---- Importar lançamentos de campo ----
+# ---- Importar lançamentos de campo (local + Google Sheets) ----
 nome_rel_atual = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
 pasta_rel_atual = GENERATED_DIR / slugify_nome(nome_rel_atual) if nome_rel_atual else None
-lancamentos_disponiveis = []
+
+# Busca lançamentos locais
+lancamentos_local = []
 if pasta_rel_atual and pasta_rel_atual.exists():
     dados_rel_json = carregar_dados_condominio(pasta_rel_atual)
-    lancamentos_disponiveis = (dados_rel_json or {}).get("lancamentos_campo", [])
+    lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
+
+# Busca lançamentos do Google Sheets (aba Visitas)
+lancamentos_sheets = []
+if nome_rel_atual:
+    lancamentos_sheets = sheets_listar_lancamentos(nome_rel_atual)
+
+# Filtra pelo mês de referência
+mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
+ano_ref = (st.session_state.get("rel_ano_referencia") or str(datetime.now().year)).strip()
+
+def _filtrar_mes(lancamentos, mes, ano):
+    if not mes or not ano:
+        return lancamentos
+    filtrados = []
+    for lc in lancamentos:
+        data = lc.get("data","")
+        # Formato dd/mm/aaaa ou aaaa-mm-dd
+        try:
+            if "/" in data:
+                partes = data.split("/")
+                if len(partes) == 3 and partes[1] == mes.zfill(2) and partes[2] == ano:
+                    filtrados.append(lc)
+            elif "-" in data:
+                partes = data.split("-")
+                if len(partes) == 3 and partes[1] == mes.zfill(2) and partes[0] == ano:
+                    filtrados.append(lc)
+        except Exception:
+            filtrados.append(lc)
+    return filtrados if filtrados else lancamentos
+
+# Une local + Sheets sem duplicar (por data+operador)
+_vistos = set()
+lancamentos_disponiveis = []
+for lc in lancamentos_local + lancamentos_sheets:
+    _chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','')}"
+    if _chave not in _vistos:
+        _vistos.add(_chave)
+        lancamentos_disponiveis.append(lc)
+
+# Filtra por mês se informado
+lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+
+def _importar_lancamentos(lancamentos):
+    """Preenche o relatório com os lançamentos de campo."""
+    garantir_campos_analises(max(len(lancamentos), ANALISES_PADRAO))
+    for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
+        # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
+        piscinas = lc.get("piscinas", [])
+        if piscinas:
+            lc_dados = piscinas[0]  # primeira piscina para o relatório principal
+        else:
+            lc_dados = lc
+        st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
+        st.session_state[f"rel_analise_ph_{i}"]        = lc_dados.get("ph", lc.get("ph",""))
+        st.session_state[f"rel_analise_cl_{i}"]        = lc_dados.get("cloro_livre", lc.get("cloro_livre",""))
+        st.session_state[f"rel_analise_ct_{i}"]        = lc_dados.get("cloro_total", lc.get("cloro_total",""))
+        st.session_state[f"rel_analise_alc_{i}"]       = lc_dados.get("alcalinidade", lc.get("alcalinidade",""))
+        st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
+        st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
+        st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
+    # Importa dosagens da última visita com dosagem registrada
+    for lc in reversed(lancamentos):
+        if lc.get("dosagens"):
+            aplicar_dosagens_ultimas_no_relatorio({"dosagens_ultimas": lc["dosagens"]})
+            break
+    # Concatena observações e problemas
+    obs_lista = []
+    for lc in lancamentos:
+        if lc.get("problemas","").strip():
+            obs_lista.append(f"[{lc.get('data','')}] ⚠️ {lc['problemas']}")
+        if lc.get("observacao","").strip():
+            obs_lista.append(f"[{lc.get('data','')}] {lc['observacao']}")
+    obs_txt = "\n".join(obs_lista[:10])
+    if obs_txt:
+        st.session_state["rel_observacoes_gerais"] = obs_txt
 
 if lancamentos_disponiveis:
+    _total = len(lancamentos_disponiveis)
+    _fonte = "📱 local + Sheets" if lancamentos_sheets else "📱 local"
+    _periodo = f"{lancamentos_disponiveis[0].get('data','?')} → {lancamentos_disponiveis[-1].get('data','?')}"
+
     st.markdown(f"""
     <div style="border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;
     background:rgba(20,120,60,0.07);margin-bottom:12px;">
-    <strong>📱 {len(lancamentos_disponiveis)} lançamento(s) de campo disponível(is) para este condomínio</strong><br>
-    <span style="font-size:0.85rem;color:#3a6a3a;">
-    Período: {lancamentos_disponiveis[0].get('data','?')} até {lancamentos_disponiveis[-1].get('data','?')}
-    </span>
+    <strong>📱 {_total} lançamento(s) de campo disponível(is) — {_fonte}</strong><br>
+    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span>
     </div>
     """, unsafe_allow_html=True)
 
     imp1, imp2, imp3 = st.columns([1.5, 1.5, 1])
     with imp1:
-        if st.button("📥 Importar lançamentos de campo para o relatório", use_container_width=True, type="primary"):
-            # Preenche as linhas de análise com os lançamentos
-            garantir_campos_analises(max(len(lancamentos_disponiveis), ANALISES_PADRAO))
-            for i, lc in enumerate(lancamentos_disponiveis[:ANALISES_MAX_SUGERIDO]):
-                st.session_state[f"rel_analise_data_{i}"] = lc.get("data", "")
-                st.session_state[f"rel_analise_ph_{i}"] = lc.get("ph", "")
-                st.session_state[f"rel_analise_cl_{i}"] = lc.get("cloro_livre", "")
-                st.session_state[f"rel_analise_ct_{i}"] = lc.get("cloro_total", "")
-                st.session_state[f"rel_analise_alc_{i}"] = lc.get("alcalinidade", "")
-                st.session_state[f"rel_analise_dc_{i}"] = lc.get("dureza", "")
-                st.session_state[f"rel_analise_cya_{i}"] = lc.get("cianurico", "")
-                st.session_state[f"rel_analise_operador_{i}"] = lc.get("operador", "")
-            # Importa última dosagem disponível
-            for lc in reversed(lancamentos_disponiveis):
-                if lc.get("dosagens"):
-                    aplicar_dosagens_ultimas_no_relatorio({"dosagens_ultimas": lc["dosagens"]})
-                    break
-            # Importa observações concatenadas
-            obs_campo = [lc.get("observacao","") for lc in lancamentos_disponiveis if lc.get("observacao","").strip()]
-            for i, obs in enumerate(obs_campo[:5]):
-                st.session_state[f"rel_obs_{i}"] = obs
-            st.success(f"{len(lancamentos_disponiveis)} lançamento(s) importado(s) com sucesso!")
+        if st.button("📥 Importar lançamentos para o relatório", use_container_width=True, type="primary"):
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.success(f"✅ {_total} lançamento(s) importado(s) com sucesso!")
             st.rerun()
 
     with imp2:
-        if st.button("🗑️ Limpar lançamentos após gerar relatório", use_container_width=True):
+        if st.button("🗑️ Limpar lançamentos locais após gerar", use_container_width=True):
             if pasta_rel_atual and pasta_rel_atual.exists():
                 dados_limpar = carregar_dados_condominio(pasta_rel_atual) or {}
                 dados_limpar["lancamentos_campo"] = []
                 salvar_dados_condominio(pasta_rel_atual, dados_limpar)
-                st.success("Lançamentos de campo limpos.")
+                st.success("Lançamentos locais limpos.")
                 st.rerun()
 
     with imp3:
-        with st.expander("Ver lançamentos"):
+        with st.expander("👁 Ver lançamentos"):
             for lc in lancamentos_disponiveis:
-                st.caption(f"📅 {lc.get('data','?')} | Op: {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')} CT:{lc.get('cloro_total','–')} Alc:{lc.get('alcalinidade','–')} DC:{lc.get('dureza','–')} CYA:{lc.get('cianurico','–')}")
-                if lc.get("observacao"):
+                piscinas = lc.get("piscinas",[])
+                if piscinas:
+                    for p in piscinas:
+                        st.caption(f"📅 {lc.get('data','?')} | {p.get('nome','Piscina')} | pH:{p.get('ph','–')} CRL:{p.get('cloro_livre','–')}")
+                else:
+                    st.caption(f"📅 {lc.get('data','?')} | Op:{lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}")
+                if lc.get("problemas","").strip():
+                    st.caption(f"   ⚠️ {lc['problemas']}")
+                if lc.get("observacao","").strip():
                     st.caption(f"   📝 {lc['observacao']}")
+
+else:
+    if nome_rel_atual:
+        st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
 
 st.markdown("**Dados do condomínio / local atendido**")
 rd1, rd2 = st.columns(2)
