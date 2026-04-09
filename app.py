@@ -4525,7 +4525,9 @@ if pasta_formulario_atual and pasta_formulario_atual.exists():
 # TOPO
 # =========================================
 
-# Logo do topo — lê diretamente o widget de seleção de empresa
+# Logo do topo — garante padrão Aqua Gestão se ainda não foi escolhida empresa
+if "empresa_selecionada" not in st.session_state:
+    st.session_state["empresa_selecionada"] = "🔵 Aqua Gestão"
 _radio_empresa_top = st.session_state.get("empresa_selecionada", "🔵 Aqua Gestão")
 if "Bem Star" in str(_radio_empresa_top):
     logo = next((p for p in LOGO_BEM_STAR_CANDIDATOS if p.exists()), None) or encontrar_logo()
