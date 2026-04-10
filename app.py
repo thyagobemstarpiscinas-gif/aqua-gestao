@@ -484,6 +484,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "vol_infantil": vol_infantil,
                 "vol_family":   vol_family,
                 "empresa":      _empresa_cl,
+                "piscinas_extras": [],  # carregado do JSON local se disponível
             })
         return clientes
     except Exception as e:
@@ -1345,16 +1346,33 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
             "dureza":      st.session_state.get(f"op_{abrev}_dc", ""),
             "cianurico":   st.session_state.get(f"op_{abrev}_cya", ""),
         })
-    # Dosagens
-    for i in range(5):
-        prod = st.session_state.get(f"op_dos_prod_{i}", "").strip()
-        if prod:
-            dados["dosagens"].append({
-                "produto":    prod,
-                "quantidade": st.session_state.get(f"op_dos_qtd_{i}", ""),
-                "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
-                "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
-            })
+    # Dosagens por piscina
+    _slug_map_r = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
+    for pisc_nome in piscinas_ativas:
+        _slug_r = _slug_map_r.get(pisc_nome, slugify_nome(pisc_nome)[:12])
+        _dos_p = []
+        for i in range(5):
+            prod = st.session_state.get(f"op_dos_{_slug_r}_prod_{i}", "").strip()
+            if prod:
+                _dos_p.append({
+                    "produto":    prod,
+                    "quantidade": st.session_state.get(f"op_dos_{_slug_r}_qtd_{i}", ""),
+                    "unidade":    st.session_state.get(f"op_dos_{_slug_r}_un_{i}", ""),
+                    "finalidade": st.session_state.get(f"op_dos_{_slug_r}_fin_{i}", ""),
+                })
+        if _dos_p:
+            dados["dosagens"].extend(_dos_p)
+    # Fallback: campos legados op_dos_prod_i
+    if not dados["dosagens"]:
+        for i in range(5):
+            prod = st.session_state.get(f"op_dos_prod_{i}", "").strip()
+            if prod:
+                dados["dosagens"].append({
+                    "produto":    prod,
+                    "quantidade": st.session_state.get(f"op_dos_qtd_{i}", ""),
+                    "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
+                    "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
+                })
     # Fotos já salvas na pasta de rascunho
     _pasta_fotos_rasc = GENERATED_DIR / slugify_nome(nome_cond.strip()) / "fotos_rascunho"
     dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
@@ -4427,124 +4445,198 @@ def gerar_relatorio_visita_docx(
             ("Período de referência", f"{mes}/{ano}"),
         ])
 
-        # ── ANÁLISES ──────────────────────────────────────────────────────────
+        # ── ANÁLISES FÍSICO-QUÍMICAS — uma tabela por piscina ────────────────
         _par("2. ANÁLISES FÍSICO-QUÍMICAS", bold=True, size=11)
 
-        cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
-        t_anal = doc.add_table(rows=1 + len(lancamentos), cols=len(cabecalho))
-        t_anal.style = "Table Grid"
-
-        # Estilo header e zebra
         from docx.oxml.ns import qn as _qn
         from docx.oxml import OxmlElement as _OXE
-        def _shd_cell(cell, fill_hex):
-            tc_pr = cell._tc.get_or_add_tcPr()
-            shd = _OXE("w:shd")
-            shd.set(_qn("w:val"), "clear")
-            shd.set(_qn("w:color"), "auto")
-            shd.set(_qn("w:fill"), fill_hex)
-            tc_pr.append(shd)
-
-        # Cabeçalho com fundo azul
-        from docx.oxml.ns import qn as _qn2
-        from docx.oxml import OxmlElement as _OXE2
         from docx.shared import RGBColor as _RGB
 
         def _shd(cell, fill):
             tc = cell._tc.get_or_add_tcPr()
-            s = _OXE2("w:shd")
-            s.set(_qn2("w:val"), "clear"); s.set(_qn2("w:color"), "auto")
-            s.set(_qn2("w:fill"), fill); tc.append(s)
+            s = _OXE("w:shd")
+            s.set(_qn("w:val"), "clear"); s.set(_qn("w:color"), "auto")
+            s.set(_qn("w:fill"), fill); tc.append(s)
 
-        for j, cab in enumerate(cabecalho):
-            cell = t_anal.cell(0, j)
-            r = cell.paragraphs[0].add_run(cab)
-            r.bold = True; r.font.size = Pt(9)
-            r.font.color.rgb = _RGB(0xFF,0xFF,0xFF)
-            _shd(cell, "0D3D75")
+        def _tabela_analises(nome_piscina: str, dados_linhas: list, vol_m3: str = ""):
+            """Gera bloco de tabela de análises para uma piscina."""
+            # Subtítulo da piscina com volume
+            _vol_txt = f" — {vol_m3} m³" if vol_m3 and vol_m3 != "0" else ""
+            _p_sub = doc.add_paragraph()
+            _r_sub = _p_sub.add_run(f"🏊 {nome_piscina}{_vol_txt}")
+            _r_sub.bold = True
+            _r_sub.font.size = Pt(10)
+            _r_sub.font.color.rgb = _RGB(0x0d, 0x3d, 0x75)
 
-        # Dados com zebra
-        for i, lc in enumerate(lancamentos):
-            piscinas = lc.get("piscinas", [])
-            lc_d = piscinas[0] if piscinas else lc
-            valores = [
-                lc.get("data",""),
-                lc_d.get("ph", lc.get("ph","")),
-                lc_d.get("cloro_livre", lc.get("cloro_livre","")),
-                lc_d.get("cloro_total", lc.get("cloro_total","")),
-                lc_d.get("alcalinidade", lc.get("alcalinidade","")),
-                lc_d.get("dureza", lc.get("dureza","")),
-                lc_d.get("cianurico", lc.get("cianurico","")),
-                lc.get("operador",""),
-            ]
-            _fill = "EEF3FB" if i % 2 == 0 else "FFFFFF"
-            for j, val in enumerate(valores):
-                cell = t_anal.cell(i+1, j)
-                cell.paragraphs[0].add_run(str(val or "—"))
-                cell.paragraphs[0].runs[0].font.size = Pt(9)
-                _shd(cell, _fill)
+            cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
+            t = doc.add_table(rows=1 + len(dados_linhas), cols=len(cabecalho))
+            t.style = "Table Grid"
 
-        doc.add_paragraph()
-
-        # Se múltiplas piscinas, adiciona tabelas extras
-        todas_piscinas = set()
-        for lc in lancamentos:
-            for p in lc.get("piscinas",[]):
-                if p.get("nome","") and p["nome"] != "Piscina":
-                    todas_piscinas.add(p["nome"])
-
-        for pisc_nome in sorted(todas_piscinas):
-            if pisc_nome == lancamentos[0].get("piscinas",[{}])[0].get("nome","") if lancamentos and lancamentos[0].get("piscinas") else True:
-                continue
-            _par(f"Análises — {pisc_nome}", bold=True, size=10)
-            t_p = doc.add_table(rows=1, cols=len(cabecalho))
-            t_p.style = "Table Grid"
+            # Header azul
             for j, cab in enumerate(cabecalho):
-                t_p.cell(0,j).paragraphs[0].add_run(cab).bold = True
-                t_p.cell(0,j).paragraphs[0].runs[0].font.size = Pt(8)
-            for lc in lancamentos:
-                for p in lc.get("piscinas",[]):
-                    if p.get("nome","") == pisc_nome:
-                        row = t_p.add_row()
-                        for j, val in enumerate([
-                            lc.get("data",""), p.get("ph",""), p.get("cloro_livre",""),
-                            p.get("cloro_total",""), p.get("alcalinidade",""),
-                            p.get("dureza",""), p.get("cianurico",""), lc.get("operador",""),
-                        ]):
-                            row.cells[j].paragraphs[0].add_run(str(val or "—"))
-                            row.cells[j].paragraphs[0].runs[0].font.size = Pt(8)
+                cell = t.cell(0, j)
+                r = cell.paragraphs[0].add_run(cab)
+                r.bold = True; r.font.size = Pt(9)
+                r.font.color.rgb = _RGB(0xFF, 0xFF, 0xFF)
+                _shd(cell, "0D3D75")
+
+            # Dados com zebra
+            for i, linha in enumerate(dados_linhas):
+                _fill = "EEF3FB" if i % 2 == 0 else "FFFFFF"
+                for j, val in enumerate(linha):
+                    cell = t.cell(i+1, j)
+                    cell.paragraphs[0].add_run(str(val or "—"))
+                    cell.paragraphs[0].runs[0].font.size = Pt(9)
+                    _shd(cell, _fill)
             doc.add_paragraph()
+
+        # Coleta todas as piscinas distintas presentes nos lançamentos
+        _piscinas_ordem = []
+        _piscinas_vistas = set()
+        for lc in lancamentos:
+            _piscs = lc.get("piscinas", [])
+            if _piscs:
+                for p in _piscs:
+                    _pn = p.get("nome", "Piscina").strip() or "Piscina"
+                    if _pn not in _piscinas_vistas:
+                        _piscinas_vistas.add(_pn)
+                        _piscinas_ordem.append(_pn)
+            else:
+                if "Piscina" not in _piscinas_vistas:
+                    _piscinas_vistas.add("Piscina")
+                    _piscinas_ordem.append("Piscina")
+
+        # Se só tem uma piscina genérica, usa o nome do local
+        if _piscinas_ordem == ["Piscina"] and nome_local:
+            _piscinas_ordem = ["Piscina"]
+
+        # Gera uma tabela por piscina
+        for _pisc_nome in _piscinas_ordem:
+            _linhas_pisc = []
+            for lc in lancamentos:
+                _piscs = lc.get("piscinas", [])
+                if _piscs:
+                    for p in _piscs:
+                        if (p.get("nome","Piscina").strip() or "Piscina") == _pisc_nome:
+                            _linhas_pisc.append([
+                                lc.get("data",""),
+                                p.get("ph",""),
+                                p.get("cloro_livre",""),
+                                p.get("cloro_total",""),
+                                p.get("alcalinidade",""),
+                                p.get("dureza",""),
+                                p.get("cianurico",""),
+                                lc.get("operador",""),
+                            ])
+                elif _pisc_nome == "Piscina":
+                    _linhas_pisc.append([
+                        lc.get("data",""),
+                        lc.get("ph",""),
+                        lc.get("cloro_livre",""),
+                        lc.get("cloro_total",""),
+                        lc.get("alcalinidade",""),
+                        lc.get("dureza",""),
+                        lc.get("cianurico",""),
+                        lc.get("operador",""),
+                    ])
+            if _linhas_pisc:
+                _tabela_analises(_pisc_nome, _linhas_pisc)
 
         # ── DOSAGENS ──────────────────────────────────────────────────────────
         _par("3. DOSAGENS APLICADAS", bold=True, size=11)
-        todas_dosagens = []
+
+        # Agrupa dosagens por piscina (se disponível) ou por visita
+        # Estrutura: {piscina_nome: [{data, produto, qtd, un, fin}]}
+        _dos_por_pisc = {}
+
         for lc in lancamentos:
             data_lc = lc.get("data","")
-            for d in lc.get("dosagens",[]):
-                if d.get("produto","").strip():
-                    todas_dosagens.append({**d, "data": data_lc})
+            _piscs = lc.get("piscinas", [])
 
-        if todas_dosagens:
-            t_dos = doc.add_table(rows=1 + len(todas_dosagens), cols=5)
+            if _piscs:
+                # Dosagens vinculadas a cada piscina
+                for p in _piscs:
+                    _pn = p.get("nome","Piscina").strip() or "Piscina"
+                    _dos_p = p.get("dosagens", [])
+                    # Se a piscina não tem dosagens próprias, usa as dosagens gerais da visita
+                    if not _dos_p:
+                        _dos_p = lc.get("dosagens", [])
+                    for d in _dos_p:
+                        if d.get("produto","").strip():
+                            if _pn not in _dos_por_pisc:
+                                _dos_por_pisc[_pn] = []
+                            _dos_por_pisc[_pn].append({**d, "data": data_lc})
+                # Se nenhuma piscina tem dosagens, coloca nas dosagens gerais
+                if not any(_dos_por_pisc.get(p.get("nome","Piscina"),[]) for p in _piscs):
+                    for d in lc.get("dosagens",[]):
+                        if d.get("produto","").strip():
+                            _pn_geral = _piscs[0].get("nome","Geral") if _piscs else "Geral"
+                            if _pn_geral not in _dos_por_pisc:
+                                _dos_por_pisc[_pn_geral] = []
+                            _dos_por_pisc[_pn_geral].append({**d, "data": data_lc})
+            else:
+                # Sem piscinas — dosagens gerais
+                for d in lc.get("dosagens",[]):
+                    if d.get("produto","").strip():
+                        if "Geral" not in _dos_por_pisc:
+                            _dos_por_pisc["Geral"] = []
+                        _dos_por_pisc["Geral"].append({**d, "data": data_lc})
+
+        # Se todas as dosagens ficaram na mesma chave (sem distinção por piscina),
+        # consolida em tabela única com header "Dosagens do período"
+        _chaves_dos = [k for k, v in _dos_por_pisc.items() if v]
+
+        if not _chaves_dos:
+            _par("Nenhuma dosagem registrada no período.", size=10, italic=True)
+        elif len(_chaves_dos) == 1:
+            # Uma piscina ou geral — tabela única sem subtítulo de piscina
+            _lista_dos = list(_dos_por_pisc.values())[0]
+            t_dos = doc.add_table(rows=1 + len(_lista_dos), cols=5)
             t_dos.style = "Table Grid"
             for j, cab in enumerate(["Data", "Produto", "Qtd.", "Unidade", "Finalidade / Motivo"]):
                 _c = t_dos.cell(0,j)
                 _r = _c.paragraphs[0].add_run(cab)
                 _r.bold = True; _r.font.size = Pt(9)
-                try:
+                _r.font.color.rgb = _RGB(0xFF,0xFF,0xFF)
+                _shd(_c, "0D3D75")
+            for i, d in enumerate(_lista_dos):
+                _fill_d = "EEF3FB" if i % 2 == 0 else "FFFFFF"
+                for j, val in enumerate([d.get("data",""), d.get("produto",""),
+                        d.get("quantidade",""), d.get("unidade",""), d.get("finalidade","")]):
+                    _cd = t_dos.cell(i+1,j)
+                    _cd.paragraphs[0].add_run(str(val or "—"))
+                    _cd.paragraphs[0].runs[0].font.size = Pt(9)
+                    _shd(_cd, _fill_d)
+        else:
+            # Múltiplas piscinas — uma subseção por piscina
+            for _pn_dos in _chaves_dos:
+                _lista_dos = _dos_por_pisc[_pn_dos]
+                if not _lista_dos:
+                    continue
+                # Subtítulo da piscina
+                _p_sub_dos = doc.add_paragraph()
+                _r_sub_dos = _p_sub_dos.add_run(f"🏊 {_pn_dos}")
+                _r_sub_dos.bold = True; _r_sub_dos.font.size = Pt(10)
+                _r_sub_dos.font.color.rgb = _RGB(0x0d, 0x3d, 0x75)
+                # Tabela
+                t_dos = doc.add_table(rows=1 + len(_lista_dos), cols=5)
+                t_dos.style = "Table Grid"
+                for j, cab in enumerate(["Data", "Produto", "Qtd.", "Unidade", "Finalidade / Motivo"]):
+                    _c = t_dos.cell(0,j)
+                    _r = _c.paragraphs[0].add_run(cab)
+                    _r.bold = True; _r.font.size = Pt(9)
                     _r.font.color.rgb = _RGB(0xFF,0xFF,0xFF)
                     _shd(_c, "0D3D75")
-                except Exception:
-                    pass
-            for i, d in enumerate(todas_dosagens):
-                for j, val in enumerate([
-                    d.get("data",""), d.get("produto",""),
-                    d.get("quantidade",""), d.get("unidade",""), d.get("finalidade",""),
-                ]):
-                    t_dos.cell(i+1,j).paragraphs[0].add_run(str(val or "—"))
-                    t_dos.cell(i+1,j).paragraphs[0].runs[0].font.size = Pt(9)
-        else:
-            _par("Nenhuma dosagem registrada no período.", size=10, italic=True)
+                for i, d in enumerate(_lista_dos):
+                    _fill_d = "EEF3FB" if i % 2 == 0 else "FFFFFF"
+                    for j, val in enumerate([d.get("data",""), d.get("produto",""),
+                            d.get("quantidade",""), d.get("unidade",""), d.get("finalidade","")]):
+                        _cd = t_dos.cell(i+1,j)
+                        _cd.paragraphs[0].add_run(str(val or "—"))
+                        _cd.paragraphs[0].runs[0].font.size = Pt(9)
+                        _shd(_cd, _fill_d)
+                doc.add_paragraph()
+
         doc.add_paragraph()
 
         # ── PROBLEMAS / OCORRÊNCIAS ───────────────────────────────────────────
@@ -4573,12 +4665,27 @@ def gerar_relatorio_visita_docx(
         else:
             secao_fotos = secao_obs
 
-        # ── FOTOS ─────────────────────────────────────────────────────────────
-        if fotos:
-            _par(f"{secao_fotos}. REGISTRO FOTOGRÁFICO", bold=True, size=11)
-            for foto_path in fotos:
+        # ── REGISTRO FOTOGRÁFICO — organizado por categoria ───────────────────
+        # Classifica fotos por categoria baseado no prefixo do nome
+        _fotos_antes  = [f for f in (fotos or []) if "antes"  in f.name.lower()]
+        _fotos_depois = [f for f in (fotos or []) if "depois" in f.name.lower()]
+        _fotos_cmaq   = [f for f in (fotos or []) if "cmaq"   in f.name.lower()
+                         or "maquin" in f.name.lower() or "casa" in f.name.lower()]
+        _fotos_outras = [f for f in (fotos or [])
+                         if f not in _fotos_antes + _fotos_depois + _fotos_cmaq]
+
+        _tem_fotos = any([_fotos_antes, _fotos_depois, _fotos_cmaq, _fotos_outras])
+
+        def _inserir_bloco_fotos(titulo_cat, lista_fotos, icone="📷"):
+            if not lista_fotos:
+                return
+            _p_cat = doc.add_paragraph()
+            _r_cat = _p_cat.add_run(f"{icone} {titulo_cat} ({len(lista_fotos)} foto(s))")
+            _r_cat.bold = True
+            _r_cat.font.size = Pt(10)
+            _r_cat.font.color.rgb = _RGB(0x0d, 0x3d, 0x75)
+            for foto_path in lista_fotos:
                 try:
-                    _par(foto_path.name, size=9)
                     p_foto = doc.add_paragraph()
                     p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     _ok_foto = inserir_foto_docx_exif(p_foto, foto_path, width_inches=5.5)
@@ -4587,6 +4694,13 @@ def gerar_relatorio_visita_docx(
                 except Exception:
                     _par(f"[Foto não inserida: {foto_path.name}]", size=9, italic=True)
             doc.add_paragraph()
+
+        if _tem_fotos:
+            _par(f"{secao_fotos}. REGISTRO FOTOGRÁFICO", bold=True, size=11)
+            _inserir_bloco_fotos("Antes do tratamento",  _fotos_antes,  "🔵")
+            _inserir_bloco_fotos("Após o tratamento",    _fotos_depois, "🟢")
+            _inserir_bloco_fotos("Casa de máquinas",     _fotos_cmaq,   "🔧")
+            _inserir_bloco_fotos("Outras",               _fotos_outras, "📷")
             secao_parecer = secao_fotos + 1
         else:
             secao_parecer = secao_fotos
@@ -5840,16 +5954,24 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     _vol_pisc = 0.0
                     _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
                     _vol_key = _slug_map2.get(pisc_nome, "")
-                    if _vol_key and _vol_m3:
-                        # Busca volume individual
-                        try:
-                            _clv = sheets_listar_clientes_completo()
-                            for _cv2 in _clv:
-                                if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                    try:
+                        _clv = sheets_listar_clientes_completo()
+                        for _cv2 in _clv:
+                            if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                                if _vol_key:
+                                    # Piscina padrão (adulto/infantil/family)
                                     _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
-                                    break
-                        except Exception:
-                            pass
+                                else:
+                                    # Piscina extra — busca no JSON local
+                                    _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                                    _dados_extra_vol = carregar_dados_condominio(_pasta_extra_vol) if _pasta_extra_vol.exists() else {}
+                                    for _pe in (_dados_extra_vol or {}).get("piscinas_extras", []):
+                                        if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
+                                            _vol_pisc = float(_pe.get("vol", 0) or 0)
+                                            break
+                                break
+                    except Exception:
+                        pass
                     _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
 
                     _sugestoes = []
@@ -5859,7 +5981,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                             volume_m3=_vol_usar
                         )
                     if _sugestoes:
-                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_m3:.0f} m³):**")
+                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
                         for _s in _sugestoes:
                             _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
                             if _s["quantidade"] and _s["quantidade"] > 0:
@@ -5870,6 +5992,18 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                             with st.expander("ℹ️ Base técnica", expanded=False):
                                 st.caption(_s["justificativa"])
                                 st.caption(f"📚 {_s.get('norma','')}")
+                        # Botão aplicar sugestões nas dosagens desta piscina
+                        if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
+                                key=f"btn_aplicar_sug_{pisc_slug}",
+                                use_container_width=True):
+                            # Salva sugestões no session_state para preencher dosagens
+                            _key_sug = f"_sug_pisc_{pisc_slug}"
+                            st.session_state[_key_sug] = [
+                                s for s in _sugestoes
+                                if s.get("quantidade") and s["quantidade"] > 0
+                            ]
+                            st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
+                            st.rerun()
                     else:
                         st.success("✅ Todos os parâmetros dentro da faixa ideal.")
                 else:
@@ -5886,20 +6020,70 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_cya = op_piscinas_dados[0]["cianurico"]   if op_piscinas_dados else ""
         op_cloraminas = valor_float(op_piscinas_dados[0]["cloraminas"]) if op_piscinas_dados else None
 
-        # ── Dosagens ──────────────────────────────────────────────────────────
+        # ── Dosagens por piscina ──────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">⚗️ Dosagens aplicadas</div>', unsafe_allow_html=True)
-        op_dosagens = []
-        for i in range(5):
-            with st.expander(f"Produto {i+1}", expanded=(i == 0)):
-                d1, d2 = st.columns([2, 1])
-                prod = d1.text_input("Produto", key=f"op_dos_prod_{i}", label_visibility="collapsed", placeholder="Nome do produto", on_change=_autosave_rascunho)
-                qtd  = d2.text_input("Qtd", key=f"op_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd", on_change=_autosave_rascunho)
-                d3, d4 = st.columns([1, 2])
-                un   = d3.text_input("Un", key=f"op_dos_un_{i}", label_visibility="collapsed", placeholder="kg/L", on_change=_autosave_rascunho)
-                fin  = d4.text_input("Finalidade", key=f"op_dos_fin_{i}", label_visibility="collapsed", placeholder="Finalidade", on_change=_autosave_rascunho)
-                if prod.strip():
-                    op_dosagens.append({"produto": prod.strip(), "fabricante_lote": "", "quantidade": qtd.strip(), "unidade": un.strip(), "finalidade": fin.strip()})
+        st.caption("Registre os produtos aplicados em cada piscina. Use as sugestões calculadas acima.")
+        op_dosagens = []  # lista global para compatibilidade (primeira piscina)
+
+        for _pisc_d in op_piscinas_dados:
+            _pn_d    = _pisc_d["nome"]
+            _slug_d  = _slug_map.get(_pn_d, slugify_nome(_pn_d)[:12])
+            _key_sug = f"_sug_pisc_{_slug_d}"
+
+            # Se há sugestões aplicadas para esta piscina, pré-preenche os campos
+            _sug_aplicadas = st.session_state.get(_key_sug, [])
+            if _sug_aplicadas:
+                for _idx_s, _s in enumerate(_sug_aplicadas[:5]):
+                    st.session_state[f"op_dos_{_slug_d}_prod_{_idx_s}"] = _s.get("produto","")
+                    st.session_state[f"op_dos_{_slug_d}_qtd_{_idx_s}"]  = str(round(_s.get("quantidade",0),1))
+                    st.session_state[f"op_dos_{_slug_d}_un_{_idx_s}"]   = _s.get("unidade","")
+                    st.session_state[f"op_dos_{_slug_d}_fin_{_idx_s}"]  = _s.get("acao","")
+                st.session_state.pop(_key_sug, None)  # limpa após aplicar
+
+            st.markdown(f"**🏊 {_pn_d}**")
+            _dos_pisc = []
+            for i in range(5):
+                _k_prod = f"op_dos_{_slug_d}_prod_{i}"
+                _k_qtd  = f"op_dos_{_slug_d}_qtd_{i}"
+                _k_un   = f"op_dos_{_slug_d}_un_{i}"
+                _k_fin  = f"op_dos_{_slug_d}_fin_{i}"
+                with st.expander(
+                    f"Produto {i+1}" + (f" — {st.session_state.get(_k_prod,'')}" if st.session_state.get(_k_prod) else ""),
+                    expanded=(i == 0 or bool(st.session_state.get(_k_prod)))
+                ):
+                    _dd1, _dd2 = st.columns([2, 1])
+                    _prod = _dd1.text_input("Produto", key=_k_prod,
+                        label_visibility="collapsed", placeholder="Nome do produto",
+                        on_change=_autosave_rascunho)
+                    _qtd  = _dd2.text_input("Qtd", key=_k_qtd,
+                        label_visibility="collapsed", placeholder="Qtd",
+                        on_change=_autosave_rascunho)
+                    _dd3, _dd4 = st.columns([1, 2])
+                    _un   = _dd3.text_input("Un", key=_k_un,
+                        label_visibility="collapsed", placeholder="kg/L/g",
+                        on_change=_autosave_rascunho)
+                    _fin  = _dd4.text_input("Finalidade", key=_k_fin,
+                        label_visibility="collapsed", placeholder="Finalidade / motivo",
+                        on_change=_autosave_rascunho)
+                    if _prod.strip():
+                        _dos_pisc.append({
+                            "produto":    _prod.strip(),
+                            "quantidade": _qtd.strip(),
+                            "unidade":    _un.strip(),
+                            "finalidade": _fin.strip(),
+                        })
+
+            # Armazena dosagens na piscina correspondente
+            _pisc_d["dosagens"] = _dos_pisc
+            # Compatibilidade legado (primeira piscina)
+            if not op_dosagens and _dos_pisc:
+                op_dosagens = _dos_pisc
+
+        # Fallback: se só tem uma piscina, op_dosagens = dosagens dela
+        if not op_dosagens and op_piscinas_dados:
+            op_dosagens = op_piscinas_dados[0].get("dosagens", [])
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Fotos categorizadas — com salvamento imediato ───────────────────
@@ -6618,7 +6802,9 @@ else:
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
     for k in ["cc_nome","cc_cnpj","cc_cep","cc_endereco","cc_contato","cc_telefone",
-              "cc_vol_adulto","cc_vol_infantil","cc_vol_family"]:
+              "cc_vol_adulto","cc_vol_infantil","cc_vol_family",
+              "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
+              "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
 
 # ── Seletor de edição ────────────────────────────────────────────────────────
@@ -6651,6 +6837,11 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
             st.session_state["cc_vol_infantil"] = str(_cc_cliente_editar.get("vol_infantil","") or "")
             st.session_state["cc_vol_family"]   = str(_cc_cliente_editar.get("vol_family","") or "")
+            _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
+            st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
+            st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
+            st.session_state["cc_pisc_extra2_nome"] = _piscs_extras[1]["nome"] if len(_piscs_extras) > 1 else ""
+            st.session_state["cc_pisc_extra2_vol"]  = str(_piscs_extras[1].get("vol","") or "") if len(_piscs_extras) > 1 else ""
             st.rerun()
     else:
         st.info("Nenhum cliente para editar.")
@@ -6714,14 +6905,36 @@ with cc2:
     cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
 
 # ── Volumes das piscinas ─────────────────────────────────────────────────────
-st.markdown("**🏊 Volume das piscinas (m³)**")
+st.markdown("**🏊 Volumes das piscinas (m³)**")
+st.caption("Preencha apenas as piscinas que este local possui. O volume é usado para calcular dosagens automaticamente.")
+
 cv1, cv2, cv3 = st.columns(3)
 with cv1:
-    cc_vol_adulto   = st.text_input("Piscina Adulto (m³)", key="cc_vol_adulto", placeholder="ex: 150")
+    cc_vol_adulto   = st.text_input("🏊 Adulto (m³)", key="cc_vol_adulto",
+        placeholder="ex: 150", help="Volume da piscina adulto em metros cúbicos")
 with cv2:
-    cc_vol_infantil = st.text_input("Piscina Infantil (m³)", key="cc_vol_infantil", placeholder="ex: 30")
+    cc_vol_infantil = st.text_input("🐣 Infantil (m³)", key="cc_vol_infantil",
+        placeholder="ex: 30", help="Volume da piscina infantil em metros cúbicos")
 with cv3:
-    cc_vol_family   = st.text_input("Piscina Family (m³)", key="cc_vol_family", placeholder="ex: 50")
+    cc_vol_family   = st.text_input("👨‍👩‍👧 Family (m³)", key="cc_vol_family",
+        placeholder="ex: 50", help="Volume da piscina family em metros cúbicos")
+
+# Piscinas extras (outra, SPA, coberta, etc.)
+st.markdown("**Outras piscinas** (SPA, coberta, olímpica, etc.)")
+_cv_extra1, _cv_extra2 = st.columns(2)
+with _cv_extra1:
+    cc_pisc_extra1_nome = st.text_input("Nome da piscina extra 1", key="cc_pisc_extra1_nome",
+        placeholder="ex: SPA, Coberta, Olímpica")
+with _cv_extra2:
+    cc_pisc_extra1_vol  = st.text_input("Volume (m³)", key="cc_pisc_extra1_vol",
+        placeholder="ex: 80")
+_cv_extra3, _cv_extra4 = st.columns(2)
+with _cv_extra3:
+    cc_pisc_extra2_nome = st.text_input("Nome da piscina extra 2", key="cc_pisc_extra2_nome",
+        placeholder="ex: Aquecida, Semiolímpica")
+with _cv_extra4:
+    cc_pisc_extra2_vol  = st.text_input("Volume (m³) ", key="cc_pisc_extra2_vol",
+        placeholder="ex: 120")
 
 def _parse_vol(v):
     try: return float(str(v).replace(",",".").strip() or 0)
@@ -6738,6 +6951,18 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
+                # Coleta piscinas extras
+                _piscs_extras_editar = []
+                for _en, _ev in [
+                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
+                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
+                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
+                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
+                ]:
+                    if _en:
+                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
+                        except: _ev_f = 0
+                        _piscs_extras_editar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_editar_cliente(
                     id_cliente=_cc_cliente_editar["id"],
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
@@ -6746,8 +6971,28 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
+                # Salva piscinas extras no JSON local
+                if _piscs_extras_editar:
+                    _pasta_extras2 = GENERATED_DIR / slugify_nome(cc_nome.strip())
+                    _pasta_extras2.mkdir(parents=True, exist_ok=True)
+                    _dados_extras2 = carregar_dados_condominio(_pasta_extras2) or {}
+                    _dados_extras2["piscinas_extras"] = _piscs_extras_editar
+                    _dados_extras2["nome_condominio"] = cc_nome.strip()
+                    salvar_dados_condominio(_pasta_extras2, _dados_extras2)
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
+                # Coleta piscinas extras
+                _piscs_extras_salvar = []
+                for _en, _ev in [
+                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
+                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
+                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
+                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
+                ]:
+                    if _en:
+                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
+                        except: _ev_f = 0
+                        _piscs_extras_salvar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_salvar_cliente(
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
                     endereco=cc_endereco.strip(), contato=cc_contato.strip(),
@@ -6755,6 +7000,14 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
+                # Salva piscinas extras no JSON local
+                if _piscs_extras_salvar:
+                    _pasta_extras = GENERATED_DIR / slugify_nome(cc_nome.strip())
+                    _pasta_extras.mkdir(parents=True, exist_ok=True)
+                    _dados_extras = carregar_dados_condominio(_pasta_extras) or {}
+                    _dados_extras["piscinas_extras"] = _piscs_extras_salvar
+                    _dados_extras["nome_condominio"] = cc_nome.strip()
+                    salvar_dados_condominio(_pasta_extras, _dados_extras)
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
         if ok:
             st.success(msg_ok)
