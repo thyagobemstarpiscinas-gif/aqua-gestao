@@ -1247,6 +1247,120 @@ def logo_para_base64(path) -> str:
         return ""
 
 
+def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
+    """Salva rascunho do lançamento em andamento no modo operador."""
+    try:
+        pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
+        pasta.mkdir(parents=True, exist_ok=True)
+        rascunho_path = pasta / "_rascunho_operador.json"
+        dados["_rascunho_salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        dados["_rascunho_cond"] = nome_cond.strip()
+        with open(rascunho_path, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def carregar_rascunho_operador(nome_cond: str) -> dict:
+    """Carrega rascunho do operador para um condomínio."""
+    try:
+        pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
+        rascunho_path = pasta / "_rascunho_operador.json"
+        if not rascunho_path.exists():
+            return {}
+        with open(rascunho_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def deletar_rascunho_operador(nome_cond: str):
+    """Remove rascunho após salvar lançamento definitivo."""
+    try:
+        pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
+        rascunho_path = pasta / "_rascunho_operador.json"
+        if rascunho_path.exists():
+            rascunho_path.unlink()
+    except Exception:
+        pass
+
+
+def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
+    """Coleta estado atual do formulário do operador para salvar como rascunho."""
+    dados = {
+        "data_visita":  st.session_state.get("op_data_visita", ""),
+        "operador":     st.session_state.get("op_operador", ""),
+        "obs":          st.session_state.get("op_obs_campo", ""),
+        "problemas":    st.session_state.get("op_problemas", ""),
+        "resp_local":   st.session_state.get("op_resp_local", ""),
+        "parecer":      st.session_state.get("op_parecer_visita", "✅ Satisfatório"),
+        "piscinas": [],
+        "dosagens": [],
+    }
+    # Parâmetros por piscina
+    for pisc_nome in piscinas_ativas:
+        _slug = slugify_nome(pisc_nome).lower()
+        abrev = ("adulto" if "adulto" in _slug else
+                 "infantil" if "infantil" in _slug else
+                 "family" if "family" in _slug else "outra")
+        dados["piscinas"].append({
+            "nome":        pisc_nome,
+            "ph":          st.session_state.get(f"op_{abrev}_ph", ""),
+            "cloro_livre": st.session_state.get(f"op_{abrev}_crl", ""),
+            "cloro_total": st.session_state.get(f"op_{abrev}_ct", ""),
+            "alcalinidade":st.session_state.get(f"op_{abrev}_alc", ""),
+            "dureza":      st.session_state.get(f"op_{abrev}_dc", ""),
+            "cianurico":   st.session_state.get(f"op_{abrev}_cya", ""),
+        })
+    # Dosagens
+    for i in range(5):
+        prod = st.session_state.get(f"op_dos_prod_{i}", "").strip()
+        if prod:
+            dados["dosagens"].append({
+                "produto":    prod,
+                "quantidade": st.session_state.get(f"op_dos_qtd_{i}", ""),
+                "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
+                "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
+            })
+    return dados
+
+
+def restaurar_rascunho_operador(rascunho: dict):
+    """Restaura rascunho nos campos do formulário do operador."""
+    if rascunho.get("data_visita"):
+        st.session_state["op_data_visita"] = rascunho["data_visita"]
+    if rascunho.get("operador"):
+        st.session_state["op_operador"] = rascunho["operador"]
+    if rascunho.get("obs"):
+        st.session_state["op_obs_campo"] = rascunho["obs"]
+    if rascunho.get("problemas"):
+        st.session_state["op_problemas"] = rascunho["problemas"]
+    if rascunho.get("resp_local"):
+        st.session_state["op_resp_local"] = rascunho["resp_local"]
+    if rascunho.get("parecer"):
+        st.session_state["op_parecer_visita"] = rascunho["parecer"]
+    # Parâmetros por piscina
+    for p in rascunho.get("piscinas", []):
+        _slug = slugify_nome(p.get("nome","")).lower()
+        abrev = ("adulto" if "adulto" in _slug else
+                 "infantil" if "infantil" in _slug else
+                 "family" if "family" in _slug else "outra")
+        for campo, key in [
+            ("ph", f"op_{abrev}_ph"), ("cloro_livre", f"op_{abrev}_crl"),
+            ("cloro_total", f"op_{abrev}_ct"), ("alcalinidade", f"op_{abrev}_alc"),
+            ("dureza", f"op_{abrev}_dc"), ("cianurico", f"op_{abrev}_cya"),
+        ]:
+            if p.get(campo):
+                st.session_state[key] = p[campo]
+    # Dosagens
+    for i, d in enumerate(rascunho.get("dosagens", [])[:5]):
+        st.session_state[f"op_dos_prod_{i}"] = d.get("produto", "")
+        st.session_state[f"op_dos_qtd_{i}"]  = d.get("quantidade", "")
+        st.session_state[f"op_dos_un_{i}"]   = d.get("unidade", "")
+        st.session_state[f"op_dos_fin_{i}"]  = d.get("finalidade", "")
+
+
 def buscar_cep(cep: str) -> dict:
     """Consulta ViaCEP via requests com fallback para urllib."""
     cep_limpo = re.sub(r"\D", "", cep or "")
@@ -5330,6 +5444,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:]}"
         else:
             st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:4]}/{v[4:]}"
+        # Autosave na mudança de data
+        if op_nome_cond.strip():
+            try:
+                _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas if "piscinas_ativas" in dir() else ["Piscina Adulto"])
+                salvar_rascunho_operador(op_nome_cond, _d)
+            except Exception:
+                pass
 
     st.text_input("Data (digite só números: ddmmaaaa)",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
@@ -5371,6 +5492,50 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.rerun()
         piscinas_ativas = _piscinas_ativas
 
+        # ── Indicador de autosave ────────────────────────────────────────────
+        _rasc_path = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json"
+        if _rasc_path.exists():
+            try:
+                import json as _json_rasc
+                with open(_rasc_path) as _rf:
+                    _rasc_info = _json_rasc.load(_rf)
+                _salvo_em_auto = _rasc_info.get("_rascunho_salvo_em", "")
+                st.markdown(
+                    f"<div style='text-align:right;font-size:0.75rem;color:#3a8a3a;padding:2px 8px;'>"
+                    f"💾 Salvo automaticamente às {_salvo_em_auto.split()[-1] if _salvo_em_auto else '—'}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            except Exception:
+                pass
+
+        # ── Verificar rascunho existente ─────────────────────────────────────
+        _rascunho_op = carregar_rascunho_operador(op_nome_cond)
+        _key_rascunho_visto = f"_rascunho_visto_{slugify_nome(op_nome_cond)}"
+        if _rascunho_op and not st.session_state.get(_key_rascunho_visto):
+            _salvo_em = _rascunho_op.get("_rascunho_salvo_em", "")
+            st.markdown(f"""
+            <div style="background:rgba(255,165,0,0.12);border:1px solid rgba(255,165,0,0.4);
+            border-radius:12px;padding:12px 16px;margin-bottom:8px;">
+            ⚠️ <strong>Rascunho encontrado</strong> — salvo em {_salvo_em}<br>
+            <span style="font-size:0.85rem;color:#aaa;">Você pode restaurar e continuar de onde parou.</span>
+            </div>
+            """, unsafe_allow_html=True)
+            _rc1, _rc2 = st.columns(2)
+            with _rc1:
+                if st.button("📂 Restaurar rascunho", key="btn_restaurar_rasc",
+                        type="primary", use_container_width=True):
+                    restaurar_rascunho_operador(_rascunho_op)
+                    st.session_state[_key_rascunho_visto] = True
+                    st.success("✅ Rascunho restaurado! Continue de onde parou.")
+                    st.rerun()
+            with _rc2:
+                if st.button("🗑 Descartar rascunho", key="btn_descartar_rasc",
+                        use_container_width=True):
+                    deletar_rascunho_operador(op_nome_cond)
+                    st.session_state[_key_rascunho_visto] = True
+                    st.rerun()
+
         # Limpa campos SE houver limpeza pendente
         if st.session_state.pop("op_limpar_campos", False):
             for pisc in ["adulto","infantil","family","outra"]:
@@ -5384,9 +5549,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.session_state["op_resp_local"] = ""
             st.session_state["op_parecer_visita"] = "✅ Satisfatório"
 
+        # ── Autosave: função chamada a cada mudança de campo ─────────────────
+        def _autosave_rascunho():
+            """Salva rascunho automaticamente quando qualquer campo muda."""
+            if op_nome_cond.strip():
+                _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
+                salvar_rascunho_operador(op_nome_cond, _d)
+
         def _num_op(chave, label, placeholder, quinzenal=False):
             lbl = f"{label} ⏱ 15d" if quinzenal else label
             v = st.text_input(lbl, key=chave, placeholder=placeholder,
+                on_change=_autosave_rascunho,
                 help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
             return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
@@ -5533,33 +5706,88 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         for i in range(5):
             with st.expander(f"Produto {i+1}", expanded=(i == 0)):
                 d1, d2 = st.columns([2, 1])
-                prod = d1.text_input("Produto", key=f"op_dos_prod_{i}", label_visibility="collapsed", placeholder="Nome do produto")
-                qtd  = d2.text_input("Qtd", key=f"op_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd")
+                prod = d1.text_input("Produto", key=f"op_dos_prod_{i}", label_visibility="collapsed", placeholder="Nome do produto", on_change=_autosave_rascunho)
+                qtd  = d2.text_input("Qtd", key=f"op_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd", on_change=_autosave_rascunho)
                 d3, d4 = st.columns([1, 2])
-                un   = d3.text_input("Un", key=f"op_dos_un_{i}", label_visibility="collapsed", placeholder="kg/L")
-                fin  = d4.text_input("Finalidade", key=f"op_dos_fin_{i}", label_visibility="collapsed", placeholder="Finalidade")
+                un   = d3.text_input("Un", key=f"op_dos_un_{i}", label_visibility="collapsed", placeholder="kg/L", on_change=_autosave_rascunho)
+                fin  = d4.text_input("Finalidade", key=f"op_dos_fin_{i}", label_visibility="collapsed", placeholder="Finalidade", on_change=_autosave_rascunho)
                 if prod.strip():
                     op_dosagens.append({"produto": prod.strip(), "fabricante_lote": "", "quantidade": qtd.strip(), "unidade": un.strip(), "finalidade": fin.strip()})
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # ── Fotos categorizadas ───────────────────────────────────────────────
+        # ── Fotos categorizadas — com salvamento imediato ───────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">📸 Fotos da visita</div>', unsafe_allow_html=True)
-        st.caption("Faça upload de cada foto na categoria correta.")
+        st.caption("Fotos são salvas automaticamente ao fazer upload — não somem se o sinal cair.")
 
         op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_antes")
         op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_depois")
         op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_cmaq")
 
-        # Preview
-        _todas_fotos_preview = [("Antes", op_fotos_antes), ("Depois", op_fotos_depois), ("Casa máq.", op_fotos_cmaq)]
-        for _cat, _flist in _todas_fotos_preview:
-            if _flist:
-                st.caption(f"**{_cat}:**")
-                _cols = st.columns(min(len(_flist), 3))
-                for _i, _f in enumerate(_flist):
+        # ── Salvamento imediato ao upload ─────────────────────────────────────
+        # Pasta temporária de fotos do rascunho
+        _pasta_fotos_rasc = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "fotos_rascunho") if op_nome_cond.strip() else None
+
+        def _salvar_foto_imediato(lista_uploads, categoria):
+            """Salva fotos na pasta de rascunho assim que são carregadas."""
+            if not _pasta_fotos_rasc or not lista_uploads:
+                return []
+            _pasta_fotos_rasc.mkdir(parents=True, exist_ok=True)
+            salvos = []
+            for foto in lista_uploads:
+                _nome_f = f"rasc_{categoria}_{limpar_nome_arquivo(foto.name)}"
+                _path_f = _pasta_fotos_rasc / _nome_f
+                if not _path_f.exists():  # Não re-salva se já existe
+                    with open(_path_f, "wb") as _ff:
+                        _ff.write(foto.getbuffer())
+                salvos.append(_nome_f)
+            return salvos
+
+        # Salva imediatamente ao fazer upload
+        _fotos_rasc_antes  = _salvar_foto_imediato(op_fotos_antes,  "antes")
+        _fotos_rasc_depois = _salvar_foto_imediato(op_fotos_depois, "depois")
+        _fotos_rasc_cmaq   = _salvar_foto_imediato(op_fotos_cmaq,   "cmaq")
+
+        # Também mostra fotos já salvas do rascunho anterior (sessão anterior)
+        _fotos_rasc_existentes = {"antes": [], "depois": [], "cmaq": []}
+        if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
+            for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
+                for _cat in ["antes", "depois", "cmaq"]:
+                    if f"rasc_{_cat}_" in _fp.name:
+                        _fotos_rasc_existentes[_cat].append(_fp)
+
+        # Preview — fotos do upload atual + fotos salvas do rascunho
+        _todas_fotos_preview = [
+            ("🔵 Antes", op_fotos_antes, _fotos_rasc_existentes["antes"]),
+            ("🟢 Depois", op_fotos_depois, _fotos_rasc_existentes["depois"]),
+            ("🔧 Casa máq.", op_fotos_cmaq, _fotos_rasc_existentes["cmaq"]),
+        ]
+        _total_fotos_rasc = sum(len(v) for v in _fotos_rasc_existentes.values())
+        if _total_fotos_rasc > 0:
+            st.caption(f"💾 {_total_fotos_rasc} foto(s) já salvas do rascunho anterior")
+
+        for _cat, _flist_up, _flist_rasc in _todas_fotos_preview:
+            _todas = list(_flist_up or []) 
+            # Mostra fotos do rascunho que não estão no upload atual
+            _nomes_up = {f.name for f in (_flist_up or [])}
+            _rasc_extras = [f for f in _flist_rasc
+                           if not any(f.name.endswith(n) for n in _nomes_up)]
+            if _todas or _rasc_extras:
+                st.caption(f"**{_cat}:** {len(_todas) + len(_rasc_extras)} foto(s)")
+                _all_show = _todas + _rasc_extras
+                _cols = st.columns(min(len(_all_show), 3))
+                for _i, _f in enumerate(_all_show):
                     with _cols[_i % 3]:
                         st.image(_f, use_container_width=True)
+
+        # Botão para limpar fotos do rascunho
+        if _total_fotos_rasc > 0:
+            if st.button("🗑 Limpar fotos do rascunho", key="btn_limpar_fotos_rasc"):
+                import shutil
+                if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
+                    shutil.rmtree(str(_pasta_fotos_rasc))
+                st.rerun()
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Problemas / Ocorrências ───────────────────────────────────────────
@@ -5567,14 +5795,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown('<div class="op-title">⚠️ Problemas / Ocorrências</div>', unsafe_allow_html=True)
         op_problemas = st.text_area("Problemas", key="op_problemas", height=80,
             label_visibility="collapsed",
-            placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...")
+            placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
+            on_change=_autosave_rascunho)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Observação geral ──────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">📝 Observação geral</div>', unsafe_allow_html=True)
         op_obs = st.text_area("Obs", key="op_obs_campo", height=80,
-            label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...")
+            label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...",
+            on_change=_autosave_rascunho)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Responsável no local ──────────────────────────────────────────────
@@ -5582,7 +5812,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown('<div class="op-title">👤 Responsável no local</div>', unsafe_allow_html=True)
         op_resp_local = st.text_input("Responsável no local", key="op_resp_local",
             label_visibility="collapsed",
-            placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)")
+            placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)",
+            on_change=_autosave_rascunho)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Parecer da visita ─────────────────────────────────────────────────
@@ -5594,7 +5825,29 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             key="op_parecer_visita",
             label_visibility="collapsed",
             horizontal=True,
+            on_change=_autosave_rascunho,
         )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Botão salvar rascunho ─────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        _rc_col1, _rc_col2 = st.columns([1, 1])
+        with _rc_col1:
+            if st.button("📋 Salvar rascunho", key="btn_salvar_rascunho",
+                    use_container_width=True,
+                    help="Salva o progresso atual. Você pode continuar depois."):
+                if op_nome_cond.strip():
+                    _dados_rasc = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
+                    if salvar_rascunho_operador(op_nome_cond, _dados_rasc):
+                        st.success(f"✅ Rascunho salvo! Pode fechar e retomar depois.")
+                    else:
+                        st.error("Erro ao salvar rascunho.")
+                else:
+                    st.warning("Selecione o condomínio antes de salvar o rascunho.")
+        with _rc_col2:
+            _rasc_exists = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json").exists() if op_nome_cond.strip() else False
+            if _rasc_exists:
+                st.caption("📋 Rascunho salvo")
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -5656,6 +5909,37 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(op_fotos_depois, "depois")
                 fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
 
+                # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
+                _pasta_rasc_f = pasta_op / "fotos_rascunho"
+                if _pasta_rasc_f.exists():
+                    import shutil as _shutil
+                    for _fp_rasc in sorted(_pasta_rasc_f.glob("rasc_*")):
+                        for _cat, _nomes_cat, _b64s_cat in [
+                            ("antes",  fotos_antes_nomes,  fotos_antes_b64),
+                            ("depois", fotos_depois_nomes, fotos_depois_b64),
+                            ("cmaq",   fotos_cmaq_nomes,   fotos_cmaq_b64),
+                        ]:
+                            if f"rasc_{_cat}_" in _fp_rasc.name:
+                                _nome_dest = _fp_rasc.name.replace(f"rasc_{_cat}_", f"{_cat}_{ts_f}_")
+                                _dest = pasta_fotos_op / _nome_dest
+                                if not _dest.exists():
+                                    _shutil.copy2(str(_fp_rasc), str(_dest))
+                                if _nome_dest not in _nomes_cat:
+                                    _nomes_cat.append(_nome_dest)
+                                    try:
+                                        from PIL import Image as _PI, ImageOps as _IO
+                                        import io as _io2
+                                        _img2 = _PI.open(str(_dest))
+                                        _img2 = _IO.exif_transpose(_img2)
+                                        _img2.thumbnail((1200, 1200), _PI.LANCZOS)
+                                        _buf2 = _io2.BytesIO()
+                                        _img2.convert("RGB").save(_buf2, format="JPEG", quality=82)
+                                        _b64s_cat.append(_b64.b64encode(_buf2.getvalue()).decode())
+                                    except Exception:
+                                        pass
+                    # Remove pasta de rascunho de fotos após incorporar
+                    _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
+
                 fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes
                 fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids
 
@@ -5709,6 +5993,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.session_state["_op_ultimo_lancamento"] = lancamento
                 # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
                 st.session_state["op_limpar_campos"] = True
+                # Remove rascunho após salvar lançamento definitivo
+                deletar_rascunho_operador(op_nome_cond)
                 st.rerun()
 
         pasta_hc = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) if op_nome_cond.strip() else None
