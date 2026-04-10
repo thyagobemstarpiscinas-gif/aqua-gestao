@@ -1232,6 +1232,38 @@ def encontrar_logo_bem_star() -> Path | None:
     return None
 
 
+def inserir_foto_docx_exif(doc_or_run, foto_path: Path, width_inches: float = 5.5):
+    """Insere foto em DOCX com rotação EXIF corrigida automaticamente.
+    Salva temporariamente a imagem corrigida e insere no documento.
+    """
+    import io as _io
+    try:
+        from PIL import Image as _PIL, ImageOps as _IOS
+        _img = _PIL.open(str(foto_path))
+        _img = _IOS.exif_transpose(_img)  # Corrige rotação EXIF
+        _img.thumbnail((1800, 1800), _PIL.LANCZOS)
+        _buf = _io.BytesIO()
+        _img.convert("RGB").save(_buf, format="JPEG", quality=88)
+        _buf.seek(0)
+        if hasattr(doc_or_run, "add_picture"):
+            # É um run
+            doc_or_run.add_picture(_buf, width=Inches(width_inches))
+        else:
+            # É um parágrafo ou doc — adicionar run
+            doc_or_run.add_run().add_picture(_buf, width=Inches(width_inches))
+        return True
+    except Exception:
+        # Fallback sem correção EXIF
+        try:
+            if hasattr(doc_or_run, "add_picture"):
+                doc_or_run.add_picture(str(foto_path), width=Inches(width_inches))
+            else:
+                doc_or_run.add_run().add_picture(str(foto_path), width=Inches(width_inches))
+            return True
+        except Exception:
+            return False
+
+
 def logo_para_base64(path) -> str:
     """Converte imagem para string base64 para exibicao HTML inline."""
     if path is None or not path.exists():
@@ -1323,6 +1355,14 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
                 "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
                 "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
             })
+    # Fotos já salvas na pasta de rascunho
+    _pasta_fotos_rasc = GENERATED_DIR / slugify_nome(nome_cond.strip()) / "fotos_rascunho"
+    dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
+    if _pasta_fotos_rasc.exists():
+        for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
+            for _cat in ["antes", "depois", "cmaq"]:
+                if f"rasc_{_cat}_" in _fp.name:
+                    dados["fotos_rascunho"][_cat].append(_fp.name)
     return dados
 
 
@@ -2384,15 +2424,144 @@ def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str, nome_condomini
 
 
 def converter_docx_para_pdf(docx_path: Path, pdf_path: Path):
-    try:
-        import pythoncom
-        from docx2pdf import convert
+    """
+    Converte DOCX para PDF.
+    - Windows (local): usa docx2pdf + pythoncom
+    - Linux (Streamlit Cloud): usa LibreOffice headless ou reportlab fallback
+    """
+    import platform, shutil, subprocess
+    _sistema = platform.system()
 
-        pythoncom.CoInitialize()
-        convert(str(docx_path), str(pdf_path))
-        return True, None
-    except Exception as e:
-        return False, str(e)
+    # ── Tentativa 1: Windows — docx2pdf com pythoncom ────────────────────────
+    if _sistema == "Windows":
+        try:
+            import pythoncom
+            from docx2pdf import convert as _conv
+            pythoncom.CoInitialize()
+            _conv(str(docx_path), str(pdf_path))
+            if pdf_path.exists():
+                return True, None
+        except Exception:
+            pass
+
+    # ── Tentativa 2: LibreOffice headless (Linux/Cloud) ───────────────────────
+    try:
+        _lo = shutil.which("libreoffice") or shutil.which("soffice")
+        if _lo:
+            subprocess.run(
+                [_lo, "--headless", "--convert-to", "pdf",
+                 "--outdir", str(pdf_path.parent), str(docx_path)],
+                capture_output=True, timeout=60
+            )
+            _pdf_lo = pdf_path.parent / (docx_path.stem + ".pdf")
+            if _pdf_lo.exists():
+                if _pdf_lo != pdf_path:
+                    _pdf_lo.rename(pdf_path)
+                return True, None
+    except Exception:
+        pass
+
+    # ── Tentativa 3: docx2pdf sem pythoncom (Linux) ───────────────────────────
+    if _sistema != "Windows":
+        try:
+            from docx2pdf import convert as _conv2
+            _conv2(str(docx_path), str(pdf_path))
+            if pdf_path.exists():
+                return True, None
+        except Exception:
+            pass
+
+    # ── Fallback: ReportLab extraindo texto + imagens do DOCX ────────────────
+    try:
+        from docx import Document as _DocxR
+        from docx.oxml.ns import qn as _qn
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph,
+            Spacer, Image as RLImage, HRFlowable, Table, TableStyle)
+        import io as _io, base64 as _b64
+
+        _doc_r = _DocxR(str(docx_path))
+        _styles = getSampleStyleSheet()
+        _s_title = ParagraphStyle("t", parent=_styles["Heading1"],
+            fontSize=13, alignment=TA_CENTER,
+            textColor=colors.HexColor("#0d3d75"), spaceAfter=6)
+        _s_h2 = ParagraphStyle("h2", parent=_styles["Heading2"],
+            fontSize=11, textColor=colors.HexColor("#0d3d75"),
+            spaceBefore=10, spaceAfter=4)
+        _s_body = ParagraphStyle("b", parent=_styles["Normal"],
+            fontSize=9.5, alignment=TA_JUSTIFY, leading=14, spaceAfter=3)
+        _s_center = ParagraphStyle("c", parent=_styles["Normal"],
+            fontSize=9, alignment=TA_CENTER, spaceAfter=3)
+
+        _story = []
+
+        # Extrai imagens embutidas no DOCX
+        _img_map = {}
+        for _rel in _doc_r.part.rels.values():
+            if "image" in _rel.reltype:
+                try:
+                    _img_bytes = _rel.target_part.blob
+                    _img_map[_rel.rId] = _img_bytes
+                except Exception:
+                    pass
+
+        def _safe_para(txt, style):
+            try:
+                # Escapar caracteres XML problemáticos
+                txt = (txt.replace("&","&amp;").replace("<","&lt;")
+                          .replace(">","&gt;").replace('"','&quot;'))
+                return Paragraph(txt, style)
+            except Exception:
+                return Paragraph("—", style)
+
+        for _para in _doc_r.paragraphs:
+            _txt = _para.text.strip()
+            # Verifica se tem imagem no parágrafo
+            _has_img = _para._element.findall(
+                ".//" + _qn("a:blip"), _para._element.nsmap
+                if hasattr(_para._element, "nsmap") else {}
+            )
+            if not _txt and not _has_img:
+                _story.append(Spacer(1, 0.15*cm))
+                continue
+            _style_name = _para.style.name if _para.style else ""
+            if "Heading 1" in _style_name or "Title" in _style_name:
+                _story.append(_safe_para(_txt, _s_title))
+            elif "Heading" in _style_name:
+                _story.append(_safe_para(_txt, _s_h2))
+            elif _txt:
+                _align = _para.alignment
+                _s = _s_center if _align == 1 else _s_body
+                _story.append(_safe_para(_txt, _s))
+
+        # Adiciona imagens separadamente das relações
+        for _rId, _img_bytes in list(_img_map.items())[:20]:
+            try:
+                _buf = _io.BytesIO(_img_bytes)
+                _img_rl = RLImage(_buf, width=14*cm, kind="proportional")
+                _img_rl.hAlign = "CENTER"
+                _story.append(Spacer(1, 0.2*cm))
+                _story.append(_img_rl)
+                _story.append(Spacer(1, 0.2*cm))
+            except Exception:
+                pass
+
+        _doc_rl = SimpleDocTemplate(
+            str(pdf_path), pagesize=A4,
+            topMargin=2*cm, bottomMargin=2*cm,
+            leftMargin=2.5*cm, rightMargin=2.5*cm,
+        )
+        _doc_rl.build(_story)
+        if pdf_path.exists():
+            return True, None
+    except Exception as _e:
+        return False, str(_e)
+
+    return False, "Nenhum método de conversão disponível"
 
 
 def gerar_documento(
@@ -3350,7 +3519,6 @@ def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
     doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
     doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
     doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025; ABNT NBR 10339; NR-26; NR-06.")
-    doc.add_paragraph("Recomenda-se a guarda e organização deste documento e de seus registros correlatos por prazo mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental e segurança jurídica.")
     doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas in loco e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
 
     doc.add_paragraph("Observações automáticas:")
@@ -3445,13 +3613,7 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
 
     # ---- Parecer principal e aviso legal em parágrafos soltos ----
     # Também cobre o caso de o template ter esses textos fora de tabelas/placeholders.
-    aviso_legal_texto = (
-        "AVISO LEGAL: Recomenda-se a guarda e organização deste documento e de seus registros correlatos "
-        "por prazo mínimo de 5 (cinco) anos, para fins de rastreabilidade, auditoria, controle documental "
-        "e segurança jurídica. Emitido sob responsabilidade técnica do RT acima identificado. "
-        "Análises microbiológicas in loco não integram este relatório e dependem de laboratório acreditado, "
-        "sob responsabilidade de contratação do contratante."
-    )
+    aviso_legal_texto = ""  # removido a pedido do usuário
 
     # Rastreia se os quadros principais foram encontrados e preenchidos
     quadro_diagnostico_preenchido = False
@@ -3509,10 +3671,14 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
         doc.add_paragraph("REGISTRO FOTOGRÁFICO")
         for foto in fotos:
             try:
-                doc.add_paragraph(foto.name)
-                doc.add_picture(str(foto), width=Inches(5.8))
+                doc.add_paragraph(foto.name if hasattr(foto, "name") else str(foto))
+                _p_foto_m = doc.add_paragraph()
+                _p_foto_m.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _ok_m = inserir_foto_docx_exif(_p_foto_m, foto, width_inches=5.8)
+                if not _ok_m:
+                    doc.add_paragraph(f"Não foi possível inserir a foto: {foto.name if hasattr(foto, 'name') else foto}")
             except Exception:
-                doc.add_paragraph(f"Não foi possível inserir a foto: {foto.name}")
+                doc.add_paragraph(f"Não foi possível inserir a foto.")
 
     # ---- Fallback CONDICIONAL: só adiciona se as tabelas principais não foram encontradas ----
     # O fallback NÃO deve ser gerado se o template já tem os quadros de análise, dosagem e recomendação.
@@ -4415,18 +4581,20 @@ def gerar_relatorio_visita_docx(
                     _par(foto_path.name, size=9)
                     p_foto = doc.add_paragraph()
                     p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p_foto.add_run().add_picture(str(foto_path), width=Inches(5.5))
+                    _ok_foto = inserir_foto_docx_exif(p_foto, foto_path, width_inches=5.5)
+                    if not _ok_foto:
+                        _par(f"[Foto não inserida: {foto_path.name}]", size=9, italic=True)
                 except Exception:
                     _par(f"[Foto não inserida: {foto_path.name}]", size=9, italic=True)
             doc.add_paragraph()
-            secao_aviso = secao_fotos + 1
+            secao_parecer = secao_fotos + 1
         else:
-            secao_aviso = secao_fotos
+            secao_parecer = secao_fotos
 
         # ── PARECER TÉCNICO ───────────────────────────────────────────────────
         _pareceres = [lc.get("parecer","") for lc in lancamentos if lc.get("parecer","").strip()]
         if _pareceres:
-            _par(f"{secao_aviso}. PARECER TÉCNICO-OPERACIONAL", bold=True, size=11)
+            _par(f"{secao_parecer}. PARECER TÉCNICO-OPERACIONAL", bold=True, size=11)
             # Parecer da última visita
             _parecer_final = _pareceres[-1]
             _cor_parecer = "#1a7a1a" if "Satisfatório" in _parecer_final else (
@@ -4437,17 +4605,7 @@ def gerar_relatorio_visita_docx(
             _r_parecer.font.size = Pt(11)
             _r_parecer.bold = True
             doc.add_paragraph()
-            secao_aviso += 1
-
-        # ── AVISO LEGAL ───────────────────────────────────────────────────────
-        _par(f"{secao_aviso}. AVISO LEGAL E GUARDA DOCUMENTAL", bold=True, size=10)
-        _par(
-            "Recomenda-se a guarda e organização deste documento por prazo mínimo de 5 anos, "
-            "para fins de rastreabilidade, auditoria e segurança jurídica. "
-            "Este relatório é de caráter técnico-informativo e não substitui laudo laboratorial microbiológico.",
-            size=9
-        )
-        doc.add_paragraph()
+            secao_parecer += 1
 
         # ── TEXTO RT (apenas no relatório sem RT — Bem Star) ──────────────────
         if not incluir_rt:
@@ -4930,30 +5088,55 @@ if "empresa_selecionada" not in st.session_state:
     st.session_state["empresa_selecionada"] = "🔵 Aqua Gestão"
 
 logo = encontrar_logo()
+logo_bs = encontrar_logo_bem_star()
 
 # Topo só aparece fora da tela de entrada
 if st.session_state.get("modo_atual", "entrada") != "entrada":
+    _empresa_topo = st.session_state.get("empresa_ativa", "aqua_gestao")
+    _eh_bs_topo = _empresa_topo == "bem_star"
+
     col_top1, col_top2 = st.columns([1, 5])
     with col_top1:
-        if logo:
-            st.image(str(logo), width=150)
+        if _eh_bs_topo:
+            if logo_bs:
+                st.image(str(logo_bs), width=150)
+        else:
+            if logo:
+                st.image(str(logo), width=150)
     with col_top2:
-        st.markdown(
-            f"""
-            <div class="top-card">
-                <div class="top-title">{APP_TITLE}</div>
-                <div class="top-subtitle">
-                    Sistema profissional para geração automatizada de contrato e aditivo de RT
+        if _eh_bs_topo:
+            st.markdown(
+                f"""
+                <div class="top-card">
+                    <div class="top-title">Bem Star Piscinas</div>
+                    <div class="top-subtitle">
+                        Limpeza e Manutenção de Piscinas
+                    </div>
+                    <div>
+                        <span class="info-badge">CNPJ: {CNPJ_BEM_STAR}</span>
+                        <span class="info-badge">Uberlândia/MG</span>
+                    </div>
                 </div>
-                <div>
-                    <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
-                    <span class="info-badge">{CRQ}</span>
-                    <span class="info-badge">Windows + Word + DOCX/PDF</span>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""
+                <div class="top-card">
+                    <div class="top-title">{APP_TITLE}</div>
+                    <div class="top-subtitle">
+                        Sistema profissional para geração automatizada de contrato e aditivo de RT
+                    </div>
+                    <div>
+                        <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
+                        <span class="info-badge">{CRQ}</span>
+                        <span class="info-badge">Windows + Word + DOCX/PDF</span>
+                    </div>
                 </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
 
 # =========================================
 # SIDEBAR – CONFIG + HISTÓRICO
@@ -5514,10 +5697,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _key_rascunho_visto = f"_rascunho_visto_{slugify_nome(op_nome_cond)}"
         if _rascunho_op and not st.session_state.get(_key_rascunho_visto):
             _salvo_em = _rascunho_op.get("_rascunho_salvo_em", "")
+            # Conta fotos salvas no rascunho
+            _fotos_rasc_info = _rascunho_op.get("fotos_rascunho", {})
+            _total_fotos_rasc_banner = sum(len(v) for v in _fotos_rasc_info.values())
+            _fotos_txt = f" • {_total_fotos_rasc_banner} foto(s) salva(s)" if _total_fotos_rasc_banner > 0 else ""
             st.markdown(f"""
             <div style="background:rgba(255,165,0,0.12);border:1px solid rgba(255,165,0,0.4);
             border-radius:12px;padding:12px 16px;margin-bottom:8px;">
-            ⚠️ <strong>Rascunho encontrado</strong> — salvo em {_salvo_em}<br>
+            ⚠️ <strong>Rascunho encontrado</strong> — salvo em {_salvo_em}{_fotos_txt}<br>
             <span style="font-size:0.85rem;color:#aaa;">Você pode restaurar e continuar de onde parou.</span>
             </div>
             """, unsafe_allow_html=True)
@@ -7134,9 +7321,14 @@ else:
             st.error("Selecione o cliente, mês e ano.")
         else:
             try:
-                # Monta lista de lançamentos no formato esperado pela função
+                # Monta lista de lançamentos — deduplica por data+operador+ph
+                _lanc_vistos = set()
                 _lanc_para_relatorio = []
                 for _lc in lancamentos_csr:
+                    _chave_lc = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','') or (_lc.get('piscinas',[{}])[0].get('ph','') if _lc.get('piscinas') else '')}"
+                    if _chave_lc in _lanc_vistos:
+                        continue
+                    _lanc_vistos.add(_chave_lc)
                     piscinas = _lc.get("piscinas", [])
                     if piscinas:
                         _dados = piscinas[0]
@@ -7156,16 +7348,11 @@ else:
                         "dosagens":     _dados.get("dosagens", _lc.get("dosagens", [])),
                     })
 
-                # Concatena observações e problemas
-                _obs_lista = []
-                for _lc in lancamentos_csr:
-                    if (_lc.get("problemas") or "").strip():
-                        _obs_lista.append(f"[{_lc.get('data','')}] ⚠️ {_lc['problemas']}")
-                    if (_lc.get("observacao") or "").strip():
-                        _obs_lista.append(f"[{_lc.get('data','')}] {_lc['observacao']}")
+                # obs_geral passa apenas obs gerais do campo de texto.
+                # Problemas e observações dos lançamentos são extraídos
+                # diretamente pela função gerar_relatorio_visita_docx via
+                # os campos "problemas" e "observacao" de cada lançamento.
                 _obs_final = csr_obs_geral.strip()
-                if _obs_lista:
-                    _obs_final = (_obs_final + "\n" if _obs_final else "") + "\n".join(_obs_lista[:10])
 
                 pasta_csr_out = GENERATED_DIR / slugify_nome(csr_sel)
                 pasta_csr_out.mkdir(parents=True, exist_ok=True)
@@ -7175,7 +7362,15 @@ else:
 
                 with st.spinner("Gerando relatório Bem Star..."):
                     # fotos_csr é list[(data_str, Path)] — extrai só os Paths
-                    _fotos_paths = [_fp for _, _fp in fotos_csr] if fotos_csr else []
+                    # Deduplica por nome base de arquivo (remove duplicatas entre lançamentos)
+                    _fotos_vistas = set()
+                    _fotos_paths = []
+                    for _, _fp in (fotos_csr or []):
+                        # Usa nome sem timestamp inicial para detectar duplicatas
+                        _nome_base = "_".join(_fp.name.split("_")[2:]) if _fp.name.count("_") >= 2 else _fp.name
+                        if _nome_base not in _fotos_vistas:
+                            _fotos_vistas.add(_nome_base)
+                            _fotos_paths.append(_fp)
                     _ok_docx, _err_docx = gerar_relatorio_visita_docx(
                         output_path   = docx_csr,
                         nome_local    = csr_dados_sel.get("nome", csr_sel),
