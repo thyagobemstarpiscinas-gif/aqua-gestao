@@ -336,7 +336,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
-                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0):
+                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
+                           empresa: str = "Aqua Gestão"):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
@@ -391,6 +392,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             str(vol_adulto) if vol_adulto else "", # J - Vol Adulto m3
             str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
             str(vol_family) if vol_family else "", # L - Vol Family m3
+            empresa,                               # M - Empresa
         ]
 
         # Insere logo após o último cliente real (linha do Sheets = índice + 2)
@@ -465,6 +467,9 @@ def sheets_listar_clientes_completo() -> list[dict]:
             vol_family   = _vol(row, 11)
             vol_total    = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
 
+            _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
+            if not _empresa_cl:
+                _empresa_cl = "Aqua Gestão"
             clientes.append({
                 "id":           id_val,
                 "nome":         nome,
@@ -478,6 +483,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "vol_adulto":   vol_adulto,
                 "vol_infantil": vol_infantil,
                 "vol_family":   vol_family,
+                "empresa":      _empresa_cl,
             })
         return clientes
     except Exception as e:
@@ -488,7 +494,8 @@ def sheets_listar_clientes_completo() -> list[dict]:
 
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
-                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0) -> bool:
+                           vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
+                           empresa: str = "") -> bool:
     """Edita cliente existente na aba Clientes pelo ID."""
     import re as _re
     try:
@@ -501,6 +508,9 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         for i, row in enumerate(todos):
             if len(row) > 1 and str(row[1]).strip() == id_cliente.strip():
                 linha_sheets = i + 1
+                # Preserva empresa existente se não informada
+                _empresa_atual = str(row[12]).strip() if len(row) > 12 else ""
+                _empresa_final = empresa if empresa else (_empresa_atual or "Aqua Gestão")
                 nova = [
                     "",
                     id_cliente,
@@ -514,8 +524,9 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_adulto) if vol_adulto else "",
                     str(vol_infantil) if vol_infantil else "",
                     str(vol_family) if vol_family else "",
+                    _empresa_final,                # M - Empresa
                 ]
-                aba.update(f"A{linha_sheets}:L{linha_sheets}", [nova], value_input_option="USER_ENTERED")
+                aba.update(f"A{linha_sheets}:M{linha_sheets}", [nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -1251,6 +1262,24 @@ def buscar_cep(cep: str) -> dict:
         return dados
     except Exception:
         return {}
+
+
+def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
+    """Filtra lista de clientes pelo campo empresa.
+    empresa_ativa: 'aqua_gestao' | 'bem_star'
+    Clientes com empresa='Ambas' aparecem nas duas.
+    Clientes sem campo empresa (legados) aparecem para Aqua Gestão.
+    """
+    resultado = []
+    for c in clientes:
+        emp = c.get("empresa", "Aqua Gestão")
+        if emp == "Ambas":
+            resultado.append(c)
+        elif empresa_ativa == "bem_star" and emp == "Bem Star Piscinas":
+            resultado.append(c)
+        elif empresa_ativa == "aqua_gestao" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
+            resultado.append(c)
+    return resultado
 
 
 def slugify_nome(texto: str) -> str:
@@ -5225,12 +5254,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita_html",
                     )
 
-    # Busca clientes do Google Sheets primeiro, fallback para pasta local
+    # Busca clientes do Google Sheets filtrados pela empresa ativa
     @st.cache_data(ttl=60)
-    def _buscar_clientes_sheets():
-        return sheets_listar_clientes()
+    def _buscar_clientes_sheets_completo():
+        return sheets_listar_clientes_completo()
 
-    clientes_sheets = _buscar_clientes_sheets()
+    _empresa_ativa_op = st.session_state.get("empresa_ativa", "aqua_gestao")
+    _clientes_todos_op = _buscar_clientes_sheets_completo()
+    _clientes_filtrados_op = filtrar_clientes_por_empresa(_clientes_todos_op, _empresa_ativa_op)
+    clientes_sheets = [c["nome"] for c in _clientes_filtrados_op]
 
     # Combina clientes do Sheets com os locais
     pastas_disponiveis = sorted([
@@ -5449,6 +5481,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                             pass
                     _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
 
+                    _sugestoes = []
                     if _vol_usar > 0:
                         _sugestoes = calcular_sugestoes_dosagem(
                             ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
@@ -5872,17 +5905,27 @@ def _listar_ops():
 
 ops_cadastrados = _listar_ops()
 
+# Cache de clientes para o painel de operadores
+@st.cache_data(ttl=60)
+def _clientes_para_painel_op():
+    return sheets_listar_clientes_completo()
+
+_todos_clientes_painel = _clientes_para_painel_op()
+_nomes_todos_clientes = [c["nome"] for c in _todos_clientes_painel]
+
 if ops_cadastrados:
     st.success(f"✅ {len(ops_cadastrados)} operador(es) cadastrado(s):")
     for op in ops_cadastrados:
-        conds_txt = ", ".join(op.get("condomínios", [])) or "Todos"
+        _op_conds = op.get("condomínios", [])
+        _acesso_total = "TODOS" in _op_conds or not _op_conds
+        conds_txt = "Todos os clientes" if _acesso_total else ", ".join(_op_conds)
         status = "🟢 Ativo" if op.get("ativo") else "🔴 Inativo"
         _pin_raw = op["pin"]
         _pin_mask = f"{_pin_raw[:2]}{'*' * (len(_pin_raw)-2)}"
-        with st.expander(f"{status} — {op['nome']} | PIN: {_pin_mask}"):
-            st.write(f"**Condomínios:** {conds_txt}")
 
-            # Revelar / ocultar PIN
+        with st.expander(f"{status} — {op['nome']} | PIN: {_pin_mask} | {len(_op_conds) if not _acesso_total else 'Todos'} cliente(s)"):
+
+            # ── PIN revelar/ocultar ───────────────────────────────────────
             _key_rev = f"revelar_pin_{op['nome']}"
             _revelado = st.session_state.get(_key_rev, False)
             _col_pin1, _col_pin2 = st.columns([2, 1])
@@ -5900,6 +5943,79 @@ if ops_cadastrados:
                     st.session_state[_key_rev] = not _revelado
                     st.rerun()
 
+            st.markdown("---")
+
+            # ── Clientes vinculados ───────────────────────────────────────
+            st.markdown("**🏊 Clientes vinculados:**")
+            if _acesso_total:
+                st.caption(f"✅ Acesso total — vê todos os {len(_nomes_todos_clientes)} clientes cadastrados.")
+            else:
+                if _op_conds:
+                    for _c in _op_conds:
+                        # Verificar se cliente existe no Sheets
+                        _existe = any(
+                            _c.lower().strip() in cl["nome"].lower() or
+                            cl["nome"].lower() in _c.lower().strip()
+                            for cl in _todos_clientes_painel
+                        )
+                        _icone = "✅" if _existe else "⚠️"
+                        st.caption(f"{_icone} {_c}")
+                    if any(
+                        not any(
+                            _c.lower().strip() in cl["nome"].lower() or
+                            cl["nome"].lower() in _c.lower().strip()
+                            for cl in _todos_clientes_painel
+                        ) for _c in _op_conds
+                    ):
+                        st.caption("⚠️ = cliente não encontrado no cadastro atual")
+                else:
+                    st.caption("Nenhum cliente vinculado.")
+
+            st.markdown("---")
+
+            # ── Editar clientes vinculados ────────────────────────────────
+            _key_edit = f"editar_conds_{op['nome']}"
+            if st.button(f"✏️ Editar clientes de {op['nome']}",
+                    key=f"btn_edit_conds_{op['nome']}", use_container_width=True):
+                st.session_state[_key_edit] = not st.session_state.get(_key_edit, False)
+                st.rerun()
+
+            if st.session_state.get(_key_edit, False):
+                st.markdown("**Selecione os clientes que este operador pode acessar:**")
+                _acesso_total_edit = st.checkbox(
+                    "Acesso total (todos os clientes)",
+                    value=_acesso_total,
+                    key=f"chk_total_{op['nome']}"
+                )
+                if not _acesso_total_edit:
+                    _sel_conds = st.multiselect(
+                        "Clientes permitidos",
+                        options=_nomes_todos_clientes,
+                        default=[c for c in _op_conds if c in _nomes_todos_clientes],
+                        key=f"multi_conds_{op['nome']}",
+                        label_visibility="collapsed",
+                    )
+                else:
+                    _sel_conds = ["TODOS"]
+
+                if st.button(f"💾 Salvar clientes de {op['nome']}",
+                        key=f"btn_save_conds_{op['nome']}", type="primary",
+                        use_container_width=True):
+                    _conds_final = ["TODOS"] if _acesso_total_edit else _sel_conds
+                    if sheets_salvar_operador(
+                        nome=op["nome"],
+                        pin=_pin_raw,
+                        condomínios=_conds_final,
+                        ativo=op.get("ativo", True),
+                    ):
+                        st.success(f"✅ Clientes de {op['nome']} atualizados!")
+                        st.session_state[_key_edit] = False
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Erro ao salvar. Verifique a conexão com o Sheets.")
+
+            # ── Remover operador ──────────────────────────────────────────
             if st.button(f"🗑 Remover {op['nome']}", key=f"del_op_{op['nome']}"):
                 if sheets_deletar_operador(op["nome"]):
                     st.success(f"Operador '{op['nome']}' removido.")
@@ -6040,6 +6156,12 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
+            # Pré-seleciona empresa no radio
+            _emp_carregada = _cc_cliente_editar.get("empresa","Aqua Gestão")
+            _emp_map_inv = {"Aqua Gestão": "🔵 Aqua Gestão",
+                            "Bem Star Piscinas": "⭐ Bem Star Piscinas",
+                            "Ambas": "🔵⭐ Ambas"}
+            st.session_state["cc_empresa"] = _emp_map_inv.get(_emp_carregada, "🔵 Aqua Gestão")
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
@@ -6055,6 +6177,18 @@ def _mask_cc_cnpj():
 
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
+
+# Seletor de empresa no cadastro
+cc_empresa = st.radio(
+    "Empresa vinculada",
+    ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas", "🔵⭐ Ambas"],
+    key="cc_empresa",
+    horizontal=True,
+    help="Define para qual empresa este cliente pertence."
+)
+_cc_empresa_val = {"🔵 Aqua Gestão": "Aqua Gestão",
+                   "⭐ Bem Star Piscinas": "Bem Star Piscinas",
+                   "🔵⭐ Ambas": "Ambas"}.get(cc_empresa, "Aqua Gestão")
 
 cc1, cc2 = st.columns(2)
 with cc1:
@@ -6123,6 +6257,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     endereco=cc_endereco.strip(), contato=cc_contato.strip(),
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
+                    empresa=_cc_empresa_val,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
@@ -6131,6 +6266,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     endereco=cc_endereco.strip(), contato=cc_contato.strip(),
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
+                    empresa=_cc_empresa_val,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
         if ok:
@@ -6512,7 +6648,7 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
         csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
         csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
 
-    if st.button("➕ Salvar cliente sem RT", use_container_width=True):
+    if st.button("➕ Salvar cliente (Bem Star)", use_container_width=True):
         if not csr_nome.strip():
             st.error("Informe o nome do local.")
         else:
@@ -6534,6 +6670,31 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
                 clientes_sem_rt.append(novo)
                 st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
             salvar_clientes_sem_rt(clientes_sem_rt)
+            # Salva também no Google Sheets (col M = Bem Star Piscinas)
+            with st.spinner("Sincronizando com Google Sheets..."):
+                _cl_sheets = sheets_listar_clientes_completo()
+                _existe_sheets = next((c for c in _cl_sheets
+                    if c["nome"].lower().strip() == csr_nome.strip().lower()), None)
+                if _existe_sheets:
+                    sheets_editar_cliente(
+                        id_cliente=_existe_sheets["id"],
+                        nome=csr_nome.strip(),
+                        cnpj=formatar_cnpj(csr_cnpj.strip()),
+                        endereco=csr_endereco.strip(),
+                        contato=csr_contato.strip(),
+                        telefone=formatar_telefone(csr_telefone.strip()),
+                        empresa="Bem Star Piscinas",
+                    )
+                else:
+                    sheets_salvar_cliente(
+                        nome=csr_nome.strip(),
+                        cnpj=formatar_cnpj(csr_cnpj.strip()),
+                        endereco=csr_endereco.strip(),
+                        contato=csr_contato.strip(),
+                        telefone=formatar_telefone(csr_telefone.strip()),
+                        empresa="Bem Star Piscinas",
+                    )
+            st.cache_data.clear()
             # Cria pasta do cliente no generated
             pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
             pasta_csr.mkdir(parents=True, exist_ok=True)
@@ -6556,11 +6717,24 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
 st.markdown("---")
 st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
 
-clientes_sem_rt_reload = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+# Carrega clientes Bem Star do Sheets (fonte principal) + fallback JSON local
+@st.cache_data(ttl=30)
+def _clientes_bem_star_relatorio():
+    _todos = sheets_listar_clientes_completo()
+    _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
+    # Fallback: também inclui clientes do JSON local
+    _json_local = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+    _nomes_sheets = {c["nome"].lower() for c in _bs}
+    for _cl in _json_local:
+        if _cl["nome"].lower() not in _nomes_sheets:
+            _bs.append(_cl)
+    return _bs
+
+clientes_sem_rt_reload = _clientes_bem_star_relatorio()
 opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
 
 if not opcoes_csr:
-    st.info("Cadastre um cliente sem RT acima para gerar o relatório técnico.")
+    st.info("Cadastre um cliente Bem Star acima para gerar o relatório técnico.")
 else:
     rts1, rts2, rts3 = st.columns([2, 1, 1])
     with rts1:
