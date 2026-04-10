@@ -1248,20 +1248,31 @@ def logo_para_base64(path) -> str:
 
 
 def buscar_cep(cep: str) -> dict:
-    """Consulta ViaCEP e retorna dict com logradouro, bairro, localidade, uf ou {} em caso de erro."""
-    try:
-        import urllib.request, json
-        cep_limpo = re.sub(r"\D", "", cep or "")
-        if len(cep_limpo) != 8:
-            return {}
-        url = f"https://viacep.com.br/ws/{cep_limpo}/json/"
-        with urllib.request.urlopen(url, timeout=4) as resp:
-            dados = json.loads(resp.read().decode())
-        if dados.get("erro"):
-            return {}
-        return dados
-    except Exception:
+    """Consulta ViaCEP via requests com fallback para urllib."""
+    cep_limpo = re.sub(r"\D", "", cep or "")
+    if len(cep_limpo) != 8:
         return {}
+    url = f"https://viacep.com.br/ws/{cep_limpo}/json/"
+    # Tentativa 1: requests (mais compatível com Streamlit Cloud)
+    try:
+        import requests as _req
+        resp = _req.get(url, timeout=5)
+        if resp.status_code == 200:
+            dados = resp.json()
+            if not dados.get("erro"):
+                return dados
+    except Exception:
+        pass
+    # Tentativa 2: urllib fallback
+    try:
+        import urllib.request, json as _json
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            dados = _json.loads(resp.read().decode())
+        if not dados.get("erro"):
+            return dados
+    except Exception:
+        pass
+    return {}
 
 
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
@@ -6194,6 +6205,9 @@ cc1, cc2 = st.columns(2)
 with cc1:
     cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
     # CEP com busca automática ViaCEP
+    # Aplica CEP formatado se acabou de buscar
+    if st.session_state.get("_cc_cep_fmt"):
+        st.session_state["cc_cep"] = st.session_state.pop("_cc_cep_fmt")
     _cep_col1, _cep_col2 = st.columns([3, 1])
     with _cep_col1:
         cc_cep = st.text_input("CEP", key="cc_cep", placeholder="00000-000",
@@ -6214,8 +6228,8 @@ with cc1:
                 _cep_fmt    = f"{_cep_valor[:5]}-{_cep_valor[5:]}"
                 _end_auto   = ", ".join(p for p in [_logradouro, _bairro, f"{_cidade}/{_uf}", _cep_fmt] if p)
                 st.session_state["cc_endereco"] = _end_auto
-                st.session_state["cc_cep"] = _cep_fmt
-                st.success(f"✅ {_cidade}/{_uf} — {_logradouro}")
+                st.session_state["_cc_cep_fmt"] = _cep_fmt
+                st.rerun()
             else:
                 st.error("CEP não encontrado. Verifique e tente novamente.")
         else:
@@ -6621,6 +6635,8 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
     csr1, csr2 = st.columns(2)
     with csr1:
         csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+        if st.session_state.get("_csr_cep_fmt"):
+            st.session_state["csr_cep"] = st.session_state.pop("_csr_cep_fmt")
         _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
         with _csr_cep_c1:
             st.text_input("CEP", key="csr_cep", placeholder="00000-000",
@@ -6636,8 +6652,8 @@ with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
                 if _dc:
                     _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
                     st.session_state["csr_endereco"] = _end
-                    st.session_state["csr_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
-                    st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+                    st.session_state["_csr_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                    st.rerun()
                 else:
                     st.error("CEP não encontrado.")
             else:
@@ -7362,6 +7378,8 @@ with col1:
         on_change=on_change_cnpj,
         placeholder="00.000.000/0000-00",
     )
+    if st.session_state.get("_rt_cep_fmt"):
+        st.session_state["rt_cep"] = st.session_state.pop("_rt_cep_fmt")
     _rt_cep_c1, _rt_cep_c2 = st.columns([3, 1])
     with _rt_cep_c1:
         st.text_input("CEP", key="rt_cep", placeholder="00000-000",
@@ -7377,8 +7395,8 @@ with col1:
             if _dc:
                 _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
                 st.session_state["endereco_condominio"] = _end
-                st.session_state["rt_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
-                st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+                st.session_state["_rt_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.rerun()
             else:
                 st.error("CEP não encontrado.")
         else:
@@ -7761,6 +7779,8 @@ st.markdown("**Dados do condomínio / local atendido**")
 rd1, rd2 = st.columns(2)
 with rd1:
     st.text_input("Condomínio / estabelecimento", key="rel_nome_condominio")
+    if st.session_state.get("_rel_cep_fmt"):
+        st.session_state["rel_cep"] = st.session_state.pop("_rel_cep_fmt")
     _rel_cep_c1, _rel_cep_c2 = st.columns([3, 1])
     with _rel_cep_c1:
         st.text_input("CEP", key="rel_cep", placeholder="00000-000",
@@ -7776,8 +7796,8 @@ with rd1:
             if _dc:
                 _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
                 st.session_state["rel_endereco_condominio"] = _end
-                st.session_state["rel_cep"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
-                st.success(f"✅ {_dc.get('localidade','')}/{_dc.get('uf','')} — {_dc.get('logradouro','')}")
+                st.session_state["_rel_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.rerun()
             else:
                 st.error("CEP não encontrado.")
         else:

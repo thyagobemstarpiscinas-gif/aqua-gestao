@@ -1,7 +1,6 @@
-streamlit>=1.32.0
-python-docx>=1.1.0
-Pillow>=10.0.0
-gspread>=6.0.0
-google-auth>=2.27.0
-google-api-python-client>=2.100.0
-reportlab>=4.0.0
+streamlit
+python-docx
+Pillow
+docx2pdf
+gspread
+google-auth
