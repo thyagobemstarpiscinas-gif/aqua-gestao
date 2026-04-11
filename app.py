@@ -2915,8 +2915,191 @@ def _mockup_dados_relatorio_demo() -> dict:
     }
 
 
-def _gerar_mockup_relatorio_bem_star_html() -> str:
+def _coletar_analises_preview_formulario() -> list[dict]:
+    """Coleta as linhas atuais do formulário de relatório mensal para a prévia."""
+    total = int(st.session_state.get("rel_analises_total", 9) or 9)
+    linhas = []
+    for i in range(total):
+        item = {
+            "data": str(st.session_state.get(f"rel_analise_data_{i}", "") or "").strip(),
+            "ph": str(st.session_state.get(f"rel_analise_ph_{i}", "") or "").strip(),
+            "cloro_livre": str(st.session_state.get(f"rel_analise_cl_{i}", "") or "").strip(),
+            "cloro_total": str(st.session_state.get(f"rel_analise_ct_{i}", "") or "").strip(),
+            "alcalinidade": str(st.session_state.get(f"rel_analise_alc_{i}", "") or "").strip(),
+            "dureza": str(st.session_state.get(f"rel_analise_dc_{i}", "") or "").strip(),
+            "cianurico": str(st.session_state.get(f"rel_analise_cya_{i}", "") or "").strip(),
+            "operador": str(st.session_state.get(f"rel_analise_operador_{i}", "") or "").strip(),
+        }
+        if any(item.values()):
+            item["cloraminas"] = ""
+            try:
+                _ct = valor_float(item["cloro_total"])
+                _cl = valor_float(item["cloro_livre"])
+                if _ct is not None and _cl is not None:
+                    item["cloraminas"] = str(round(max(_ct - _cl, 0), 2)).replace(".", ",")
+            except Exception:
+                item["cloraminas"] = ""
+            linhas.append(item)
+    return linhas
+
+
+def _coletar_dosagens_preview_formulario() -> list[dict]:
+    """Coleta as dosagens atuais do formulário de relatório mensal para a prévia."""
+    dosagens = []
+    for i in range(7):
+        item = {
+            "produto": str(st.session_state.get(f"rel_dos_produto_{i}", "") or "").strip(),
+            "fabricante_lote": str(st.session_state.get(f"rel_dos_lote_{i}", "") or "").strip(),
+            "quantidade": str(st.session_state.get(f"rel_dos_qtd_{i}", "") or "").strip(),
+            "unidade": str(st.session_state.get(f"rel_dos_un_{i}", "") or "").strip(),
+            "finalidade": str(st.session_state.get(f"rel_dos_finalidade_{i}", "") or "").strip(),
+        }
+        if any(item.values()):
+            dosagens.append(item)
+    return dosagens
+
+
+def _obter_obs_preview_formulario() -> str:
+    obs = []
+    for i in range(5):
+        txt = str(st.session_state.get(f"rel_obs_{i}", "") or "").strip()
+        if txt:
+            obs.append(txt)
+    obs_geral = str(st.session_state.get("rel_observacoes_gerais", "") or "").strip()
+    if obs_geral:
+        obs.insert(0, obs_geral)
+    if obs:
+        return "\n".join(obs)
+    return str(st.session_state.get("csr_obs_rel", "") or "").strip()
+
+
+def _parecer_preview_por_status(status: str, diagnostico: str) -> str:
+    diagnostico = str(diagnostico or "").strip()
+    status = str(status or "").strip().upper()
+    if diagnostico:
+        return diagnostico
+    if status == "CONFORME":
+        return "Satisfatório. Parâmetros em conformidade com o preenchimento atual do formulário."
+    if status == "EM CORREÇÃO":
+        return "Aceitável com correções em andamento conforme o preenchimento atual do formulário."
+    if status == "NÃO CONFORME":
+        return "Não satisfatório. O preenchimento atual indica necessidade de intervenção corretiva."
+    return "Parecer técnico-operacional não informado no formulário atual."
+
+
+def _obter_dados_preview_relatorio(empresa: str = "Aqua Gestão", usar_formulario_atual: bool = False) -> tuple[dict, bool, str]:
     dados = _mockup_dados_relatorio_demo()
+    empresa = str(empresa or "Aqua Gestão").strip()
+    if not usar_formulario_atual:
+        return dados, False, "Exibindo dados demonstrativos do modelo."
+
+    nome = ""
+    cnpj = ""
+    endereco = ""
+    responsavel = ""
+    operador = ""
+    mes = ""
+    ano = ""
+
+    if empresa == "Bem Star Piscinas":
+        nome = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
+        mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
+        ano = str(st.session_state.get("csr_ano_rel", "") or "").strip()
+        operador = str(st.session_state.get("csr_operador_rel", "") or "").strip()
+        responsavel = str(st.session_state.get("rel_representante", "") or "").strip()
+        cnpj = str(st.session_state.get("rel_cnpj_condominio", "") or "").strip()
+        endereco = str(st.session_state.get("rel_endereco_condominio", "") or "").strip()
+    else:
+        nome = str(st.session_state.get("rel_nome_condominio", "") or "").strip()
+        cnpj = str(st.session_state.get("rel_cnpj_condominio", "") or "").strip()
+        endereco = str(st.session_state.get("rel_endereco_condominio", "") or "").strip()
+        responsavel = str(st.session_state.get("rel_representante", "") or "").strip()
+        mes = str(st.session_state.get("rel_mes_referencia", "") or "").strip()
+        ano = str(st.session_state.get("rel_ano_referencia", "") or "").strip()
+
+    analises = _coletar_analises_preview_formulario()
+    dosagens = _coletar_dosagens_preview_formulario()
+    obs_txt = _obter_obs_preview_formulario()
+    diagnostico = str(st.session_state.get("rel_diagnostico", "") or "").strip()
+    status_agua = str(st.session_state.get("rel_status_agua", "") or "").strip()
+    parecer = _parecer_preview_por_status(status_agua, diagnostico)
+
+    if analises and not operador:
+        operador = analises[-1].get("operador", "")
+
+    campos_preenchidos = any([nome, cnpj, endereco, responsavel, operador, mes, ano, obs_txt, diagnostico, analises, dosagens])
+    if not campos_preenchidos:
+        return dados, False, "Nenhum dado atual do formulário foi encontrado; exibindo dados demonstrativos."
+
+    dados["nome_local"] = nome or dados["nome_local"]
+    dados["cnpj"] = cnpj or dados["cnpj"]
+    dados["endereco"] = endereco or dados["endereco"]
+    dados["responsavel"] = responsavel or dados["responsavel"]
+    dados["operador"] = operador or dados["operador"]
+    dados["mes"] = mes or dados["mes"]
+    dados["ano"] = ano or dados["ano"]
+    dados["obs_geral"] = obs_txt or dados["obs_geral"]
+
+    if analises:
+        lancamentos_periodo = []
+        for idx, item in enumerate(analises):
+            _obs_item = item["data"] and obs_txt if idx == len(analises) - 1 else ""
+            _problemas = ""
+            if idx == len(analises) - 1 and status_agua == "NÃO CONFORME":
+                _problemas = "Status geral da água marcado como NÃO CONFORME no formulário atual."
+            elif idx == len(analises) - 1 and status_agua == "EM CORREÇÃO":
+                _problemas = "Status geral da água marcado como EM CORREÇÃO no formulário atual."
+
+            lancamentos_periodo.append({
+                "data": item.get("data", ""),
+                "operador": item.get("operador", operador),
+                "observacao": _obs_item,
+                "problemas": _problemas,
+                "parecer": parecer if idx == len(analises) - 1 else "",
+                "dosagens": dosagens if idx == len(analises) - 1 else [],
+                "piscinas": [{
+                    "nome": "Piscina",
+                    "ph": item.get("ph", ""),
+                    "cloro_livre": item.get("cloro_livre", ""),
+                    "cloro_total": item.get("cloro_total", ""),
+                    "cloraminas": item.get("cloraminas", ""),
+                    "alcalinidade": item.get("alcalinidade", ""),
+                    "dureza": item.get("dureza", ""),
+                    "cianurico": item.get("cianurico", ""),
+                }],
+            })
+
+        dados["lancamentos_periodo"] = lancamentos_periodo
+        ultimo = analises[-1]
+        dados["lancamento_aqua"] = {
+            "data": ultimo.get("data", ""),
+            "operador": ultimo.get("operador", operador),
+            "observacao": obs_txt or dados["obs_geral"],
+            "problemas": lancamentos_periodo[-1].get("problemas", ""),
+            "parecer": parecer,
+            "dosagens": dosagens,
+            "piscinas": [{
+                "nome": "Piscina",
+                "ph": ultimo.get("ph", ""),
+                "cloro_livre": ultimo.get("cloro_livre", ""),
+                "cloro_total": ultimo.get("cloro_total", ""),
+                "cloraminas": ultimo.get("cloraminas", ""),
+                "alcalinidade": ultimo.get("alcalinidade", ""),
+                "dureza": ultimo.get("dureza", ""),
+                "cianurico": ultimo.get("cianurico", ""),
+            }],
+        }
+    else:
+        dados["lancamento_aqua"]["observacao"] = obs_txt or dados["lancamento_aqua"].get("observacao", "")
+        dados["lancamento_aqua"]["operador"] = operador or dados["lancamento_aqua"].get("operador", "")
+        dados["lancamento_aqua"]["dosagens"] = dosagens or dados["lancamento_aqua"].get("dosagens", [])
+        dados["lancamento_aqua"]["parecer"] = parecer
+
+    return dados, True, "Usando os dados atuais preenchidos no formulário para montar esta prévia."
+
+
+def _gerar_mockup_relatorio_bem_star_html(dados: dict | None = None) -> str:
+    dados = dados or _mockup_dados_relatorio_demo()
     hoje = date.today().strftime("%d/%m/%Y")
     return f"""<!DOCTYPE html>
 <html lang=\"pt-BR\">
@@ -3053,8 +3236,8 @@ def _gerar_mockup_relatorio_bem_star_html() -> str:
 </html>"""
 
 
-def _gerar_mockup_relatorio_impressao_html(empresa: str = "Aqua Gestão") -> str:
-    dados = _mockup_dados_relatorio_demo()
+def _gerar_mockup_relatorio_impressao_html(empresa: str = "Aqua Gestão", dados: dict | None = None) -> str:
+    dados = dados or _mockup_dados_relatorio_demo()
     incluir_rt = str(empresa or "").strip() != "Bem Star Piscinas"
     titulo_topo = "AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS" if incluir_rt else "BEM STAR PISCINAS"
     subtitulo_topo = (
@@ -3197,15 +3380,15 @@ def _gerar_mockup_relatorio_impressao_html(empresa: str = "Aqua Gestão") -> str
 </html>"""
 
 
-def gerar_mockup_relatorio_preview_html(empresa: str = "Aqua Gestão", visual: str = "web") -> str:
+def gerar_mockup_relatorio_preview_html(empresa: str = "Aqua Gestão", visual: str = "web", dados: dict | None = None) -> str:
     """Retorna o HTML demonstrativo do relatório conforme o modelo atual do sistema."""
     empresa = str(empresa or "Aqua Gestão").strip()
     visual = str(visual or "web").strip().lower()
+    dados = dados or _mockup_dados_relatorio_demo()
     if visual == "print":
-        return _gerar_mockup_relatorio_impressao_html(empresa)
+        return _gerar_mockup_relatorio_impressao_html(empresa, dados=dados)
     if empresa == "Bem Star Piscinas":
-        return _gerar_mockup_relatorio_bem_star_html()
-    dados = _mockup_dados_relatorio_demo()
+        return _gerar_mockup_relatorio_bem_star_html(dados=dados)
     return gerar_html_relatorio_visita(dados["lancamento_aqua"], dados["nome_local"])
 
 
@@ -9222,9 +9405,20 @@ _prev_empresa = st.radio(
     key="preview_rel_empresa",
 )
 _prev_empresa_val = "Bem Star Piscinas" if "Bem Star" in _prev_empresa else "Aqua Gestão"
+_prev_usar_form = st.checkbox(
+    "Usar dados atuais do formulário nesta prévia",
+    key="preview_rel_usar_form",
+    help="Quando marcado, a prévia tenta aproveitar os dados atualmente preenchidos no formulário de relatório para montar o modelo visual.",
+)
 
-_prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web")
-_prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print")
+_prev_dados, _prev_usando_form, _prev_msg = _obter_dados_preview_relatorio(_prev_empresa_val, _prev_usar_form)
+if _prev_usando_form:
+    st.success(f"✅ {_prev_msg}")
+else:
+    st.info(f"ℹ️ {_prev_msg}")
+
+_prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web", dados=_prev_dados)
+_prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print", dados=_prev_dados)
 
 _prev_tab1, _prev_tab2 = st.tabs(["🌐 Modelo tela / HTML", "🖨️ Modelo impressão / PDF"])
 with _prev_tab1:
