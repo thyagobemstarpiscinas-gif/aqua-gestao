@@ -2055,7 +2055,8 @@ def carregar_dados_condominio(pasta_condominio: Path) -> dict | None:
         return None
     try:
         with open(caminho_json, "r", encoding="utf-8") as f:
-            return json.load(f)
+            dados = json.load(f)
+        return dados if isinstance(dados, dict) else None
     except Exception:
         return None
 
@@ -5808,7 +5809,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # ── Piscinas deste condomínio ─────────────────────────────────────────
         # Carrega configuração de piscinas salva ou usa padrão
         _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-        _dados_cond_op = carregar_dados_condominio(_pasta_cond_op) if _pasta_cond_op.exists() else {}
+        _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
 
         # Admin pode definir piscinas pelo painel — operador vê as já configuradas
@@ -6013,8 +6014,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                                 else:
                                     # Piscina extra — busca no JSON local
                                     _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-                                    _dados_extra_vol = carregar_dados_condominio(_pasta_extra_vol) if _pasta_extra_vol.exists() else {}
-                                    for _pe in (_dados_extra_vol or {}).get("piscinas_extras", []):
+                                    _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
+                                    for _pe in _dados_extra_vol.get("piscinas_extras", []):
                                         if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
                                             _vol_pisc = float(_pe.get("vol", 0) or 0)
                                             break
