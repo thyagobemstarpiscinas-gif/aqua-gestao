@@ -6824,6 +6824,25 @@ def _gerar_exportacao_operadores_csv(lista_ops: list[dict]) -> str:
     return buf.getvalue()
 
 
+def _filtrar_clientes_admin_por_empresa(clientes: list[dict], empresa_filtro: str) -> list[str]:
+    empresa_filtro = str(empresa_filtro or "Todas").strip()
+    nomes = []
+    for c in clientes or []:
+        nome = str(c.get("nome", "")).strip()
+        if not nome:
+            continue
+        emp = str(c.get("empresa", "Aqua Gestão") or "Aqua Gestão").strip()
+        if empresa_filtro == "Todas":
+            nomes.append(nome)
+        elif empresa_filtro == "Aqua Gestão" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
+            nomes.append(nome)
+        elif empresa_filtro == "Bem Star Piscinas" and emp == "Bem Star Piscinas":
+            nomes.append(nome)
+        elif empresa_filtro == "Ambas" and emp == "Ambas":
+            nomes.append(nome)
+    return _condominios_organizar(nomes)
+
+
 _total_ops = len(ops_cadastrados)
 _total_ativos = sum(1 for op in ops_cadastrados if op.get("ativo"))
 _total_inativos = _total_ops - _total_ativos
@@ -6970,14 +6989,23 @@ with _tab_ops1:
                         else:
                             st.error(st.session_state.get("_operadores_erro") or "Erro ao duplicar permissões. Verifique a conexão com o Sheets.")
 
-            _busca_conds_edit = st.text_input(
-                "Buscar condomínio dentro deste formulário",
-                key=f"busca_conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
-                placeholder="Digite parte do nome para filtrar a lista de permissões",
-            )
-            _opcoes_conds_edit = _filtrar_condominios_por_busca(_nomes_todos_clientes, _busca_conds_edit, _op_exatos_sel)
+            _fe1, _fe2 = st.columns([1.1, 1.9])
+            with _fe1:
+                _empresa_conds_edit = st.selectbox(
+                    "Filtrar permissões por empresa",
+                    ["Todas", "Aqua Gestão", "Bem Star Piscinas", "Ambas"],
+                    key=f"empresa_conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                )
+            with _fe2:
+                _busca_conds_edit = st.text_input(
+                    "Buscar condomínio dentro deste formulário",
+                    key=f"busca_conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    placeholder="Digite parte do nome para filtrar a lista de permissões",
+                )
+            _nomes_empresa_edit = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_conds_edit)
+            _opcoes_conds_edit = _filtrar_condominios_por_busca(_nomes_empresa_edit, _busca_conds_edit, _op_exatos_sel)
             if not _op_total_sel:
-                st.caption(f"Exibindo {len(_opcoes_conds_edit)} de {len(_nomes_todos_clientes)} condomínio(s) nesta seleção.")
+                st.caption(f"Exibindo {len(_opcoes_conds_edit)} de {len(_nomes_empresa_edit)} condomínio(s) para o filtro de empresa atual.")
 
             _key_conds_edit = f"conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}"
             with st.container():
@@ -7098,18 +7126,29 @@ with _tab_ops1:
                         st.rerun()
 
 with _tab_ops2:
-    _busca_conds_novo = st.text_input(
-        "Buscar condomínio para o novo operador",
-        key="busca_conds_novo",
-        placeholder="Digite parte do nome para filtrar a lista de permissões",
-    )
+    _fn1, _fn2 = st.columns([1.1, 1.9])
+    with _fn1:
+        _empresa_conds_novo = st.selectbox(
+            "Filtrar permissões por empresa",
+            ["Todas", "Aqua Gestão", "Bem Star Piscinas", "Ambas"],
+            key="empresa_conds_novo",
+        )
+    with _fn2:
+        _busca_conds_novo = st.text_input(
+            "Buscar condomínio para o novo operador",
+            key="busca_conds_novo",
+            placeholder="Digite parte do nome para filtrar a lista de permissões",
+        )
+    _nomes_empresa_novo = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_conds_novo)
     _opcoes_conds_novo = _filtrar_condominios_por_busca(
-        _nomes_todos_clientes,
+        _nomes_empresa_novo,
         _busca_conds_novo,
         st.session_state.get("op_novo_conds", []),
     )
-    if _nomes_todos_clientes:
-        st.caption(f"Exibindo {len(_opcoes_conds_novo)} de {len(_nomes_todos_clientes)} condomínio(s) para o cadastro do novo operador.")
+    if _nomes_empresa_novo:
+        st.caption(f"Exibindo {len(_opcoes_conds_novo)} de {len(_nomes_empresa_novo)} condomínio(s) para o filtro de empresa atual.")
+    else:
+        st.caption("Nenhum condomínio disponível para o filtro de empresa selecionado.")
 
     with st.container():
         st.markdown("#### Cadastro seguro de novo operador")
