@@ -1237,7 +1237,15 @@ def preparar_assinatura_rt_para_relatorio() -> Path | None:
 
 
 def encontrar_logo() -> Path | None:
+    """Retorna somente a logo institucional da Aqua Gestão.
+
+    Proteção importante: nunca aceitar arquivos da Bem Star na busca da Aqua,
+    nem na lista fixa nem na varredura genérica.
+    """
     for caminho in LOGO_CANDIDATOS:
+        nome = caminho.name.lower()
+        if "bem_star" in nome or "bemstar" in nome:
+            continue
         if caminho.exists() and caminho.is_file():
             return caminho
 
@@ -1246,7 +1254,8 @@ def encontrar_logo() -> Path | None:
             if pasta.exists():
                 encontrados = list(pasta.glob(extensao))
                 for arq in encontrados:
-                    if "logo" in arq.name.lower() and "bem_star" not in arq.name.lower():
+                    nome = arq.name.lower()
+                    if "logo" in nome and "bem_star" not in nome and "bemstar" not in nome:
                         return arq
     return None
 
