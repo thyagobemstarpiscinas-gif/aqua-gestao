@@ -127,6 +127,68 @@ def drive_baixar_foto(file_id: str) -> bytes | None:
 # GESTÃO DE OPERADORES
 # =========================================
 
+def _normalizar_chave_acesso(texto: str) -> str:
+    """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
+    texto = re.sub(r"\s+", " ", str(texto or "").strip())
+    return texto.casefold()
+
+
+def _condominios_organizar(condominios: list[str] | None) -> list[str]:
+    """Limpa, deduplica e preserva a ordem dos condomínios informados."""
+    resultado = []
+    vistos = set()
+    for item in condominios or []:
+        valor = re.sub(r"\s+", " ", str(item or "").strip())
+        if not valor:
+            continue
+        chave = _normalizar_chave_acesso(valor)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        resultado.append(valor)
+    return resultado
+
+
+def _resolver_condominios_permitidos_exatos(condominios_permitidos: list[str], todos_condominios: list[str]) -> list[str]:
+    """Resolve permissões por correspondência exata normalizada.
+
+    Mantém o nome oficial disponível no sistema e evita liberações por substring.
+    """
+    mapa_disponiveis = {}
+    for nome in todos_condominios or []:
+        chave = _normalizar_chave_acesso(nome)
+        if chave and chave not in mapa_disponiveis:
+            mapa_disponiveis[chave] = nome
+
+    permitidos_exatos = []
+    vistos = set()
+    for nome in _condominios_organizar(condominios_permitidos):
+        chave = _normalizar_chave_acesso(nome)
+        if chave in mapa_disponiveis and chave not in vistos:
+            vistos.add(chave)
+            permitidos_exatos.append(mapa_disponiveis[chave])
+    return permitidos_exatos
+
+
+def _pin_operador_em_uso(pin: str, nome_ignorar: str = "") -> bool:
+    """Verifica se o PIN já está em uso por outro operador."""
+    pin_limpo = str(pin or "").strip()
+    nome_ignorar_norm = _normalizar_chave_acesso(nome_ignorar)
+    if not pin_limpo:
+        return False
+
+    for op in sheets_listar_operadores():
+        if str(op.get("pin", "")).strip() == pin_limpo:
+            if _normalizar_chave_acesso(op.get("nome", "")) != nome_ignorar_norm:
+                return True
+
+    for op in carregar_operadores():
+        if str(op.get("pin", "")).strip() == pin_limpo:
+            if _normalizar_chave_acesso(op.get("nome", "")) != nome_ignorar_norm:
+                return True
+    return False
+
+
 def sheets_listar_operadores() -> list[dict]:
     """Lista operadores da aba 👷 Operadores do Sheets."""
     try:
@@ -141,12 +203,19 @@ def sheets_listar_operadores() -> list[dict]:
         operadores = []
         for row in todos:
             if len(row) >= 4 and str(row[0]).strip() and str(row[0]).strip() != "Nome":
-                nome = str(row[0]).strip()
+                nome = re.sub(r"\s+", " ", str(row[0]).strip())
                 pin  = str(row[1]).strip()
                 conds_raw = str(row[2]).strip()
                 ativo = str(row[3]).strip().lower() in ("sim", "ativo", "1", "true", "yes")
-                conds = [c.strip() for c in conds_raw.split("|") if c.strip()] if conds_raw else []
-                operadores.append({"nome": nome, "pin": pin, "condomínios": conds, "ativo": ativo})
+                conds = _condominios_organizar(conds_raw.split("|")) if conds_raw else []
+                acesso_total = any(_normalizar_chave_acesso(c) == "todos" for c in conds) or not conds
+                operadores.append({
+                    "nome": nome,
+                    "pin": pin,
+                    "condomínios": conds,
+                    "ativo": ativo,
+                    "acesso_total": acesso_total,
+                })
         return operadores
     except Exception as e:
         _log_sheets_erro("sheets_listar_operadores", e)
@@ -176,24 +245,37 @@ def sheets_criar_aba_operadores():
 
 def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool = True) -> bool:
     """Salva ou atualiza operador na aba 👷 Operadores."""
-    import re as _re
     try:
+        nome_limpo = re.sub(r"\s+", " ", str(nome or "").strip())
+        pin_limpo = str(pin or "").strip()
+        conds_limpos = _condominios_organizar(condomínios)
+
+        if not nome_limpo or not pin_limpo:
+            st.session_state["_operadores_erro"] = "Nome e PIN são obrigatórios."
+            return False
+
+        if _pin_operador_em_uso(pin_limpo, nome_ignorar=nome_limpo):
+            st.session_state["_operadores_erro"] = f"O PIN {pin_limpo} já está em uso por outro operador."
+            return False
+
         sh = conectar_sheets()
         if sh is None:
             return False
         sheets_criar_aba_operadores()
         aba = sh.worksheet("👷 Operadores")
         todos = aba.get_all_values()
-        conds_str = " | ".join(condomínios)
+        conds_str = " | ".join(conds_limpos)
         ativo_str = "Sim" if ativo else "Não"
-        nova_linha = [nome, pin, conds_str, ativo_str, datetime.now().strftime("%Y-%m-%d"), ""]
+        nova_linha = [nome_limpo, pin_limpo, conds_str, ativo_str, datetime.now().strftime("%Y-%m-%d"), ""]
         # Verifica se já existe (pelo nome)
         for i, row in enumerate(todos):
-            if len(row) > 0 and str(row[0]).strip().lower() == nome.lower().strip():
+            if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
                 aba.update(f"A{i+1}:F{i+1}", [nova_linha])
+                st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
         aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        st.session_state.pop("_operadores_erro", None)
         return True
     except Exception as e:
         _log_sheets_erro("sheets_salvar_operador", e)
@@ -209,7 +291,7 @@ def sheets_deletar_operador(nome: str) -> bool:
         aba = sh.worksheet("👷 Operadores")
         todos = aba.get_all_values()
         for i, row in enumerate(todos):
-            if len(row) > 0 and str(row[0]).strip().lower() == nome.lower().strip():
+            if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome):
                 aba.delete_rows(i + 1)
                 return True
         return False
@@ -220,11 +302,7 @@ def sheets_deletar_operador(nome: str) -> bool:
 
 def verificar_pin_operador(pin_digitado: str) -> dict | None:
     """Verifica PIN e retorna dados do operador, ou None se inválido."""
-    operadores = sheets_listar_operadores()
-    for op in operadores:
-        if op["pin"] == pin_digitado.strip() and op["ativo"]:
-            return op
-    return None
+    return validar_pin_operador(pin_digitado)
 
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
@@ -581,22 +659,31 @@ def salvar_operadores(lista: list):
 
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global 2940 (acesso total)."""
+    Também aceita PIN global 5010 (acesso total)."""
+    pin_limpo = str(pin or "").strip()
     # PIN global continua funcionando — acesso total
-    if pin == PIN_OPERADOR:
-        return {"nome": "Operador", "pin": pin, "condomínios": ["TODOS"], "acesso_total": True}
+    if pin_limpo == PIN_OPERADOR:
+        return {"nome": "Operador", "pin": pin_limpo, "condomínios": ["TODOS"], "acesso_total": True}
     # Busca nos operadores do Sheets
     try:
         operadores = sheets_listar_operadores()
         for op in operadores:
-            if op.get("pin","").strip() == pin.strip() and op.get("pin","").strip():
+            if op.get("pin", "").strip() == pin_limpo and op.get("ativo", True):
+                op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
+                op["acesso_total"] = op.get("acesso_total", False) or any(
+                    _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
+                ) or not op["condomínios"]
                 return op
     except Exception:
         pass
     # Fallback: JSON local
     operadores_local = carregar_operadores()
     for op in operadores_local:
-        if op.get("pin","") == pin:
+        if str(op.get("pin", "")).strip() == pin_limpo and op.get("ativo", True):
+            op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
+            op["acesso_total"] = op.get("acesso_total", False) or any(
+                _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
+            ) or not op["condomínios"]
             return op
     return None
 
@@ -674,17 +761,11 @@ def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: li
         return todos_condomínios  # sem nome → mostra todos (modo antigo)
     operadores = sheets_listar_operadores()
     for op in operadores:
-        if op["nome"].lower().strip() == nome_operador.lower().strip():
-            if "TODOS" in op["condomínios"]:
+        if _normalizar_chave_acesso(op["nome"]) == _normalizar_chave_acesso(nome_operador):
+            conds = _condominios_organizar(op.get("condomínios", []))
+            if any(_normalizar_chave_acesso(c) == "todos" for c in conds) or not conds:
                 return todos_condomínios
-            # Filtra os condomínios permitidos
-            permitidos = []
-            for cond in todos_condomínios:
-                for perm in op["condomínios"]:
-                    if perm.lower() in cond.lower() or cond.lower() in perm.lower():
-                        permitidos.append(cond)
-                        break
-            return permitidos if permitidos else todos_condomínios
+            return _resolver_condominios_permitidos_exatos(conds, todos_condomínios)
     # Operador não cadastrado → mostra todos (retrocompatibilidade)
     return todos_condomínios
 
@@ -5491,7 +5572,7 @@ with st.sidebar:
 # =========================================
 
 # PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "2940"
+PIN_OPERADOR = "5010"
 
 # Inicializa o modo se não estiver definido
 if "modo_atual" not in st.session_state:
@@ -5676,7 +5757,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _op_atual = st.session_state.get("op_dados_atual", {"nome": "Operador", "acesso_total": True, "condomínios": []})
     _op_nome_logado = _op_atual.get("nome", "Operador")
     _op_acesso_total = _op_atual.get("acesso_total", False)
-    _op_conds_permitidos = _op_atual.get("condomínios", [])
+    _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
 
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
         st.session_state["op_pin_ok"] = False
@@ -5761,13 +5842,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     )
 
     # Filtra condomínios pelo PIN do operador logado
-    if _op_acesso_total or not _op_conds_permitidos or "TODOS" in _op_conds_permitidos:
+    if _op_acesso_total or not _op_conds_permitidos or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
         opcoes_cond = opcoes_cond_todas
     else:
-        opcoes_cond = [c for c in opcoes_cond_todas if any(
-            perm.lower().strip() in c.lower() or c.lower() in perm.lower().strip()
-            for perm in _op_conds_permitidos
-        )]
+        opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
         if opcoes_cond:
             st.caption(f"✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).")
         else:
@@ -6634,8 +6712,8 @@ _nomes_todos_clientes = [c["nome"] for c in _todos_clientes_painel]
 if ops_cadastrados:
     st.success(f"✅ {len(ops_cadastrados)} operador(es) cadastrado(s):")
     for op in ops_cadastrados:
-        _op_conds = op.get("condomínios", [])
-        _acesso_total = "TODOS" in _op_conds or not _op_conds
+        _op_conds = _condominios_organizar(op.get("condomínios", []))
+        _acesso_total = op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds) or not _op_conds
         conds_txt = "Todos os clientes" if _acesso_total else ", ".join(_op_conds)
         status = "🟢 Ativo" if op.get("ativo") else "🔴 Inativo"
         _pin_raw = op["pin"]
@@ -6669,23 +6747,14 @@ if ops_cadastrados:
                 st.caption(f"✅ Acesso total — vê todos os {len(_nomes_todos_clientes)} clientes cadastrados.")
             else:
                 if _op_conds:
+                    _clientes_exatos = _resolver_condominios_permitidos_exatos(_op_conds, _nomes_todos_clientes)
+                    _clientes_exatos_set = {_normalizar_chave_acesso(c) for c in _clientes_exatos}
                     for _c in _op_conds:
-                        # Verificar se cliente existe no Sheets
-                        _existe = any(
-                            _c.lower().strip() in cl["nome"].lower() or
-                            cl["nome"].lower() in _c.lower().strip()
-                            for cl in _todos_clientes_painel
-                        )
+                        _existe = _normalizar_chave_acesso(_c) in _clientes_exatos_set
                         _icone = "✅" if _existe else "⚠️"
                         st.caption(f"{_icone} {_c}")
-                    if any(
-                        not any(
-                            _c.lower().strip() in cl["nome"].lower() or
-                            cl["nome"].lower() in _c.lower().strip()
-                            for cl in _todos_clientes_painel
-                        ) for _c in _op_conds
-                    ):
-                        st.caption("⚠️ = cliente não encontrado no cadastro atual")
+                    if any(_normalizar_chave_acesso(_c) not in _clientes_exatos_set for _c in _op_conds):
+                        st.caption("⚠️ = cliente não encontrado exatamente no cadastro atual")
                 else:
                     st.caption("Nenhum cliente vinculado.")
 
@@ -6709,7 +6778,7 @@ if ops_cadastrados:
                     _sel_conds = st.multiselect(
                         "Clientes permitidos",
                         options=_nomes_todos_clientes,
-                        default=[c for c in _op_conds if c in _nomes_todos_clientes],
+                        default=_resolver_condominios_permitidos_exatos(_op_conds, _nomes_todos_clientes),
                         key=f"multi_conds_{op['nome']}",
                         label_visibility="collapsed",
                     )
@@ -6719,8 +6788,10 @@ if ops_cadastrados:
                 if st.button(f"💾 Salvar clientes de {op['nome']}",
                         key=f"btn_save_conds_{op['nome']}", type="primary",
                         use_container_width=True):
-                    _conds_final = ["TODOS"] if _acesso_total_edit else _sel_conds
-                    if sheets_salvar_operador(
+                    _conds_final = ["TODOS"] if _acesso_total_edit else _condominios_organizar(_sel_conds)
+                    if not _acesso_total_edit and not _conds_final:
+                        st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
+                    elif sheets_salvar_operador(
                         nome=op["nome"],
                         pin=_pin_raw,
                         condomínios=_conds_final,
@@ -6731,7 +6802,7 @@ if ops_cadastrados:
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("Erro ao salvar. Verifique a conexão com o Sheets.")
+                        st.error(st.session_state.get("_operadores_erro") or "Erro ao salvar. Verifique a conexão com o Sheets.")
 
             # ── Remover operador ──────────────────────────────────────────
             if st.button(f"🗑 Remover {op['nome']}", key=f"del_op_{op['nome']}"):
@@ -6740,7 +6811,7 @@ if ops_cadastrados:
                     st.cache_data.clear()
                     st.rerun()
 else:
-    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 2940 continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 5010 continua funcionando como acesso geral.")
 
 with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadastrados)):
     # Carrega lista de clientes para selecionar condomínios
@@ -6753,7 +6824,7 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
     with op_col1:
         op_nome_novo = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
         op_pin_novo  = st.text_input("PIN exclusivo *", key="op_novo_pin", placeholder="Ex.: 1234", max_chars=10,
-            help="Mínimo 4 caracteres. Não use 2940 (reservado para acesso geral).")
+            help="Mínimo 4 caracteres. Não use 5010 (reservado para acesso geral).")
     with op_col2:
         op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
         op_acesso_total_novo = st.checkbox("Acesso a todos os condomínios", value=False, key="op_novo_acesso_total")
@@ -6766,29 +6837,37 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
             help="Deixe vazio + marque 'Acesso total' para liberar tudo."
         )
     else:
-        op_conds_novo = _clientes_op if op_acesso_total_novo else []
+        op_conds_novo = ["TODOS"] if op_acesso_total_novo else []
 
     if st.button("💾 Salvar operador", type="primary", use_container_width=True, key="btn_salvar_op"):
-        if not op_nome_novo.strip():
+        _nome_op_limpo = re.sub(r"\s+", " ", op_nome_novo.strip())
+        _pin_op_limpo = op_pin_novo.strip()
+        _conds_op_final = ["TODOS"] if op_acesso_total_novo else _condominios_organizar(op_conds_novo)
+
+        if not _nome_op_limpo:
             st.error("Informe o nome do operador.")
-        elif not op_pin_novo.strip() or len(op_pin_novo.strip()) < 4:
+        elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif op_pin_novo.strip() == "2940":
-            st.error("O PIN 2940 é reservado para acesso geral. Escolha outro.")
+        elif _pin_op_limpo == "5010":
+            st.error("O PIN 5010 é reservado para acesso geral. Escolha outro.")
+        elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
+            st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
+        elif not op_acesso_total_novo and not _conds_op_final:
+            st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
         else:
             with st.spinner("Salvando operador..."):
                 ok_op = sheets_salvar_operador(
-                    nome=op_nome_novo.strip(),
-                    pin=op_pin_novo.strip(),
-                    condomínios=op_conds_novo,
+                    nome=_nome_op_limpo,
+                    pin=_pin_op_limpo,
+                    condomínios=_conds_op_final,
                     ativo=op_ativo_novo,
                 )
             if ok_op:
-                st.success(f"✅ Operador '{op_nome_novo}' salvo! PIN: {op_pin_novo}")
+                st.success(f"✅ Operador '{_nome_op_limpo}' salvo! PIN: {_pin_op_limpo}")
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.error("❌ Erro ao salvar operador. Verifique a conexão com o Sheets.")
+                st.error(st.session_state.get("_operadores_erro") or "❌ Erro ao salvar operador. Verifique a conexão com o Sheets.")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -7579,7 +7658,7 @@ else:
                         filtrados.append(lc)
             except Exception:
                 filtrados.append(lc)
-        return filtrados if filtrados else lancamentos
+        return filtrados
 
     _mes_csr  = (csr_mes or "").strip()
     _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
@@ -8464,7 +8543,7 @@ def _filtrar_mes(lancamentos, mes, ano):
                     filtrados.append(lc)
         except Exception:
             filtrados.append(lc)
-    return filtrados if filtrados else lancamentos
+    return filtrados
 
 # Une local + Sheets sem duplicar (por data+operador)
 _vistos = set()
