@@ -6788,6 +6788,42 @@ def _filtrar_condominios_por_busca(opcoes: list[str], busca: str, selecionados: 
     return combinados
 
 
+def _gerar_exportacao_operadores_csv(lista_ops: list[dict]) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow([
+        "Nome",
+        "PIN_mascarado",
+        "Status",
+        "Acesso_total",
+        "Qtd_condominios_permitidos",
+        "Condominios_permitidos",
+        "Condominios_localizados_exatamente",
+        "Permissoes_nao_localizadas",
+    ])
+
+    for op in _ordenar_ops_admin(lista_ops):
+        _conds = _condominios_organizar(op.get("condomínios", []))
+        _acesso_total_csv = _op_tem_acesso_total(op)
+        _exatos_csv = _resolver_condominios_permitidos_exatos(_conds, _nomes_todos_clientes)
+        _exatos_set_csv = {_normalizar_chave_acesso(c) for c in _exatos_csv}
+        _orfaos_csv = [c for c in _conds if _normalizar_chave_acesso(c) not in _exatos_set_csv and _normalizar_chave_acesso(c) != "todos"]
+        writer.writerow([
+            str(op.get("nome", "")).strip(),
+            _mascarar_pin_admin(op.get("pin", "")),
+            "Ativo" if op.get("ativo") else "Inativo",
+            "Sim" if _acesso_total_csv else "Não",
+            len(_exatos_csv) if not _acesso_total_csv else len(_nomes_todos_clientes),
+            " | ".join(_conds if not _acesso_total_csv else ["TODOS"]),
+            " | ".join(_exatos_csv),
+            " | ".join(_orfaos_csv),
+        ])
+    return buf.getvalue()
+
+
 _total_ops = len(ops_cadastrados)
 _total_ativos = sum(1 for op in ops_cadastrados if op.get("ativo"))
 _total_inativos = _total_ops - _total_ativos
@@ -6802,6 +6838,21 @@ with _mop3:
     st.metric("Inativos", _total_inativos)
 with _mop4:
     st.metric("Acesso restrito", _total_restritos)
+
+if ops_cadastrados:
+    _csv_operadores = _gerar_exportacao_operadores_csv(ops_cadastrados)
+    _exp1, _exp2 = st.columns([1.2, 2])
+    with _exp1:
+        st.download_button(
+            "📤 Exportar operadores e permissões",
+            data=_csv_operadores.encode("utf-8-sig"),
+            file_name=f"operadores_permissoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="btn_exportar_operadores_csv",
+        )
+    with _exp2:
+        st.caption("Exportação administrativa em CSV com status, PIN mascarado e condomínios permitidos/localizados para conferência.")
 
 if not ops_cadastrados:
     st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN 2940 continua funcionando como acesso geral.")
@@ -6928,7 +6979,8 @@ with _tab_ops1:
             if not _op_total_sel:
                 st.caption(f"Exibindo {len(_opcoes_conds_edit)} de {len(_nomes_todos_clientes)} condomínio(s) nesta seleção.")
 
-            with st.form(f"form_admin_seguro_{_normalizar_chave_acesso(_op_nome_sel)}"):
+            _key_conds_edit = f"conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}"
+            with st.container():
                 st.markdown("#### Editar operador com segurança")
                 _ed1, _ed2 = st.columns(2)
                 with _ed1:
@@ -6964,14 +7016,33 @@ with _tab_ops1:
                         "Condomínios permitidos para este PIN",
                         options=_opcoes_conds_edit,
                         default=_op_exatos_sel,
-                        key=f"conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                        key=_key_conds_edit,
                         help="Seleção exata dos condomínios liberados para este operador.",
                     )
+                    _selecionados_edit = _condominios_organizar(st.session_state.get(_key_conds_edit, _op_exatos_sel))
+                    _ced1, _ced2 = st.columns([1.1, 1.4])
+                    with _ced1:
+                        st.caption(f"Selecionados agora: {len(_selecionados_edit)} condomínio(s).")
+                    with _ced2:
+                        if st.button(
+                            "✅ Marcar todos os resultados da busca",
+                            key=f"btn_marcar_busca_{_normalizar_chave_acesso(_op_nome_sel)}",
+                            use_container_width=True,
+                            disabled=not bool(_opcoes_conds_edit),
+                        ):
+                            st.session_state[_key_conds_edit] = _condominios_organizar(_selecionados_edit + _opcoes_conds_edit)
+                            st.rerun()
                 else:
                     st.caption("Com acesso total marcado, o operador continuará vendo todos os condomínios disponíveis.")
                     _conds_edit = ["TODOS"]
+                    st.caption(f"Selecionados agora: {len(_nomes_todos_clientes)} condomínio(s) via acesso total.")
 
-                _salvar_edit = st.form_submit_button("💾 Salvar alterações do operador", type="primary", use_container_width=True)
+                _salvar_edit = st.button(
+                    "💾 Salvar alterações do operador",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"btn_salvar_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                )
 
             if _salvar_edit:
                 _pin_final_edit = _novo_pin_edit.strip() if _editar_pin else _op_pin_sel
@@ -7040,7 +7111,7 @@ with _tab_ops2:
     if _nomes_todos_clientes:
         st.caption(f"Exibindo {len(_opcoes_conds_novo)} de {len(_nomes_todos_clientes)} condomínio(s) para o cadastro do novo operador.")
 
-    with st.form("form_novo_operador_seguro"):
+    with st.container():
         st.markdown("#### Cadastro seguro de novo operador")
         _novo1, _novo2 = st.columns(2)
         with _novo1:
@@ -7064,11 +7135,30 @@ with _tab_ops2:
                 key="op_novo_conds",
                 help="Seleção exata dos condomínios liberados para o novo operador.",
             )
+            _selecionados_novo = _condominios_organizar(st.session_state.get("op_novo_conds", []))
+            _cn1, _cn2 = st.columns([1.1, 1.4])
+            with _cn1:
+                st.caption(f"Selecionados agora: {len(_selecionados_novo)} condomínio(s).")
+            with _cn2:
+                if st.button(
+                    "✅ Marcar todos os resultados da busca",
+                    key="btn_marcar_busca_novo_operador",
+                    use_container_width=True,
+                    disabled=not bool(_opcoes_conds_novo),
+                ):
+                    st.session_state["op_novo_conds"] = _condominios_organizar(_selecionados_novo + _opcoes_conds_novo)
+                    st.rerun()
         else:
             st.caption("Com acesso total marcado, o novo operador verá todos os condomínios disponíveis no sistema.")
             op_conds_novo = ["TODOS"]
+            st.caption(f"Selecionados agora: {len(_nomes_todos_clientes)} condomínio(s) via acesso total.")
 
-        _salvar_novo = st.form_submit_button("💾 Cadastrar operador", type="primary", use_container_width=True)
+        _salvar_novo = st.button(
+            "💾 Cadastrar operador",
+            type="primary",
+            use_container_width=True,
+            key="btn_cadastrar_novo_operador_seguro",
+        )
 
     if _salvar_novo:
         _nome_op_limpo = re.sub(r"\s+", " ", op_nome_novo.strip())
