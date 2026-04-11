@@ -659,7 +659,7 @@ def salvar_operadores(lista: list):
 
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global 5010 (acesso total)."""
+    Também aceita PIN global 2940 (acesso total)."""
     pin_limpo = str(pin or "").strip()
     # PIN global continua funcionando — acesso total
     if pin_limpo == PIN_OPERADOR:
@@ -5572,7 +5572,7 @@ with st.sidebar:
 # =========================================
 
 # PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "5010"
+PIN_OPERADOR = "2940"
 
 # Inicializa o modo se não estiver definido
 if "modo_atual" not in st.session_state:
@@ -6811,7 +6811,7 @@ if ops_cadastrados:
                     st.cache_data.clear()
                     st.rerun()
 else:
-    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 5010 continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado. Use o formulário abaixo. O PIN 2940 continua funcionando como acesso geral.")
 
 with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadastrados)):
     # Carrega lista de clientes para selecionar condomínios
@@ -6824,7 +6824,7 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
     with op_col1:
         op_nome_novo = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
         op_pin_novo  = st.text_input("PIN exclusivo *", key="op_novo_pin", placeholder="Ex.: 1234", max_chars=10,
-            help="Mínimo 4 caracteres. Não use 5010 (reservado para acesso geral).")
+            help="Mínimo 4 caracteres. Não use 2940 (reservado para acesso geral).")
     with op_col2:
         op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
         op_acesso_total_novo = st.checkbox("Acesso a todos os condomínios", value=False, key="op_novo_acesso_total")
@@ -6848,8 +6848,8 @@ with st.expander("➕ Cadastrar / editar operador", expanded=not bool(ops_cadast
             st.error("Informe o nome do operador.")
         elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif _pin_op_limpo == "5010":
-            st.error("O PIN 5010 é reservado para acesso geral. Escolha outro.")
+        elif _pin_op_limpo == "2940":
+            st.error("O PIN 2940 é reservado para acesso geral. Escolha outro.")
         elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
             st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
         elif not op_acesso_total_novo and not _conds_op_final:
