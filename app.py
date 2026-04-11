@@ -306,26 +306,28 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                 break
 
         nova_linha = [
-            "",  # col A vazia
-            id_visita,
-            lancamento.get("data", ""),
-            id_cliente,
-            nome_condominio,
-            lancamento.get("ph", ""),
-            lancamento.get("cloro_livre", ""),
-            lancamento.get("alcalinidade", ""),
-            lancamento.get("dureza", ""),
-            lancamento.get("cianurico", ""),
-            "",  # foto antes
-            "",  # foto depois
-            "",  # foto casa máquinas
-            lancamento.get("observacao", ""),
-            "",  # dosagem cloro (calculado)
-            "",  # dosagem bicarbonato (calculado)
-            "",  # alerta pH
-            "",  # alerta cloro
-            "Concluída",
-            lancamento.get("operador", ""),
+            "",                                    # col A  - vazia
+            id_visita,                             # col B  - ID visita
+            lancamento.get("data", ""),            # col C  - Data
+            id_cliente,                            # col D  - ID cliente
+            nome_condominio,                       # col E  - Condomínio
+            lancamento.get("ph", ""),              # col F  - pH
+            lancamento.get("cloro_livre", ""),     # col G  - CRL
+            lancamento.get("cloro_total", ""),     # col H  - CT ← adicionado
+            lancamento.get("alcalinidade", ""),    # col I  - Alcalinidade
+            lancamento.get("dureza", ""),          # col J  - Dureza
+            lancamento.get("cianurico", ""),       # col K  - CYA
+            "",                                    # col L  - foto antes
+            "",                                    # col M  - foto depois
+            "",                                    # col N  - foto casa máquinas
+            lancamento.get("observacao", ""),      # col O  - Observação
+            "",                                    # col P  - dosagem cloro
+            "",                                    # col Q  - dosagem bicarb
+            "",                                    # col R  - alerta pH
+            "",                                    # col S  - alerta cloro
+            "Concluída",                           # col T  - Status
+            lancamento.get("operador", ""),        # col U  - Operador
+            lancamento.get("problemas", ""),       # col V  - Problemas
         ]
 
         aba.append_row(nova_linha, value_input_option="USER_ENTERED")
@@ -609,16 +611,45 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         lancamentos = []
         for row in todos:
             if len(row) > 4 and nome_condominio.lower() in str(row[4]).lower():
-                lancamentos.append({
-                    "data": row[2] if len(row) > 2 else "",
-                    "ph": row[5] if len(row) > 5 else "",
-                    "cloro_livre": row[6] if len(row) > 6 else "",
-                    "alcalinidade": row[7] if len(row) > 7 else "",
-                    "dureza": row[8] if len(row) > 8 else "",
-                    "cianurico": row[9] if len(row) > 9 else "",
-                    "observacao": row[13] if len(row) > 13 else "",
-                    "operador": row[19] if len(row) > 19 else "",
-                })
+                def _r(i): return row[i] if len(row) > i else ""
+                # Detecta formato antigo (sem CT na col H) vs novo (com CT)
+                # No formato novo: col H = CT, col I = Alc, col J = DC, col K = CYA
+                # No formato antigo: col H = Alc, col I = DC, col J = CYA
+                # Heurística: se col H parece alcalinidade (valor > 30), é formato antigo
+                _col_h = _r(7)
+                try:
+                    _h_float = float(str(_col_h).replace(",",".").strip() or 0)
+                    _formato_novo = _h_float < 10  # CT raramente > 10, Alc sempre > 30
+                except Exception:
+                    _formato_novo = True
+
+                if _formato_novo:
+                    lancamentos.append({
+                        "data":        _r(2),
+                        "ph":          _r(5),
+                        "cloro_livre": _r(6),
+                        "cloro_total": _r(7),
+                        "alcalinidade":_r(8),
+                        "dureza":      _r(9),
+                        "cianurico":   _r(10),
+                        "observacao":  _r(14),
+                        "operador":    _r(20),
+                        "problemas":   _r(21),
+                    })
+                else:
+                    # Formato antigo — sem CT
+                    lancamentos.append({
+                        "data":        _r(2),
+                        "ph":          _r(5),
+                        "cloro_livre": _r(6),
+                        "cloro_total": "",
+                        "alcalinidade":_r(7),
+                        "dureza":      _r(8),
+                        "cianurico":   _r(9),
+                        "observacao":  _r(13),
+                        "operador":    _r(19),
+                        "problemas":   "",
+                    })
         return lancamentos
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
@@ -4468,7 +4499,7 @@ def gerar_relatorio_visita_docx(
             _r_sub.font.size = Pt(10)
             _r_sub.font.color.rgb = _RGB(0x0d, 0x3d, 0x75)
 
-            cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
+            cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Clor. mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
             t = doc.add_table(rows=1 + len(dados_linhas), cols=len(cabecalho))
             t.style = "Table Grid"
 
@@ -4518,22 +4549,31 @@ def gerar_relatorio_visita_docx(
                 if _piscs:
                     for p in _piscs:
                         if (p.get("nome","Piscina").strip() or "Piscina") == _pisc_nome:
+                            # Calcula cloraminas se disponível
+                            _crl_v = valor_float(p.get("cloro_livre",""))
+                            _ct_v  = valor_float(p.get("cloro_total",""))
+                            _clor_txt = str(round(max(_ct_v - _crl_v, 0), 2)) if _crl_v is not None and _ct_v is not None else p.get("cloraminas","")
                             _linhas_pisc.append([
                                 lc.get("data",""),
                                 p.get("ph",""),
                                 p.get("cloro_livre",""),
                                 p.get("cloro_total",""),
+                                _clor_txt,
                                 p.get("alcalinidade",""),
                                 p.get("dureza",""),
                                 p.get("cianurico",""),
                                 lc.get("operador",""),
                             ])
                 elif _pisc_nome == "Piscina":
+                    _crl_fb = valor_float(lc.get("cloro_livre",""))
+                    _ct_fb  = valor_float(lc.get("cloro_total",""))
+                    _clor_fb = str(round(max(_ct_fb - _crl_fb, 0), 2)) if _crl_fb is not None and _ct_fb is not None else lc.get("cloraminas","")
                     _linhas_pisc.append([
                         lc.get("data",""),
                         lc.get("ph",""),
                         lc.get("cloro_livre",""),
                         lc.get("cloro_total",""),
+                        _clor_fb,
                         lc.get("alcalinidade",""),
                         lc.get("dureza",""),
                         lc.get("cianurico",""),
