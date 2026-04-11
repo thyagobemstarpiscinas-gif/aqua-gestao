@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
+import streamlit.components.v1 as components
 from docx import Document
 from docx.shared import Inches
 from PIL import Image, ImageOps
@@ -2816,6 +2817,396 @@ def gerar_html_resumo_cadastro(item: dict) -> str:
     </html>
     """
     return html
+
+
+def _mockup_dados_relatorio_demo() -> dict:
+    """Dados fictícios usados apenas para a pré-visualização do modelo de relatório."""
+    lancamento_aqua = {
+        "data": "10/04/2026",
+        "operador": "João Silva",
+        "observacao": "Casa de máquinas organizada, filtro em operação normal e responsável local orientado sobre nova conferência após a recirculação.",
+        "problemas": "Piscina infantil com cloro livre abaixo do mínimo operacional e pH levemente abaixo da faixa ideal.",
+        "parecer": "Aceitável com correções imediatas na piscina infantil e monitoramento da estabilidade química nas próximas horas.",
+        "dosagens": [
+            {"produto": "Cloro granulado", "quantidade": "1,2", "unidade": "kg", "finalidade": "Reforço de desinfecção"},
+            {"produto": "Barrilha leve", "quantidade": "0,8", "unidade": "kg", "finalidade": "Correção gradual do pH"},
+            {"produto": "Algicida manutenção", "quantidade": "250", "unidade": "mL", "finalidade": "Prevenção"},
+        ],
+        "piscinas": [
+            {
+                "nome": "Piscina Adulto",
+                "ph": "7,4",
+                "cloro_livre": "1,8",
+                "cloro_total": "2,0",
+                "cloraminas": "0,2",
+                "alcalinidade": "110",
+                "dureza": "180",
+                "cianurico": "35",
+            },
+            {
+                "nome": "Piscina Infantil",
+                "ph": "7,0",
+                "cloro_livre": "0,4",
+                "cloro_total": "0,8",
+                "cloraminas": "0,4",
+                "alcalinidade": "72",
+                "dureza": "230",
+                "cianurico": "28",
+            },
+        ],
+    }
+
+    lancamentos_periodo = [
+        {
+            "data": "02/04/2026",
+            "operador": "João Silva",
+            "observacao": "Início do período com parâmetros estáveis e água visualmente cristalina.",
+            "dosagens": [{"produto": "Clarificante", "quantidade": "150", "unidade": "mL", "finalidade": "Auxílio à filtração"}],
+            "piscinas": [
+                {"nome": "Piscina Adulto", "ph": "7,5", "cloro_livre": "2,0", "cloro_total": "2,2", "cloraminas": "0,2", "alcalinidade": "105", "dureza": "190", "cianurico": "34"},
+                {"nome": "Piscina Infantil", "ph": "7,3", "cloro_livre": "1,6", "cloro_total": "1,8", "cloraminas": "0,2", "alcalinidade": "88", "dureza": "220", "cianurico": "30"},
+            ],
+            "parecer": "Satisfatório.",
+        },
+        {
+            "data": "10/04/2026",
+            "operador": "João Silva",
+            "observacao": "Casa de máquinas organizada, filtro em operação normal e responsável local orientado sobre nova conferência após a recirculação.",
+            "problemas": "Piscina infantil com cloro livre abaixo do mínimo operacional e pH levemente abaixo da faixa ideal.",
+            "dosagens": [
+                {"produto": "Cloro granulado", "quantidade": "1,2", "unidade": "kg", "finalidade": "Reforço de desinfecção"},
+                {"produto": "Barrilha leve", "quantidade": "0,8", "unidade": "kg", "finalidade": "Correção gradual do pH"},
+            ],
+            "piscinas": [
+                {"nome": "Piscina Adulto", "ph": "7,4", "cloro_livre": "1,8", "cloro_total": "2,0", "cloraminas": "0,2", "alcalinidade": "110", "dureza": "180", "cianurico": "35", "dosagens": [{"produto": "Algicida manutenção", "quantidade": "250", "unidade": "mL", "finalidade": "Prevenção"}]},
+                {"nome": "Piscina Infantil", "ph": "7,0", "cloro_livre": "0,4", "cloro_total": "0,8", "cloraminas": "0,4", "alcalinidade": "72", "dureza": "230", "cianurico": "28", "dosagens": [{"produto": "Cloro granulado", "quantidade": "1,2", "unidade": "kg", "finalidade": "Reforço de desinfecção"}, {"produto": "Barrilha leve", "quantidade": "0,8", "unidade": "kg", "finalidade": "Correção gradual do pH"}]},
+            ],
+            "parecer": "Aceitável com correções imediatas na piscina infantil e monitoramento da estabilidade química nas próximas horas.",
+        },
+        {
+            "data": "18/04/2026",
+            "operador": "Marcos Lima",
+            "observacao": "Rechecagem após tratamento corretivo com melhora dos parâmetros e estabilidade visual da água.",
+            "dosagens": [{"produto": "Cloro granulado", "quantidade": "0,4", "unidade": "kg", "finalidade": "Manutenção"}],
+            "piscinas": [
+                {"nome": "Piscina Adulto", "ph": "7,5", "cloro_livre": "2,1", "cloro_total": "2,3", "cloraminas": "0,2", "alcalinidade": "108", "dureza": "185", "cianurico": "36"},
+                {"nome": "Piscina Infantil", "ph": "7,3", "cloro_livre": "1,5", "cloro_total": "1,7", "cloraminas": "0,2", "alcalinidade": "84", "dureza": "228", "cianurico": "29"},
+            ],
+            "parecer": "Satisfatório.",
+        },
+    ]
+
+    return {
+        "nome_local": "Residencial Águas Claras",
+        "cnpj": "12.345.678/0001-90",
+        "endereco": "Av. Floriano Peixoto, 1500 - Uberlândia/MG",
+        "responsavel": "Carlos Menezes",
+        "operador": "João Silva",
+        "mes": "04",
+        "ano": "2026",
+        "lancamento_aqua": lancamento_aqua,
+        "lancamentos_periodo": lancamentos_periodo,
+        "obs_geral": "Relatório demonstrativo de pré-visualização, espelhando o padrão visual e textual atual do sistema.",
+        "fotos_demo": [
+            ("Antes do tratamento", "Piscina infantil antes da correção química"),
+            ("Após o tratamento", "Área após aplicação dos produtos e recirculação inicial"),
+            ("Casa de máquinas", "Conjunto de filtração e circulação em operação"),
+        ],
+    }
+
+
+def _gerar_mockup_relatorio_bem_star_html() -> str:
+    dados = _mockup_dados_relatorio_demo()
+    hoje = date.today().strftime("%d/%m/%Y")
+    return f"""<!DOCTYPE html>
+<html lang=\"pt-BR\">
+<head>
+<meta charset=\"UTF-8\">
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<title>Relatório técnico-operacional de piscinas — {dados['nome_local']}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0;}}
+  body{{font-family:Arial,Helvetica,sans-serif;background:#f4f7f9;color:#14313d;}}
+  .page{{max-width:680px;margin:0 auto;padding:16px;}}
+  .card{{background:#fff;border:1px solid #d5e2e6;border-radius:12px;padding:18px 20px;margin-bottom:12px;}}
+  .hdr{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}}
+  .brand{{display:flex;gap:12px;align-items:center;}}
+  .logo{{width:48px;height:48px;border-radius:50%;background:#15707c;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;}}
+  .tit1{{font-size:16px;font-weight:700;color:#0f3a46;}}
+  .tit2{{font-size:10px;color:#6f8790;letter-spacing:.7px;text-transform:uppercase;margin-top:2px;}}
+  .doc{{text-align:right;}}
+  .doc .ttl{{font-size:13px;font-weight:700;color:#15707c;}}
+  .doc .sub{{font-size:10px;color:#7f95a0;margin-top:3px;}}
+  .sec{{font-size:10px;font-weight:700;color:#15707c;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #15707c;}}
+  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;}}
+  .lbl{{font-size:10px;color:#7f95a0;text-transform:uppercase;}}
+  .val{{font-size:13px;font-weight:600;color:#14313d;margin-top:2px;}}
+  .pool{{border:1px solid #dbe5ea;border-radius:10px;padding:12px;margin-top:10px;}}
+  .pool h4{{margin:0 0 10px;font-size:13px;color:#0f3a46;}}
+  .params{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}}
+  .box{{border:1px solid #d7e2e8;border-radius:8px;padding:10px 8px;text-align:center;background:#fbfdfe;}}
+  .box.ok{{background:#edf7f0;border-color:#cfe6d4;}}
+  .box.warn{{background:#fff6ee;border-color:#f1d4be;}}
+  .pn{{font-size:9px;color:#7f95a0;text-transform:uppercase;margin-bottom:4px;}}
+  .pv{{font-size:18px;font-weight:700;color:#14313d;}}
+  .box.ok .pv{{color:#2e7d32;}}
+  .box.warn .pv{{color:#c26300;}}
+  .ps{{font-size:9px;color:#6f8790;margin-top:3px;}}
+  .list{{padding-left:18px;color:#334e58;line-height:1.7;font-size:13px;}}
+  .note{{font-size:12px;color:#516a74;line-height:1.7;}}
+  .photo{{border:1px dashed #c9d8de;border-radius:10px;padding:12px;background:#f8fbfc;margin-bottom:8px;}}
+  .photo strong{{display:block;color:#0f3a46;font-size:12px;margin-bottom:4px;}}
+  .rod{{text-align:center;font-size:10px;color:#7f95a0;padding:8px 0 2px;}}
+</style>
+</head>
+<body>
+<div class=\"page\">
+  <div class=\"card\">
+    <div class=\"hdr\">
+      <div class=\"brand\">
+        <div class=\"logo\">BS</div>
+        <div>
+          <div class=\"tit1\">BEM STAR PISCINAS</div>
+          <div class=\"tit2\">RELATÓRIO TÉCNICO-OPERACIONAL DE PISCINAS</div>
+        </div>
+      </div>
+      <div class=\"doc\">
+        <div class=\"ttl\">Relatório de visita</div>
+        <div class=\"sub\">Emitido em {hoje}</div>
+      </div>
+    </div>
+    <div style=\"margin-top:12px;height:1px;background:#d7e3e7;\"></div>
+    <div class=\"grid\" style=\"margin-top:12px;\">
+      <div><div class=\"lbl\">Local / Condomínio</div><div class=\"val\">{dados['nome_local']}</div></div>
+      <div><div class=\"lbl\">Período de referência</div><div class=\"val\">{dados['mes']}/{dados['ano']}</div></div>
+      <div><div class=\"lbl\">Operador de campo</div><div class=\"val\">{dados['operador']}</div></div>
+      <div><div class=\"lbl\">Responsável / Síndico</div><div class=\"val\">{dados['responsavel']}</div></div>
+    </div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">1. Identificação do local</div>
+    <div class=\"grid\">
+      <div><div class=\"lbl\">Local / Condomínio</div><div class=\"val\">{dados['nome_local']}</div></div>
+      <div><div class=\"lbl\">CNPJ</div><div class=\"val\">{dados['cnpj']}</div></div>
+      <div><div class=\"lbl\">Endereço</div><div class=\"val\">{dados['endereco']}</div></div>
+      <div><div class=\"lbl\">Responsável no local</div><div class=\"val\">{dados['responsavel']}</div></div>
+    </div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">2. Análises físico-químicas</div>
+    <div class=\"pool\">
+      <h4>🏊 Piscina Principal</h4>
+      <div class=\"params\">
+        <div class=\"box ok\"><div class=\"pn\">pH</div><div class=\"pv\">7,5</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">CRL mg/L</div><div class=\"pv\">2,2</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">CT mg/L</div><div class=\"pv\">2,4</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">Clor. mg/L</div><div class=\"pv\">0,2</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">Alc. mg/L</div><div class=\"pv\">98</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">CYA mg/L</div><div class=\"pv\">32</div><div class=\"ps\">Conforme</div></div>
+      </div>
+    </div>
+    <div class=\"pool\">
+      <h4>🏊 Spa / Hidro</h4>
+      <div class=\"params\">
+        <div class=\"box ok\"><div class=\"pn\">pH</div><div class=\"pv\">7,3</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box warn\"><div class=\"pn\">CRL mg/L</div><div class=\"pv\">0,9</div><div class=\"ps\">Em atenção</div></div>
+        <div class=\"box ok\"><div class=\"pn\">CT mg/L</div><div class=\"pv\">1,2</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">Clor. mg/L</div><div class=\"pv\">0,3</div><div class=\"ps\">Monitorar</div></div>
+        <div class=\"box ok\"><div class=\"pn\">Alc. mg/L</div><div class=\"pv\">90</div><div class=\"ps\">Conforme</div></div>
+        <div class=\"box ok\"><div class=\"pn\">CYA mg/L</div><div class=\"pv\">25</div><div class=\"ps\">Conforme</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">3. Dosagens aplicadas</div>
+    <ul class=\"list\">
+      <li>Aplicação de 600 g de cloro granulado no spa/hidro.</li>
+      <li>Aplicação de 150 mL de clarificante na piscina principal.</li>
+      <li>Verificação de cestos, skimmers e pré-filtros.</li>
+      <li>Orientação passada ao responsável do local.</li>
+    </ul>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">4. Observações gerais</div>
+    <div class=\"note\">Condição geral satisfatória. Apenas o spa/hidro requer rechecagem breve de cloro residual devido à maior sensibilidade de volume e uso. Estrutura e circulação em conformidade visual no momento da visita.</div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">5. Registro fotográfico</div>
+    <div class=\"photo\"><strong>📷 Piscina principal</strong>Vista geral da lâmina d'água.</div>
+    <div class=\"photo\"><strong>📷 Spa / Hidro</strong>Condição visual do segundo corpo d'água.</div>
+    <div class=\"photo\"><strong>📷 Equipamentos</strong>Painel e equipamentos no momento da visita.</div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"sec\">Sobre responsabilidade técnica (RT)</div>
+    <div class=\"note\">{TEXTO_RT_SEM_RT.strip().replace(chr(10), '<br><br>')}</div>
+  </div>
+
+  <div class=\"rod\">Bem Star Piscinas · Documento de pré-visualização do modelo atual</div>
+</div>
+</body>
+</html>"""
+
+
+def _gerar_mockup_relatorio_impressao_html(empresa: str = "Aqua Gestão") -> str:
+    dados = _mockup_dados_relatorio_demo()
+    incluir_rt = str(empresa or "").strip() != "Bem Star Piscinas"
+    titulo_topo = "AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS" if incluir_rt else "BEM STAR PISCINAS"
+    subtitulo_topo = (
+        f"Responsável Técnico: {RESPONSAVEL_TÉCNICO} | {CRQ}<br>{QUALIFICACAO_RT} | Certificações: {CERTIFICACOES_RT}"
+        if incluir_rt else
+        f"RELATÓRIO TÉCNICO-OPERACIONAL DE PISCINAS<br>CNPJ: {CNPJ_BEM_STAR}  |  Uberlândia/MG"
+    )
+    blocos_analises = []
+    for nome_piscina in ["Piscina Adulto", "Piscina Infantil"]:
+        linhas = []
+        for lc in dados['lancamentos_periodo']:
+            for p in lc.get('piscinas', []):
+                if p.get('nome') == nome_piscina:
+                    linhas.append(f"""
+                    <tr>
+                      <td>{lc.get('data','')}</td>
+                      <td>{p.get('ph','')}</td>
+                      <td>{p.get('cloro_livre','')}</td>
+                      <td>{p.get('cloro_total','')}</td>
+                      <td>{p.get('cloraminas','')}</td>
+                      <td>{p.get('alcalinidade','')}</td>
+                      <td>{p.get('dureza','')}</td>
+                      <td>{p.get('cianurico','')}</td>
+                      <td>{lc.get('operador','')}</td>
+                    </tr>
+                    """)
+        blocos_analises.append(f"""
+        <div class=\"subpiscina\">🏊 {nome_piscina}</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th><th>pH</th><th>CRL mg/L</th><th>CT mg/L</th><th>Clor. mg/L</th><th>Alc. mg/L</th><th>Dureza mg/L</th><th>CYA mg/L</th><th>Operador</th>
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(linhas)}
+          </tbody>
+        </table>
+        """)
+
+    secao_rt_extra = ""
+    if not incluir_rt:
+        secao_rt_extra = f"""
+        <div class=\"sec\">SOBRE RESPONSABILIDADE TÉCNICA (RT)</div>
+        <div class=\"texto\">{TEXTO_RT_SEM_RT.strip().replace(chr(10), '<br><br>')}</div>
+        """
+
+    secao_assinatura = (
+        f"___________________________<br>{RESPONSAVEL_TÉCNICO}<br>{CRQ}<br>{QUALIFICACAO_RT}"
+        if incluir_rt else
+        "___________________________<br>Bem Star Piscinas"
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang=\"pt-BR\">
+<head>
+<meta charset=\"UTF-8\">
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<title>Pré-visualização de impressão — {dados['nome_local']}</title>
+<style>
+  *{{box-sizing:border-box;}}
+  body{{margin:0;background:#e9eef5;font-family:Arial,Helvetica,sans-serif;color:#172b44;padding:24px;}}
+  .sheet{{max-width:960px;margin:0 auto;background:#fff;box-shadow:0 10px 40px rgba(20,35,60,.14);padding:38px 42px;border:1px solid #d7e0eb;}}
+  .topo{{text-align:center;margin-bottom:18px;}}
+  .topo h1{{font-size:18px;margin:0;color:#0d3d75;}}
+  .topo .sub{{font-size:11px;color:#4d647d;line-height:1.6;margin-top:6px;}}
+  .linha{{height:2px;background:#0d3d75;margin:14px 0 18px;}}
+  .sec{{font-size:14px;font-weight:700;margin:18px 0 10px;color:#0d3d75;}}
+  table{{width:100%;border-collapse:collapse;margin:8px 0 14px;table-layout:fixed;}}
+  th,td{{border:1px solid #c8d3e0;padding:7px 6px;font-size:11px;vertical-align:top;word-wrap:break-word;}}
+  th{{background:#0d3d75;color:#fff;font-weight:700;}}
+  tbody tr:nth-child(odd) td{{background:#eef3fb;}}
+  .info td:first-child{{width:26%;background:#eef3fb;font-weight:700;}}
+  .subpiscina{{font-size:12px;font-weight:700;color:#0d3d75;margin:12px 0 6px;}}
+  .texto{{font-size:11px;line-height:1.8;color:#2f3f52;}}
+  .bloco-fotos{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px;}}
+  .foto{{border:1px solid #cfd9e5;min-height:120px;padding:10px;background:#f9fbfd;}}
+  .foto strong{{display:block;margin-bottom:6px;color:#0d3d75;font-size:11px;}}
+  .parecer{{padding:10px 12px;border:1px solid #d9c8a8;background:#fff8ea;font-size:11px;line-height:1.7;}}
+  .assinatura{{text-align:center;margin-top:30px;font-size:11px;line-height:1.9;}}
+  .rodape{{text-align:center;font-size:10px;color:#748399;margin-top:16px;}}
+</style>
+</head>
+<body>
+<div class=\"sheet\">
+  <div class=\"topo\">
+    <h1>{titulo_topo}</h1>
+    <div class=\"sub\">{subtitulo_topo}</div>
+  </div>
+  <div class=\"linha\"></div>
+
+  <div class=\"sec\">1. IDENTIFICAÇÃO DO LOCAL</div>
+  <table class=\"info\">
+    <tbody>
+      <tr><td>Local / Condomínio</td><td>{dados['nome_local']}</td></tr>
+      <tr><td>CNPJ</td><td>{dados['cnpj']}</td></tr>
+      <tr><td>Endereço</td><td>{dados['endereco']}</td></tr>
+      <tr><td>Responsável / Síndico</td><td>{dados['responsavel']}</td></tr>
+      <tr><td>Responsável no local</td><td>{dados['responsavel']}</td></tr>
+      <tr><td>Operador de campo</td><td>{dados['operador']}</td></tr>
+      <tr><td>Período de referência</td><td>{dados['mes']}/{dados['ano']}</td></tr>
+    </tbody>
+  </table>
+
+  <div class=\"sec\">2. ANÁLISES FÍSICO-QUÍMICAS</div>
+  {''.join(blocos_analises)}
+
+  <div class=\"sec\">3. DOSAGENS APLICADAS</div>
+  <table>
+    <thead><tr><th>Data</th><th>Piscina</th><th>Produto</th><th>Quantidade</th><th>Finalidade técnica</th></tr></thead>
+    <tbody>
+      <tr><td>10/04/2026</td><td>Piscina Infantil</td><td>Cloro granulado</td><td>1,2 kg</td><td>Reforço de desinfecção</td></tr>
+      <tr><td>10/04/2026</td><td>Piscina Infantil</td><td>Barrilha leve</td><td>0,8 kg</td><td>Correção gradual do pH</td></tr>
+      <tr><td>10/04/2026</td><td>Piscina Adulto</td><td>Algicida manutenção</td><td>250 mL</td><td>Prevenção</td></tr>
+    </tbody>
+  </table>
+
+  <div class=\"sec\">4. PROBLEMAS / OCORRÊNCIAS</div>
+  <div class=\"texto\">⚠ 10/04/2026: Piscina infantil com cloro livre abaixo do mínimo operacional e pH levemente abaixo da faixa ideal.</div>
+
+  <div class=\"sec\">5. OBSERVAÇÕES GERAIS</div>
+  <div class=\"texto\">{dados['obs_geral']}<br>10/04/2026: Casa de máquinas organizada, filtro em operação normal e responsável local orientado sobre nova conferência após a recirculação.</div>
+
+  <div class=\"sec\">6. REGISTRO FOTOGRÁFICO</div>
+  <div class=\"bloco-fotos\">
+    <div class=\"foto\"><strong>🔵 Antes do tratamento</strong>Piscina infantil antes da correção química.</div>
+    <div class=\"foto\"><strong>🟢 Após o tratamento</strong>Área após aplicação dos produtos e recirculação inicial.</div>
+    <div class=\"foto\"><strong>🔧 Casa de máquinas</strong>Conjunto de filtração e circulação em operação.</div>
+  </div>
+
+  <div class=\"sec\">7. PARECER TÉCNICO-OPERACIONAL</div>
+  <div class=\"parecer\">Parecer da última visita: Aceitável com correções imediatas na piscina infantil e monitoramento da estabilidade química nas próximas horas.</div>
+
+  {secao_rt_extra}
+
+  <div class=\"assinatura\">Uberlândia/MG, {hoje_br()}.<br><br>{secao_assinatura}</div>
+  <div class=\"rodape\">Documento demonstrativo de pré-visualização do modelo atual do sistema</div>
+</div>
+</body>
+</html>"""
+
+
+def gerar_mockup_relatorio_preview_html(empresa: str = "Aqua Gestão", visual: str = "web") -> str:
+    """Retorna o HTML demonstrativo do relatório conforme o modelo atual do sistema."""
+    empresa = str(empresa or "Aqua Gestão").strip()
+    visual = str(visual or "web").strip().lower()
+    if visual == "print":
+        return _gerar_mockup_relatorio_impressao_html(empresa)
+    if empresa == "Bem Star Piscinas":
+        return _gerar_mockup_relatorio_bem_star_html()
+    dados = _mockup_dados_relatorio_demo()
+    return gerar_html_relatorio_visita(dados["lancamento_aqua"], dados["nome_local"])
 
 
 # =========================================
@@ -8819,6 +9210,45 @@ if _ultimos:
 # =========================================
 # RELATÓRIO MENSAL DE RT
 # =========================================
+
+st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allow_html=True)
+st.subheader("👁️ Pré-visualizar modelo de relatório")
+st.caption("Mockup demonstrativo espelhado nos textos, blocos e hierarquia visual atuais do sistema. A geração real de PDF/DOCX/HTML continua inalterada.")
+
+_prev_empresa = st.radio(
+    "Empresa do modelo",
+    ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+    horizontal=True,
+    key="preview_rel_empresa",
+)
+_prev_empresa_val = "Bem Star Piscinas" if "Bem Star" in _prev_empresa else "Aqua Gestão"
+
+_prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web")
+_prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print")
+
+_prev_tab1, _prev_tab2 = st.tabs(["🌐 Modelo tela / HTML", "🖨️ Modelo impressão / PDF"])
+with _prev_tab1:
+    components.html(_prev_html, height=1180 if _prev_empresa_val == "Aqua Gestão" else 1280, scrolling=True)
+    st.download_button(
+        "⬇️ Baixar mockup HTML (tela)",
+        data=_prev_html.encode("utf-8"),
+        file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_tela.html",
+        mime="text/html",
+        use_container_width=True,
+        key="btn_dl_mockup_rel_tela",
+    )
+with _prev_tab2:
+    components.html(_prev_print, height=1580, scrolling=True)
+    st.download_button(
+        "⬇️ Baixar mockup HTML (impressão)",
+        data=_prev_print.encode("utf-8"),
+        file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_impressao.html",
+        mime="text/html",
+        use_container_width=True,
+        key="btn_dl_mockup_rel_print",
+    )
+
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-card aq-only" id="sec-relatorio-rt">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
