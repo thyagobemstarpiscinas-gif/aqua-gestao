@@ -7117,63 +7117,62 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         _vol_m3 = 0.0
 
                 # Usa volume específico da piscina se disponível
-                    _vol_pisc = 0.0
-                    _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
-                    _vol_key = _slug_map2.get(pisc_nome, "")
-                    try:
-                        _clv = sheets_listar_clientes_completo()
-                        for _cv2 in _clv:
-                            if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
-                                if _vol_key:
-                                    # Piscina padrão (adulto/infantil/family)
-                                    _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
-                                else:
-                                    # Piscina extra — busca no JSON local
-                                    _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-                                    _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
-                                    for _pe in _dados_extra_vol.get("piscinas_extras", []):
-                                        if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
-                                            _vol_pisc = float(_pe.get("vol", 0) or 0)
-                                            break
-                                break
-                    except Exception:
-                        pass
-                    _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
-
-                    _sugestoes = []
-                    if _vol_usar > 0:
-                        _sugestoes = calcular_sugestoes_dosagem(
-                            ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
-                            volume_m3=_vol_usar
-                        )
-                    if _sugestoes:
-                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
-                        for _s in _sugestoes:
-                            _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
-                            if _s["quantidade"] and _s["quantidade"] > 0:
-                                st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
-                                st.caption(f"↳ {_s['acao']}")
+                _vol_pisc = 0.0
+                _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
+                _vol_key = _slug_map2.get(pisc_nome, "")
+                try:
+                    _clv = sheets_listar_clientes_completo()
+                    for _cv2 in _clv:
+                        if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                            if _vol_key:
+                                # Piscina padrão (adulto/infantil/family)
+                                _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
                             else:
-                                st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
-                            with st.expander("ℹ️ Base técnica", expanded=False):
-                                st.caption(_s["justificativa"])
-                                st.caption(f"📚 {_s.get('norma','')}")
-                        # Botão aplicar sugestões nas dosagens desta piscina
-                        if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
-                                key=f"btn_aplicar_sug_{pisc_slug}",
-                                use_container_width=True):
-                            # Salva sugestões no session_state para preencher dosagens
-                            _key_sug = f"_sug_pisc_{pisc_slug}"
-                            st.session_state[_key_sug] = [
-                                s for s in _sugestoes
-                                if s.get("quantidade") and s["quantidade"] > 0
-                            ]
-                            st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
-                            st.rerun()
-                    else:
-                        st.success("✅ Todos os parâmetros dentro da faixa ideal.")
+                                # Piscina extra — busca no JSON local
+                                _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                                _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
+                                for _pe in _dados_extra_vol.get("piscinas_extras", []):
+                                    if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
+                                        _vol_pisc = float(_pe.get("vol", 0) or 0)
+                                        break
+                            break
+                except Exception:
+                    pass
+                _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
+
+                _sugestoes = []
+                if _vol_usar > 0:
+                    _sugestoes = calcular_sugestoes_dosagem(
+                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
+                        volume_m3=_vol_usar
+                    )
+                if _sugestoes:
+                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
+                    for _s in _sugestoes:
+                        _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
+                        if _s["quantidade"] and _s["quantidade"] > 0:
+                            st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
+                            st.caption(f"↳ {_s['acao']}")
+                        else:
+                            st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
+                        with st.expander("ℹ️ Base técnica", expanded=False):
+                            st.caption(_s["justificativa"])
+                            st.caption(f"📚 {_s.get('norma','')}")
+                    # Botão aplicar sugestões nas dosagens desta piscina
+                    if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
+                            key=f"btn_aplicar_sug_{pisc_slug}",
+                            use_container_width=True):
+                        _key_sug = f"_sug_pisc_{pisc_slug}"
+                        st.session_state[_key_sug] = [
+                            s for s in _sugestoes
+                            if s.get("quantidade") and s["quantidade"] > 0
+                        ]
+                        st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
+                        st.rerun()
                 else:
-                    st.caption("⚠️ Volume m³ não cadastrado — adicione na planilha para calcular doses.")
+                    st.success("✅ Todos os parâmetros dentro da faixa ideal.")
+            else:
+                st.caption("⚠️ Volume m³ não cadastrado — adicione na planilha para calcular doses.")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
