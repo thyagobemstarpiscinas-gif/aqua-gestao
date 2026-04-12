@@ -5486,69 +5486,308 @@ def gerar_relatorio_visita_docx(
     except Exception as e:
         return False, str(e)
 
-def gerar_relatorio_mensal() -> tuple[bool, str]:
+
+
+def _resolver_fotos_relatorio_rt(pasta_condominio: Path, nome_condominio: str, mes: str = "", ano: str = "", preview: bool = False) -> tuple[list[Path], str]:
+    """Resolve as fotos do relatório RT usando a mesma lógica para prévia e geração final."""
+    if preview:
+        pasta_preview = pasta_condominio / "_previa_exata_relatorio" / "fotos_upload"
+        fotos_upload = _salvar_uploads_relatorio_preview(pasta_preview)
+        origem_upload = "anexos atuais do formulário"
+    else:
+        fotos_upload = salvar_uploads_relatorio(pasta_condominio)
+        origem_upload = "anexos atuais do formulário"
+
+    if fotos_upload:
+        return fotos_upload, origem_upload
+
+    mes_ano_rel = _mes_ano_preview_relatorio(mes, ano)
+    fotos_drive = buscar_fotos_drive_para_relatorio(nome_condominio, mes_ano_rel)
+    if fotos_drive:
+        return fotos_drive, f"Google Drive ({mes_ano_rel})"
+
+    pasta_fotos_campo = pasta_condominio / "fotos_campo"
+    if pasta_fotos_campo.exists():
+        fotos_campo = sorted(
+            [f for f in pasta_fotos_campo.glob("*") if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+        )
+        if fotos_campo:
+            return fotos_campo, "pasta local fotos_campo"
+
+    return [], "nenhuma foto encontrada"
+
+
+
+def _carregar_clientes_bem_star_relatorio() -> dict:
+    clientes = {c.get("nome", ""): c for c in (sheets_listar_clientes_completo() or []) if c.get("nome")}
+    try:
+        caminho_json = GENERATED_DIR / "_clientes_sem_rt.json"
+        if caminho_json.exists() and "carregar_clientes_sem_rt" in globals():
+            for c in (carregar_clientes_sem_rt() or []):
+                nome = c.get("nome")
+                if nome and nome not in clientes:
+                    clientes[nome] = c
+    except Exception:
+        pass
+    return clientes
+
+
+
+def _coletar_contexto_relatorio_bem_star() -> dict:
+    csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
+    csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
+    csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(datetime.now().year)).strip()
+    csr_operador_nome = str(st.session_state.get("csr_operador_rel", "") or "").strip()
+    csr_obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
+
+    erros = []
+    if not csr_sel:
+        erros.append("Selecione o cliente Bem Star.")
+    if not csr_mes:
+        erros.append("Informe o mês do relatório Bem Star.")
+    if not csr_ano:
+        erros.append("Informe o ano do relatório Bem Star.")
+    if erros:
+        return {"ok": False, "erros": erros, "mensagem": " | ".join(erros)}
+
+    clientes = _carregar_clientes_bem_star_relatorio()
+    csr_dados_sel = clientes.get(csr_sel, {})
+
+    pasta_csr = GENERATED_DIR / slugify_nome(csr_sel)
+    pasta_csr.mkdir(parents=True, exist_ok=True)
+    dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
+    lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
+    lancamentos_sheets = sheets_listar_lancamentos(csr_sel) if csr_sel else []
+
+    vistos = set()
+    lancamentos_todos = []
+    for lc in (lancamentos_local or []) + (lancamentos_sheets or []):
+        chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
+        if chave not in vistos:
+            vistos.add(chave)
+            lancamentos_todos.append(lc)
+
+    lancamentos_csr = _filtrar_lancamentos_preview_por_mes(lancamentos_todos, csr_mes, csr_ano)
+    if not lancamentos_csr:
+        msg = "Nenhum lançamento encontrado para o cliente/período selecionado."
+        return {"ok": False, "erros": [msg], "mensagem": msg}
+
+    lanc_para_relatorio = []
+    vistos_rel = set()
+    for lc in lancamentos_csr:
+        chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
+        if chave in vistos_rel:
+            continue
+        vistos_rel.add(chave)
+        piscinas = lc.get("piscinas", [])
+        dados = piscinas[0] if piscinas else lc
+        lanc_para_relatorio.append({
+            "data": lc.get("data", ""),
+            "ph": dados.get("ph", lc.get("ph", "")),
+            "cloro_livre": dados.get("cloro_livre", lc.get("cloro_livre", "")),
+            "cloro_total": dados.get("cloro_total", lc.get("cloro_total", "")),
+            "alcalinidade": dados.get("alcalinidade", lc.get("alcalinidade", "")),
+            "dureza": dados.get("dureza", lc.get("dureza", "")),
+            "cianurico": dados.get("cianurico", lc.get("cianurico", "")),
+            "operador": lc.get("operador", csr_operador_nome),
+            "observacao": lc.get("observacao", ""),
+            "problemas": lc.get("problemas", ""),
+            "dosagens": dados.get("dosagens", lc.get("dosagens", [])),
+        })
+
+    fotos_paths = _coletar_fotos_bem_star_preview(csr_sel, lancamentos_csr)
+    return {
+        "ok": True,
+        "cliente": csr_sel,
+        "mes": csr_mes,
+        "ano": csr_ano,
+        "operador": csr_operador_nome,
+        "obs_geral": csr_obs_geral,
+        "dados_cliente": csr_dados_sel,
+        "pasta": pasta_csr,
+        "lancamentos": lanc_para_relatorio,
+        "fotos": fotos_paths,
+        "origem_fotos": "fotos_campo das visitas" if fotos_paths else "nenhuma foto encontrada",
+    }
+
+
+
+def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     dados_relatorio = montar_dados_relatorio()
     erros = validar_relatorio_mensal(dados_relatorio)
     if erros:
-        return False, " | ".join(erros)
+        return {
+            "ok": False,
+            "empresa": "Aqua Gestão",
+            "preview": preview,
+            "erros": erros,
+            "mensagem": " | ".join(erros),
+        }
 
     nome_condominio = dados_relatorio["nome_condominio"]
     pasta_condominio = GENERATED_DIR / slugify_nome(nome_condominio)
     pasta_condominio.mkdir(parents=True, exist_ok=True)
-    if st.session_state.get("rel_salvar_alteracoes_cadastro"):
-        salvar_relatorio_no_cadastro_principal()
-        salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
-    else:
-        salvar_dados_condominio(pasta_condominio, obter_snapshot_relatorio_independente())
-    fotos_salvas = salvar_uploads_relatorio(pasta_condominio)
 
-    # Se não há fotos no upload atual, busca do Google Drive (fotos do mês)
-    if not fotos_salvas:
-        mes_ano_rel = datetime.now().strftime("%Y-%m")
-        fotos_drive = buscar_fotos_drive_para_relatorio(nome_condominio, mes_ano_rel)
-        if fotos_drive:
-            fotos_salvas = fotos_drive
+    if not preview:
+        if st.session_state.get("rel_salvar_alteracoes_cadastro"):
+            salvar_relatorio_no_cadastro_principal()
+            salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
+        else:
+            salvar_dados_condominio(pasta_condominio, obter_snapshot_relatorio_independente())
 
-    # Também busca fotos dos lançamentos de campo salvos localmente
-    if not fotos_salvas and pasta_condominio.exists():
-        pasta_fotos_campo = pasta_condominio / "fotos_campo"
-        if pasta_fotos_campo.exists():
-            fotos_campo = sorted(pasta_fotos_campo.glob("*"))
-            fotos_campo = [f for f in fotos_campo if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
-            if fotos_campo:
-                fotos_salvas = fotos_campo
+    fotos_salvas, origem_fotos = _resolver_fotos_relatorio_rt(
+        pasta_condominio,
+        nome_condominio,
+        dados_relatorio.get("mes_referencia", ""),
+        dados_relatorio.get("ano_referencia", ""),
+        preview=preview,
+    )
 
-    data_nome = datetime.now().strftime("%Y%m%d")
-    base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_RELATORIO_RT")
-    relatorio_docx = pasta_condominio / f"{base_nome}.docx"
-    relatorio_pdf = pasta_condominio / f"{base_nome}.pdf"
+    pasta_saida = pasta_condominio / "_previa_exata_relatorio" if preview else pasta_condominio
+    pasta_saida.mkdir(parents=True, exist_ok=True)
+    data_nome = datetime.now().strftime("%Y%m%d_%H%M%S" if preview else "%Y%m%d")
+    sufixo = "PREVIA_EXATA_RELATORIO_RT" if preview else "RELATORIO_RT"
+    base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_{sufixo}")
+    relatorio_docx = pasta_saida / f"{base_nome}.docx"
+    relatorio_pdf = pasta_saida / f"{base_nome}.pdf"
 
     preencher_relatorio_mensal_docx(TEMPLATE_RELATORIO, relatorio_docx, dados_relatorio, fotos=fotos_salvas)
     ok_pdf, erro_pdf = converter_docx_para_pdf(relatorio_docx, relatorio_pdf)
 
-    registrar_documento_manifest(
-        pasta_condominio=pasta_condominio,
-        nome_condominio=nome_condominio,
-        tipo="Relatório",
-        arquivo_docx=relatorio_docx,
-        arquivo_pdf=relatorio_pdf,
-        pdf_gerado=ok_pdf,
-        erro_pdf=erro_pdf,
-        dados_utilizados={
-            "TIPO_ATENDIMENTO": dados_relatorio.get("tipo_atendimento"),
-            "REPRESENTANTE": dados_relatorio.get("representante"),
-            "CPF_CNPJ_REPRESENTANTE": dados_relatorio.get("cpf_cnpj_representante"),
-            "ART_STATUS": dados_relatorio.get("art_status"),
-            "ART_TEXTO": obter_status_art_texto(dados_relatorio),
-        },
-        extras={"fotos": [p.name for p in fotos_salvas]},
-    )
+    if not preview:
+        registrar_documento_manifest(
+            pasta_condominio=pasta_condominio,
+            nome_condominio=nome_condominio,
+            tipo="Relatório",
+            arquivo_docx=relatorio_docx,
+            arquivo_pdf=relatorio_pdf,
+            pdf_gerado=ok_pdf,
+            erro_pdf=erro_pdf,
+            dados_utilizados={
+                "TIPO_ATENDIMENTO": dados_relatorio.get("tipo_atendimento"),
+                "REPRESENTANTE": dados_relatorio.get("representante"),
+                "CPF_CNPJ_REPRESENTANTE": dados_relatorio.get("cpf_cnpj_representante"),
+                "ART_STATUS": dados_relatorio.get("art_status"),
+                "ART_TEXTO": obter_status_art_texto(dados_relatorio),
+            },
+            extras={"fotos": [p.name for p in fotos_salvas]},
+        )
+        st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
+        st.session_state.ultimos_docs_gerados.update({
+            "relatorio_docx": str(relatorio_docx) if relatorio_docx.exists() else None,
+            "relatorio_pdf": str(relatorio_pdf) if ok_pdf and relatorio_pdf.exists() else None,
+        })
 
-    st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
-    st.session_state.ultimos_docs_gerados.update({
-        "relatorio_docx": str(relatorio_docx) if relatorio_docx.exists() else None,
-        "relatorio_pdf": str(relatorio_pdf) if ok_pdf and relatorio_pdf.exists() else None,
-    })
+    return {
+        "ok": True,
+        "empresa": "Aqua Gestão",
+        "preview": preview,
+        "mensagem": (
+            f"Prévia exata Aqua Gestão atualizada com {len(fotos_salvas)} foto(s), usando o mesmo gerador DOCX/PDF do relatório final."
+            if preview else
+            f"Relatório mensal registrado com sucesso para {nome_condominio}."
+        ),
+        "docx": relatorio_docx,
+        "pdf": relatorio_pdf,
+        "pdf_ok": ok_pdf,
+        "erro_pdf": erro_pdf,
+        "fotos": fotos_salvas,
+        "origem_fotos": origem_fotos,
+        "dados": dados_relatorio,
+        "pasta": pasta_condominio,
+    }
+
+
+
+def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
+    ctx = _coletar_contexto_relatorio_bem_star()
+    if not ctx.get("ok"):
+        return {
+            "ok": False,
+            "empresa": "Bem Star Piscinas",
+            "preview": preview,
+            "erros": ctx.get("erros", []),
+            "mensagem": ctx.get("mensagem", "Não foi possível montar o relatório Bem Star."),
+        }
+
+    pasta_saida = ctx["pasta"] / "_previa_exata_relatorio" if preview else ctx["pasta"]
+    pasta_saida.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sufixo = "PREVIA_EXATA_RELATORIO_BS" if preview else "RELATORIO_BS"
+    base_nome = limpar_nome_arquivo(f"{ts}_{ctx['cliente']}_{sufixo}")
+    docx_path = pasta_saida / f"{base_nome}.docx"
+    pdf_path = pasta_saida / f"{base_nome}.pdf"
+
+    ok_docx, erro_docx = gerar_relatorio_visita_docx(
+        output_path=docx_path,
+        nome_local=ctx["dados_cliente"].get("nome", ctx["cliente"]),
+        cnpj=ctx["dados_cliente"].get("cnpj", ""),
+        endereco=ctx["dados_cliente"].get("endereco", ""),
+        responsavel=ctx["dados_cliente"].get("contato", ""),
+        operador=ctx["operador"],
+        mes=ctx["mes"],
+        ano=ctx["ano"],
+        lancamentos=ctx["lancamentos"],
+        obs_geral=ctx["obs_geral"],
+        incluir_rt=False,
+        fotos=ctx["fotos"],
+    )
+    if not ok_docx:
+        msg = f"Erro ao gerar DOCX do relatório Bem Star: {erro_docx}"
+        return {
+            "ok": False,
+            "empresa": "Bem Star Piscinas",
+            "preview": preview,
+            "erros": [erro_docx],
+            "mensagem": msg,
+            "fotos": ctx.get("fotos", []),
+            "origem_fotos": ctx.get("origem_fotos", ""),
+        }
+
+    ok_pdf, erro_pdf = converter_docx_para_pdf(docx_path, pdf_path)
+    if not preview:
+        registrar_documento_manifest(ctx["pasta"], ctx["cliente"], "Relatório", docx_path, pdf_path, ok_pdf, erro_pdf)
+
+    return {
+        "ok": True,
+        "empresa": "Bem Star Piscinas",
+        "preview": preview,
+        "mensagem": (
+            f"Prévia exata Bem Star atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
+            if preview else
+            f"Relatório Bem Star gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
+        ),
+        "docx": docx_path,
+        "pdf": pdf_path,
+        "pdf_ok": ok_pdf,
+        "erro_pdf": erro_pdf,
+        "fotos": ctx["fotos"],
+        "origem_fotos": ctx["origem_fotos"],
+        "dados": ctx,
+        "pasta": ctx["pasta"],
+    }
+
+
+
+def renderizar_relatorio_oficial(empresa: str = "Aqua Gestão", preview: bool = False) -> dict:
+    empresa = str(empresa or "Aqua Gestão").strip()
+    if empresa == "Bem Star Piscinas":
+        return _renderizar_relatorio_bem_star(preview=preview)
+    return _renderizar_relatorio_rt(preview=preview)
+
+
+
+def gerar_relatorio_mensal() -> tuple[bool, str]:
+    resultado = renderizar_relatorio_oficial("Aqua Gestão", preview=False)
+    if not resultado.get("ok"):
+        return False, resultado.get("mensagem", "Não foi possível gerar o relatório mensal.")
+
+    dados_relatorio = resultado["dados"]
+    relatorio_docx = Path(resultado["docx"])
+    relatorio_pdf = Path(resultado["pdf"])
+    ok_pdf = bool(resultado.get("pdf_ok"))
+    erro_pdf = resultado.get("erro_pdf")
+    pasta_condominio = Path(resultado["pasta"])
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     if dados_relatorio["avaliacao_automatica"]["detalhes"]:
@@ -5573,8 +5812,30 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
         if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
     st.markdown("</div>", unsafe_allow_html=True)
-    return True, f"Relatório mensal registrado com sucesso para {nome_condominio}."
+    return True, resultado["mensagem"]
 
+
+
+def gerar_previa_exata_relatorio(empresa: str = "Aqua Gestão") -> dict:
+    return renderizar_relatorio_oficial(empresa, preview=True)
+
+
+
+def exibir_pdf_previa_exata(pdf_path: Path, height: int = 1200):
+    import base64 as _b64
+    if not pdf_path or not Path(pdf_path).exists():
+        st.warning("O PDF da prévia ainda não está disponível.")
+        return
+    pdf_b64 = _b64.b64encode(Path(pdf_path).read_bytes()).decode("utf-8")
+    components.html(
+        f"""
+        <div style="background:#eef3fb;border:1px solid #d0d8e4;border-radius:14px;padding:10px;">
+          <iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="{height}" style="border:none;border-radius:10px;background:#fff;"></iframe>
+        </div>
+        """,
+        height=height + 28,
+        scrolling=False,
+    )
 
 # =========================================
 # PROCESSAMENTO DE VALIDAÇÃO
@@ -8633,117 +8894,55 @@ else:
     if fotos_csr:
         st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
 
-    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
-        if not csr_sel or not _mes_csr or not _ano_csr:
-            st.error("Selecione o cliente, mês e ano.")
+    
+if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+    try:
+        with st.spinner("Gerando relatório Bem Star..."):
+            _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
+
+        if not _resultado_bs.get("ok"):
+            st.error(_resultado_bs.get("mensagem", "Erro ao gerar relatório Bem Star."))
         else:
-            try:
-                # Monta lista de lançamentos — deduplica por data+operador+ph
-                _lanc_vistos = set()
-                _lanc_para_relatorio = []
-                for _lc in lancamentos_csr:
-                    _chave_lc = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','') or (_lc.get('piscinas',[{}])[0].get('ph','') if _lc.get('piscinas') else '')}"
-                    if _chave_lc in _lanc_vistos:
-                        continue
-                    _lanc_vistos.add(_chave_lc)
-                    piscinas = _lc.get("piscinas", [])
-                    if piscinas:
-                        _dados = piscinas[0]
-                    else:
-                        _dados = _lc
-                    _lanc_para_relatorio.append({
-                        "data":         _lc.get("data", ""),
-                        "ph":           _dados.get("ph", _lc.get("ph", "")),
-                        "cloro_livre":  _dados.get("cloro_livre", _lc.get("cloro_livre", "")),
-                        "cloro_total":  _dados.get("cloro_total", _lc.get("cloro_total", "")),
-                        "alcalinidade": _dados.get("alcalinidade", _lc.get("alcalinidade", "")),
-                        "dureza":       _dados.get("dureza", _lc.get("dureza", "")),
-                        "cianurico":    _dados.get("cianurico", _lc.get("cianurico", "")),
-                        "operador":     _lc.get("operador", csr_operador_nome),
-                        "observacao":   _lc.get("observacao", ""),
-                        "problemas":    _lc.get("problemas", ""),
-                        "dosagens":     _dados.get("dosagens", _lc.get("dosagens", [])),
-                    })
-
-                # obs_geral passa apenas obs gerais do campo de texto.
-                # Problemas e observações dos lançamentos são extraídos
-                # diretamente pela função gerar_relatorio_visita_docx via
-                # os campos "problemas" e "observacao" de cada lançamento.
-                _obs_final = csr_obs_geral.strip()
-
-                pasta_csr_out = GENERATED_DIR / slugify_nome(csr_sel)
-                pasta_csr_out.mkdir(parents=True, exist_ok=True)
-                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                docx_csr = pasta_csr_out / f"{_ts}_{slugify_nome(csr_sel)}_RELATORIO_BS.docx"
-                pdf_csr  = pasta_csr_out / f"{_ts}_{slugify_nome(csr_sel)}_RELATORIO_BS.pdf"
-
-                with st.spinner("Gerando relatório Bem Star..."):
-                    # fotos_csr é list[(data_str, Path)] — extrai só os Paths
-                    # Deduplica por nome base de arquivo (remove duplicatas entre lançamentos)
-                    _fotos_vistas = set()
-                    _fotos_paths = []
-                    for _, _fp in (fotos_csr or []):
-                        # Usa nome sem timestamp inicial para detectar duplicatas
-                        _nome_base = "_".join(_fp.name.split("_")[2:]) if _fp.name.count("_") >= 2 else _fp.name
-                        if _nome_base not in _fotos_vistas:
-                            _fotos_vistas.add(_nome_base)
-                            _fotos_paths.append(_fp)
-                    _ok_docx, _err_docx = gerar_relatorio_visita_docx(
-                        output_path   = docx_csr,
-                        nome_local    = csr_dados_sel.get("nome", csr_sel),
-                        cnpj          = csr_dados_sel.get("cnpj", ""),
-                        endereco      = csr_dados_sel.get("endereco", ""),
-                        responsavel   = csr_dados_sel.get("contato", ""),
-                        operador      = csr_operador_nome,
-                        mes           = _mes_csr,
-                        ano           = _ano_csr,
-                        lancamentos   = _lanc_para_relatorio,
-                        obs_geral     = _obs_final,
-                        incluir_rt    = False,
-                        fotos         = _fotos_paths,
-                    )
-
-                if not _ok_docx:
-                    st.error(f"Erro ao gerar DOCX: {_err_docx}")
+            docx_csr = Path(_resultado_bs["docx"])
+            pdf_csr = Path(_resultado_bs["pdf"])
+            ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
+            err_pdf_csr = _resultado_bs.get("erro_pdf")
+            _ctx_bs = _resultado_bs.get("dados", {})
+            st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                with open(docx_csr, "rb") as _f:
+                    st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True)
+            with dl2:
+                if ok_pdf_csr and pdf_csr.exists():
+                    with open(pdf_csr, "rb") as _f:
+                        st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
+                            mime="application/pdf", use_container_width=True)
                 else:
-                    ok_pdf_csr, err_pdf_csr = converter_docx_para_pdf(docx_csr, pdf_csr)
-                    registrar_documento_manifest(pasta_csr_out, csr_sel, "Relatório", docx_csr, pdf_csr, ok_pdf_csr, err_pdf_csr)
-                    st.success(f"✅ Relatório Bem Star gerado! {len(fotos_csr)} foto(s) incluída(s).")
-                    dl1, dl2 = st.columns(2)
-                    with dl1:
-                        with open(docx_csr, "rb") as _f:
-                            st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                use_container_width=True)
-                    with dl2:
-                        if ok_pdf_csr and pdf_csr.exists():
-                            with open(pdf_csr, "rb") as _f:
-                                st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
-                                    mime="application/pdf", use_container_width=True)
-                        else:
-                            st.warning(f"PDF não gerado: {err_pdf_csr}")
+                    st.warning(f"PDF não gerado: {err_pdf_csr}")
 
-                    # ── Bloco de envio ────────────────────────────────────
-                    _msg_rel = montar_mensagem_bem_star(
-                        nome_local  = csr_dados_sel.get("nome", csr_sel),
-                        responsavel = csr_dados_sel.get("contato", ""),
-                        tipo        = "relatorio",
-                        mes         = _mes_csr,
-                        ano         = _ano_csr,
-                    )
-                    exibir_bloco_envio_bem_star(
-                        nome_local  = csr_dados_sel.get("nome", csr_sel),
-                        pasta       = pasta_csr_out,
-                        telefone    = csr_dados_sel.get("telefone", ""),
-                        email       = csr_dados_sel.get("email", ""),
-                        mensagem    = _msg_rel,
-                        key_suffix  = "relatorio",
-                    )
+            _msg_rel = montar_mensagem_bem_star(
+                nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
+                tipo="relatorio",
+                mes=_ctx_bs.get("mes", csr_mes),
+                ano=_ctx_bs.get("ano", csr_ano),
+            )
+            exibir_bloco_envio_bem_star(
+                nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                pasta=Path(_resultado_bs["pasta"]),
+                telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
+                email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
+                mensagem=_msg_rel,
+                key_suffix="relatorio",
+            )
 
-            except Exception as e:
-                st.error(f"Erro ao gerar relatório Bem Star: {e}")
-                import traceback
-                st.code(traceback.format_exc(), language="text")
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório Bem Star: {e}")
+        import traceback
+        st.code(traceback.format_exc(), language="text")
 
 
 st.markdown("</div>", unsafe_allow_html=True)
@@ -9394,53 +9593,100 @@ if _ultimos:
 # RELATÓRIO MENSAL DE RT
 # =========================================
 
+
 st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allow_html=True)
-st.subheader("👁️ Pré-visualizar modelo de relatório")
-st.caption("Mockup demonstrativo espelhado nos textos, blocos e hierarquia visual atuais do sistema. A geração real de PDF/DOCX/HTML continua inalterada.")
+st.subheader("👁️ Pré-visualizar relatório final")
+st.caption("Esta área agora pode montar a prévia exata do relatório final usando os dados reais preenchidos no formulário e as fotos anexadas, com o mesmo pipeline DOCX/PDF usado na geração oficial do app.")
 
 _prev_empresa = st.radio(
-    "Empresa do modelo",
+    "Empresa do relatório",
     ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
     horizontal=True,
     key="preview_rel_empresa",
 )
 _prev_empresa_val = "Bem Star Piscinas" if "Bem Star" in _prev_empresa else "Aqua Gestão"
 _prev_usar_form = st.checkbox(
-    "Usar dados atuais do formulário nesta prévia",
+    "Usar dados reais do formulário e fotos anexadas (prévia exata)",
+    value=True,
     key="preview_rel_usar_form",
-    help="Quando marcado, a prévia tenta aproveitar os dados atualmente preenchidos no formulário de relatório para montar o modelo visual.",
+    help="Quando marcado, a prévia usa o mesmo gerador DOCX/PDF do relatório final, aproveitando os dados atuais do formulário e as fotos anexadas disponíveis.",
 )
 
-_prev_dados, _prev_usando_form, _prev_msg = _obter_dados_preview_relatorio(_prev_empresa_val, _prev_usar_form)
-if _prev_usando_form:
-    st.success(f"✅ {_prev_msg}")
-else:
-    st.info(f"ℹ️ {_prev_msg}")
+_prev_tab1, _prev_tab2 = st.tabs(["📄 Prévia exata do relatório final", "🧩 Modelo visual de referência"])
 
-_prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web", dados=_prev_dados)
-_prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print", dados=_prev_dados)
-
-_prev_tab1, _prev_tab2 = st.tabs(["🌐 Modelo tela / HTML", "🖨️ Modelo impressão / PDF"])
 with _prev_tab1:
-    components.html(_prev_html, height=1180 if _prev_empresa_val == "Aqua Gestão" else 1280, scrolling=True)
-    st.download_button(
-        "⬇️ Baixar mockup HTML (tela)",
-        data=_prev_html.encode("utf-8"),
-        file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_tela.html",
-        mime="text/html",
-        use_container_width=True,
-        key="btn_dl_mockup_rel_tela",
-    )
+    if _prev_usar_form:
+        with st.spinner("Montando prévia exata com os dados atuais..."):
+            _prev_result = gerar_previa_exata_relatorio(_prev_empresa_val)
+
+        if _prev_result.get("ok"):
+            _pdf_ok = bool(_prev_result.get("pdf_ok")) and _prev_result.get("pdf") and Path(_prev_result["pdf"]).exists()
+            _docx_ok = _prev_result.get("docx") and Path(_prev_result["docx"]).exists()
+            st.success(f"✅ {_prev_result.get('mensagem', 'Prévia exata atualizada com sucesso.')}")
+            st.caption(f"Fotos usadas: {len(_prev_result.get('fotos', []))} · origem: {_prev_result.get('origem_fotos', 'não identificada')}")
+
+            if _pdf_ok:
+                exibir_pdf_previa_exata(Path(_prev_result["pdf"]), height=1220 if _prev_empresa_val == "Aqua Gestão" else 1320)
+            else:
+                st.warning(f"O DOCX da prévia foi gerado, mas o PDF não foi convertido automaticamente. Erro: {_prev_result.get('erro_pdf')}")
+
+            _col_prev_1, _col_prev_2 = st.columns(2)
+            with _col_prev_1:
+                if _docx_ok:
+                    with open(_prev_result["docx"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar DOCX da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["docx"]).name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_docx",
+                        )
+            with _col_prev_2:
+                if _pdf_ok:
+                    with open(_prev_result["pdf"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar PDF da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["pdf"]).name,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_pdf",
+                        )
+        else:
+            st.warning("Não foi possível montar a prévia exata com os dados atuais.")
+            for _erro_prev in _prev_result.get("erros", []) or [_prev_result.get("mensagem", "")]:
+                if _erro_prev:
+                    st.write(f"- {_erro_prev}")
+    else:
+        st.info("Ative a opção de prévia exata para usar o mesmo gerador DOCX/PDF do relatório final com os dados reais do formulário.")
+
 with _prev_tab2:
-    components.html(_prev_print, height=1580, scrolling=True)
-    st.download_button(
-        "⬇️ Baixar mockup HTML (impressão)",
-        data=_prev_print.encode("utf-8"),
-        file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_impressao.html",
-        mime="text/html",
-        use_container_width=True,
-        key="btn_dl_mockup_rel_print",
-    )
+    _prev_dados, _, _ = _obter_dados_preview_relatorio(_prev_empresa_val, False)
+    st.info("Exibindo o modelo visual de referência como apoio rápido de layout. A aba ao lado mostra a prévia exata do documento final.")
+    _prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web", dados=_prev_dados)
+    _prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print", dados=_prev_dados)
+    _sub_tab1, _sub_tab2 = st.tabs(["🌐 Referência tela / HTML", "🖨️ Referência impressão / PDF"])
+    with _sub_tab1:
+        components.html(_prev_html, height=1180 if _prev_empresa_val == "Aqua Gestão" else 1280, scrolling=True)
+        st.download_button(
+            "⬇️ Baixar HTML de referência (tela)",
+            data=_prev_html.encode("utf-8"),
+            file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_tela.html",
+            mime="text/html",
+            use_container_width=True,
+            key="btn_dl_mockup_rel_tela",
+        )
+    with _sub_tab2:
+        components.html(_prev_print, height=1580, scrolling=True)
+        st.download_button(
+            "⬇️ Baixar HTML de referência (impressão)",
+            data=_prev_print.encode("utf-8"),
+            file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_impressao.html",
+            mime="text/html",
+            use_container_width=True,
+            key="btn_dl_mockup_rel_print",
+        )
 
 st.markdown('</div>', unsafe_allow_html=True)
 
