@@ -1541,6 +1541,17 @@ def restaurar_rascunho_operador(rascunho: dict):
         st.session_state[f"op_dos_fin_{i}"]  = d.get("finalidade", "")
 
 
+
+def aplicar_restauracao_pendente_operador():
+    """Aplica restauração pendente antes de instanciar os widgets do formulário."""
+    rasc = st.session_state.pop("_rascunho_operador_pendente", None)
+    if not rasc:
+        return False
+    restaurar_rascunho_operador(rasc)
+    st.session_state["_rascunho_operador_restaurado_msg"] = True
+    return True
+
+
 def buscar_cep(cep: str) -> dict:
     """Consulta ViaCEP via requests com fallback para urllib."""
     cep_limpo = re.sub(r"\D", "", cep or "")
@@ -6647,6 +6658,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
 
+    # Aplica restauração pendente ANTES de criar widgets com key no session_state
+    if aplicar_restauracao_pendente_operador():
+        st.rerun()
+
+    if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
+        st.success("✅ Rascunho restaurado! Continue de onde parou.")
+
     _empresa_ativa_op = st.session_state.get("empresa_ativa", "aqua_gestao")
     _clientes_todos_op = _buscar_clientes_sheets_completo()
     _clientes_filtrados_op = filtrar_clientes_por_empresa(_clientes_todos_op, _empresa_ativa_op)
@@ -6789,9 +6807,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             with _rc1:
                 if st.button("📂 Restaurar rascunho", key="btn_restaurar_rasc",
                         type="primary", use_container_width=True):
-                    restaurar_rascunho_operador(_rascunho_op)
+                    st.session_state["_rascunho_operador_pendente"] = _rascunho_op
                     st.session_state[_key_rascunho_visto] = True
-                    st.success("✅ Rascunho restaurado! Continue de onde parou.")
                     st.rerun()
             with _rc2:
                 if st.button("🗑 Descartar rascunho", key="btn_descartar_rasc",
