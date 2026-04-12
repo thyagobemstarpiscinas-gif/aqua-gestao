@@ -4416,6 +4416,127 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
 
 
 
+def _normalizar_lista_fotos_b64(valor) -> list[str]:
+    if not valor:
+        return []
+    if isinstance(valor, str):
+        valor = [valor]
+    return [str(v).strip() for v in valor if str(v).strip()]
+
+
+
+def _imagem_bytes_para_b64_relatorio(img_bytes: bytes) -> str | None:
+    try:
+        import io as _io
+        import base64 as _b64
+        from PIL import Image as _PILR, ImageOps as _IOps
+
+        _img = _PILR.open(_io.BytesIO(img_bytes))
+        _img = _IOps.exif_transpose(_img)
+        if _img.mode != "RGB":
+            _img = _img.convert("RGB")
+        _img.thumbnail((1600, 1600))
+        _buf = _io.BytesIO()
+        _img.save(_buf, format="JPEG", quality=85, optimize=True)
+        return _b64.b64encode(_buf.getvalue()).decode("utf-8")
+    except Exception:
+        return None
+
+
+
+def _resolver_fotos_visita_para_relatorio(lancamento: dict) -> dict[str, list[str]]:
+    """Resolve fotos do lançamento priorizando base64, depois Drive e por fim arquivos locais."""
+    categorias = {
+        "antes": {"b64": [], "ids": [], "nomes": []},
+        "depois": {"b64": [], "ids": [], "nomes": []},
+        "cmaq": {"b64": [], "ids": [], "nomes": []},
+    }
+
+    for cat in categorias:
+        categorias[cat]["b64"] = _normalizar_lista_fotos_b64(lancamento.get(f"fotos_{cat}_b64", []))
+        categorias[cat]["ids"] = list(lancamento.get(f"fotos_{cat}_ids", []) or [])
+        categorias[cat]["nomes"] = list(lancamento.get(f"fotos_{cat}", []) or [])
+
+    if not categorias["antes"]["ids"]:
+        categorias["antes"]["ids"] = list(lancamento.get("fotos_drive_ids", []) or [])
+
+    nomes_gerais = list(lancamento.get("fotos", []) or [])
+    if nomes_gerais:
+        for nome in nomes_gerais:
+            nome_l = str(nome).lower()
+            if ("antes" in nome_l) and nome not in categorias["antes"]["nomes"]:
+                categorias["antes"]["nomes"].append(nome)
+            elif ("depois" in nome_l) and nome not in categorias["depois"]["nomes"]:
+                categorias["depois"]["nomes"].append(nome)
+            elif (("cmaq" in nome_l) or ("maq" in nome_l)) and nome not in categorias["cmaq"]["nomes"]:
+                categorias["cmaq"]["nomes"].append(nome)
+
+    nome_cond = (lancamento.get("condominio") or "").strip()
+    pasta_base = GENERATED_DIR / slugify_nome(nome_cond) if nome_cond else None
+    pastas_busca = []
+    if pasta_base:
+        pastas_busca = [
+            pasta_base / "fotos_campo",
+            pasta_base / "fotos_relatorio",
+            pasta_base / "_previa_exata_relatorio" / "fotos_upload",
+            pasta_base / "fotos_rascunho",
+        ]
+
+    def _adicionar_b64(cat: str, valor_b64: str | None):
+        if valor_b64 and valor_b64 not in categorias[cat]["b64"]:
+            categorias[cat]["b64"].append(valor_b64)
+
+    for cat in categorias:
+        if not categorias[cat]["b64"]:
+            for fid in categorias[cat]["ids"]:
+                try:
+                    fb = drive_baixar_foto(fid)
+                except Exception:
+                    fb = None
+                if not fb:
+                    continue
+                _adicionar_b64(cat, _imagem_bytes_para_b64_relatorio(fb))
+
+        if not categorias[cat]["b64"]:
+            for nome in categorias[cat]["nomes"]:
+                for pasta in pastas_busca:
+                    try:
+                        caminho = pasta / str(nome)
+                    except Exception:
+                        caminho = None
+                    if caminho and caminho.exists() and caminho.is_file():
+                        try:
+                            _adicionar_b64(cat, _imagem_bytes_para_b64_relatorio(caminho.read_bytes()))
+                        except Exception:
+                            pass
+
+        if not categorias[cat]["b64"] and pastas_busca:
+            padroes = {
+                "antes": ["*antes*", "rasc_antes_*"],
+                "depois": ["*depois*", "rasc_depois_*"],
+                "cmaq": ["*cmaq*", "*maq*", "rasc_cmaq_*"],
+            }
+            vistos = set()
+            for pasta in pastas_busca:
+                if not pasta.exists():
+                    continue
+                for padrao in padroes.get(cat, []):
+                    for caminho in sorted(pasta.glob(padrao)):
+                        if not caminho.is_file():
+                            continue
+                        chave = str(caminho)
+                        if chave in vistos:
+                            continue
+                        vistos.add(chave)
+                        try:
+                            _adicionar_b64(cat, _imagem_bytes_para_b64_relatorio(caminho.read_bytes()))
+                        except Exception:
+                            pass
+
+    return {cat: categorias[cat]["b64"] for cat in categorias}
+
+
+
 def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     """Gera HTML profissional do relatório de visita para download como PDF."""
 
@@ -4543,33 +4664,25 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     <div class="obs-txt">"{problemas}"</div>
   </div>''' if problemas else ""
 
-    # ── Fotos do Drive (base64 embutido por categoria) ───────────────────────
-    import base64 as _b64
+    # ── Fotos do relatório (base64, Drive e fallback local) ──────────────────
+    fotos_resolvidas = _resolver_fotos_visita_para_relatorio(lancamento)
 
-    def _ids_to_html(ids_list, titulo):
-        if not ids_list:
+    def _b64_to_html(b64_list, titulo):
+        if not b64_list:
             return ""
         imgs = ""
-        for fid in ids_list:
-            try:
-                fb = drive_baixar_foto(fid)
-                if fb:
-                    b64 = _b64.b64encode(fb).decode("utf-8")
-                    imgs += f'<div style="margin-bottom:6px;"><img src="data:image/jpeg;base64,{b64}" style="width:100%;border-radius:6px;border:1px solid #d0d8e4;" /></div>'
-            except Exception:
-                pass
+        for b64 in b64_list[:6]:
+            if not b64:
+                continue
+            imgs += f'<div style="margin-bottom:6px;"><img src="data:image/jpeg;base64,{b64}" style="width:100%;border-radius:6px;border:1px solid #d0d8e4;" /></div>'
         if not imgs:
             return ""
         return f'<div style="margin-bottom:12px;"><div style="font-size:10px;color:#1e4d8c;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">{titulo}</div>{imgs}</div>'
 
-    fotos_antes_ids  = lancamento.get("fotos_antes_ids",  lancamento.get("fotos_drive_ids", []))
-    fotos_depois_ids = lancamento.get("fotos_depois_ids", [])
-    fotos_cmaq_ids   = lancamento.get("fotos_cmaq_ids",   [])
-
     _fotos_content = (
-        _ids_to_html(fotos_antes_ids,  "Antes do tratamento") +
-        _ids_to_html(fotos_depois_ids, "Depois do tratamento") +
-        _ids_to_html(fotos_cmaq_ids,   "Casa de máquinas")
+        _b64_to_html(fotos_resolvidas.get("antes", []),  "Antes do tratamento") +
+        _b64_to_html(fotos_resolvidas.get("depois", []), "Depois do tratamento") +
+        _b64_to_html(fotos_resolvidas.get("cmaq", []),   "Casa de máquinas")
     )
 
     fotos_html_section = f'''
@@ -5001,9 +5114,10 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             except Exception:
                 pass
 
-    fotos_antes_b64  = lancamento.get("fotos_antes_b64",  [])
-    fotos_depois_b64 = lancamento.get("fotos_depois_b64", [])
-    fotos_cmaq_b64   = lancamento.get("fotos_cmaq_b64",   [])
+    fotos_resolvidas = _resolver_fotos_visita_para_relatorio(lancamento)
+    fotos_antes_b64  = fotos_resolvidas.get("antes", [])
+    fotos_depois_b64 = fotos_resolvidas.get("depois", [])
+    fotos_cmaq_b64   = fotos_resolvidas.get("cmaq", [])
 
     if fotos_antes_b64 or fotos_depois_b64 or fotos_cmaq_b64:
         elems.append(Paragraph("Registro fotográfico", s_sec))
@@ -6642,7 +6756,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     )
                     st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
                 except Exception as _e:
+                    import traceback
                     st.warning(f"PDF não gerado: {_e}. Baixando versão HTML como alternativa.")
+                    st.code(traceback.format_exc(), language="text")
                     html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
                     st.download_button(
                         "📄 Baixar relatório (HTML)",
