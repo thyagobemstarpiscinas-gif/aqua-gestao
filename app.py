@@ -4853,6 +4853,13 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
 def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF do relatório de visita usando ReportLab. Retorna bytes do PDF."""
     import io
+    # Garante que reportlab está instalado (Streamlit Cloud pode não ter)
+    try:
+        import reportlab
+    except ImportError:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "pip", "install", "reportlab", "--quiet"],
+                      capture_output=True)
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.units import cm
