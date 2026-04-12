@@ -1618,6 +1618,29 @@ def limpar_nome_arquivo(texto: str) -> str:
     return texto[:150]
 
 
+
+def carregar_imagem_corrigida_orientacao(origem):
+    """Corrige orientação EXIF para preview no Streamlit sem alterar o upload original."""
+    try:
+        import io as _io
+        from PIL import Image as _PILImg, ImageOps as _IOps
+
+        if hasattr(origem, "getbuffer"):
+            dados = bytes(origem.getbuffer())
+        elif isinstance(origem, (str, Path)):
+            dados = Path(origem).read_bytes()
+        elif isinstance(origem, bytes):
+            dados = origem
+        else:
+            return origem
+
+        img = _PILImg.open(_io.BytesIO(dados))
+        img = _IOps.exif_transpose(img)
+        return img
+    except Exception:
+        return origem
+
+
 def hoje_br() -> str:
     return date.today().strftime("%d/%m/%Y")
 
@@ -6757,6 +6780,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
                 except Exception as _e:
                     import traceback
+                    _erro_pdf = str(_e)
+                    if "reportlab" in _erro_pdf.lower():
+                        st.error("Dependência ausente para gerar PDF: reportlab. Instale no ambiente e gere novamente.")
                     st.warning(f"PDF não gerado: {_e}. Baixando versão HTML como alternativa.")
                     st.code(traceback.format_exc(), language="text")
                     html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
@@ -7245,7 +7271,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 _cols = st.columns(min(len(_all_show), 3))
                 for _i, _f in enumerate(_all_show):
                     with _cols[_i % 3]:
-                        st.image(_f, use_container_width=True)
+                        st.image(carregar_imagem_corrigida_orientacao(_f), use_container_width=True)
 
         # Botão para limpar fotos do rascunho
         if _total_fotos_rasc > 0:
