@@ -6775,6 +6775,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             nome_arq = limpar_nome_arquivo(f"Relatorio_Visita_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
             with st.spinner("Gerando PDF..."):
                 try:
+                    # Tenta via reportlab direto
                     pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
                     st.download_button(
                         "📄 Baixar PDF desta visita",
@@ -6786,18 +6787,54 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     )
                     st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
                 except Exception as _e:
-                    import traceback
-                    _erro_pdf = str(_e)
-                    if "reportlab" in _erro_pdf.lower():
-                        st.error("Dependência ausente para gerar PDF: reportlab. Instale no ambiente e gere novamente.")
-                    st.warning(f"PDF não gerado: {_e}. Baixando versão HTML como alternativa.")
-                    st.code(traceback.format_exc(), language="text")
-                    html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
-                    st.download_button(
-                        "📄 Baixar relatório (HTML)",
-                        data=html_rel.encode("utf-8"),
-                        file_name=f"{nome_arq}.html",
-                        mime="text/html",
+                    # Fallback: gera DOCX e converte via LibreOffice
+                    try:
+                        import tempfile, shutil
+                        _pasta_tmp = GENERATED_DIR / slugify_nome(_salvo["nome"])
+                        _pasta_tmp.mkdir(parents=True, exist_ok=True)
+                        _ts_vis = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _docx_tmp = _pasta_tmp / f"{_ts_vis}_visita.docx"
+                        _pdf_tmp  = _pasta_tmp / f"{_ts_vis}_visita.pdf"
+                        # Monta lançamento como lista para gerar_relatorio_visita_docx
+                        _lc_lista = [_ult_lanc]
+                        _inc_rt = st.session_state.get("empresa_ativa","aqua_gestao") == "aqua_gestao"
+                        _ok_d, _err_d = gerar_relatorio_visita_docx(
+                            output_path=_docx_tmp,
+                            nome_local=_salvo["nome"],
+                            cnpj="", endereco="", responsavel="",
+                            operador=_salvo.get("operador",""),
+                            mes=_salvo["data"].split("/")[1] if "/" in _salvo["data"] else "",
+                            ano=_salvo["data"].split("/")[2] if "/" in _salvo["data"] else "",
+                            lancamentos=_lc_lista,
+                            obs_geral="",
+                            incluir_rt=_inc_rt,
+                            fotos=[],
+                        )
+                        if _ok_d:
+                            _ok_p, _err_p = converter_docx_para_pdf(_docx_tmp, _pdf_tmp)
+                            if _ok_p and _pdf_tmp.exists():
+                                with open(_pdf_tmp, "rb") as _pf:
+                                    st.download_button(
+                                        "📄 Baixar PDF desta visita",
+                                        data=_pf.read(),
+                                        file_name=f"{nome_arq}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True,
+                                        key="btn_dl_relatorio_visita",
+                                    )
+                                st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                            else:
+                                raise Exception(_err_p or "Conversão falhou")
+                        else:
+                            raise Exception(_err_d or "Geração DOCX falhou")
+                    except Exception as _e2:
+                        st.warning(f"PDF não gerado. Baixando versão HTML como alternativa.")
+                        html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
+                        st.download_button(
+                            "📄 Baixar relatório (HTML)",
+                            data=html_rel.encode("utf-8"),
+                            file_name=f"{nome_arq}.html",
+                            mime="text/html",
                         use_container_width=True,
                         key="btn_dl_relatorio_visita_html",
                     )

@@ -1,6 +1,8 @@
 streamlit
 python-docx
 Pillow
-docx2pdf
 gspread
 google-auth
+google-api-python-client
+reportlab
+requests
