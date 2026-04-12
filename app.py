@@ -7140,17 +7140,29 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     pass
                 _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
 
-                _sugestoes = []
-                if _vol_usar > 0:
-                    _sugestoes = calcular_sugestoes_dosagem(
-                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
-                        volume_m3=_vol_usar
-                    )
+                # Limpa cache de volume se for 0 (força nova busca)
+                _cache_key_vol = f"_vol_m3_{slugify_nome(op_nome_cond.strip())}"
+                if st.session_state.get(_cache_key_vol, -1) == 0:
+                    del st.session_state[_cache_key_vol]
+                    _vol_usar = 0.0
+
+                _tem_vol = _vol_usar > 0
+                # Calcula sugestões — com ou sem volume
+                # Se sem volume: mostra produto e ação mas sem quantidade
+                _vol_calc = _vol_usar if _tem_vol else 1.0
+                _sugestoes = calcular_sugestoes_dosagem(
+                    ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
+                    volume_m3=_vol_calc
+                )
                 if _sugestoes:
-                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
+                    if _tem_vol:
+                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
+                    else:
+                        st.markdown(f"**💊 Sugestões para {pisc_nome}:**")
+                        st.caption("⚠️ Volume não cadastrado — quantidades não calculadas. Cadastre o volume m³ para doses exatas.")
                     for _s in _sugestoes:
                         _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
-                        if _s["quantidade"] and _s["quantidade"] > 0:
+                        if _s["quantidade"] and _s["quantidade"] > 0 and _tem_vol:
                             st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
                             st.caption(f"↳ {_s['acao']}")
                         else:
@@ -7159,20 +7171,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                             st.caption(_s["justificativa"])
                             st.caption(f"📚 {_s.get('norma','')}")
                     # Botão aplicar sugestões nas dosagens desta piscina
-                    if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
-                            key=f"btn_aplicar_sug_{pisc_slug}",
-                            use_container_width=True):
-                        _key_sug = f"_sug_pisc_{pisc_slug}"
-                        st.session_state[_key_sug] = [
-                            s for s in _sugestoes
-                            if s.get("quantidade") and s["quantidade"] > 0
-                        ]
-                        st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
-                        st.rerun()
+                    if _tem_vol:
+                        if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
+                                key=f"btn_aplicar_sug_{pisc_slug}",
+                                use_container_width=True):
+                            _key_sug = f"_sug_pisc_{pisc_slug}"
+                            st.session_state[_key_sug] = [
+                                s for s in _sugestoes
+                                if s.get("quantidade") and s["quantidade"] > 0
+                            ]
+                            st.success(f"✅ Sugestões aplicadas! Verifique as dosagens abaixo.")
+                            st.rerun()
                 else:
                     st.success("✅ Todos os parâmetros dentro da faixa ideal.")
             else:
-                st.caption("⚠️ Volume m³ não cadastrado — adicione na planilha para calcular doses.")
+                st.caption("⚠️ Volume m³ não cadastrado — cadastre para calcular doses exatas.")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
