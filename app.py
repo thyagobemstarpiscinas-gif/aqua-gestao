@@ -7092,59 +7092,34 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             _tem_params = any(v is not None for v in [_v_ph, _v_crl, _v_alc, _v_dc, _v_cya])
 
             if _tem_params:
-                # Busca volume m³ do condomínio no Sheets
-                _vol_m3 = st.session_state.get(f"_vol_m3_{slugify_nome(op_nome_cond.strip())}", 0.0)
-                if not _vol_m3:
-                    try:
-                        _clientes_vol = sheets_listar_clientes_completo()
-                        for _cv in _clientes_vol:
-                            if _cv["nome"].lower().strip() == op_nome_cond.strip().lower():
-                                # Busca volume da planilha (col D = Volume_m3)
-                                _sh_vol = conectar_sheets()
-                                if _sh_vol:
-                                    _aba_vol = _sh_vol.worksheet("👥 Clientes")
-                                    _rows_vol = _aba_vol.get_all_values()
-                                    for _rv in _rows_vol:
-                                        if len(_rv) > 3 and _cv["nome"].lower() in str(_rv[2]).lower():
-                                            try:
-                                                _vol_m3 = float(str(_rv[3]).replace(",",".").strip() or 0)
-                                            except Exception:
-                                                _vol_m3 = 0.0
-                                            break
-                                break
-                        st.session_state[f"_vol_m3_{slugify_nome(op_nome_cond.strip())}"] = _vol_m3
-                    except Exception:
-                        _vol_m3 = 0.0
-
-                # Usa volume específico da piscina se disponível
-                _vol_pisc = 0.0
+                # Busca volume específico desta piscina — uma chamada única ao Sheets
+                _vol_usar = 0.0
                 _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
                 _vol_key = _slug_map2.get(pisc_nome, "")
                 try:
-                    _clv = sheets_listar_clientes_completo()
-                    for _cv2 in _clv:
-                        if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                    _clv_vol = sheets_listar_clientes_completo()
+                    for _cv_vol in _clv_vol:
+                        if _cv_vol["nome"].lower().strip() == op_nome_cond.strip().lower():
                             if _vol_key:
-                                # Piscina padrão (adulto/infantil/family)
-                                _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
-                            else:
+                                # Piscina padrão — usa campo direto do dict
+                                _vol_usar = float(_cv_vol.get(_vol_key, 0) or 0)
+                            if _vol_usar == 0:
+                                # Fallback: usa volume total da piscina
+                                _vol_usar = float(_cv_vol.get("vol_total", 0) or 0)
+                            if _vol_usar == 0 and not _vol_key:
                                 # Piscina extra — busca no JSON local
-                                _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-                                _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
-                                for _pe in _dados_extra_vol.get("piscinas_extras", []):
+                                _pasta_xvol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                                _dados_xvol = (carregar_dados_condominio(_pasta_xvol) or {}) if _pasta_xvol.exists() else {}
+                                for _pe in _dados_xvol.get("piscinas_extras", []):
                                     if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
-                                        _vol_pisc = float(_pe.get("vol", 0) or 0)
+                                        _vol_usar = float(_pe.get("vol", 0) or 0)
                                         break
                             break
                 except Exception:
-                    pass
-                _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
-
-                # Limpa cache de volume se for 0 (força nova busca)
-                _cache_key_vol = f"_vol_m3_{slugify_nome(op_nome_cond.strip())}"
-                if st.session_state.get(_cache_key_vol, -1) == 0:
-                    del st.session_state[_cache_key_vol]
                     _vol_usar = 0.0
+
+                if _vol_usar > 0:
+                    st.caption(f"📐 Volume: {_vol_usar:.0f} m³")
 
                 _tem_vol = _vol_usar > 0
                 # Calcula sugestões — com ou sem volume
