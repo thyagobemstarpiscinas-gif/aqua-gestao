@@ -2547,19 +2547,6 @@ def adicionar_espaco(doc: Document, qtd: int = 1):
         doc.add_paragraph("")
 
 
-from docx.shared import Pt, Cm
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-adicionar_espaco(doc, 2)
-
-# Data — parágrafo simples centralizado, fora de qualquer tabela
-p_local = doc.add_paragraph()
-p_local.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run_data = p_local.add_run(f"Uberlândia/MG, {hoje_br()}.")
-run_data.font.size = Pt(11)
-
-adicionar_espaco(doc, 2)
-
 def preencher_celula(cell, linhas, negrito_idx=None):
     negrito_idx = negrito_idx or []
     cell.paragraphs[0].clear()
@@ -2571,59 +2558,6 @@ def preencher_celula(cell, linhas, negrito_idx=None):
         run = p.add_run(linha)
         run.font.size = Pt(9)
         run.bold = (i in negrito_idx)
-
-col_w = Cm(8)
-
-# ---- Tabela: CONTRATADA | CONTRATANTE ----
-tab1 = doc.add_table(rows=1, cols=2)
-tab1.autofit = False
-for row in tab1.rows:
-    for cell in row.cells:
-        cell.width = col_w
-
-linhas_contratada = [
-    "_" * 28,
-    "AQUA GESTÃO",
-    "CONTROLE TÉCNICO DE PISCINAS",
-    RESPONSAVEL_TÉCNICO,
-    CRQ,
-    "CONTRATADA",
-]
-preencher_celula(tab1.cell(0, 0), linhas_contratada, negrito_idx=[1, 2, 5])
-
-# Monta linhas do CONTRATANTE — nome quebra por palavras com até 32 chars/linha
-linhas_contratante = ["_" * 28]
-if nome_condominio:
-    palavras = nome_condominio.upper().split()
-    linha_atual = ""
-    for palavra in palavras:
-        teste = (linha_atual + " " + palavra).strip()
-        if len(teste) <= 40:
-            linha_atual = teste
-        else:
-            if linha_atual:
-                linhas_contratante.append(linha_atual)
-                linha_atual = palavra
-    if linha_atual:
-        linhas_contratante.append(linha_atual)
-if cnpj_condominio:
-    linhas_contratante.append(f"CNPJ: {cnpj_condominio}")
-if nome_sindico:
-    linhas_contratante.append(nome_sindico)
-linhas_contratante.append("CONTRATANTE")
-preencher_celula(tab1.cell(0, 1), linhas_contratante, negrito_idx=[1, len(linhas_contratante) - 1])
-
-adicionar_espaco(doc, 2)
-
-# ---- Tabela de testemunhas ----
-tab2 = doc.add_table(rows=1, cols=2)
-tab2.autofit = False
-for row in tab2.rows:
-    for cell in row.cells:
-        cell.width = col_w
-
-preencher_celula(tab2.cell(0, 0), ["_" * 28, "Testemunha 1", "Nome:", "CPF:"])
-preencher_celula(tab2.cell(0, 1), ["_" * 28, "Testemunha 2", "Nome:", "CPF:"])
 
 
 def converter_docx_para_pdf(docx_path: Path, pdf_path: Path):
