@@ -10866,7 +10866,6 @@ placeholders = {
 # =========================================
 
 def exibir_bloco_envio(
-def exibir_bloco_envio(
     nome_condominio: str,
     pasta_condominio: Path,
     whatsapp_cliente: str,
@@ -11214,5 +11213,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19p"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19q"
 )
