@@ -7142,6 +7142,31 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     else:
         if opcoes_cond:
             op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
+            
+            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
+            if op_nome_cond:
+                with st.expander("🕒 Últimas 3 visitas", expanded=False):
+                    with st.spinner("Buscando histórico..."):
+                        historico_v = sheets_listar_lancamentos(op_nome_cond)
+                        if not historico_v:
+                            st.caption("Nenhuma visita anterior registrada.")
+                        else:
+                            # Ordena por data decrescente
+                            try:
+                                historico_v = sorted(
+                                    historico_v, 
+                                    key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
+                                    reverse=True
+                                )
+                            except:
+                                pass
+                            
+                            for v in historico_v[:3]:
+                                st.markdown(f"**Data: {v['data']}** | Op: {v.get('operador','–')}")
+                                st.markdown(f"pH: `{v.get('ph','–')}` | CRL: `{v.get('cloro_livre','–')}` | Alc: `{v.get('alcalinidade','–')}`")
+                                if v.get('problemas'):
+                                    st.caption(f"⚠️ {v['problemas']}")
+                                st.markdown("---")
         else:
             st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
             op_nome_cond = ""
@@ -8011,6 +8036,64 @@ if st.session_state.get("data_fim", "").strip():
 # DADOS DE PAINEL
 # =========================================
 
+def obter_metricas_bem_star():
+    """Coleta métricas para o Dashboard Bem Star."""
+    try:
+        todos_clientes = sheets_listar_clientes_completo()
+        clientes_bs = filtrar_clientes_por_empresa(todos_clientes, "bem_star")
+        
+        total_ativos = len([c for c in clientes_bs if c.get("status") == "Ativo"])
+        
+        # Visitas do mês atual
+        hoje = datetime.now()
+        mes_atual = hoje.strftime("%m")
+        ano_atual = hoje.strftime("%Y")
+        
+        visitas_mes = 0
+        ultimos_pareceres = []
+        
+        for c in clientes_bs:
+            lancamentos = sheets_listar_lancamentos(c["nome"])
+            # Filtra por mês/ano
+            for lc in lancamentos:
+                data = lc.get("data", "")
+                try:
+                    if "/" in data:
+                        p = data.split("/")
+                        if len(p) == 3 and p[1] == mes_atual and p[2] == ano_atual:
+                            visitas_mes += 1
+                    elif "-" in data:
+                        p = data.split("-")
+                        if len(p) == 3 and p[1] == mes_atual and p[0] == ano_atual:
+                            visitas_mes += 1
+                except:
+                    pass
+            
+            if lancamentos:
+                # Ordena por data (assumindo formato dd/mm/aaaa ou aaaa-mm-dd)
+                try:
+                    lancamentos_ordenados = sorted(
+                        lancamentos, 
+                        key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
+                        reverse=True
+                    )
+                    ultimos_pareceres.append({
+                        "cliente": c["nome"],
+                        "data": lancamentos_ordenados[0]["data"],
+                        "parecer": lancamentos_ordenados[0].get("observacao", "Sem observação")
+                    })
+                except:
+                    pass
+                    
+        return {
+            "total_ativos": total_ativos,
+            "visitas_mes": visitas_mes,
+            "ultimos_pareceres": ultimos_pareceres[:5] # Top 5 recentes
+        }
+    except Exception as e:
+        _log_sheets_erro("obter_metricas_bem_star", e)
+        return {"total_ativos": 0, "visitas_mes": 0, "ultimos_pareceres": []}
+
 painel_vencimentos = listar_painel_vencimentos(st.session_state.alerta_vencimento_dias)
 painel_filtrado = filtrar_itens_painel(
     painel_vencimentos,
@@ -8030,60 +8113,98 @@ itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencen
 itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
 
 # =========================================
-# DASHBOARD EXECUTIVO
+# DASHBOARD EXECUTIVO / BEM STAR
 # =========================================
 
-taxa_estrutura = (total_com_json / total_monitorado * 100) if total_monitorado else 0
-criticos = [i for i in painel_vencimentos if i["status"]["codigo"] in ("vencido", "vencendo")][:5]
-
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Dashboard executivo")
-
-d1, d2, d3, d4, d5 = st.columns(5)
-with d1:
-    st.markdown(
-        f"<div class='dash-mini'><div class='dash-title'>Total monitorado</div><div class='dash-value'>{total_monitorado}</div><div class='dash-sub'>Pastas acompanhadas pelo sistema</div></div>",
-        unsafe_allow_html=True,
-    )
-with d2:
-    st.markdown(
-        f"<div class='dash-mini'><div class='dash-title'>Vigentes</div><div class='dash-value'>{total_vigentes}</div><div class='dash-sub'>Dentro da vigência regular</div></div>",
-        unsafe_allow_html=True,
-    )
-with d3:
-    st.markdown(
-        f"<div class='dash-mini'><div class='dash-title'>Vencem em breve</div><div class='dash-value'>{total_vencendo}</div><div class='dash-sub'>Dentro da faixa de alerta</div></div>",
-        unsafe_allow_html=True,
-    )
-with d4:
-    st.markdown(
-        f"<div class='dash-mini'><div class='dash-title'>Vencidos</div><div class='dash-value'>{total_vencidos}</div><div class='dash-sub'>Exigem ação imediata</div></div>",
-        unsafe_allow_html=True,
-    )
-with d5:
-    st.markdown(
-        f"<div class='dash-mini'><div class='dash-title'>Cadastros estruturados</div><div class='dash-value'>{taxa_estrutura:.0f}%</div><div class='dash-sub'>{total_com_json} de {total_monitorado} com JSON salvo</div></div>",
-        unsafe_allow_html=True,
-    )
-
-cx1, cx2 = st.columns([1.15, 1])
-with cx1:
-    st.markdown("**Resumo crítico**")
-    if not criticos:
-        st.success("Nenhum condomínio em faixa crítica no momento.")
+if st.session_state.get("empresa_ativa") == "bem_star":
+    # --- DASHBOARD BEM STAR ---
+    with st.spinner("Carregando indicadores Bem Star..."):
+        metricas_bs = obter_metricas_bem_star()
+    
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("⭐ Painel Bem Star Piscinas")
+    
+    db1, db2, db3 = st.columns(3)
+    with db1:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Clientes Ativos</div><div class='dash-value'>{metricas_bs['total_ativos']}</div><div class='dash-sub'>Carteira Bem Star</div></div>",
+            unsafe_allow_html=True,
+        )
+    with db2:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {datetime.now().strftime('%m/%Y')}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with db3:
+        # Média de visitas por cliente ativo (exemplo de métrica extra)
+        media = (metricas_bs['visitas_mes'] / metricas_bs['total_ativos']) if metricas_bs['total_ativos'] > 0 else 0
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Média Visitas/Cli</div><div class='dash-value'>{media:.1f}</div><div class='dash-sub'>Frequência mensal média</div></div>",
+            unsafe_allow_html=True,
+        )
+    
+    st.markdown("**Últimos pareceres técnicos**")
+    if not metricas_bs['ultimos_pareceres']:
+        st.info("Nenhum parecer técnico recente encontrado.")
     else:
-        for item in criticos:
-            st.markdown(
-                f"- **{item['nome_exibicao']}** — {item['status']['rotulo']} — {item['status']['mensagem']}"
-            )
+        for p in metricas_bs['ultimos_pareceres']:
+            st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
-with cx2:
-    st.markdown("**Leitura rápida**")
-    st.write(f"Sem vigência válida: **{total_indefinidos}**")
-    st.write(f"Com ação prioritária agora: **{total_vencidos + total_vencendo}**")
-    st.write(f"Faixa de lembrete atual: **{st.session_state.alerta_vencimento_dias} dias**")
+else:
+    # --- DASHBOARD AQUA GESTÃO (ORIGINAL) ---
+    taxa_estrutura = (total_com_json / total_monitorado * 100) if total_monitorado else 0
+    criticos = [i for i in painel_vencimentos if i["status"]["codigo"] in ("vencido", "vencendo")][:5]
 
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Dashboard executivo")
+
+    d1, d2, d3, d4, d5 = st.columns(5)
+    with d1:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Total monitorado</div><div class='dash-value'>{total_monitorado}</div><div class='dash-sub'>Pastas acompanhadas pelo sistema</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d2:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vigentes</div><div class='dash-value'>{total_vigentes}</div><div class='dash-sub'>Dentro da vigência regular</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d3:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vencem em breve</div><div class='dash-value'>{total_vencendo}</div><div class='dash-sub'>Dentro da faixa de alerta</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d4:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vencidos</div><div class='dash-value'>{total_vencidos}</div><div class='dash-sub'>Exigem ação imediata</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d5:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Cadastros estruturados</div><div class='dash-value'>{taxa_estrutura:.0f}%</div><div class='dash-sub'>{total_com_json} de {total_monitorado} com JSON salvo</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    cx1, cx2 = st.columns([1.15, 1])
+    with cx1:
+        st.markdown("**Resumo crítico**")
+        if not criticos:
+            st.success("Nenhum condomínio em faixa crítica no momento.")
+        else:
+            for item in criticos:
+                st.markdown(
+                    f"- **{item['nome_exibicao']}** — {item['status']['rotulo']} — {item['status']['mensagem']}"
+                )
+
+    with cx2:
+        st.markdown("**Leitura rápida**")
+        st.write(f"Sem vigência válida: **{total_indefinidos}**")
+        st.write(f"Com ação prioritária agora: **{total_vencidos + total_vencendo}**")
+        st.write(f"Faixa de lembrete atual: **{st.session_state.alerta_vencimento_dias} dias**")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # SAÚDE DO SISTEMA
@@ -10742,45 +10863,58 @@ placeholders = {
 # =========================================
 
 def exibir_bloco_envio(
+def exibir_bloco_envio(
     nome_condominio: str,
     pasta_condominio: Path,
     whatsapp_cliente: str,
     email_cliente: str,
     mensagem: str,
 ):
+    """Bloco de envio unificado para Aqua Gestão (WhatsApp + email + copiar)."""
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Mensagem pronta para envio")
-    st.text_area(
-        "Texto",
+    st.subheader("📤 Enviar para o cliente")
+
+    # Editor da mensagem
+    msg_editada = st.text_area(
+        "Mensagem",
         value=mensagem,
         height=220,
+        key=f"aq_msg_envio_{slugify_nome(nome_condominio)}",
         label_visibility="collapsed",
     )
-
-    componente_copiar(mensagem)
+    componente_copiar(msg_editada)
 
     col_env1, col_env2, col_env3 = st.columns(3)
 
     with col_env1:
-        if whatsapp_cliente.strip():
-            url_wa = link_whatsapp(whatsapp_cliente, mensagem)
-            st.link_button("Abrir WhatsApp", url_wa, use_container_width=True)
+        _tel = (whatsapp_cliente or "").strip()
+        if _tel:
+            url_wa = link_whatsapp(_tel, msg_editada)
+            st.link_button("💬 Abrir WhatsApp", url_wa, use_container_width=True)
         else:
-            st.button("Abrir WhatsApp", disabled=True, use_container_width=True)
+            st.text_input("WhatsApp", placeholder="(34) 99999-9999", key=f"aq_tel_envio_{slugify_nome(nome_condominio)}")
+            _tel2 = st.session_state.get(f"aq_tel_envio_{slugify_nome(nome_condominio)}", "").strip()
+            if _tel2:
+                st.link_button("💬 Abrir WhatsApp", link_whatsapp(_tel2, msg_editada), use_container_width=True)
 
     with col_env2:
-        if email_cliente.strip():
-            assunto = f"Documentação contratual – {nome_condominio}"
-            url_mail = link_email(email_cliente, assunto, mensagem)
-            st.link_button("Abrir e-mail", url_mail, use_container_width=True)
+        _eml = (email_cliente or "").strip()
+        if _eml:
+            assunto = f"Documentação Aqua Gestão – {nome_condominio}"
+            url_mail = link_email(_eml, assunto, msg_editada)
+            st.link_button("✉️ Abrir e-mail", url_mail, use_container_width=True)
         else:
-            st.button("Abrir e-mail", disabled=True, use_container_width=True)
+            st.text_input("E-mail", placeholder="email@cliente.com.br", key=f"aq_email_envio_{slugify_nome(nome_condominio)}")
+            _eml2 = st.session_state.get(f"aq_email_envio_{slugify_nome(nome_condominio)}", "").strip()
+            if _eml2:
+                assunto = f"Documentação Aqua Gestão – {nome_condominio}"
+                st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto, msg_editada), use_container_width=True)
 
     with col_env3:
-        if st.button("Abrir pasta deste condomínio", use_container_width=True):
+        if st.button("📂 Abrir pasta", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)tml=True)
 
 
 def gerar_contrato_e_aditivo():
@@ -11077,5 +11211,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Ambiente prioritário: Windows"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19o"
 )
