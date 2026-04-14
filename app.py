@@ -11211,5 +11211,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19o"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • v19o - ATUALIZADO"
 )
