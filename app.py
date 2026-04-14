@@ -1916,6 +1916,12 @@ def on_change_data_fim():
 def on_change_data_assinatura():
     st.session_state.data_assinatura = formatar_data_digitada(st.session_state.get("data_assinatura", ""))
 
+def on_change_bs_cont_data_inicio():
+    st.session_state.bs_cont_data_inicio = formatar_data_digitada(st.session_state.get("bs_cont_data_inicio", ""))
+
+def on_change_bs_cont_data_fim():
+    st.session_state.bs_cont_data_fim = formatar_data_digitada(st.session_state.get("bs_cont_data_fim", ""))
+
 
 def on_change_rel_documento_representante():
     atual = st.session_state.get("rel_cpf_cnpj_representante", "")
@@ -2061,6 +2067,12 @@ def aplicar_dosagens_ultimas_no_relatorio(dados_salvos: dict | None):
         st.session_state[f"rel_dos_un_{i}"] = (item.get("unidade") or "").strip()
         st.session_state[f"rel_dos_finalidade_{i}"] = (item.get("finalidade") or "").strip()
 
+
+def aplicar_snapshot_relatorio_independente(dados: dict):
+    for key, value in dados.items():
+        if key != "dosagens_ultimas": # Dosagens são aplicadas separadamente
+            st.session_state[key] = value
+    aplicar_dosagens_ultimas_no_relatorio(dados)
 
 def obter_snapshot_relatorio_independente() -> dict:
     return {
@@ -4693,7 +4705,7 @@ def gerar_grafico_tendencia_ph_crl(analises: list[dict], nome_condominio: str = 
 
         _plotar(150, 'ph', 'pH', azul, 7.2, 7.8, '')
         _plotar(485, 'crl', 'Cloro livre residual (CRL)', azul_claro, 0.5, 3.0, 'mg/L')
-        draw.text((60, altura - 54), 'Áreas em verde representam a faixa operacional ideal. O gráfico é gerado automaticamente a partir das análises lançadas no mês.', fill=cinza, font=f_sub)
+        draw.text((60, altura - 54), 'Áreas em verde representam a faixa operacional ideal. O gráfico é gerado a partir das análises lançadas no mês.', fill=cinza, font=f_sub)
 
         img.save(output_path, format='PNG', optimize=True)
         return output_path
@@ -5090,7 +5102,7 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
   </div>
 
   <div class="rodape">
-    Aqua Gestão – Controle Técnico de Piscinas · Documento gerado automaticamente
+    Aqua Gestão – Controle Técnico de Piscinas · Documento de uso operacional
   </div>
 
 </div>
@@ -5324,7 +5336,8 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     if problemas:
         elems.append(Paragraph("Problemas / Ocorrências", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
-        t_prob = Table([[Paragraph(f"⚠ {problemas}", s_alerta)]], colWidths=["100%"])
+        problemas_formatados = problemas.replace("\n", "<br/>")
+        t_prob = Table([[Paragraph(f"⚠ {problemas_formatados}", s_alerta)]], colWidths=["100%"])
         t_prob.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,-1), LARANJA_BG),
             ("BOX", (0,0), (-1,-1), 0.5, LARANJA),
@@ -5452,7 +5465,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     elems.append(t_ass)
 
     elems.append(Spacer(1, 4))
-    elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento gerado automaticamente", s_center))
+    elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento de uso operacional", s_center))
 
     doc.build(elems)
     buffer.seek(0)
@@ -9787,14 +9800,22 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
             ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
             key="bs_cont_pagamento")
 
+    st.markdown("**Duração do Contrato**")
+    bs_duracao = st.radio("Tipo de contrato", 
+        ["Por tempo indeterminado", "12 meses com prorrogação automática"],
+        key="bs_cont_duracao", horizontal=True)
+
     st.markdown("**Datas**")
     _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
     with _bs_d1:
         bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
-            placeholder="dd/mm/aaaa", value=hoje_br())
+            placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_inicio)
     with _bs_d2:
-        bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
-            placeholder="dd/mm/aaaa")
+        if "indeterminado" in bs_duracao:
+            st.text_input("Data de término", value="Indeterminado", disabled=True)
+        else:
+            bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
+                placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
     with _bs_d3:
         bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
             placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
@@ -9829,13 +9850,14 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
                 _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
                 _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
                 _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
-                _prazo    = (st.session_state.get("bs_cont_prazo","")).strip() or "12"
+                _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
                 _valor    = (st.session_state.get("bs_cont_valor","")).strip()
                 _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
                 _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
                 _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
                 _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
-                _fim      = (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
+                _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
                 _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
                 _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
                 _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
@@ -10358,7 +10380,7 @@ _prev_usar_form = st.checkbox(
     help="Quando marcado, a prévia usa o mesmo gerador DOCX/PDF do relatório final, aproveitando os dados atuais do formulário e as fotos anexadas disponíveis.",
 )
 
-_prev_tab1, _prev_tab2 = st.tabs(["📄 Prévia exata do relatório final", "🧩 Modelo visual de referência"])
+_prev_tab1, _prev_tab2, _prev_tab3 = st.tabs(["📄 Prévia exata do relatório final", "🧩 Modelo visual de referência", "⬆️ Carregar Relatório"])
 
 with _prev_tab1:
     if _prev_usar_form:
@@ -10433,6 +10455,19 @@ with _prev_tab2:
             use_container_width=True,
             key="btn_dl_mockup_rel_print",
         )
+
+with _prev_tab3:
+    st.markdown("### Carregar relatório para edição")
+    st.caption("Selecione um arquivo JSON de relatório salvo para preencher o formulário e editar.")
+    uploaded_file = st.file_uploader("Escolha um arquivo JSON", type=["json"], key="upload_relatorio_json")
+    if uploaded_file is not None:
+        try:
+            dados_relatorio = json.load(uploaded_file)
+            aplicar_snapshot_relatorio_independente(dados_relatorio)
+            st.success("✅ Relatório carregado com sucesso! Os campos do formulário foram preenchidos.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Erro ao carregar o arquivo JSON: {e}")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -10738,11 +10773,9 @@ with ctrl_d2:
     st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usados pela última vez.")
 for i in range(7):
     cols = st.columns([1.4,1.1,0.7,0.7,1.3])
-    cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico")
-    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante/Lote")
-    cols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Qtd")
-    cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unid.")
-    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica")
+    cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico", on_change=_autosave_rascunho)
+    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante / Lote", on_change=_autosave_rascucols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Quantidade", on_change=_autosave_rascunho)
+   cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unidade", on_change=_autosave_rascunho)    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica", on_change=_autosave_rascunho)
 
 st.markdown("**Observações automáticas / editáveis**")
 for i in range(5):
@@ -11213,5 +11246,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19s"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19t"
 )
