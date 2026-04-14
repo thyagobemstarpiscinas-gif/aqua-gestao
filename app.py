@@ -10,7 +10,8 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as components
 from docx import Document
-from docx.shared import Inches
+from docx.shared import Inches, Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from PIL import Image, ImageOps
 try:
     from pillow_heif import register_heif_opener
@@ -137,6 +138,16 @@ def drive_baixar_foto(file_id: str) -> bytes | None:
 # =========================================
 # GESTÃO DE OPERADORES
 # =========================================
+
+def inserir_logo_no_header(doc: Document, logo_path: Path):
+    if not logo_path or not logo_path.exists():
+        return
+
+    header = doc.sections[0].header
+    header.paragraphs[0].clear()
+    run = header.paragraphs[0].add_run()
+    run.add_picture(str(logo_path), width=Cm(7))
+    header.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 def _normalizar_chave_acesso(texto: str) -> str:
     """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
@@ -1059,7 +1070,7 @@ LOGO_BEM_STAR_CANDIDATOS = [
     BASE_DIR / "bem_star_logo.jpg",
     BASE_DIR / "assets" / "bem_star_logo.png",
 ]
-TEMPLATE_CONTRATO = BASE_DIR / "template.docx"
+TEMPLATE_CONTRATO = Path("/home/ubuntu/template.docx")
 TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
 DADOS_JSON_NAME = "dados_condominio.json"
@@ -2572,7 +2583,7 @@ def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str, nome_condomini
             run.font.size = Pt(9)
             run.bold = (i in negrito_idx)
 
-    col_w = Cm(6)
+    col_w = Cm(8)
 
     # ---- Tabela: CONTRATADA | CONTRATANTE ----
     tab1 = doc.add_table(rows=1, cols=2)
@@ -2598,7 +2609,7 @@ def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str, nome_condomini
         linha_atual = ""
         for palavra in palavras:
             teste = (linha_atual + " " + palavra).strip()
-            if len(teste) <= 32:
+            if len(teste) <= 40:
                 linha_atual = teste
             else:
                 if linha_atual:
@@ -2780,6 +2791,12 @@ def gerar_documento(
         raise FileNotFoundError(f"Template não encontrado: {template_path.name}")
 
     doc = Document(str(template_path))
+    
+    # Tenta inserir o logo da Bem Star no cabeçalho
+    logo_bem_star = encontrar_logo_bem_star()
+    if logo_bem_star:
+        inserir_logo_no_header(doc, logo_bem_star)
+
     substituir_placeholders_doc(doc, placeholders)
 
     if incluir_assinaturas:
@@ -10882,6 +10899,15 @@ dados = {
 }
 
 placeholders = {
+        "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
+        "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
+        "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+        "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+        "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+        "{{VOLUMES_PISCINAS}}": "Volumes das piscinas serão preenchidos automaticamente.",
+        "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+        "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+        "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
     "{{DATA_ASSINATURA}}": dados["DATA_ASSINATURA"],
     "{{NOME_CONDOMINIO}}": dados["NOME_CONDOMINIO"],
     "{{CNPJ_CONDOMINIO}}": dados["CNPJ_CONDOMINIO"],
@@ -11246,5 +11272,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19t"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19u"
 )
