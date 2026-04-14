@@ -6967,6 +6967,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     }
     .op-title { font-size: 1.2rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; }
+    /* Campo oculto para captura de assinatura via canvas HTML */
+    div[data-testid="stTextInput"]:has(input[aria-label="assinatura_b64_hidden"]) { display: none !important; }
     .op-sub { font-size: 0.82rem; color: #5d7288; margin-bottom: 10px; }
     .op-salvo {
         border: 1px solid rgba(30,140,70,0.3);
@@ -7614,40 +7616,142 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Assinatura do responsável ─────────────────────────────────────────
+        # Implementação com canvas HTML nativo — sem dependência de streamlit-drawable-canvas
+        # Funciona em qualquer browser mobile (Android/iOS) e no Streamlit Cloud
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">✍️ Assinatura do responsável</div>', unsafe_allow_html=True)
         st.caption("Peça para o zelador, síndico ou responsável assinar com o dedo na tela. A assinatura será anexada automaticamente ao PDF da visita.")
+
         _canvas_nonce = st.session_state.get("_op_ass_canvas_nonce", 0)
-        _canvas_key = f"op_assinatura_canvas_{_canvas_nonce}"
         _ass_exist_b64 = _normalizar_assinatura_b64(st.session_state.get("op_assinatura_responsavel_b64", ""))
-        if st_canvas:
-            _canvas_result = st_canvas(
-                fill_color="rgba(255,255,255,0)",
-                stroke_width=2.5,
-                stroke_color="#0d3d75",
-                background_color="rgba(255,255,255,0)",
-                height=180,
-                width=640,
-                drawing_mode="freedraw",
-                point_display_radius=0,
-                display_toolbar=False,
-                key=_canvas_key,
-            )
-            _ass_novo_b64 = _assinatura_canvas_para_b64(_canvas_result.image_data if _canvas_result else None)
-            if _ass_novo_b64:
+
+        # Campo oculto que recebe o base64 vindo do iframe via query param
+        _ass_input_key = f"_ass_b64_input_{_canvas_nonce}"
+        st.markdown('<div style="position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;" aria-hidden="true">', unsafe_allow_html=True)
+        _ass_from_input = st.text_input(
+            "assinatura_b64_hidden",
+            key=_ass_input_key,
+            label_visibility="collapsed",
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+        if _ass_from_input and _ass_from_input.startswith("data:image"):
+            _ass_novo_b64 = _normalizar_assinatura_b64(_ass_from_input)
+            if _ass_novo_b64 and _ass_novo_b64 != _ass_exist_b64:
                 st.session_state["op_assinatura_responsavel_b64"] = _ass_novo_b64
-                st.session_state["op_assinatura_responsavel_data"] = st.session_state.get("op_data_visita", "") or hoje_br()
+                st.session_state["op_assinatura_responsavel_data"] = (
+                    st.session_state.get("op_data_visita", "") or hoje_br()
+                )
                 _ass_exist_b64 = _ass_novo_b64
-        else:
-            st.warning("Componente de assinatura indisponível neste ambiente. No deploy, mantenha 'streamlit-drawable-canvas' no requirements.txt.")
+                _autosave_rascunho()
+
+        # Canvas HTML nativo — touch e mouse, sem pacote externo
+        _canvas_html = f"""
+<div id="sig-wrap" style="
+    background:#f8faff;
+    border:2px dashed #1565A8;
+    border-radius:10px;
+    padding:8px;
+    margin-bottom:8px;
+    touch-action:none;
+    user-select:none;
+">
+  <canvas id="sigCanvas"
+    width="640" height="200"
+    style="display:block;width:100%;height:auto;cursor:crosshair;border-radius:6px;background:#fff;">
+  </canvas>
+</div>
+<div style="display:flex;gap:8px;margin-bottom:4px;">
+  <button id="btnConfirm" onclick="confirmarAssinatura()" style="
+    flex:1;padding:10px;background:#1565A8;color:#fff;
+    border:none;border-radius:8px;font-size:15px;cursor:pointer;">
+    ✅ Confirmar assinatura
+  </button>
+  <button onclick="limparCanvas()" style="
+    flex:0 0 auto;padding:10px 16px;background:#e0e0e0;color:#333;
+    border:none;border-radius:8px;font-size:15px;cursor:pointer;">
+    🧹
+  </button>
+</div>
+<div id="sigStatus" style="font-size:13px;color:#666;min-height:20px;"></div>
+
+<script>
+(function(){{
+  var canvas = document.getElementById('sigCanvas');
+  var ctx = canvas.getContext('2d');
+  var drawing = false;
+  var hasStrokes = false;
+
+  function getPos(e) {{
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = canvas.width  / rect.width;
+    var scaleY = canvas.height / rect.height;
+    var src = e.touches ? e.touches[0] : e;
+    return {{
+      x: (src.clientX - rect.left) * scaleX,
+      y: (src.clientY - rect.top)  * scaleY
+    }};
+  }}
+
+  ctx.strokeStyle = '#0d3d75';
+  ctx.lineWidth   = 2.5;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+
+  canvas.addEventListener('mousedown',  function(e){{ drawing=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); }});
+  canvas.addEventListener('mousemove',  function(e){{ if(!drawing) return; e.preventDefault(); var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); hasStrokes=true; }});
+  canvas.addEventListener('mouseup',    function(){{ drawing=false; }});
+  canvas.addEventListener('mouseleave', function(){{ drawing=false; }});
+
+  canvas.addEventListener('touchstart', function(e){{ e.preventDefault(); drawing=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); }}, {{passive:false}});
+  canvas.addEventListener('touchmove',  function(e){{ e.preventDefault(); if(!drawing) return; var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); hasStrokes=true; }}, {{passive:false}});
+  canvas.addEventListener('touchend',   function(e){{ e.preventDefault(); drawing=false; }}, {{passive:false}});
+
+  window.limparCanvas = function() {{
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    hasStrokes = false;
+    document.getElementById('sigStatus').textContent = '';
+  }};
+
+  window.confirmarAssinatura = function() {{
+    if (!hasStrokes) {{
+      document.getElementById('sigStatus').textContent = '⚠️ Desenhe a assinatura antes de confirmar.';
+      return;
+    }}
+    var dataUrl = canvas.toDataURL('image/png');
+    // Localiza o campo oculto pelo aria-label injetado pelo Streamlit
+    var target = window.parent.document.querySelector('input[aria-label="assinatura_b64_hidden"]');
+    if (!target) {{
+      // Fallback: qualquer input vazio ou com data:image
+      var inputs = window.parent.document.querySelectorAll('input[type="text"]');
+      for (var i=0; i<inputs.length; i++) {{
+        if (inputs[i].value === '' || inputs[i].value.startsWith('data:image')) {{
+          target = inputs[i];
+          break;
+        }}
+      }}
+    }}
+    if (target) {{
+      var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+      nativeInputValueSetter.call(target, dataUrl);
+      target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+      document.getElementById('sigStatus').textContent = '✅ Assinatura confirmada! Clique em Salvar lançamento.';
+      document.getElementById('btnConfirm').style.background = '#2e7d32';
+    }} else {{
+      document.getElementById('sigStatus').textContent = '⚠️ Erro ao capturar. Tente novamente ou atualize a página.';
+    }}
+  }};
+}})();
+</script>
+"""
+        components.html(_canvas_html, height=290, scrolling=False)
 
         _acol1, _acol2 = st.columns([1, 1])
         with _acol1:
             if _ass_exist_b64:
                 _resp_ass = (st.session_state.get("op_resp_local") or "").strip()
-                st.success("Assinatura capturada" + (f" — {_resp_ass}" if _resp_ass else ""))
+                st.success("✅ Assinatura capturada" + (f" — {_resp_ass}" if _resp_ass else ""))
             else:
-                st.caption("Assine no quadro acima para anexar ao PDF.")
+                st.caption("Assine no quadro acima e toque em ✅ Confirmar assinatura.")
         with _acol2:
             if st.button("🧹 Limpar assinatura", key="btn_limpar_assinatura", use_container_width=True):
                 st.session_state["op_assinatura_responsavel_b64"] = ""
