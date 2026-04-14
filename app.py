@@ -6887,7 +6887,7 @@ if _modo_interno == "entrada":
         nova_empresa = "bem_star" if _eh_bem_star else "aqua_gestao"
         if st.session_state.get("empresa_ativa") != nova_empresa:
             st.session_state["empresa_ativa"] = nova_empresa
-            st.experimental_rerun()
+            st.rerun()
 
         if _eh_bem_star:
             _logo_bs_b64 = logo_para_base64(encontrar_logo_bem_star())
@@ -11213,5 +11213,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19r"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19s"
 )
