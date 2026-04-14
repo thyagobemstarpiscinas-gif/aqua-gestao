@@ -139,16 +139,6 @@ def drive_baixar_foto(file_id: str) -> bytes | None:
 # GESTÃO DE OPERADORES
 # =========================================
 
-def inserir_logo_no_header(doc: Document, logo_path: Path):
-    if not logo_path or not logo_path.exists():
-        return
-
-    header = doc.sections[0].header
-    header.paragraphs[0].clear()
-    run = header.paragraphs[0].add_run()
-    run.add_picture(str(logo_path), width=Cm(7))
-    header.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-
 def _normalizar_chave_acesso(texto: str) -> str:
     """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
     texto = re.sub(r"\s+", " ", str(texto or "").strip())
@@ -2511,12 +2501,12 @@ def substituir_em_paragrafo(paragraph, mapa: dict[str, str]):
             alterou = True
 
     if alterou:
-        for run in paragraph.runs:
-            run.text = ""
-        if paragraph.runs:
-            paragraph.runs[0].text = texto_novo
-        else:
-            paragraph.add_run(texto_novo)
+        # Clear existing runs and add a new one with the replaced text
+        # This handles cases where placeholders might be split across multiple runs
+        for i in range(len(paragraph.runs) - 1, -1, -1):
+            p = paragraph.runs[i]._element
+            p.getparent().remove(p)
+        paragraph.add_run(texto_novo)
 
 
 def substituir_placeholders_doc(doc: Document, mapa: dict[str, str]):
@@ -2557,84 +2547,83 @@ def adicionar_espaco(doc: Document, qtd: int = 1):
         doc.add_paragraph("")
 
 
-def adicionar_bloco_assinaturas(doc: Document, nome_sindico: str, nome_condominio: str = "", cnpj_condominio: str = ""):
-    from docx.shared import Pt, Cm
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    adicionar_espaco(doc, 2)
+adicionar_espaco(doc, 2)
 
-    # Data — parágrafo simples centralizado, fora de qualquer tabela
-    p_local = doc.add_paragraph()
-    p_local.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_data = p_local.add_run(f"Uberlândia/MG, {hoje_br()}.")
-    run_data.font.size = Pt(11)
+# Data — parágrafo simples centralizado, fora de qualquer tabela
+p_local = doc.add_paragraph()
+p_local.alignment = WD_ALIGN_PARAGRAPH.CENTER
+run_data = p_local.add_run(f"Uberlândia/MG, {hoje_br()}.")
+run_data.font.size = Pt(11)
 
-    adicionar_espaco(doc, 2)
+adicionar_espaco(doc, 2)
 
-    def preencher_celula(cell, linhas, negrito_idx=None):
-        negrito_idx = negrito_idx or []
-        cell.paragraphs[0].clear()
-        primeira = True
-        for i, linha in enumerate(linhas):
-            p = cell.paragraphs[0] if primeira else cell.add_paragraph()
-            primeira = False
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(linha)
-            run.font.size = Pt(9)
-            run.bold = (i in negrito_idx)
+def preencher_celula(cell, linhas, negrito_idx=None):
+    negrito_idx = negrito_idx or []
+    cell.paragraphs[0].clear()
+    primeira = True
+    for i, linha in enumerate(linhas):
+        p = cell.paragraphs[0] if primeira else cell.add_paragraph()
+        primeira = False
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(linha)
+        run.font.size = Pt(9)
+        run.bold = (i in negrito_idx)
 
-    col_w = Cm(8)
+col_w = Cm(8)
 
-    # ---- Tabela: CONTRATADA | CONTRATANTE ----
-    tab1 = doc.add_table(rows=1, cols=2)
-    tab1.autofit = False
-    for row in tab1.rows:
-        for cell in row.cells:
-            cell.width = col_w
+# ---- Tabela: CONTRATADA | CONTRATANTE ----
+tab1 = doc.add_table(rows=1, cols=2)
+tab1.autofit = False
+for row in tab1.rows:
+    for cell in row.cells:
+        cell.width = col_w
 
-    linhas_contratada = [
-        "_" * 28,
-        "AQUA GESTÃO",
-        "CONTROLE TÉCNICO DE PISCINAS",
-        RESPONSAVEL_TÉCNICO,
-        CRQ,
-        "CONTRATADA",
-    ]
-    preencher_celula(tab1.cell(0, 0), linhas_contratada, negrito_idx=[1, 2, 5])
+linhas_contratada = [
+    "_" * 28,
+    "AQUA GESTÃO",
+    "CONTROLE TÉCNICO DE PISCINAS",
+    RESPONSAVEL_TÉCNICO,
+    CRQ,
+    "CONTRATADA",
+]
+preencher_celula(tab1.cell(0, 0), linhas_contratada, negrito_idx=[1, 2, 5])
 
-    # Monta linhas do CONTRATANTE — nome quebra por palavras com até 32 chars/linha
-    linhas_contratante = ["_" * 28]
-    if nome_condominio:
-        palavras = nome_condominio.upper().split()
-        linha_atual = ""
-        for palavra in palavras:
-            teste = (linha_atual + " " + palavra).strip()
-            if len(teste) <= 40:
-                linha_atual = teste
-            else:
-                if linha_atual:
-                    linhas_contratante.append(linha_atual)
+# Monta linhas do CONTRATANTE — nome quebra por palavras com até 32 chars/linha
+linhas_contratante = ["_" * 28]
+if nome_condominio:
+    palavras = nome_condominio.upper().split()
+    linha_atual = ""
+    for palavra in palavras:
+        teste = (linha_atual + " " + palavra).strip()
+        if len(teste) <= 40:
+            linha_atual = teste
+        else:
+            if linha_atual:
+                linhas_contratante.append(linha_atual)
                 linha_atual = palavra
-        if linha_atual:
-            linhas_contratante.append(linha_atual)
-    if cnpj_condominio:
-        linhas_contratante.append(f"CNPJ: {cnpj_condominio}")
-    if nome_sindico:
-        linhas_contratante.append(nome_sindico)
-    linhas_contratante.append("CONTRATANTE")
-    preencher_celula(tab1.cell(0, 1), linhas_contratante, negrito_idx=[1, len(linhas_contratante) - 1])
+    if linha_atual:
+        linhas_contratante.append(linha_atual)
+if cnpj_condominio:
+    linhas_contratante.append(f"CNPJ: {cnpj_condominio}")
+if nome_sindico:
+    linhas_contratante.append(nome_sindico)
+linhas_contratante.append("CONTRATANTE")
+preencher_celula(tab1.cell(0, 1), linhas_contratante, negrito_idx=[1, len(linhas_contratante) - 1])
 
-    adicionar_espaco(doc, 2)
+adicionar_espaco(doc, 2)
 
-    # ---- Tabela de testemunhas ----
-    tab2 = doc.add_table(rows=1, cols=2)
-    tab2.autofit = False
-    for row in tab2.rows:
-        for cell in row.cells:
-            cell.width = col_w
+# ---- Tabela de testemunhas ----
+tab2 = doc.add_table(rows=1, cols=2)
+tab2.autofit = False
+for row in tab2.rows:
+    for cell in row.cells:
+        cell.width = col_w
 
-    preencher_celula(tab2.cell(0, 0), ["_" * 28, "Testemunha 1", "Nome:", "CPF:"])
-    preencher_celula(tab2.cell(0, 1), ["_" * 28, "Testemunha 2", "Nome:", "CPF:"])
+preencher_celula(tab2.cell(0, 0), ["_" * 28, "Testemunha 1", "Nome:", "CPF:"])
+preencher_celula(tab2.cell(0, 1), ["_" * 28, "Testemunha 2", "Nome:", "CPF:"])
 
 
 def converter_docx_para_pdf(docx_path: Path, pdf_path: Path):
@@ -2778,29 +2767,13 @@ def converter_docx_para_pdf(docx_path: Path, pdf_path: Path):
     return False, "Nenhum método de conversão disponível"
 
 
-def gerar_documento(
-    template_path: Path,
-    output_docx: Path,
-    placeholders: dict[str, str],
-    incluir_assinaturas: bool = True,
-    nome_sindico: str = "",
-    nome_condominio: str = "",
-    cnpj_condominio: str = "",
-):
+def gerar_documento(template_path: Path, output_docx: Path, placeholders: dict, incluir_assinaturas: bool = False):
     if not template_path.exists():
         raise FileNotFoundError(f"Template não encontrado: {template_path.name}")
 
     doc = Document(str(template_path))
     
-    # Tenta inserir o logo da Bem Star no cabeçalho
-    logo_bem_star = encontrar_logo_bem_star()
-    if logo_bem_star:
-        inserir_logo_no_header(doc, logo_bem_star)
-
     substituir_placeholders_doc(doc, placeholders)
-
-    if incluir_assinaturas:
-        adicionar_bloco_assinaturas(doc, nome_sindico=nome_sindico, nome_condominio=nome_condominio, cnpj_condominio=cnpj_condominio)
 
     doc.save(str(output_docx))
 
@@ -3678,6 +3651,19 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
 
     placeholders = {
         "{{DATA_ASSINATURA}}": dados_atualizados.get("data_assinatura", ""),
+        "{{NOME_CONTRATANTE}}": dados_atualizados.get("nome_condominio", ""),
+        "{{CPF_CNPJ_CONTRATANTE}}": dados_atualizados.get("cnpj_condominio", ""),
+        "{{ENDERECO_CONTRATANTE}}": dados_atualizados.get("endereco_condominio", ""),
+        "{{VOLUMES_PISCINAS}}": "", # Placeholder para volumes das piscinas
+        "{{VALOR_MENSAL}}": valor_para_template(dados_atualizados.get("valor_mensal", "")),
+        "{{VALOR_MENSAL_EXTENSO}}": "", # Necessita de função para converter número em extenso
+        "{{DIA_PAGAMENTO}}": "", # Necessita de campo no formulário
+        "{{MULTA_ATRASO}}": "", # Necessita de campo no formulário
+        "{{JUROS_ATRASO}}": "", # Necessita de campo no formulário
+        "{{PRAZO_CONTRATO}}": "", # Necessita de campo no formulário
+        "{{DATA_INICIO_CONTRATO}}": dados_atualizados.get("data_inicio", ""),
+        "{{DATA_FIM_CONTRATO}}": dados_atualizados.get("data_fim", ""),
+        "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {dados_atualizados.get('data_assinatura', '')}",
         "{{NOME_CONDOMINIO}}": dados_atualizados.get("nome_condominio", ""),
         "{{CNPJ_CONDOMINIO}}": dados_atualizados.get("cnpj_condominio", ""),
         "{{ENDERECO_CONDOMINIO}}": dados_atualizados.get("endereco_condominio", ""),
@@ -10762,8 +10748,8 @@ with ctrl_a1:
         adicionar_analise_extra()
         st.rerun()
 with ctrl_a2:
-    st.caption(f"{st.session_state.get("rel_analises_total", ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Base padrão: 9 análises mensais.")
-for i in range(int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)):
+    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Base padrão: 9 análises mensais.")
+for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
     cols = st.columns([1.05,0.7,0.8,0.8,0.9,0.9,0.9,1.1])
     cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
@@ -10791,9 +10777,10 @@ with ctrl_d2:
 for i in range(7):
     cols = st.columns([1.4,1.1,0.7,0.7,1.3])
     cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico", on_change=_autosave_rascunho)
-    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante / Lote", on_change=_autosave_rascucols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Quantidade", on_change=_autosave_rascunho)
-   cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unidade", on_change=_autosave_rascunho)    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica", on_change=_autosave_rascunho)
-
+    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante / Lote", on_change=_autosave_rascunho)
+    cols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Quantidade", on_change=_autosave_rascunho)
+    cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unidade", on_change=_autosave_rascunho)
+    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica", on_change=_autosave_rascunho)
 st.markdown("**Observações automáticas / editáveis**")
 for i in range(5):
     st.text_area(f"Observação {i+1}", key=f"rel_obs_{i}", height=70)
@@ -10882,44 +10869,6 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 
 # =========================================
-# AÇÕES PRINCIPAIS
-# =========================================
-
-dados = {
-    "DATA_ASSINATURA": st.session_state.data_assinatura.strip(),
-    "NOME_CONDOMINIO": st.session_state.nome_condominio.strip(),
-    "CNPJ_CONDOMINIO": st.session_state.cnpj_condominio.strip(),
-    "ENDERECO_CONDOMINIO": st.session_state.endereco_condominio.strip(),
-    "NOME_SINDICO": st.session_state.nome_sindico.strip(),
-    "CPF_SINDICO": st.session_state.cpf_sindico.strip(),
-    "VALOR_MENSAL": valor_para_template(st.session_state.valor_mensal.strip()),
-    "VALOR_ADITIVO": valor_para_template(st.session_state.valor_aditivo.strip()),
-    "DATA_INICIO": st.session_state.data_inicio.strip(),
-    "DATA_FIM": st.session_state.data_fim.strip(),
-}
-
-placeholders = {
-        "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
-        "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
-        "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
-        "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
-        "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
-        "{{VOLUMES_PISCINAS}}": "Volumes das piscinas serão preenchidos automaticamente.",
-        "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
-        "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
-        "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
-    "{{DATA_ASSINATURA}}": dados["DATA_ASSINATURA"],
-    "{{NOME_CONDOMINIO}}": dados["NOME_CONDOMINIO"],
-    "{{CNPJ_CONDOMINIO}}": dados["CNPJ_CONDOMINIO"],
-    "{{ENDERECO_CONDOMINIO}}": dados["ENDERECO_CONDOMINIO"],
-    "{{NOME_SINDICO}}": dados["NOME_SINDICO"],
-    "{{CPF_SINDICO}}": dados["CPF_SINDICO"],
-    "{{VALOR_MENSAL}}": dados["VALOR_MENSAL"],
-    "{{VALOR_ADITIVO}}": dados["VALOR_ADITIVO"],
-    "{{DATA_INICIO}}": dados["DATA_INICIO"],
-    "{{DATA_FIM}}": dados["DATA_FIM"],
-}
-
 # =========================================
 # FUNÇÕES DE PROCESSAMENTO DE DOCUMENTOS
 # =========================================
@@ -11009,15 +10958,30 @@ def gerar_contrato_e_aditivo():
         aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
         aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
 
+        placeholders = {
+            "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
+            "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
+            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
+            "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
+            "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
+            "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
+            "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
+            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
+        }
+
         with st.spinner("Gerando contrato..."):
             gerar_documento(
                 template_path=TEMPLATE_CONTRATO,
                 output_docx=contrato_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=True,
-                nome_sindico=nome_sindico,
-                nome_condominio=nome_condominio,
-                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
+                incluir_assinaturas=False,
             )
 
         with st.spinner("Gerando aditivo..."):
@@ -11025,10 +10989,7 @@ def gerar_contrato_e_aditivo():
                 template_path=TEMPLATE_ADITIVO,
                 output_docx=aditivo_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=True,
-                nome_sindico=nome_sindico,
-                nome_condominio=nome_condominio,
-                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
+                incluir_assinaturas=False,
             )
 
         ok_contrato, erro_contrato = converter_docx_para_pdf(contrato_docx, contrato_pdf)
@@ -11166,15 +11127,30 @@ def gerar_somente_aditivo_rapido():
         aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
         aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
 
+        placeholders = {
+            "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
+            "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
+            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
+            "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
+            "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
+            "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
+            "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
+            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
+        }
+
         with st.spinner("Gerando aditivo rápido..."):
             gerar_documento(
                 template_path=TEMPLATE_ADITIVO,
                 output_docx=aditivo_docx,
                 placeholders=placeholders,
-                incluir_assinaturas=True,
-                nome_sindico=nome_sindico,
-                nome_condominio=nome_condominio,
-                cnpj_condominio=st.session_state.cnpj_condominio.strip(),
+                incluir_assinaturas=False,
             )
 
         ok_aditivo, erro_aditivo = converter_docx_para_pdf(aditivo_docx, aditivo_pdf)
