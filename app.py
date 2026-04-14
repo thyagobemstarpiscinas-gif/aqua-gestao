@@ -9652,7 +9652,14 @@ st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("📝 Contrato Bem Star Piscinas")
 st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
 
-with st.expander("📋 Preencher e gerar contrato", expanded=False):
+def _noop_bs_cont():
+    st.session_state["bs_cont_expander_aberto"] = True
+
+if "bs_cont_expander_aberto" not in st.session_state:
+    st.session_state["bs_cont_expander_aberto"] = False
+
+with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["bs_cont_expander_aberto"]):
+    st.session_state["bs_cont_expander_aberto"] = True
 
     # ── Seletor de cliente ────────────────────────────────────────────────────
     @st.cache_data(ttl=30)
@@ -9688,50 +9695,50 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
     _bc1, _bc2 = st.columns(2)
     with _bc1:
         bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
-            placeholder="Ex.: Condomínio Residencial Bella Vista")
+            placeholder="Ex.: Condomínio Residencial Bella Vista", on_change=lambda: (_noop_bs_cont(), on_change_bs_cont_data_inicio()))
         bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
-            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
+            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP", on_change=_noop_bs_cont)
     with _bc2:
         bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
-            placeholder="00.000.000/0000-00")
+            placeholder="00.000.000/0000-00", on_change=_noop_bs_cont)
         bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
-            placeholder="Nome completo do responsável")
+            placeholder="Nome completo do responsável", on_change=_noop_bs_cont)
         bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
-            placeholder="(34) 99999-9999")
+            placeholder="(34) 99999-9999", on_change=_noop_bs_cont)
 
     st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
     bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
         height=60,
-        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
+        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas", on_change=_noop_bs_cont)
 
     st.markdown("**Condições do serviço**")
     _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
     with _bs_c1:
         bs_frequencia = st.selectbox("Frequência de visitas", 
             ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Outra"],
-            key="bs_cont_frequencia")
+            key="bs_cont_frequencia", on_change=_noop_bs_cont)
         if bs_frequencia == "Outra":
             bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
-                placeholder="Ex.: quinzenal")
+                placeholder="Ex.: quinzenal", on_change=_noop_bs_cont)
     with _bs_c2:
         bs_produtos = st.radio("Produtos químicos", 
             ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
             key="bs_cont_produtos")
     with _bs_c3:
         bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
-            placeholder="Ex.: 12")
+            placeholder="Ex.: 12", on_change=_noop_bs_cont)
 
     st.markdown("**Valores e pagamento**")
     _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
     with _bs_v1:
         bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
-            placeholder="Ex.: 350,00")
+            placeholder="Ex.: 350,00", on_change=_noop_bs_cont)
     with _bs_v2:
         bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
-            placeholder="Ex.: trezentos e cinquenta reais")
+            placeholder="Ex.: trezentos e cinquenta reais", on_change=_noop_bs_cont)
     with _bs_v3:
         bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
-            placeholder="Ex.: 10")
+            placeholder="Ex.: 10", on_change=_noop_bs_cont)
     with _bs_v4:
         bs_pagamento = st.selectbox("Forma de pagamento",
             ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
@@ -9746,18 +9753,18 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
     _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
     with _bs_d1:
         bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
-            placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_inicio)
+            placeholder="dd/mm/aaaa", value=hoje_br(), on_change=_noop_bs_cont)
     with _bs_d2:
         if "indeterminado" in bs_duracao:
             st.text_input("Data de término", value="Indeterminado", disabled=True)
         else:
             bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
-                placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
+                placeholder="dd/mm/aaaa", on_change=lambda: (_noop_bs_cont(), on_change_bs_cont_data_fim()))
     with _bs_d3:
         bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
-            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
+            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG", on_change=_noop_bs_cont)
     bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
-        placeholder="dd/mm/aaaa", value=hoje_br())
+        placeholder="dd/mm/aaaa", value=hoje_br(), on_change=_noop_bs_cont)
 
     st.markdown("---")
 
