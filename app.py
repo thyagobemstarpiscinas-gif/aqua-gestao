@@ -6575,6 +6575,18 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
         st.session_state[f"rel_rec_resp_{i}"] = rec.get("responsavel", "")
 
 
+def _autosave_rascunho_relatorio():
+    """Autosave seguro para campos do relatório independente."""
+    try:
+        _nome = (st.session_state.get("rel_nome_condominio") or "").strip()
+        if not _nome:
+            return
+        _pasta = GENERATED_DIR / slugify_nome(_nome)
+        _pasta.mkdir(parents=True, exist_ok=True)
+        salvar_rascunho_relatorio(_pasta)
+    except Exception:
+        pass
+
 def excluir_rascunho_relatorio(pasta_condominio: Path):
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     if caminho.exists():
@@ -7516,17 +7528,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     _dd1, _dd2 = st.columns([2, 1])
                     _prod = _dd1.text_input("Produto", key=_k_prod,
                         label_visibility="collapsed", placeholder="Nome do produto",
-                        on_change=_autosave_rascunho)
+                        on_change=_autosave_rascunho_relatorio)
                     _qtd  = _dd2.text_input("Qtd", key=_k_qtd,
                         label_visibility="collapsed", placeholder="Qtd",
-                        on_change=_autosave_rascunho)
+                        on_change=_autosave_rascunho_relatorio)
                     _dd3, _dd4 = st.columns([1, 2])
                     _un   = _dd3.text_input("Un", key=_k_un,
                         label_visibility="collapsed", placeholder="kg/L/g",
-                        on_change=_autosave_rascunho)
+                        on_change=_autosave_rascunho_relatorio)
                     _fin  = _dd4.text_input("Finalidade", key=_k_fin,
                         label_visibility="collapsed", placeholder="Finalidade / motivo",
-                        on_change=_autosave_rascunho)
+                        on_change=_autosave_rascunho_relatorio)
                     if _prod.strip():
                         _dos_pisc.append({
                             "produto":    _prod.strip(),
@@ -7628,7 +7640,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_problemas = st.text_area("Problemas", key="op_problemas", height=80,
             label_visibility="collapsed",
             placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
-            on_change=_autosave_rascunho)
+            on_change=_autosave_rascunho_relatorio)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Observação geral ──────────────────────────────────────────────────
