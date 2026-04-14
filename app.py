@@ -6884,7 +6884,10 @@ if _modo_interno == "entrada":
             label_visibility="collapsed",
         )
         _eh_bem_star = "Bem Star" in _empresa_sel
-        st.session_state["empresa_ativa"] = "bem_star" if _eh_bem_star else "aqua_gestao"
+        nova_empresa = "bem_star" if _eh_bem_star else "aqua_gestao"
+        if st.session_state.get("empresa_ativa") != nova_empresa:
+            st.session_state["empresa_ativa"] = nova_empresa
+            st.experimental_rerun()
 
         if _eh_bem_star:
             _logo_bs_b64 = logo_para_base64(encontrar_logo_bem_star())
@@ -11211,5 +11214,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • v19o - ATUALIZADO"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19p"
 )
