@@ -1468,33 +1468,16 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
             "dureza":      st.session_state.get(f"op_{abrev}_dc", ""),
             "cianurico":   st.session_state.get(f"op_{abrev}_cya", ""),
         })
-    # Dosagens por piscina
-    _slug_map_r = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
-    for pisc_nome in piscinas_ativas:
-        _slug_r = _slug_map_r.get(pisc_nome, slugify_nome(pisc_nome)[:12])
-        _dos_p = []
-        for i in range(5):
-            prod = st.session_state.get(f"op_dos_{_slug_r}_prod_{i}", "").strip()
-            if prod:
-                _dos_p.append({
-                    "produto":    prod,
-                    "quantidade": st.session_state.get(f"op_dos_{_slug_r}_qtd_{i}", ""),
-                    "unidade":    st.session_state.get(f"op_dos_{_slug_r}_un_{i}", ""),
-                    "finalidade": st.session_state.get(f"op_dos_{_slug_r}_fin_{i}", ""),
-                })
-        if _dos_p:
-            dados["dosagens"].extend(_dos_p)
-    # Fallback: campos legados op_dos_prod_i
-    if not dados["dosagens"]:
-        for i in range(5):
-            prod = st.session_state.get(f"op_dos_prod_{i}", "").strip()
-            if prod:
-                dados["dosagens"].append({
-                    "produto":    prod,
-                    "quantidade": st.session_state.get(f"op_dos_qtd_{i}", ""),
-                    "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
-                    "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
-                })
+    # Dosagens — usa campos reais do formulário (op_dos_prod_i)
+    for i in range(5):
+        prod = st.session_state.get(f"op_dos_prod_{i}", "").strip()
+        if prod:
+            dados["dosagens"].append({
+                "produto":    prod,
+                "quantidade": st.session_state.get(f"op_dos_qtd_{i}", ""),
+                "unidade":    st.session_state.get(f"op_dos_un_{i}", ""),
+                "finalidade": st.session_state.get(f"op_dos_fin_{i}", ""),
+            })
     # Fotos já salvas na pasta de rascunho
     _pasta_fotos_rasc = GENERATED_DIR / slugify_nome(nome_cond.strip()) / "fotos_rascunho"
     dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
@@ -5082,7 +5065,13 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     if problemas:
         elems.append(Paragraph("Problemas / Ocorrências", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
-        t_prob = Table([[Paragraph(f"⚠ {problemas}", s_alerta)]], colWidths=["100%"])
+        # Preserva quebras de linha do texto de problemas
+        _prob_linhas = [l.strip() for l in problemas.replace("\r\n","\n").replace("\r","\n").split("\n") if l.strip()]
+        _prob_paras = [Paragraph(f"⚠ {_prob_linhas[0]}", s_alerta)] if _prob_linhas else []
+        for _pl in _prob_linhas[1:]:
+            _prob_paras.append(Spacer(1, 4))
+            _prob_paras.append(Paragraph(f"• {_pl}", s_alerta))
+        t_prob = Table([[ [p for p in _prob_paras] ]], colWidths=["100%"])
         t_prob.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,-1), LARANJA_BG),
             ("BOX", (0,0), (-1,-1), 0.5, LARANJA),
@@ -5505,7 +5494,14 @@ def gerar_relatorio_visita_docx(
         if problemas_lista:
             _par("4. PROBLEMAS / OCORRÊNCIAS", bold=True, size=11)
             for prob in problemas_lista:
-                _par(f"⚠ {prob}", size=10)
+                # Preserva quebras de linha — cada linha vira um parágrafo
+                _linhas_prob = [l.strip() for l in prob.replace("\r\n","\n").replace("\r","\n").split("\n") if l.strip()]
+                if _linhas_prob:
+                    _par(f"⚠ {_linhas_prob[0]}", size=10)
+                    for _lp in _linhas_prob[1:]:
+                        _par(f"   • {_lp}", size=10)
+                else:
+                    _par(f"⚠ {prob}", size=10)
             doc.add_paragraph()
             secao_obs = 5
         else:
@@ -6926,8 +6922,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # ── Piscinas deste condomínio ─────────────────────────────────────────
         # Carrega configuração de piscinas salva ou usa padrão
         _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-        _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
+        _dados_cond_op = carregar_dados_condominio(_pasta_cond_op) if _pasta_cond_op.exists() else {}
+        if not isinstance(_dados_cond_op, dict):
+            _dados_cond_op = {}
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
+        if not isinstance(_piscinas_config, list) or not _piscinas_config:
+            _piscinas_config = ["Piscina Adulto"]
 
         # Admin pode definir piscinas pelo painel — operador vê as já configuradas
         with st.expander("🏊 Piscinas deste condomínio", expanded=False):
