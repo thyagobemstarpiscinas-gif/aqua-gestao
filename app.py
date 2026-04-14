@@ -2171,6 +2171,13 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.data_inicio = dados_salvos.get("data_inicio", "")
     st.session_state.data_fim = dados_salvos.get("data_fim", "")
     st.session_state.data_assinatura = dados_salvos.get("data_assinatura", hoje_br())
+    st.session_state["rt_endereco_piscinas"] = dados_salvos.get("rt_endereco_piscinas", "")
+    st.session_state["rt_prazo_meses"]       = dados_salvos.get("rt_prazo_meses", "12")
+    st.session_state["rt_dia_pagamento"]     = dados_salvos.get("rt_dia_pagamento", "10")
+    st.session_state["rt_forma_pagamento"]   = dados_salvos.get("rt_forma_pagamento", "Pix")
+    st.session_state["rt_multa"]             = dados_salvos.get("rt_multa", "2")
+    st.session_state["rt_juros"]             = dados_salvos.get("rt_juros", "1")
+    st.session_state["rt_aviso_rescisao"]    = dados_salvos.get("rt_aviso_rescisao", "30")
     st.session_state.whatsapp_cliente = dados_salvos.get("whatsapp_cliente", "")
     st.session_state.email_cliente = dados_salvos.get("email_cliente", "")
     st.session_state.observacoes_internas = dados_salvos.get("observacoes_internas", "")
@@ -9441,7 +9448,7 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
                     ["___________________________________",
                      "___________________________________"],
                     ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
-                     f"{_nome}\nCONTRATANTE"],
+                     f"{nome_contratante}\nCONTRATANTE"],
                     ["", ""],
                     ["___________________________________",
                      "___________________________________"],
@@ -9629,6 +9636,54 @@ with col2:
         on_change=on_change_data_assinatura,
     )
 
+# ── Campos adicionais do novo contrato RT ─────────────────────────────────────
+st.markdown("**📋 Dados complementares do contrato RT**")
+_rt_c1, _rt_c2, _rt_c3 = st.columns(3)
+with _rt_c1:
+    st.text_input("Prazo de vigência (meses)", key="rt_prazo_meses",
+        placeholder="12", help="Ex.: 12 para 1 ano")
+    st.text_input("Dia de pagamento", key="rt_dia_pagamento",
+        placeholder="10", help="Ex.: 10 = todo dia 10 do mês")
+with _rt_c2:
+    st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
+        key="rt_forma_pagamento")
+    st.text_input("Antecedência rescisão (dias)", key="rt_aviso_rescisao",
+        placeholder="30")
+with _rt_c3:
+    st.text_input("Multa por atraso (%)", key="rt_multa",
+        placeholder="2", help="% sobre valor em atraso")
+    st.text_input("Juros de mora (% ao mês)", key="rt_juros",
+        placeholder="1")
+st.text_area("Endereço das piscinas (se diferente do condomínio)", key="rt_endereco_piscinas",
+    height=60, placeholder="Deixe em branco para usar o endereço do condomínio")
+
+# ── Campos extras para o novo contrato RT PDF ────────────────────────────────
+with st.expander("⚙️ Configurações do contrato RT (novo modelo PDF)", expanded=False):
+    st.caption("Preencha para usar o novo modelo de contrato RT com as cláusulas atualizadas.")
+    _rcp1, _rcp2, _rcp3 = st.columns(3)
+    with _rcp1:
+        st.text_input("Prazo de vigência (meses)", key="rt_prazo_meses",
+            placeholder="12", value=st.session_state.get("rt_prazo_meses","12"))
+        st.text_input("Dia de pagamento", key="rt_dia_pagamento",
+            placeholder="10", value=st.session_state.get("rt_dia_pagamento","10"))
+    with _rcp2:
+        st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Outro"],
+            key="rt_forma_pagamento")
+        st.text_input("Multa por atraso (%)", key="rt_multa",
+            placeholder="2", value=st.session_state.get("rt_multa","2"))
+    with _rcp3:
+        st.text_input("Juros ao mês (%)", key="rt_juros",
+            placeholder="1", value=st.session_state.get("rt_juros","1"))
+        st.text_input("Índice de correção", key="rt_indice_correcao",
+            placeholder="IPCA/IBGE", value=st.session_state.get("rt_indice_correcao","IPCA/IBGE"))
+    _rcp4, _rcp5 = st.columns(2)
+    with _rcp4:
+        st.text_input("Aviso prévio para rescisão (dias)", key="rt_aviso_rescisao",
+            placeholder="30", value=st.session_state.get("rt_aviso_rescisao","30"))
+    with _rcp5:
+        st.text_input("Valor mensal por extenso", key="rt_valor_extenso",
+            placeholder="ex: mil e duzentos reais")
+
 if modo == "Modo Campo":
     st.markdown("---")
     col_campo1, col_campo2 = st.columns(2)
@@ -9706,7 +9761,7 @@ col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.5, 1.5, 1, 1])
 
 with col_btn1:
     gerar = st.button(
-        "✅ Gerar contrato + aditivo",
+        "✅ Gerar contrato + aditivo (template)",
         type="primary",
         use_container_width=True,
     )
@@ -9720,6 +9775,72 @@ with col_btn2:
 with col_btn3:
     if st.button("🗑️ Limpar formulário", use_container_width=True):
         limpar_formulario()
+
+# ── Novo contrato RT PDF ───────────────────────────────────────────────────────
+if st.button("📄 Gerar Contrato RT PDF (novo modelo)", type="primary",
+        use_container_width=True, key="btn_gerar_contrato_rt_pdf"):
+    if not st.session_state.get("nome_condominio","").strip():
+        st.error("Informe o nome do condomínio.")
+    elif not st.session_state.get("valor_mensal","").strip():
+        st.error("Informe o valor mensal.")
+    else:
+        with st.spinner("Gerando contrato RT..."):
+            try:
+                _dados_ct = {
+                    "nome_condominio":      st.session_state.get("nome_condominio","").strip(),
+                    "cnpj_condominio":      st.session_state.get("cnpj_condominio","").strip(),
+                    "endereco_condominio":  st.session_state.get("endereco_condominio","").strip(),
+                    "nome_sindico":         st.session_state.get("nome_sindico","").strip(),
+                    "cpf_sindico":          st.session_state.get("cpf_sindico","").strip(),
+                    "rt_endereco_piscinas": st.session_state.get("rt_endereco_piscinas","").strip(),
+                    "rt_prazo_meses":       st.session_state.get("rt_prazo_meses","12").strip(),
+                    "data_inicio":          st.session_state.get("data_inicio","").strip(),
+                    "data_fim":             st.session_state.get("data_fim","").strip(),
+                    "valor_mensal":         st.session_state.get("valor_mensal","").strip(),
+                    "rt_dia_pagamento":     st.session_state.get("rt_dia_pagamento","10").strip(),
+                    "rt_forma_pagamento":   st.session_state.get("rt_forma_pagamento","Pix"),
+                    "rt_multa":             st.session_state.get("rt_multa","2").strip(),
+                    "rt_juros":             st.session_state.get("rt_juros","1").strip(),
+                    "rt_aviso_rescisao":    st.session_state.get("rt_aviso_rescisao","30").strip(),
+                    "data_assinatura":      st.session_state.get("data_assinatura", hoje_br()).strip(),
+                }
+                _pdf_bytes_rt = gerar_contrato_rt_pdf(
+                    nome_contratante    = _dados_ct["nome_condominio"],
+                    cnpj_contratante    = _dados_ct["cnpj_condominio"],
+                    endereco_contratante= _dados_ct["endereco_condominio"],
+                    nome_representante  = _dados_ct["nome_sindico"],
+                    cpf_representante   = _dados_ct["cpf_sindico"],
+                    endereco_piscinas   = _dados_ct["rt_endereco_piscinas"],
+                    prazo_meses         = _dados_ct["rt_prazo_meses"],
+                    data_inicio         = _dados_ct["data_inicio"],
+                    data_fim            = _dados_ct["data_fim"],
+                    valor_mensal        = _dados_ct["valor_mensal"],
+                    valor_extenso       = st.session_state.get("rt_valor_extenso","").strip(),
+                    dia_pagamento       = _dados_ct["rt_dia_pagamento"],
+                    forma_pagamento     = _dados_ct["rt_forma_pagamento"],
+                    multa_perc          = _dados_ct["rt_multa"],
+                    juros_perc          = _dados_ct["rt_juros"],
+                    indice_correcao     = st.session_state.get("rt_indice_correcao","IPCA/IBGE").strip(),
+                    dias_rescisao       = _dados_ct["rt_aviso_rescisao"],
+                    data_assinatura     = _dados_ct["data_assinatura"],
+                    cidade_assinatura   = "Uberlândia/MG",
+                )
+                _nome_arq_rt = limpar_nome_arquivo(
+                    f"Contrato_RT_{_dados_ct['nome_condominio']}_{datetime.now().strftime('%Y%m%d')}"
+                )
+                st.success(f"✅ Contrato RT gerado para {_dados_ct['nome_condominio']}!")
+                st.download_button(
+                    "⬇️ Baixar Contrato RT PDF",
+                    data=_pdf_bytes_rt,
+                    file_name=f"{_nome_arq_rt}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_dl_contrato_rt_novo",
+                )
+            except Exception as _e_rt:
+                st.error(f"Erro ao gerar contrato RT: {_e_rt}")
+                import traceback as _tb_rt
+                st.code(_tb_rt.format_exc(), language="text")
         st.rerun()
 
 with col_btn4:
@@ -10349,6 +10470,244 @@ def exibir_bloco_envio(
             abrir_pasta_windows(pasta_condominio)
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def gerar_contrato_rt_pdf(
+    nome_contratante: str,
+    cnpj_contratante: str,
+    endereco_contratante: str,
+    nome_representante: str,
+    cpf_representante: str,
+    endereco_piscinas: str,
+    prazo_meses: str,
+    data_inicio: str,
+    data_fim: str,
+    valor_mensal: str,
+    valor_extenso: str = "",
+    dia_pagamento: str = "10",
+    forma_pagamento: str = "Pix",
+    multa_perc: str = "2",
+    juros_perc: str = "1",
+    indice_correcao: str = "IPCA/IBGE",
+    dias_rescisao: str = "30",
+    data_assinatura: str = "",
+    cidade_assinatura: str = "Uberlândia/MG",
+) -> bytes:
+    """Gera contrato RT Aqua Gestão em PDF via ReportLab."""
+    import io as _io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+        Table, TableStyle, HRFlowable)
+    try:
+        from reportlab.platypus import Image as RLImage
+    except Exception:
+        RLImage = None
+
+    _buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        _buf, pagesize=A4,
+        topMargin=2*cm, bottomMargin=2*cm,
+        leftMargin=2.5*cm, rightMargin=2.5*cm,
+    )
+
+    AZUL = colors.HexColor("#0d3d75")
+    CINZA = colors.HexColor("#5d7288")
+
+    styles = getSampleStyleSheet()
+
+    def _s(name, **kw):
+        return ParagraphStyle(name, parent=styles["Normal"], **kw)
+
+    s_titulo = _s("t", fontSize=14, alignment=TA_CENTER, textColor=AZUL,
+        spaceAfter=4, fontName="Helvetica-Bold")
+    s_sub    = _s("s", fontSize=11, alignment=TA_CENTER, textColor=CINZA, spaceAfter=2)
+    s_cl     = _s("cl", fontSize=11, spaceBefore=12, spaceAfter=3,
+        fontName="Helvetica-Bold", textColor=AZUL)
+    s_body   = _s("b", fontSize=10, alignment=TA_JUSTIFY, leading=15, spaceAfter=4)
+    s_center = _s("c", fontSize=10, alignment=TA_CENTER, spaceAfter=4)
+    s_small  = _s("sm", fontSize=8, textColor=CINZA, alignment=TA_CENTER)
+    s_ref    = _s("rf", fontSize=8, textColor=CINZA, leading=12, spaceAfter=2)
+
+    story = []
+
+    # Logo
+    _logo = encontrar_logo()
+    if _logo and _logo.exists() and RLImage:
+        try:
+            _img = RLImage(str(_logo), width=6*cm, height=2.2*cm, kind="proportional")
+            _img.hAlign = "CENTER"
+            story.append(_img)
+            story.append(Spacer(1, 0.3*cm))
+        except Exception:
+            pass
+
+    story.append(Paragraph("MODELO DE CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_titulo))
+    story.append(Paragraph("DE RESPONSABILIDADE TÉCNICA (RT) PARA TRATAMENTO DE PISCINAS", s_titulo))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(HRFlowable(width="100%", thickness=2, color=AZUL))
+    story.append(Spacer(1, 0.4*cm))
+
+    story.append(Paragraph(
+        'Este Contrato de Prestação de Serviços de Responsabilidade Técnica (doravante '
+        'denominado "Contrato") é celebrado entre:', s_body))
+    story.append(Spacer(1, 0.2*cm))
+
+    # Tabela partes
+    _qualif = (", inscrito(a) no CPF/CNPJ sob o nº " + cnpj_contratante + ",") if cnpj_contratante else ","
+    _end_c = endereco_contratante or "—"
+    _rep = nome_representante or "—"
+    _cpf_r = cpf_representante or "—"
+    t_partes = Table([
+        ["CONTRATADA",
+         "AQUA GESTÃO CONTROLE TÉCNICO LTDA, CNPJ 66.008.795/0001-92, "
+         "R. Benito Segatto, 201, Casa 02, Jardim Europa, Uberlândia/MG, "
+         "CEP 38.414-680, tel (34) 9777-7227, doravante CONTRATADA."],
+        ["CONTRATANTE",
+         nome_contratante + _qualif + " com endereço em " + _end_c +
+         ", representado(a) por " + _rep + ", CPF/CNPJ " + _cpf_r +
+         ", doravante CONTRATANTE."],
+    ], colWidths=[3*cm, 13.5*cm])
+    t_partes.setStyle(TableStyle([
+        ("FONTNAME",  (0,0),(0,-1), "Helvetica-Bold"),
+        ("FONTSIZE",  (0,0),(-1,-1), 9),
+        ("VALIGN",    (0,0),(-1,-1), "TOP"),
+        ("BOX",       (0,0),(-1,-1), 1, AZUL),
+        ("INNERGRID", (0,0),(-1,-1), 0.5, colors.HexColor("#c0c8d8")),
+        ("BACKGROUND",(0,0),(0,-1), AZUL),
+        ("TEXTCOLOR", (0,0),(0,-1), colors.white),
+        ("TOPPADDING",(0,0),(-1,-1), 7),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+        ("LEFTPADDING",(0,0),(-1,-1), 8),
+    ]))
+    story.append(t_partes)
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph(
+        "As partes acima qualificadas celebram o presente Contrato mediante as "
+        "cláusulas e condições seguintes:", s_body))
+
+    # Variáveis
+    _ep   = endereco_piscinas or _end_c
+    _m    = multa_perc or "2"
+    _j    = juros_perc or "1"
+    _ind  = indice_correcao or "IPCA/IBGE"
+    _dr   = dias_rescisao or "30"
+    _pr   = prazo_meses or "12"
+    _dpg  = dia_pagamento or "10"
+    _fpg  = forma_pagamento or "Pix"
+    _vl   = valor_mensal or "a combinar"
+    _vlex = (" (" + valor_extenso + ")") if valor_extenso else ""
+    _di   = data_inicio or "—"
+    _df   = data_fim or "—"
+    _dass = data_assinatura or hoje_br()
+
+    clausulas = [
+        ("CLÁUSULA PRIMEIRA — DO OBJETO DO CONTRATO", [
+            "1.1. O presente Contrato tem como objeto a prestação de serviços de Responsabilidade "
+            "Técnica (RT), por profissional da Química devidamente habilitado e registrado no CRQ, "
+            "para o tratamento químico e controle de qualidade da água de piscinas de uso coletivo "
+            "do(a) CONTRATANTE, em conformidade com as Resoluções CFQ nº 332/2025 e nº 345/2026.",
+            "1.2. Os serviços abrangerão a supervisão e orientação técnica para execução do tratamento "
+            "e controle da qualidade da água das piscinas localizadas em " + _ep + ", garantindo "
+            "conformidade com as normas técnicas e sanitárias aplicáveis.",
+        ]),
+        ("CLÁUSULA SEGUNDA — DAS OBRIGAÇÕES DA CONTRATADA", [
+            "2.1. A CONTRATADA se obriga a:",
+            "a) Indicar e manter profissional da Química habilitado e registrado no CRQ para assumir "
+            "a RT, conforme Resoluções CFQ nº 332/2025 e nº 345/2026.",
+            "b) Emitir a Anotação de Responsabilidade Técnica (ART) junto ao CRQ competente.",
+            "c) Prestar orientação técnica e supervisão para a correta execução do tratamento químico, "
+            "incluindo dosagem de produtos, monitoramento de parâmetros físico-químicos e microbiológicos.",
+            "d) Realizar visitas técnicas periódicas para verificação e acompanhamento dos procedimentos.",
+            "e) Elaborar e manter registros das atividades e relatórios técnicos.",
+            "f) Manter-se atualizada quanto às normas vigentes, orientando o CONTRATANTE sobre adequações.",
+        ]),
+        ("CLÁUSULA TERCEIRA — DAS OBRIGAÇÕES DO CONTRATANTE", [
+            "3.1. O CONTRATANTE se obriga a:",
+            "a) Fornecer todas as informações e documentos necessários para execução dos serviços.",
+            "b) Disponibilizar acesso irrestrito às instalações e equipamentos de tratamento.",
+            "c) Providenciar os produtos químicos e equipamentos conforme orientação técnica.",
+            "d) Seguir as orientações e recomendações técnicas da CONTRATADA.",
+            "e) Efetuar o pagamento dos serviços conforme Cláusula Quinta.",
+            "f) Informar imediatamente sobre quaisquer intercorrências nas condições das piscinas.",
+            "g) Colaborar com a CONTRATADA e com os órgãos fiscalizadores (CRQ, Vigilância Sanitária).",
+        ]),
+        ("CLÁUSULA QUARTA — DO PRAZO", [
+            "4.1. O presente Contrato terá vigência de " + _pr + " meses, com início em " + _di +
+            " e término em " + _df + ".",
+            "4.2. Poderá ser renovado automaticamente por iguais períodos, salvo manifestação "
+            "contrária por escrito com antecedência de " + _dr + " dias.",
+        ]),
+        ("CLÁUSULA QUINTA — DO PREÇO E CONDIÇÕES DE PAGAMENTO", [
+            "5.1. Pelos serviços de RT, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
+            "R$ " + _vl + _vlex + ", a ser pago até o " + _dpg + "º dia útil de cada mês, "
+            "mediante " + _fpg + ".",
+            "5.2. Em caso de atraso, incidirão multa de " + _m + "%, juros de mora de " + _j +
+            "% ao mês e correção monetária pelo " + _ind + ".",
+        ]),
+        ("CLÁUSULA SEXTA — DA CONFIDENCIALIDADE", [
+            "6.1. As partes comprometem-se a manter sigilo sobre todas as informações técnicas e "
+            "comerciais obtidas em razão da execução deste Contrato.",
+        ]),
+        ("CLÁUSULA SÉTIMA — DA RESCISÃO", [
+            "7.1. O Contrato poderá ser rescindido por qualquer das partes mediante comunicação "
+            "escrita com antecedência de " + _dr + " dias, sem prejuízo das obrigações financeiras.",
+            "7.2. Poderá ser rescindido de pleno direito em caso de descumprimento de cláusulas "
+            "ou falência/recuperação judicial de qualquer das partes.",
+        ]),
+        ("CLÁUSULA OITAVA — DO FORO", [
+            "8.1. Fica eleito o foro da Comarca de Uberlândia, Estado de Minas Gerais, para dirimir "
+            "quaisquer dúvidas ou litígios, com renúncia a qualquer outro foro.",
+        ]),
+    ]
+
+    for titulo_cl, itens in clausulas:
+        story.append(Paragraph(titulo_cl, s_cl))
+        for item in itens:
+            story.append(Paragraph(
+                item.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"),
+                s_body))
+
+    story.append(Spacer(1, 0.5*cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#c0c8d8")))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph(
+        "E, por estarem assim justas e contratadas, as partes assinam o presente Contrato em "
+        "2 (duas) vias de igual teor e forma.", s_body))
+    story.append(Paragraph(cidade_assinatura + ", " + _dass + ".", s_center))
+    story.append(Spacer(1, 1.2*cm))
+
+    t_ass = Table([
+        ["___________________________________", "___________________________________"],
+        ["AQUA GESTÃO CONTROLE TÉCNICO LTDA\nCNPJ: 66.008.795/0001-92\nCONTRATADA",
+         nome_contratante + "\nCONTRATANTE"],
+        ["", ""],
+        ["___________________________________", "___________________________________"],
+        ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
+    ], colWidths=[9*cm, 9*cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN",      (0,0),(-1,-1),"CENTER"),
+        ("FONTSIZE",   (0,0),(-1,-1), 9),
+        ("VALIGN",     (0,0),(-1,-1),"TOP"),
+        ("TOPPADDING", (0,0),(-1,-1), 5),
+    ]))
+    story.append(t_ass)
+    story.append(Spacer(1, 0.5*cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#c0c8d8")))
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Paragraph(
+        "Referências: [1] CFQ Res. nº 332/2025 — ART para tratamento de piscinas de uso coletivo. "
+        "[2] CFQ Res. nº 345/2026 — Altera arts. 2º, 6º e 7º da Res. 332/2025.",
+        s_ref))
+    story.append(Paragraph(
+        "Aqua Gestão Controle Técnico Ltda · CNPJ 66.008.795/0001-92 · Documento gerado automaticamente",
+        s_small))
+
+    doc.build(story)
+    return _buf.getvalue()
 
 
 def gerar_contrato_e_aditivo():
