@@ -10916,7 +10916,7 @@ def exibir_bloco_envio(
         if st.button("📂 Abrir pasta", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
 
-    st.markdown("</div>", unsafe_allow_html=True)tml=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def gerar_contrato_e_aditivo():
@@ -11213,5 +11213,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19q"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19r"
 )
