@@ -6909,7 +6909,18 @@ if _modo_interno == "entrada":
         text-align: center;
     }
     .entrada-title { font-size: 1.3rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
-    .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 20px; }
+    .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 18px; line-height: 1.45; }
+    .entrada-chip-wrap { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; margin: 10px 0 18px 0; }
+    .entrada-chip {
+        display:inline-block;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background:#edf5ff;
+        color:#134b8a;
+        border:1px solid #d3e6ff;
+        font-size:0.82rem;
+        font-weight:600;
+    }
     .entrada-link { font-size: 0.75rem; color: #aab8c8; margin-top: 18px; }
     </style>
     """, unsafe_allow_html=True)
@@ -6918,37 +6929,33 @@ if _modo_interno == "entrada":
     with col_e2:
         st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
 
-        # Seleção de empresa
-        _empresa_sel = st.radio(
-            "Empresa",
-            ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-            key="empresa_selecionada",
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        _eh_bem_star = "Bem Star" in _empresa_sel
-        nova_empresa = "bem_star" if _eh_bem_star else "aqua_gestao"
-        if st.session_state.get("empresa_ativa") != nova_empresa:
-            st.session_state["empresa_ativa"] = nova_empresa
-            st.rerun()
-
-        if _eh_bem_star:
-            _logo_bs_b64 = logo_para_base64(encontrar_logo_bem_star())
-            if _logo_bs_b64:
-                st.markdown(f'<img src="{_logo_bs_b64}" style="max-width:220px;max-height:90px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="entrada-title">⭐ Bem Star Piscinas</div>', unsafe_allow_html=True)
-            st.markdown('<div class="entrada-sub">Manutenção e Tratamento de Piscinas<br>CNPJ: 26.799.958/0001-88</div>', unsafe_allow_html=True)
+        _logo_aq_b64 = logo_para_base64(encontrar_logo())
+        if _logo_aq_b64:
+            st.markdown(
+                f'<img src="{_logo_aq_b64}" style="max-width:220px;max-height:120px;object-fit:contain;margin-bottom:10px;" />',
+                unsafe_allow_html=True
+            )
         else:
-            _logo_aq_b64 = logo_para_base64(encontrar_logo())
-            if _logo_aq_b64:
-                st.markdown(f'<img src="{_logo_aq_b64}" style="max-width:220px;max-height:120px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="entrada-title">🔵 Aqua Gestão</div>', unsafe_allow_html=True)
-            st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
+            st.markdown('<div class="entrada-title">🔵 Aqua Gestão</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="entrada-title">Acesso de Campo do Operador</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="entrada-sub">Entrada simplificada por PIN, sem escolha manual de empresa. '
+            'O sistema identifica os condomínios liberados para o operador e permite atendimento de clientes Aqua Gestão e Bem Star conforme o vínculo cadastrado.</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<div class="entrada-chip-wrap">'
+            '<span class="entrada-chip">📱 Acesso por PIN</span>'
+            '<span class="entrada-chip">🏢 Condomínios permitidos</span>'
+            '<span class="entrada-chip">🔄 Aqua + Bem Star</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
             st.session_state["modo_atual"] = "operador"
+            st.session_state["mostrar_pin_admin"] = False
             st.rerun()
 
         # Acesso ao escritório — com PIN administrativo
@@ -6957,9 +6964,27 @@ if _modo_interno == "entrada":
             st.session_state["mostrar_pin_admin"] = True
 
         if st.session_state.get("mostrar_pin_admin"):
-            pin_admin = st.text_input("PIN administrativo", type="password",
-                key="pin_admin_input", placeholder="Digite o PIN", label_visibility="collapsed")
-            if st.button("Entrar", key="btn_pin_admin_ok", use_container_width=True):
+            _empresa_sel_admin = st.radio(
+                "Empresa do escritório",
+                ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+                key="empresa_selecionada_admin",
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+            _eh_bem_star_admin = "Bem Star" in _empresa_sel_admin
+            nova_empresa = "bem_star" if _eh_bem_star_admin else "aqua_gestao"
+            if st.session_state.get("empresa_ativa") != nova_empresa:
+                st.session_state["empresa_ativa"] = nova_empresa
+                st.rerun()
+
+            pin_admin = st.text_input(
+                "PIN administrativo",
+                type="password",
+                key="pin_admin_input",
+                placeholder="Digite o PIN administrativo",
+                label_visibility="collapsed"
+            )
+            if st.button("Entrar no escritório", key="btn_pin_admin_ok", use_container_width=True):
                 if pin_admin == "@Anajullya10":
                     st.session_state["modo_atual"] = "escritorio"
                     st.session_state["mostrar_pin_admin"] = False
@@ -7057,8 +7082,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if not st.session_state.get("op_pin_ok"):
         st.markdown('<div class="pin-box">', unsafe_allow_html=True)
         st.markdown("### 🔐 Área do Operador")
-        st.markdown("**Aqua Gestão – Controle Técnico de Piscinas**")
-        st.markdown("Digite o PIN para acessar o lançamento de campo.")
+        st.markdown("**Acesso simplificado por PIN**")
+        st.markdown("Digite o PIN para acessar o lançamento de campo dos condomínios autorizados.")
         pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
             placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
         if st.button("Entrar", type="primary", use_container_width=True):
@@ -7085,7 +7110,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 Lançamento de Campo — {_op_nome_logado}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="op-sub">Aqua Gestão – Controle Técnico de Piscinas | Thyago Fernando da Silveira</div>', unsafe_allow_html=True)
+    st.markdown('<div class="op-sub">Atendimento de campo com permissões por condomínio | Aqua Gestão + Bem Star</div>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
