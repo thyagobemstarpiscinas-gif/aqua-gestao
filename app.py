@@ -562,7 +562,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
             _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
             if not _empresa_cl:
                 _empresa_cl = "Aqua Gestão"
-            clientes.append({
+            cliente_base = {
                 "id":           id_val,
                 "nome":         nome,
                 "cnpj":         "",
@@ -577,7 +577,8 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "vol_family":   vol_family,
                 "empresa":      _empresa_cl,
                 "piscinas_extras": [],  # carregado do JSON local se disponível
-            })
+            }
+            clientes.append(_enriquecer_cliente_com_dados_locais(cliente_base))
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
@@ -1598,21 +1599,111 @@ def buscar_cep(cep: str) -> dict:
 
 
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
-    """Filtra lista de clientes pelo campo empresa.
+    """Filtra clientes por serviço/empresa compatível.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
-    Clientes com empresa='Ambas' aparecem nas duas.
-    Clientes sem campo empresa (legados) aparecem para Aqua Gestão.
+    Clientes legados sem serviço explícito continuam compatíveis via campo empresa.
     """
     resultado = []
     for c in clientes:
-        emp = c.get("empresa", "Aqua Gestão")
-        if emp == "Ambas":
+        servicos = _normalizar_servicos_cliente(c)
+        if empresa_ativa == "bem_star" and servicos.get("limpeza"):
             resultado.append(c)
-        elif empresa_ativa == "bem_star" and emp == "Bem Star Piscinas":
-            resultado.append(c)
-        elif empresa_ativa == "aqua_gestao" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
+        elif empresa_ativa == "aqua_gestao" and servicos.get("rt"):
             resultado.append(c)
     return resultado
+
+
+def _normalizar_lista_textos_unicos(valores) -> list[str]:
+    resultado = []
+    vistos = set()
+    for item in valores or []:
+        valor = re.sub(r"\s+", " ", str(item or "").strip())
+        if not valor:
+            continue
+        chave = _normalizar_chave_acesso(valor)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        resultado.append(valor)
+    return resultado
+
+
+def _empresa_para_servicos(empresa: str) -> dict:
+    emp = _normalizar_chave_acesso(empresa)
+    if emp == "ambas":
+        return {"rt": True, "limpeza": True}
+    if "bem star" in emp:
+        return {"rt": False, "limpeza": True}
+    return {"rt": True, "limpeza": False}
+
+
+def _normalizar_servicos_cliente(dados: dict | None) -> dict:
+    dados = dados or {}
+    servicos = dados.get("servicos") if isinstance(dados.get("servicos"), dict) else {}
+    rt = bool(servicos.get("rt"))
+    limpeza = bool(servicos.get("limpeza"))
+    if not rt and not limpeza:
+        legado = _empresa_para_servicos(str(dados.get("empresa", "Aqua Gestão") or "Aqua Gestão"))
+        rt = legado["rt"]
+        limpeza = legado["limpeza"]
+    return {"rt": rt, "limpeza": limpeza}
+
+
+def _servicos_para_empresa(servicos: dict | None) -> str:
+    servicos_norm = _normalizar_servicos_cliente({"servicos": servicos or {}})
+    if servicos_norm.get("rt") and servicos_norm.get("limpeza"):
+        return "Ambas"
+    if servicos_norm.get("limpeza"):
+        return "Bem Star Piscinas"
+    return "Aqua Gestão"
+
+
+def _carregar_dados_cliente_local(nome_condominio: str) -> dict:
+    nome_limpo = str(nome_condominio or "").strip()
+    if not nome_limpo:
+        return {}
+    pasta = GENERATED_DIR / slugify_nome(nome_limpo)
+    if not pasta.exists():
+        return {}
+    dados = carregar_dados_condominio(pasta) or {}
+    if not isinstance(dados, dict):
+        return {}
+    dados["servicos"] = _normalizar_servicos_cliente(dados)
+    dados["operadores_vinculados"] = _normalizar_lista_textos_unicos(dados.get("operadores_vinculados", []))
+    dados["empresa"] = _servicos_para_empresa(dados.get("servicos"))
+    return dados
+
+
+def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
+    cliente_final = dict(cliente or {})
+    nome = str(cliente_final.get("nome", "") or "").strip()
+    dados_locais = _carregar_dados_cliente_local(nome)
+
+    servicos = _normalizar_servicos_cliente({
+        "servicos": dados_locais.get("servicos") if dados_locais else cliente_final.get("servicos"),
+        "empresa": dados_locais.get("empresa") if dados_locais else cliente_final.get("empresa", "Aqua Gestão"),
+    })
+    cliente_final["servicos"] = servicos
+    cliente_final["empresa"] = _servicos_para_empresa(servicos)
+    cliente_final["operadores_vinculados"] = _normalizar_lista_textos_unicos(
+        dados_locais.get("operadores_vinculados", cliente_final.get("operadores_vinculados", []))
+    )
+
+    for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family"]:
+        valor_local = dados_locais.get(chave)
+        if valor_local not in (None, ""):
+            cliente_final[chave] = valor_local
+
+    if dados_locais.get("endereco_condominio"):
+        cliente_final["endereco"] = dados_locais.get("endereco_condominio", cliente_final.get("endereco", ""))
+    if dados_locais.get("cnpj_condominio"):
+        cliente_final["cnpj"] = dados_locais.get("cnpj_condominio", cliente_final.get("cnpj", ""))
+    if dados_locais.get("nome_sindico") and not cliente_final.get("contato"):
+        cliente_final["contato"] = dados_locais.get("nome_sindico", "")
+    if "piscinas_extras" in dados_locais:
+        cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+
+    return cliente_final
 
 
 def slugify_nome(texto: str) -> str:
@@ -7040,7 +7131,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita_html",
                     )
 
-    # Busca clientes do Google Sheets filtrados pela empresa ativa
+    # Busca clientes do Google Sheets sem filtrar por empresa no modo operador
     @st.cache_data(ttl=60)
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
@@ -7052,24 +7143,36 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
         st.success("✅ Rascunho restaurado! Continue de onde parou.")
 
-    _empresa_ativa_op = st.session_state.get("empresa_ativa", "aqua_gestao")
     _clientes_todos_op = _buscar_clientes_sheets_completo()
-    _clientes_filtrados_op = filtrar_clientes_por_empresa(_clientes_todos_op, _empresa_ativa_op)
-    clientes_sheets = [c["nome"] for c in _clientes_filtrados_op]
+    clientes_mapa_op = {c["nome"]: c for c in _clientes_todos_op if c.get("nome")}
 
-    # Combina clientes do Sheets com os locais
+    # Combina clientes do Sheets com os locais, sem depender da empresa ativa
     pastas_disponiveis = sorted([
         p for p in GENERATED_DIR.iterdir() if p.is_dir()
     ], key=lambda p: p.name) if GENERATED_DIR.exists() else []
 
-    opcoes_cond_local = []
     for p in pastas_disponiveis:
-        dados_c = carregar_dados_condominio(p)
+        dados_c = carregar_dados_condominio(p) or {}
         nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
-        opcoes_cond_local.append(nome_ex)
+        if not nome_ex:
+            continue
+        cliente_local = _enriquecer_cliente_com_dados_locais({
+            "nome": nome_ex,
+            "empresa": dados_c.get("empresa", "Aqua Gestão"),
+            "operadores_vinculados": dados_c.get("operadores_vinculados", []),
+            "servicos": dados_c.get("servicos", {}),
+        })
+        clientes_mapa_op.setdefault(nome_ex, cliente_local)
 
-    # Une as duas listas sem duplicar
-    opcoes_cond_todas = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
+    opcoes_cond_todas = list(clientes_mapa_op.keys())
+
+    _op_conds_vinculo_direto = []
+    _op_nome_norm = _normalizar_chave_acesso(_op_nome_logado)
+    if _op_nome_norm and not _op_acesso_total:
+        for _nome_cond, _cliente_cond in clientes_mapa_op.items():
+            _ops_vinc = _normalizar_lista_textos_unicos(_cliente_cond.get("operadores_vinculados", []))
+            if any(_normalizar_chave_acesso(_op) == _op_nome_norm for _op in _ops_vinc):
+                _op_conds_vinculo_direto.append(_nome_cond)
 
     # Operador logado via PIN — nome vem do cadastro, não digitado
     _op_nome_logado_disp = _op_nome_logado if _op_nome_logado != "Operador" else ""
@@ -7081,8 +7184,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         help="Preenchido automaticamente pelo seu PIN de acesso."
     )
 
-    # Filtra condomínios pelo PIN do operador logado
-    if _op_acesso_total or not _op_conds_permitidos or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
+    # Filtra condomínios pelo vínculo direto do cadastro; se não houver, usa o sistema antigo por PIN
+    if _op_acesso_total or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
+        opcoes_cond = opcoes_cond_todas
+    elif _op_conds_vinculo_direto:
+        opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_vinculo_direto, opcoes_cond_todas)
+        st.caption(f"🔗 {len(opcoes_cond)} condomínio(s) liberado(s) por vínculo direto no cadastro.")
+    elif not _op_conds_permitidos:
         opcoes_cond = opcoes_cond_todas
     else:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
@@ -8811,14 +8919,22 @@ with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
 # Mostra clientes já cadastrados no Sheets
 @st.cache_data(ttl=30)
 def _clientes_cadastrados():
-    return sheets_listar_clientes()
+    return sheets_listar_clientes_completo()
 
 clientes_cadastrados = _clientes_cadastrados()
 
 if clientes_cadastrados:
     st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) no Google Sheets:")
     for c in clientes_cadastrados:
-        st.caption(f"• {c}")
+        _serv = _normalizar_servicos_cliente(c)
+        _badges = []
+        if _serv.get("rt"):
+            _badges.append("🔵 RT")
+        if _serv.get("limpeza"):
+            _badges.append("⭐ Limpeza")
+        _ops = _normalizar_lista_textos_unicos(c.get("operadores_vinculados", []))
+        _ops_txt = f" • Operadores: {', '.join(_ops)}" if _ops else ""
+        st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
 else:
     st.info("Nenhum cliente cadastrado ainda. Use o formulário abaixo para adicionar.")
 
@@ -8829,6 +8945,9 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
+    st.session_state["cc_srv_rt"] = False
+    st.session_state["cc_srv_limpeza"] = False
+    st.session_state["cc_operadores_vinculados"] = []
 
 # ── Seletor de edição ────────────────────────────────────────────────────────
 _cc_modo = st.radio("Ação", ["➕ Novo cliente", "✏️ Editar cliente existente"],
@@ -8849,12 +8968,10 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
-            # Pré-seleciona empresa no radio
-            _emp_carregada = _cc_cliente_editar.get("empresa","Aqua Gestão")
-            _emp_map_inv = {"Aqua Gestão": "🔵 Aqua Gestão",
-                            "Bem Star Piscinas": "⭐ Bem Star Piscinas",
-                            "Ambas": "🔵⭐ Ambas"}
-            st.session_state["cc_empresa"] = _emp_map_inv.get(_emp_carregada, "🔵 Aqua Gestão")
+            _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
+            st.session_state["cc_srv_rt"] = _servicos_cc.get("rt", False)
+            st.session_state["cc_srv_limpeza"] = _servicos_cc.get("limpeza", False)
+            st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
@@ -8876,17 +8993,42 @@ def _mask_cc_cnpj():
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-# Seletor de empresa no cadastro
-cc_empresa = st.radio(
-    "Empresa vinculada",
-    ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas", "🔵⭐ Ambas"],
-    key="cc_empresa",
-    horizontal=True,
-    help="Define para qual empresa este cliente pertence."
+# Serviços vinculados ao condomínio
+st.markdown("**🧩 Serviços vinculados ao condomínio**")
+_cc_srv1, _cc_srv2 = st.columns(2)
+with _cc_srv1:
+    cc_srv_rt = st.checkbox(
+        "🔵 RT (Aqua Gestão)",
+        key="cc_srv_rt",
+        help="Marque quando o condomínio possui atendimento técnico/RT pela Aqua Gestão."
+    )
+with _cc_srv2:
+    cc_srv_limpeza = st.checkbox(
+        "⭐ Limpeza (Bem Star)",
+        key="cc_srv_limpeza",
+        help="Marque quando o condomínio possui serviço de limpeza operacional pela Bem Star."
+    )
+
+_cc_servicos = {"rt": bool(cc_srv_rt), "limpeza": bool(cc_srv_limpeza)}
+if not any(_cc_servicos.values()):
+    _cc_servicos["rt"] = True
+_cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+st.caption(f"Empresa derivada automaticamente para compatibilidade: {_cc_empresa_val}")
+
+_operadores_disponiveis = []
+for _op in (sheets_listar_operadores() or []) + (carregar_operadores() or []):
+    _nome_op = re.sub(r"\s+", " ", str(_op.get("nome", "") or "").strip())
+    if _nome_op and _nome_op not in _operadores_disponiveis:
+        _operadores_disponiveis.append(_nome_op)
+
+cc_operadores_vinculados = st.multiselect(
+    "Operadores vinculados ao condomínio",
+    options=_operadores_disponiveis,
+    key="cc_operadores_vinculados",
+    help="Esses operadores verão este condomínio automaticamente ao entrar com o PIN."
 )
-_cc_empresa_val = {"🔵 Aqua Gestão": "Aqua Gestão",
-                   "⭐ Bem Star Piscinas": "Bem Star Piscinas",
-                   "🔵⭐ Ambas": "Ambas"}.get(cc_empresa, "Aqua Gestão")
+if not _operadores_disponiveis:
+    st.caption("Cadastre operadores no módulo de operadores para depois vinculá-los aos condomínios.")
 
 cc1, cc2 = st.columns(2)
 with cc1:
@@ -8973,19 +9115,23 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_i = _parse_vol(cc_vol_infantil)
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
+            _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
+            _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
+            _piscs_extras_form = []
+            for _en, _ev in [
+                (st.session_state.get("cc_pisc_extra1_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra1_vol","").strip()),
+                (st.session_state.get("cc_pisc_extra2_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra2_vol","").strip()),
+            ]:
+                if _en:
+                    try:
+                        _ev_f = float(_ev.replace(",",".")) if _ev else 0
+                    except:
+                        _ev_f = 0
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
+
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
-                # Coleta piscinas extras
-                _piscs_extras_editar = []
-                for _en, _ev in [
-                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
-                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
-                ]:
-                    if _en:
-                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
-                        except: _ev_f = 0
-                        _piscs_extras_editar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_editar_cliente(
                     id_cliente=_cc_cliente_editar["id"],
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
@@ -8994,28 +9140,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_editar:
-                    _pasta_extras2 = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras2.mkdir(parents=True, exist_ok=True)
-                    _dados_extras2 = carregar_dados_condominio(_pasta_extras2) or {}
-                    _dados_extras2["piscinas_extras"] = _piscs_extras_editar
-                    _dados_extras2["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras2, _dados_extras2)
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
-                # Coleta piscinas extras
-                _piscs_extras_salvar = []
-                for _en, _ev in [
-                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
-                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
-                ]:
-                    if _en:
-                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
-                        except: _ev_f = 0
-                        _piscs_extras_salvar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_salvar_cliente(
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
                     endereco=cc_endereco.strip(), contato=cc_contato.strip(),
@@ -9023,15 +9149,30 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_salvar:
-                    _pasta_extras = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras.mkdir(parents=True, exist_ok=True)
-                    _dados_extras = carregar_dados_condominio(_pasta_extras) or {}
-                    _dados_extras["piscinas_extras"] = _piscs_extras_salvar
-                    _dados_extras["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras, _dados_extras)
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+
+            _pasta_cliente = GENERATED_DIR / slugify_nome(cc_nome.strip())
+            _pasta_cliente.mkdir(parents=True, exist_ok=True)
+            _dados_cliente_local = carregar_dados_condominio(_pasta_cliente) or {}
+            _dados_cliente_local.update({
+                "nome_condominio": cc_nome.strip(),
+                "cnpj_condominio": cc_cnpj.strip(),
+                "cnpj": cc_cnpj.strip(),
+                "cep": cc_cep.strip(),
+                "endereco_condominio": cc_endereco.strip(),
+                "endereco": cc_endereco.strip(),
+                "nome_sindico": cc_contato.strip(),
+                "contato": cc_contato.strip(),
+                "telefone": cc_telefone.strip(),
+                "vol_adulto": _vol_a,
+                "vol_infantil": _vol_i,
+                "vol_family": _vol_f,
+                "empresa": _cc_empresa_val,
+                "servicos": _cc_servicos_norm,
+                "operadores_vinculados": _cc_operadores_sel,
+                "piscinas_extras": _piscs_extras_form,
+            })
+            salvar_dados_condominio(_pasta_cliente, _dados_cliente_local)
         if ok:
             st.success(msg_ok)
             st.cache_data.clear()
