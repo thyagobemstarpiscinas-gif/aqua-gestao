@@ -1224,7 +1224,7 @@ st.markdown(
             border-radius: 16px;
             padding: 14px;
             background: linear-gradient(135deg, #ffffff 0%, #fbfdff 100%);
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         }
 
         .venc-nome {
@@ -2845,7 +2845,7 @@ def gerar_html_resumo_cadastro(item: dict) -> str:
                 border: 1px solid #d7e6f7;
                 border-radius: 12px;
                 padding: 14px 16px;
-                margin-bottom: 12px;
+                margin-bottom: 8px;
                 background: #fbfdff;
             }}
             .line {{
@@ -7028,19 +7028,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.markdown("""
     <style>
     section[data-testid="stSidebar"] { display: none !important; }
-    .main .block-container { padding: 0.5rem 0.8rem 2rem !important; max-width: 100% !important; }
+    .main .block-container { padding: 0.35rem 0.7rem 1.2rem !important; max-width: 100% !important; }
     .op-card {
         border: 1px solid rgba(20,85,160,0.18);
         border-radius: 16px;
-        padding: 16px;
+        padding: 12px 14px;
         background: #ffffff;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     }
-    .op-title { font-size: 1.2rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; }
+    .op-title { font-size: 1.02rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; line-height: 1.2; }
     /* Campo oculto para captura de assinatura via canvas HTML */
     div[data-testid="stTextInput"]:has(input[aria-label="assinatura_b64_hidden"]) { display: none !important; }
-    .op-sub { font-size: 0.82rem; color: #5d7288; margin-bottom: 10px; }
+    .op-sub { font-size: 0.78rem; color: #5d7288; margin-bottom: 6px; }
     .op-salvo {
         border: 1px solid rgba(30,140,70,0.3);
         border-radius: 12px;
@@ -7052,12 +7052,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     }
     .stTextInput input, .stTextArea textarea {
         font-size: 1rem !important;
-        min-height: 48px !important;
+        min-height: 42px !important;
         border-radius: 10px !important;
     }
     .stButton > button {
-        min-height: 52px !important;
-        font-size: 1.05rem !important;
+        min-height: 46px !important;
+        font-size: 0.98rem !important;
         border-radius: 12px !important;
     }
     .stTextInput label, .stSelectbox label, .stTextArea label {
@@ -7065,7 +7065,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         font-weight: 600 !important;
         color: #1a3a5c !important;
     }
-    .element-container { margin-bottom: 6px !important; }
+    .element-container { margin-bottom: 4px !important; }
+    [data-testid="stExpander"] { border-radius: 12px !important; }
+    [data-testid="stExpander"] details summary p { font-size: 0.96rem !important; font-weight: 600 !important; }
+    .op-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#edf5ff; border:1px solid #d3e6ff; color:#134b8a; font-size:0.78rem; margin: 2px 6px 6px 0; }
+    .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
+    
     .pin-box {
         border: 2px solid rgba(20,85,160,0.25);
         border-radius: 20px;
@@ -7109,8 +7114,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.rerun()
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="op-title">📱 Lançamento de Campo — {_op_nome_logado}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="op-sub">Atendimento de campo com permissões por condomínio | Aqua Gestão + Bem Star</div>', unsafe_allow_html=True)
+    st.markdown('<div class="op-title">📱 Lançamento de Campo</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong></div>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua + Bem Star</span>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -7202,11 +7208,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     # Operador logado via PIN — nome vem do cadastro, não digitado
     _op_nome_logado_disp = _op_nome_logado if _op_nome_logado != "Operador" else ""
     op_operador = st.text_input(
-        "Seu nome (operador)",
+        "Operador identificado",
         key="op_operador",
         value=_op_nome_logado_disp,
         placeholder="Ex.: João Silva",
-        help="Preenchido automaticamente pelo seu PIN de acesso."
+        help="Preenchido automaticamente pelo seu PIN de acesso.",
+        disabled=True
     )
 
     # Filtra condomínios pelo vínculo direto do cadastro; se não houver, usa o sistema antigo por PIN
@@ -7214,26 +7221,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         opcoes_cond = opcoes_cond_todas
     elif _op_conds_vinculo_direto:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_vinculo_direto, opcoes_cond_todas)
-        st.caption(f"🔗 {len(opcoes_cond)} condomínio(s) liberado(s) por vínculo direto no cadastro.")
+        st.markdown(f'<div class="op-note-compact">🔗 {len(opcoes_cond)} condomínio(s) liberado(s) por vínculo direto no cadastro.</div>', unsafe_allow_html=True)
     elif not _op_conds_permitidos:
         opcoes_cond = opcoes_cond_todas
     else:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
         if opcoes_cond:
-            st.caption(f"✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).")
+            st.markdown(f'<div class="op-note-compact">✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).</div>', unsafe_allow_html=True)
         else:
             st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
 
-    op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
+    op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
     else:
         if opcoes_cond:
-            op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
+            op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond")
             
             # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
             if op_nome_cond:
-                with st.expander("🕒 Últimas 3 visitas", expanded=False):
+                with st.expander("🕒 Histórico recente", expanded=False):
                     with st.spinner("Buscando histórico..."):
                         historico_v = sheets_listar_lancamentos(op_nome_cond)
                         if not historico_v:
@@ -7275,7 +7282,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             except Exception:
                 pass
 
-    st.text_input("Data (digite só números: ddmmaaaa)",
+    st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -7289,8 +7296,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
 
         # Admin pode definir piscinas pelo painel — operador vê as já configuradas
-        with st.expander("🏊 Piscinas deste condomínio", expanded=False):
-            st.caption("Configure as piscinas deste condomínio. Salvo automaticamente.")
+        with st.expander("🏊 Piscinas configuradas", expanded=False):
+            st.caption("Selecione as piscinas ativas deste local.")
             _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
             _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
             _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
@@ -7392,7 +7399,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
             return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
-        with st.expander("📋 Faixas de referência", expanded=False):
+        with st.expander("📋 Faixas ideais", expanded=False):
             st.markdown("""
 | Parâmetro | Faixa ideal |
 |---|---|
