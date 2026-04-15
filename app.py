@@ -1095,7 +1095,7 @@ LOGO_CANDIDATOS = [
 GENERATED_DIR.mkdir(exist_ok=True)
 
 st.set_page_config(
-    page_title="Aqua Gestão RT",
+    page_title="",
     page_icon="📘",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -6917,7 +6917,7 @@ if _modo_interno == "entrada":
 
     col_e1, col_e2, col_e3 = st.columns([1.2, 1.6, 1.2])
     with col_e2:
-        st.markdown('<div class="entrada-eyebrow">Aqua Gestão RT</div>', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-eyebrow"></div>', unsafe_allow_html=True)
         st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="entrada-sub">Entre com seu PIN e selecione o condomínio liberado.<br>'
