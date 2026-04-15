@@ -4855,6 +4855,7 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     <div class="param-grid">
       {param_box("pH", pisc.get("ph",""), 7.2, 7.8)}
       {param_box("CRL mg/L", pisc.get("cloro_livre",""), 0.5, 3.0)}
+      {param_box("CT mg/L", pisc.get("cloro_total",""), 0.5, 5.0)}
       {param_box("Alc. mg/L", pisc.get("alcalinidade",""), 80, 120, quinzenal=True)}
       {param_box("Dureza mg/L", pisc.get("dureza",""), 150, 300, quinzenal=True)}
       {param_box("CYA mg/L", pisc.get("cianurico",""), 30, 50, quinzenal=True)}
@@ -5142,6 +5143,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     PARAMS = [
         ("pH",          "ph",          7.2, 7.8,  False),
         ("CRL mg/L",    "cloro_livre", 0.5, 3.0,  False),
+        ("CT mg/L",     "cloro_total", 0.5, 5.0,  False),
         ("Alc. mg/L",   "alcalinidade",80, 120,   True),
         ("Dureza mg/L", "dureza",      150, 300,   True),
         ("CYA mg/L",    "cianurico",   30,  50,    True),
@@ -5159,7 +5161,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
                       Paragraph("<b>Obs</b>", s_body_sm)]
         param_rows.append(header_row)
 
-        faixas_txt = {"pH":"7,2–7,8","CRL mg/L":"0,5–3,0","Alc. mg/L":"80–120","Dureza mg/L":"150–300","CYA mg/L":"30–50"}
+        faixas_txt = {"pH":"7,2–7,8","CRL mg/L":"0,5–3,0","CT mg/L":"0,5–5,0","Alc. mg/L":"80–120","Dureza mg/L":"150–300","CYA mg/L":"30–50"}
         row_colors = []
 
         for label, key, mn, mx, quinzenal in PARAMS:
