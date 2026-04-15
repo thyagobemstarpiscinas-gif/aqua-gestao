@@ -6917,8 +6917,6 @@ if _modo_interno == "entrada":
 
     col_e1, col_e2, col_e3 = st.columns([1.2, 1.6, 1.2])
     with col_e2:
-        st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
-
         st.markdown('<div class="entrada-eyebrow">Aqua Gestão RT</div>', unsafe_allow_html=True)
         st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
         st.markdown(
@@ -6966,7 +6964,6 @@ if _modo_interno == "entrada":
                 else:
                     st.error("PIN incorreto.")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
 
@@ -7073,7 +7070,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.rerun()
             else:
                 st.error("PIN incorreto. Tente novamente.")
-        st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
     # Dados do operador logado
@@ -7593,7 +7589,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         if not op_dosagens and op_piscinas_dados:
             op_dosagens = op_piscinas_dados[0].get("dosagens", [])
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Fotos categorizadas — com salvamento imediato ───────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7668,7 +7663,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     shutil.rmtree(str(_pasta_fotos_rasc))
                 st.rerun()
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Problemas / Ocorrências ───────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7677,7 +7671,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             label_visibility="collapsed",
             placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Observação geral ──────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7685,7 +7678,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_obs = st.text_area("Obs", key="op_obs_campo", height=80,
             label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Responsável no local ──────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7694,7 +7686,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             label_visibility="collapsed",
             placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Parecer da visita ─────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7707,7 +7698,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             horizontal=True,
             on_change=_autosave_rascunho,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Assinatura do responsável ─────────────────────────────────────────
         # Implementação com canvas HTML nativo — sem dependência de streamlit-drawable-canvas
@@ -7865,7 +7855,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 )
             except Exception:
                 pass
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Botão salvar rascunho ─────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7886,7 +7875,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             _rasc_exists = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json").exists() if op_nome_cond.strip() else False
             if _rasc_exists:
                 st.caption("📋 Rascunho salvo")
-        st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         if st.button("💾 Salvar lançamento", type="primary", use_container_width=True):
@@ -8056,7 +8044,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 for lc in reversed(pend_hc[-3:]):
                     ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
                     st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     # Para o restante da página não renderizar no modo operador
     st.stop()
@@ -10592,7 +10579,6 @@ if _clientes_rel:
                     st.session_state["rel_cpf_cnpj_representante"] = ""
                     st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório!")
                     st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
@@ -11162,7 +11148,6 @@ def gerar_contrato_e_aditivo():
             else:
                 st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         mensagem = montar_mensagem_envio(
             nome_condominio=nome_condominio,
@@ -11287,7 +11272,6 @@ def gerar_somente_aditivo_rapido():
             else:
                 st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         mensagem = montar_mensagem_envio(
             nome_condominio=nome_condominio,
