@@ -368,66 +368,12 @@ def conectar_sheets():
         return None
 
 
-
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba Visitas do Google Sheets."""
     try:
         sh = conectar_sheets()
         if sh is None:
             return False
-
-        aba = sh.worksheet("🔬 Visitas")
-        todos = aba.get_all_values()
-
-        visitas_existentes = [r for r in todos if r and len(r) > 1 and r[1] and str(r[1]).startswith("V")]
-        proximo_num = len(visitas_existentes) + 1
-        id_visita = f"V{proximo_num:05d}"
-
-        aba_clientes = sh.worksheet("👥 Clientes")
-        clientes = aba_clientes.get_all_values()
-        id_cliente = ""
-        for row in clientes:
-            if len(row) > 2 and nome_condominio.lower() in str(row[2]).lower():
-                id_cliente = row[1]
-                break
-
-        def _json(v):
-            try:
-                return json.dumps(v or [], ensure_ascii=False)
-            except Exception:
-                return "[]"
-
-        nova_linha = [
-            "",                                    # A
-            id_visita,                             # B
-            lancamento.get("data", ""),            # C
-            id_cliente,                            # D
-            nome_condominio,                       # E
-            lancamento.get("ph", ""),              # F
-            lancamento.get("cloro_livre", ""),     # G
-            lancamento.get("cloro_total", ""),     # H
-            lancamento.get("alcalinidade", ""),    # I
-            lancamento.get("dureza", ""),          # J
-            lancamento.get("cianurico", ""),       # K
-            "", "", "",                            # L/M/N fotos legadas
-            lancamento.get("observacao", ""),      # O
-            "", "", "", "",                        # P/Q/R/S legadas
-            "Concluída",                           # T
-            lancamento.get("operador", ""),        # U
-            lancamento.get("problemas", ""),       # V
-            lancamento.get("origem", ""),          # W
-            "SIM" if lancamento.get("gera_operacional") else "NÃO",  # X
-            "SIM" if lancamento.get("gera_rt") else "NÃO",           # Y
-            _json(lancamento.get("piscinas")),     # Z
-            _json(lancamento.get("dosagens")),     # AA
-            _json(lancamento.get("fotos_drive_ids", [])), # AB
-        ]
-
-        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
-        return True
-    except Exception as e:
-        _log_sheets_erro("sheets_salvar_lancamento_campo", e)
-        return False
 
         aba = sh.worksheet("🔬 Visitas")
         todos = aba.get_all_values()
@@ -568,10 +514,13 @@ def sheets_listar_clientes() -> list[str]:
         return []
 
 
-
 def sheets_listar_clientes_completo() -> list[dict]:
-    """Retorna lista de dicts com dados completos de cada cliente do Sheets,
-    enriquecendo com metadados estruturados salvos localmente."""
+    """Retorna lista de dicts com dados completos de cada cliente do Sheets.
+    
+    Mapeamento das colunas da planilha:
+      B=ID, C=Nome, D=Volume_m3, E=Contato_Sindico/Telefone, 
+      F=Email_Sindico, G=Endereco, H=Data_Cadastro, I=Status
+    """
     import re as _re
     try:
         sh = conectar_sheets()
@@ -589,54 +538,51 @@ def sheets_listar_clientes_completo() -> list[dict]:
             nome = str(row[2]).strip() if len(row) > 2 else ""
             if not nome:
                 continue
-
+            # Detecta se col E é telefone ou email
             col_e = str(row[4]).strip() if len(row) > 4 else ""
             col_f = str(row[5]).strip() if len(row) > 5 else ""
+            # Se col_e tem @ é email do síndico; senão é telefone
             if "@" in col_e:
                 telefone = ""
-                contato = ""
-                email = col_e
+                contato  = ""
+                email    = col_e
             else:
                 telefone = formatar_telefone(col_e) if col_e else ""
-                contato = col_f if col_f else ""
-                email = ""
-
+                contato  = col_f if col_f else ""
+                email    = ""
+            # Volumes das piscinas (colunas J=9, K=10, L=11)
             def _vol(r, idx):
-                try:
-                    return float(str(r[idx]).replace(",", ".").strip() or 0) if len(r) > idx else 0.0
-                except Exception:
-                    return 0.0
-
-            vol_adulto = _vol(row, 9)
+                try: return float(str(r[idx]).replace(",",".").strip() or 0) if len(r) > idx else 0.0
+                except: return 0.0
+            vol_adulto   = _vol(row, 9)
             vol_infantil = _vol(row, 10)
-            vol_family = _vol(row, 11)
-            vol_total = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
+            vol_family   = _vol(row, 11)
+            vol_total    = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
 
-            empresa = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
-            if not empresa:
-                empresa = "Aqua Gestão"
-
-            cliente = {
-                "id": id_val,
-                "nome": nome,
-                "cnpj": "",
-                "telefone": telefone,
-                "contato": contato,
-                "email": email,
-                "endereco": str(row[6]).strip() if len(row) > 6 else "",
-                "status": str(row[8]).strip() if len(row) > 8 else "Ativo",
-                "vol_total": vol_total,
-                "vol_adulto": vol_adulto,
+            _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
+            if not _empresa_cl:
+                _empresa_cl = "Aqua Gestão"
+            clientes.append({
+                "id":           id_val,
+                "nome":         nome,
+                "cnpj":         "",
+                "telefone":     telefone,
+                "contato":      contato,
+                "email":        email,
+                "endereco":     str(row[6]).strip() if len(row) > 6 else "",
+                "status":       str(row[8]).strip() if len(row) > 8 else "Ativo",
+                "vol_total":    vol_total,
+                "vol_adulto":   vol_adulto,
                 "vol_infantil": vol_infantil,
-                "vol_family": vol_family,
-                "empresa": empresa,
-                "piscinas_extras": [],
-            }
-            clientes.append(enriquecer_cliente_com_metadados(cliente))
+                "vol_family":   vol_family,
+                "empresa":      _empresa_cl,
+                "piscinas_extras": [],  # carregado do JSON local se disponível
+            })
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
         return []
+
 
 
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
@@ -1651,135 +1597,6 @@ def buscar_cep(cep: str) -> dict:
     return {}
 
 
-
-def _flag_sim(valor) -> bool:
-    return str(valor or "").strip().lower() in ("sim", "true", "1", "ativo", "yes")
-
-
-def _empresa_para_vinculos(empresa: str) -> dict:
-    emp = str(empresa or "").strip().lower()
-    if emp == "ambas":
-        return {
-            "Contrato_Manutencao_Ativo": "SIM",
-            "Empresa_Manutencao": "Bem Star Piscinas",
-            "Contrato_RT_Ativo": "SIM",
-            "Empresa_RT": "Aqua Gestão",
-            "Usa_Operador": "SIM",
-            "Gera_Relatorio_Operacional": "SIM",
-            "Gera_Relatorio_RT": "SIM",
-        }
-    if "bem star" in emp:
-        return {
-            "Contrato_Manutencao_Ativo": "SIM",
-            "Empresa_Manutencao": "Bem Star Piscinas",
-            "Contrato_RT_Ativo": "NÃO",
-            "Empresa_RT": "",
-            "Usa_Operador": "SIM",
-            "Gera_Relatorio_Operacional": "SIM",
-            "Gera_Relatorio_RT": "NÃO",
-        }
-    return {
-        "Contrato_Manutencao_Ativo": "NÃO",
-        "Empresa_Manutencao": "",
-        "Contrato_RT_Ativo": "SIM",
-        "Empresa_RT": "Aqua Gestão",
-        "Usa_Operador": "SIM",
-        "Gera_Relatorio_Operacional": "NÃO",
-        "Gera_Relatorio_RT": "SIM",
-    }
-
-
-def salvar_metadados_cliente_estruturado(nome: str, payload: dict | None = None) -> bool:
-    """Salva vínculos estruturados do condomínio em JSON local."""
-    try:
-        if not nome or not str(nome).strip():
-            return False
-        pasta = GENERATED_DIR / slugify_nome(str(nome).strip())
-        pasta.mkdir(parents=True, exist_ok=True)
-        dados = carregar_dados_condominio(pasta) or {}
-        dados["nome_condominio"] = str(nome).strip()
-        payload = payload or {}
-        for k, v in payload.items():
-            dados[k] = v
-        salvar_dados_condominio(pasta, dados)
-        return True
-    except Exception:
-        return False
-
-
-def carregar_metadados_cliente_estruturado(nome: str) -> dict:
-    try:
-        if not nome or not str(nome).strip():
-            return {}
-        pasta = GENERATED_DIR / slugify_nome(str(nome).strip())
-        return carregar_dados_condominio(pasta) or {}
-    except Exception:
-        return {}
-
-
-def enriquecer_cliente_com_metadados(cliente: dict) -> dict:
-    if not isinstance(cliente, dict):
-        return {}
-    nome = str(cliente.get("nome", "")).strip()
-    meta = carregar_metadados_cliente_estruturado(nome)
-    if not meta:
-        base = dict(cliente)
-        # fallback legado pelo campo empresa
-        fallback = _empresa_para_vinculos(base.get("empresa", "Aqua Gestão"))
-        for k, v in fallback.items():
-            base.setdefault(k, v)
-        base.setdefault("piscinas_extras", [])
-        return base
-
-    combinado = dict(cliente)
-    for campo in [
-        "Usa_Operador",
-        "Contrato_Manutencao_Ativo",
-        "Empresa_Manutencao",
-        "Contrato_RT_Ativo",
-        "Empresa_RT",
-        "Gera_Relatorio_Operacional",
-        "Gera_Relatorio_RT",
-        "Piscinas_Extras_JSON",
-        "Observacoes",
-        "piscinas_extras",
-    ]:
-        if campo in meta:
-            combinado[campo] = meta[campo]
-
-    if meta.get("piscinas_extras") and not combinado.get("piscinas_extras"):
-        combinado["piscinas_extras"] = meta.get("piscinas_extras", [])
-
-    # fallback legado
-    fallback = _empresa_para_vinculos(combinado.get("empresa", "Aqua Gestão"))
-    for k, v in fallback.items():
-        combinado.setdefault(k, v)
-        if not str(combinado.get(k, "")).strip():
-            combinado[k] = v
-    return combinado
-
-
-def cliente_tem_rt(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    c = enriquecer_cliente_com_metadados(cliente)
-    return _flag_sim(c.get("Contrato_RT_Ativo")) or _flag_sim(c.get("Gera_Relatorio_RT"))
-
-
-def cliente_tem_manutencao(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    c = enriquecer_cliente_com_metadados(cliente)
-    return _flag_sim(c.get("Contrato_Manutencao_Ativo")) or _flag_sim(c.get("Gera_Relatorio_Operacional"))
-
-
-def cliente_usa_operador(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    c = enriquecer_cliente_com_metadados(cliente)
-    return _flag_sim(c.get("Usa_Operador")) or cliente_tem_rt(c) or cliente_tem_manutencao(c)
-
-
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     """Filtra lista de clientes pelo campo empresa.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
@@ -2000,13 +1817,6 @@ def formatar_cnpj(texto: str) -> str:
     return f"{dig[:2]}.{dig[2:5]}.{dig[5:8]}/{dig[8:12]}-{dig[12:]}"
 
 
-def formatar_cpf_cnpj(texto: str) -> str:
-    dig = apenas_digitos(texto)
-    if len(dig) <= 11:
-        return formatar_cpf(dig)
-    return formatar_cnpj(dig)
-
-
 def formatar_telefone(texto: str) -> str:
     dig = apenas_digitos(texto)
 
@@ -2112,67 +1922,6 @@ def on_change_bs_cont_data_inicio():
 
 def on_change_bs_cont_data_fim():
     st.session_state.bs_cont_data_fim = formatar_data_digitada(st.session_state.get("bs_cont_data_fim", ""))
-
-
-def _noop_bs_cont():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_nome():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_endereco():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_cnpj():
-    st.session_state.bs_cont_cnpj = formatar_cpf_cnpj(st.session_state.get("bs_cont_cnpj", ""))
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_contato():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_telefone():
-    st.session_state.bs_cont_telefone = formatar_telefone(st.session_state.get("bs_cont_telefone", ""))
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_piscinas():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_freq_outro():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_prazo():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_valor():
-    st.session_state.bs_cont_valor = moeda_br(st.session_state.get("bs_cont_valor", ""))
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_valor_extenso():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_vencimento():
-    st.session_state.bs_cont_vencimento = apenas_digitos(st.session_state.get("bs_cont_vencimento", ""))[:2]
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_local():
-    st.session_state["bs_cont_expander_aberto"] = True
-
-
-def on_change_bs_cont_data_ass():
-    st.session_state.bs_cont_data_ass = formatar_data_digitada(st.session_state.get("bs_cont_data_ass", ""))
-    st.session_state["bs_cont_expander_aberto"] = True
 
 
 def on_change_rel_documento_representante():
@@ -6758,18 +6507,6 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
         st.session_state[f"rel_rec_resp_{i}"] = rec.get("responsavel", "")
 
 
-def _autosave_rascunho_relatorio():
-    """Autosave seguro para campos do relatório independente."""
-    try:
-        _nome = (st.session_state.get("rel_nome_condominio") or "").strip()
-        if not _nome:
-            return
-        _pasta = GENERATED_DIR / slugify_nome(_nome)
-        _pasta.mkdir(parents=True, exist_ok=True)
-        salvar_rascunho_relatorio(_pasta)
-    except Exception:
-        pass
-
 def excluir_rascunho_relatorio(pasta_condominio: Path):
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     if caminho.exists():
@@ -7313,11 +7050,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
         st.success("✅ Rascunho restaurado! Continue de onde parou.")
 
+    _empresa_ativa_op = st.session_state.get("empresa_ativa", "aqua_gestao")
     _clientes_todos_op = _buscar_clientes_sheets_completo()
-    _clientes_operador_base = [c for c in _clientes_todos_op if cliente_usa_operador(c)]
-    clientes_sheets = [c["nome"] for c in _clientes_operador_base if c.get("nome")]
-
-    st.caption("O vínculo operacional e/ou RT será definido automaticamente pelo cadastro do condomínio.")
+    _clientes_filtrados_op = filtrar_clientes_por_empresa(_clientes_todos_op, _empresa_ativa_op)
+    clientes_sheets = [c["nome"] for c in _clientes_filtrados_op]
 
     # Combina clientes do Sheets com os locais
     pastas_disponiveis = sorted([
@@ -7712,17 +7448,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     _dd1, _dd2 = st.columns([2, 1])
                     _prod = _dd1.text_input("Produto", key=_k_prod,
                         label_visibility="collapsed", placeholder="Nome do produto",
-                        on_change=_autosave_rascunho_relatorio)
+                        on_change=_autosave_rascunho)
                     _qtd  = _dd2.text_input("Qtd", key=_k_qtd,
                         label_visibility="collapsed", placeholder="Qtd",
-                        on_change=_autosave_rascunho_relatorio)
+                        on_change=_autosave_rascunho)
                     _dd3, _dd4 = st.columns([1, 2])
                     _un   = _dd3.text_input("Un", key=_k_un,
                         label_visibility="collapsed", placeholder="kg/L/g",
-                        on_change=_autosave_rascunho_relatorio)
+                        on_change=_autosave_rascunho)
                     _fin  = _dd4.text_input("Finalidade", key=_k_fin,
                         label_visibility="collapsed", placeholder="Finalidade / motivo",
-                        on_change=_autosave_rascunho_relatorio)
+                        on_change=_autosave_rascunho)
                     if _prod.strip():
                         _dos_pisc.append({
                             "produto":    _prod.strip(),
@@ -7824,7 +7560,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_problemas = st.text_area("Problemas", key="op_problemas", height=80,
             label_visibility="collapsed",
             placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
-            on_change=_autosave_rascunho_relatorio)
+            on_change=_autosave_rascunho)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Observação geral ──────────────────────────────────────────────────
@@ -8173,18 +7909,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if op_dosagens:
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
-
-                # Herda automaticamente os vínculos do cadastro do condomínio
-                _cliente_sel = next(
-                    (c for c in _clientes_todos_op if str(c.get("nome", "")).strip().lower() == op_nome_cond.strip().lower()),
-                    {}
-                )
-                _cliente_sel = enriquecer_cliente_com_metadados(_cliente_sel)
-                lancamento["gera_operacional"] = cliente_tem_manutencao(_cliente_sel)
-                lancamento["gera_rt"] = cliente_tem_rt(_cliente_sel)
-                lancamento["origem"] = "modo_operador"
-                lancamento["piscinas"] = analises_novas
-                lancamento["dosagens"] = op_dosagens
 
                 # Salva também no Google Sheets
                 ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
@@ -9268,12 +8992,15 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                _meta_vinculos = _empresa_para_vinculos(_cc_empresa_val)
-                _meta_vinculos["piscinas_extras"] = _piscs_extras_editar
-                _meta_vinculos["Piscinas_Extras_JSON"] = json.dumps(_piscs_extras_editar, ensure_ascii=False)
-                _meta_vinculos["Observacoes"] = ""
-                salvar_metadados_cliente_estruturado(cc_nome.strip(), _meta_vinculos)
-                msg_ok = f"✅ Cliente '{cc_nome}' atualizado com cadastro estruturado!"
+                # Salva piscinas extras no JSON local
+                if _piscs_extras_editar:
+                    _pasta_extras2 = GENERATED_DIR / slugify_nome(cc_nome.strip())
+                    _pasta_extras2.mkdir(parents=True, exist_ok=True)
+                    _dados_extras2 = carregar_dados_condominio(_pasta_extras2) or {}
+                    _dados_extras2["piscinas_extras"] = _piscs_extras_editar
+                    _dados_extras2["nome_condominio"] = cc_nome.strip()
+                    salvar_dados_condominio(_pasta_extras2, _dados_extras2)
+                msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
                 # Coleta piscinas extras
                 _piscs_extras_salvar = []
@@ -9294,12 +9021,15 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                _meta_vinculos = _empresa_para_vinculos(_cc_empresa_val)
-                _meta_vinculos["piscinas_extras"] = _piscs_extras_salvar
-                _meta_vinculos["Piscinas_Extras_JSON"] = json.dumps(_piscs_extras_salvar, ensure_ascii=False)
-                _meta_vinculos["Observacoes"] = ""
-                salvar_metadados_cliente_estruturado(cc_nome.strip(), _meta_vinculos)
-                msg_ok = f"✅ Cliente '{cc_nome}' salvo com cadastro estruturado! O operador já pode selecioná-lo no celular."
+                # Salva piscinas extras no JSON local
+                if _piscs_extras_salvar:
+                    _pasta_extras = GENERATED_DIR / slugify_nome(cc_nome.strip())
+                    _pasta_extras.mkdir(parents=True, exist_ok=True)
+                    _dados_extras = carregar_dados_condominio(_pasta_extras) or {}
+                    _dados_extras["piscinas_extras"] = _piscs_extras_salvar
+                    _dados_extras["nome_condominio"] = cc_nome.strip()
+                    salvar_dados_condominio(_pasta_extras, _dados_extras)
+                msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
         if ok:
             st.success(msg_ok)
             st.cache_data.clear()
@@ -9922,11 +9652,7 @@ st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("📝 Contrato Bem Star Piscinas")
 st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
 
-if "bs_cont_expander_aberto" not in st.session_state:
-    st.session_state["bs_cont_expander_aberto"] = False
-
-with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["bs_cont_expander_aberto"]):
-    st.session_state["bs_cont_expander_aberto"] = True
+with st.expander("📋 Preencher e gerar contrato", expanded=False):
 
     # ── Seletor de cliente ────────────────────────────────────────────────────
     @st.cache_data(ttl=30)
@@ -9943,7 +9669,7 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
     _bs_nomes = ["— selecione ou preencha manualmente —"] + [c["nome"] for c in _bs_clientes]
 
     _bs_sel = st.selectbox("Carregar dados de cliente cadastrado", _bs_nomes,
-        key="bs_cont_cliente_sel", on_change=_noop_bs_cont)
+        key="bs_cont_cliente_sel")
 
     if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
         _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
@@ -9953,7 +9679,6 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
             st.session_state["bs_cont_endereco"] = _bs_dado.get("endereco", "")
             st.session_state["bs_cont_contato"]  = _bs_dado.get("contato", "")
             st.session_state["bs_cont_telefone"] = _bs_dado.get("telefone", "")
-            st.session_state["bs_cont_expander_aberto"] = True
             st.success(f"✅ Dados de '{_bs_dado['nome']}' carregados.")
             st.rerun()
 
@@ -9963,22 +9688,21 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
     _bc1, _bc2 = st.columns(2)
     with _bc1:
         bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
-            placeholder="Ex.: Condomínio Residencial Bella Vista", on_change=on_change_bs_cont_nome)
+            placeholder="Ex.: Condomínio Residencial Bella Vista")
         bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
-            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP", on_change=on_change_bs_cont_endereco)
+            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
     with _bc2:
         bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
-            placeholder="00.000.000/0000-00", on_change=on_change_bs_cont_cnpj)
+            placeholder="00.000.000/0000-00")
         bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
-            placeholder="Nome completo do responsável", on_change=on_change_bs_cont_contato)
+            placeholder="Nome completo do responsável")
         bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
-            placeholder="(34) 99999-9999", on_change=on_change_bs_cont_telefone)
+            placeholder="(34) 99999-9999")
 
     st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
     bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
         height=60,
-        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas",
-        on_change=on_change_bs_cont_piscinas)
+        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
 
     st.markdown("**Condições do serviço**")
     _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
@@ -9988,26 +9712,26 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
             key="bs_cont_frequencia")
         if bs_frequencia == "Outra":
             bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
-                placeholder="Ex.: quinzenal", on_change=on_change_bs_cont_freq_outro)
+                placeholder="Ex.: quinzenal")
     with _bs_c2:
         bs_produtos = st.radio("Produtos químicos", 
             ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
             key="bs_cont_produtos")
     with _bs_c3:
         bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
-            placeholder="Ex.: 12", on_change=on_change_bs_cont_prazo)
+            placeholder="Ex.: 12")
 
     st.markdown("**Valores e pagamento**")
     _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
     with _bs_v1:
         bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
-            placeholder="Ex.: 350,00", on_change=on_change_bs_cont_valor)
+            placeholder="Ex.: 350,00")
     with _bs_v2:
         bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
-            placeholder="Ex.: trezentos e cinquenta reais", on_change=on_change_bs_cont_valor_extenso)
+            placeholder="Ex.: trezentos e cinquenta reais")
     with _bs_v3:
         bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
-            placeholder="Ex.: 10", on_change=on_change_bs_cont_vencimento)
+            placeholder="Ex.: 10")
     with _bs_v4:
         bs_pagamento = st.selectbox("Forma de pagamento",
             ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
@@ -10031,15 +9755,14 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
                 placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
     with _bs_d3:
         bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
-            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG", on_change=on_change_bs_cont_local)
+            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
     bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
-        placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_ass)
+        placeholder="dd/mm/aaaa", value=hoje_br())
 
     st.markdown("---")
 
     if st.button("📄 Gerar Contrato Bem Star (PDF)", type="primary", use_container_width=True,
             key="btn_gerar_contrato_bs"):
-        st.session_state["bs_cont_expander_aberto"] = True
         if not (st.session_state.get("bs_cont_nome","")).strip():
             st.error("Informe o nome do contratante.")
         elif not (st.session_state.get("bs_cont_valor","")).strip():
@@ -10322,7 +10045,7 @@ st.subheader("Dados do contrato e aditivo")
 def _clientes_completos_cache():
     return sheets_listar_clientes_completo()
 
-_clientes_rt = [c for c in _clientes_completos_cache() if cliente_tem_rt(c)]
+_clientes_rt = _clientes_completos_cache()
 if _clientes_rt:
     _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
     _sel_rt = st.selectbox(
