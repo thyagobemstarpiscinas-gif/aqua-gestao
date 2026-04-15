@@ -1666,6 +1666,38 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     return resultado
 
 
+def cliente_tem_vinculo_rt(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    if _flag_sistema_sim(cliente.get("Contrato_RT_Ativo", cliente.get("contrato_rt_ativo", ""))):
+        return True
+    if _flag_sistema_sim(cliente.get("Gera_Relatorio_RT", cliente.get("gera_relatorio_rt", ""))):
+        return True
+    empresa_rt = str(cliente.get("Empresa_RT", cliente.get("empresa_rt", ""))).strip().lower()
+    empresa = str(cliente.get("empresa", "")).strip().lower()
+    return "aqua" in empresa_rt or empresa in ("aqua gestão", "aqua gestao", "ambas")
+
+
+def cliente_tem_vinculo_bem_star(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    if _flag_sistema_sim(cliente.get("Contrato_Manutencao_Ativo", cliente.get("contrato_manutencao_ativo", ""))):
+        return True
+    if _flag_sistema_sim(cliente.get("Gera_Relatorio_Operacional", cliente.get("gera_relatorio_operacional", ""))):
+        return True
+    empresa_manut = str(cliente.get("Empresa_Manutencao", cliente.get("empresa_manutencao", ""))).strip().lower()
+    empresa = str(cliente.get("empresa", "")).strip().lower()
+    return "bem star" in empresa_manut or empresa in ("bem star piscinas", "ambas")
+
+
+def cliente_usa_operador_vinculado(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    if _flag_sistema_sim(cliente.get("Usa_Operador", cliente.get("usa_operador", ""))):
+        return True
+    return cliente_tem_vinculo_rt(cliente) or cliente_tem_vinculo_bem_star(cliente)
+
+
 def slugify_nome(texto: str) -> str:
     texto = (texto or "").strip()
     texto = re.sub(r"[^\w\s-]", "", texto, flags=re.UNICODE)
@@ -6638,6 +6670,14 @@ def _autosave_rascunho_relatorio():
     except Exception:
         pass
 
+
+def _autosave_rascunho():
+    """Compatibilidade: redireciona o autosave legado para o rascunho do relatório."""
+    try:
+        return _autosave_rascunho_relatorio()
+    except Exception:
+        return None
+
 def excluir_rascunho_relatorio(pasta_condominio: Path):
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     if caminho.exists():
@@ -7010,12 +7050,30 @@ if _modo_interno == "entrada":
     st.stop()
 
 
-# CSS dinâmico: oculta seções Aqua Gestão quando empresa Bem Star está ativa
+# CSS dinâmico / portal
+if "portal_area" not in st.session_state:
+    st.session_state["portal_area"] = "bem_star" if st.session_state.get("empresa_ativa") == "bem_star" else "aqua"
+
 _empresa_css_flag = st.session_state.get("empresa_ativa", "aqua_gestao")
-if _empresa_css_flag == "bem_star":
+_portal_area_css = st.session_state.get("portal_area", "aqua")
+
+if _portal_area_css == "aqua":
+    st.markdown("""
+    <style>
+    div.bs-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+elif _portal_area_css == "bem_star":
     st.markdown("""
     <style>
     div.aq-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+elif _portal_area_css == "operador":
+    st.markdown("""
+    <style>
+    div.aq-only { display: none !important; }
+    div.bs-only { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -7031,6 +7089,40 @@ if _modo_interno in ("escritorio", "operador"):
         if _modo_interno == "operador":
             st.session_state["op_pin_ok"] = False
         st.rerun()
+
+if _modo_interno == "escritorio":
+    st.markdown("**Área ativa**")
+    _portal_labels = {
+        "aqua": "🔵 Aqua Gestão – Gestão Técnica",
+        "bem_star": "⭐ Bem Star – Operacional",
+        "operador": "📱 Modo Operador",
+    }
+    _portal_atual = st.session_state.get("portal_area", "aqua")
+    _portal_idx = ["aqua", "bem_star", "operador"].index(_portal_atual if _portal_atual in ("aqua","bem_star","operador") else "aqua")
+    _portal_escolhido_label = st.radio(
+        "Área ativa",
+        [_portal_labels["aqua"], _portal_labels["bem_star"], _portal_labels["operador"]],
+        index=_portal_idx,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="portal_area_selector_escritorio",
+    )
+    _portal_inv = {v:k for k,v in _portal_labels.items()}
+    _novo_portal = _portal_inv.get(_portal_escolhido_label, "aqua")
+    if st.session_state.get("portal_area") != _novo_portal:
+        st.session_state["portal_area"] = _novo_portal
+        if _novo_portal == "aqua":
+            st.session_state["empresa_ativa"] = "aqua_gestao"
+        elif _novo_portal == "bem_star":
+            st.session_state["empresa_ativa"] = "bem_star"
+        st.rerun()
+
+    if st.session_state.get("portal_area") == "aqua":
+        st.info("Área Aqua Gestão ativa: filtros, clientes e relatórios priorizam contratos de RT.")
+    elif st.session_state.get("portal_area") == "bem_star":
+        st.info("Área Bem Star ativa: filtros e relatórios operacionais priorizam manutenção ativa.")
+    else:
+        st.info("Modo Operador ativo: a mesma visita alimenta operacional, RT ou ambos conforme o cadastro do condomínio.")
 
 # =========================================
 # MODO OPERADOR — LANÇAMENTO DE CAMPO
@@ -8237,17 +8329,57 @@ itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencen
 itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
 
 # =========================================
-# DASHBOARD EXECUTIVO / BEM STAR
+# =========================================
+# DASHBOARD EXECUTIVO / PORTAIS
 # =========================================
 
-if st.session_state.get("empresa_ativa") == "bem_star":
+if _modo_interno == "escritorio" and st.session_state.get("portal_area") == "operador":
+    _clientes_op_painel = [c for c in sheets_listar_clientes_completo() if cliente_usa_operador_vinculado(c)]
+    _qtd_rt_op = len([c for c in _clientes_op_painel if cliente_tem_vinculo_rt(c)])
+    _qtd_bs_op = len([c for c in _clientes_op_painel if cliente_tem_vinculo_bem_star(c)])
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("📱 Painel do Modo Operador")
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Condomínios disponíveis</div><div class='dash-value'>{len(_clientes_op_painel)}</div><div class='dash-sub'>Seleção por condomínio</div></div>",
+            unsafe_allow_html=True,
+        )
+    with p2:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Com vínculo RT</div><div class='dash-value'>{_qtd_rt_op}</div><div class='dash-sub'>Alimentam Aqua Gestão</div></div>",
+            unsafe_allow_html=True,
+        )
+    with p3:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Com vínculo operacional</div><div class='dash-value'>{_qtd_bs_op}</div><div class='dash-sub'>Alimentam Bem Star</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.info("No Modo Operador, o lançamento escolhe apenas o condomínio. O sistema define sozinho se a visita gera operacional, RT ou ambos.")
+    if _clientes_op_painel:
+        st.markdown("**Condomínios habilitados**")
+        for _c in _clientes_op_painel[:12]:
+            _tags = []
+            if cliente_tem_vinculo_rt(_c):
+                _tags.append("RT")
+            if cliente_tem_vinculo_bem_star(_c):
+                _tags.append("Operacional")
+            st.markdown(f"- **{_c.get('nome','Sem nome')}** — {' | '.join(_tags) if _tags else 'Sem vínculo'}")
+    else:
+        st.warning("Nenhum condomínio habilitado para o modo operador foi encontrado.")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+elif st.session_state.get("portal_area") == "bem_star" or st.session_state.get("empresa_ativa") == "bem_star":
     # --- DASHBOARD BEM STAR ---
     with st.spinner("Carregando indicadores Bem Star..."):
         metricas_bs = obter_metricas_bem_star()
-    
+
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("⭐ Painel Bem Star Piscinas")
-    
+
     db1, db2, db3 = st.columns(3)
     with db1:
         st.markdown(
@@ -8260,20 +8392,19 @@ if st.session_state.get("empresa_ativa") == "bem_star":
             unsafe_allow_html=True,
         )
     with db3:
-        # Média de visitas por cliente ativo (exemplo de métrica extra)
         media = (metricas_bs['visitas_mes'] / metricas_bs['total_ativos']) if metricas_bs['total_ativos'] > 0 else 0
         st.markdown(
             f"<div class='dash-mini'><div class='dash-title'>Média Visitas/Cli</div><div class='dash-value'>{media:.1f}</div><div class='dash-sub'>Frequência mensal média</div></div>",
             unsafe_allow_html=True,
         )
-    
+
     st.markdown("**Últimos pareceres técnicos**")
     if not metricas_bs['ultimos_pareceres']:
         st.info("Nenhum parecer técnico recente encontrado.")
     else:
         for p in metricas_bs['ultimos_pareceres']:
             st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
-    
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 else:
@@ -9815,11 +9946,13 @@ if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_contain
 st.markdown("</div>", unsafe_allow_html=True)
 
 
+st.markdown("</div>", unsafe_allow_html=True)
+
 # =========================================
 # CONTRATO BEM STAR PISCINAS
 # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
 st.subheader("📝 Contrato Bem Star Piscinas")
 st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
 
@@ -9832,7 +9965,7 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
     # ── Seletor de cliente ────────────────────────────────────────────────────
     @st.cache_data(ttl=30)
     def _clientes_bs_contrato():
-        _todos = sheets_listar_clientes_completo()
+        _todos = [c for c in sheets_listar_clientes_completo() if cliente_tem_vinculo_bem_star(c)]
         _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
         _nomes_sheets = [c["nome"] for c in _todos]
         for _cl in _locais:
@@ -10219,11 +10352,12 @@ st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_all
 st.subheader("Dados do contrato e aditivo")
 
 # ── Seletor de cliente do Sheets ──────────────────────────────────────────────
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def _clientes_completos_cache():
     return sheets_listar_clientes_completo()
 
-_clientes_rt = _clientes_completos_cache()
+_clientes_rt_base = _clientes_completos_cache()
+_clientes_rt = [c for c in _clientes_rt_base if cliente_tem_vinculo_rt(c)]
 if _clientes_rt:
     _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
     _sel_rt = st.selectbox(
