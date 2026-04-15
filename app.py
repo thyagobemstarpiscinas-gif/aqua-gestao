@@ -6902,13 +6902,14 @@ if _modo_interno == "entrada":
     .entrada-card {
         border: 1px solid rgba(20,85,160,0.15);
         border-radius: 20px;
-        padding: 32px 24px;
+        padding: 24px 24px;
         background: linear-gradient(135deg, #ffffff 0%, #f4f9ff 100%);
         box-shadow: 0 6px 24px rgba(10,50,100,0.08);
         margin: 12px 0;
         text-align: center;
     }
-    .entrada-title { font-size: 1.3rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
+    .entrada-eyebrow { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6f86a2; margin-bottom: 6px; }
+    .entrada-title { font-size: 1.35rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
     .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 18px; line-height: 1.45; }
     .entrada-chip-wrap { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; margin: 10px 0 18px 0; }
     .entrada-chip {
@@ -6929,15 +6930,7 @@ if _modo_interno == "entrada":
     with col_e2:
         st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
 
-        _logo_aq_b64 = logo_para_base64(encontrar_logo())
-        if _logo_aq_b64:
-            st.markdown(
-                f'<img src="{_logo_aq_b64}" style="max-width:220px;max-height:120px;object-fit:contain;margin-bottom:10px;" />',
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown('<div class="entrada-title">🔵 Aqua Gestão</div>', unsafe_allow_html=True)
-
+        st.markdown('<div class="entrada-eyebrow">Aqua Gestão RT</div>', unsafe_allow_html=True)
         st.markdown('<div class="entrada-title">Acesso de Campo do Operador</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="entrada-sub">Entrada simplificada por PIN, sem escolha manual de empresa. '
