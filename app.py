@@ -6900,49 +6900,30 @@ if _modo_interno == "entrada":
     st.markdown("""
     <style>
     .entrada-card {
-        border: 1px solid rgba(20,85,160,0.15);
+        border: 1px solid rgba(20,85,160,0.12);
         border-radius: 20px;
-        padding: 24px 24px;
-        background: linear-gradient(135deg, #ffffff 0%, #f4f9ff 100%);
-        box-shadow: 0 6px 24px rgba(10,50,100,0.08);
-        margin: 12px 0;
-        text-align: center;
+        padding: 18px 22px 16px 22px;
+        background: linear-gradient(135deg, #ffffff 0%, #f7fbff 100%);
+        box-shadow: 0 6px 20px rgba(10,50,100,0.06);
+        margin: 4px 0 10px 0;
+        text-align: left;
     }
-    .entrada-eyebrow { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6f86a2; margin-bottom: 6px; }
-    .entrada-title { font-size: 1.35rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
-    .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 18px; line-height: 1.45; }
-    .entrada-chip-wrap { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; margin: 10px 0 18px 0; }
-    .entrada-chip {
-        display:inline-block;
-        padding: 7px 12px;
-        border-radius: 999px;
-        background:#edf5ff;
-        color:#134b8a;
-        border:1px solid #d3e6ff;
-        font-size:0.82rem;
-        font-weight:600;
-    }
-    .entrada-link { font-size: 0.75rem; color: #aab8c8; margin-top: 18px; }
+    .entrada-eyebrow { font-size: 0.76rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6f86a2; margin-bottom: 4px; }
+    .entrada-title { font-size: 1.28rem; font-weight: 700; color: #0d3d75; margin-bottom: 4px; }
+    .entrada-sub { font-size: 0.90rem; color: #5d7288; margin-bottom: 14px; line-height: 1.4; }
+    .entrada-admin-note { font-size: 0.76rem; color: #8ea0b5; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-    col_e1, col_e2, col_e3 = st.columns([1, 2, 1])
+    col_e1, col_e2, col_e3 = st.columns([1.2, 1.6, 1.2])
     with col_e2:
         st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
 
         st.markdown('<div class="entrada-eyebrow">Aqua Gestão RT</div>', unsafe_allow_html=True)
-        st.markdown('<div class="entrada-title">Acesso de Campo do Operador</div>', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="entrada-sub">Entrada simplificada por PIN, sem escolha manual de empresa. '
-            'O sistema identifica os condomínios liberados para o operador e permite atendimento de clientes Aqua Gestão e Bem Star conforme o vínculo cadastrado.</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            '<div class="entrada-chip-wrap">'
-            '<span class="entrada-chip">📱 Acesso por PIN</span>'
-            '<span class="entrada-chip">🏢 Condomínios permitidos</span>'
-            '<span class="entrada-chip">🔄 Aqua + Bem Star</span>'
-            '</div>',
+            '<div class="entrada-sub">Entre com seu PIN e selecione o condomínio liberado.<br>'
+            'O sistema identifica automaticamente os clientes vinculados.</div>',
             unsafe_allow_html=True
         )
 
@@ -6951,10 +6932,10 @@ if _modo_interno == "entrada":
             st.session_state["mostrar_pin_admin"] = False
             st.rerun()
 
-        # Acesso ao escritório — com PIN administrativo
-        st.markdown('<div class="entrada-link">Acesso administrativo</div>', unsafe_allow_html=True)
-        if st.button("·  ·  ·", use_container_width=False, key="btn_escritorio_oculto"):
-            st.session_state["mostrar_pin_admin"] = True
+        if st.button("🔐 Acesso administrativo", use_container_width=True, key="btn_admin_limpo"):
+            st.session_state["mostrar_pin_admin"] = not st.session_state.get("mostrar_pin_admin", False)
+
+        st.markdown('<div class="entrada-admin-note">Uso interno do escritório</div>', unsafe_allow_html=True)
 
         if st.session_state.get("mostrar_pin_admin"):
             _empresa_sel_admin = st.radio(
