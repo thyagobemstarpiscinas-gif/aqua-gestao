@@ -7040,7 +7040,7 @@ if _modo_interno == "entrada":
 
     col_e1, col_e2, col_e3 = st.columns([1, 2, 1])
     with col_e2:
-        render_portal_inicial()
+# render_portal_inicial()  # movido para o final do arquivo
         st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
 
         # Seleção de empresa
@@ -11484,3 +11484,5 @@ st.markdown("---")
 st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19u"
 )
+
+render_portal_inicial()
