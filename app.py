@@ -323,10 +323,6 @@ def _log_sheets_erro(contexto: str, erro: Exception):
     st.session_state["_sheets_ultimo_erro"] = msg
 
 
-def _flag_sistema_sim(valor) -> bool:
-    return str(valor or "").strip().lower() in ("sim", "true", "1", "ativo", "yes")
-
-
 def conectar_sheets():
     """Conecta ao Google Sheets usando as credenciais do st.secrets ou arquivo local."""
     try:
@@ -372,12 +368,9 @@ def conectar_sheets():
         return None
 
 
-def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
-    """Salva lançamento de campo na aba Visitas do Google Sheets.
 
-    Mantém compatibilidade com o layout antigo e adiciona colunas extras no final
-    para a nova arquitetura por condomínio único + múltiplos serviços.
-    """
+def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
+    """Salva lançamento de campo na aba Visitas do Google Sheets."""
     try:
         sh = conectar_sheets()
         if sh is None:
@@ -386,7 +379,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         aba = sh.worksheet("🔬 Visitas")
         todos = aba.get_all_values()
 
-        visitas_existentes = [r for r in todos if len(r) > 1 and str(r[1]).startswith("V")]
+        visitas_existentes = [r for r in todos if r and len(r) > 1 and r[1] and str(r[1]).startswith("V")]
         proximo_num = len(visitas_existentes) + 1
         id_visita = f"V{proximo_num:05d}"
 
@@ -398,50 +391,87 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                 id_cliente = row[1]
                 break
 
-        fotos_antes = lancamento.get("fotos_antes", []) or []
-        fotos_depois = lancamento.get("fotos_depois", []) or []
-        fotos_cmaq = lancamento.get("fotos_cmaq", []) or []
-        dosagens = lancamento.get("dosagens", []) or []
-        piscinas = lancamento.get("piscinas", []) or []
-
-        def _json_seguro(valor):
+        def _json(v):
             try:
-                return json.dumps(valor or [], ensure_ascii=False)
+                return json.dumps(v or [], ensure_ascii=False)
             except Exception:
                 return "[]"
 
-        origem = lancamento.get("origem", "operador")
-        gera_operacional = bool(lancamento.get("gera_operacional", False))
-        gera_rt = bool(lancamento.get("gera_rt", False))
+        nova_linha = [
+            "",                                    # A
+            id_visita,                             # B
+            lancamento.get("data", ""),            # C
+            id_cliente,                            # D
+            nome_condominio,                       # E
+            lancamento.get("ph", ""),              # F
+            lancamento.get("cloro_livre", ""),     # G
+            lancamento.get("cloro_total", ""),     # H
+            lancamento.get("alcalinidade", ""),    # I
+            lancamento.get("dureza", ""),          # J
+            lancamento.get("cianurico", ""),       # K
+            "", "", "",                            # L/M/N fotos legadas
+            lancamento.get("observacao", ""),      # O
+            "", "", "", "",                        # P/Q/R/S legadas
+            "Concluída",                           # T
+            lancamento.get("operador", ""),        # U
+            lancamento.get("problemas", ""),       # V
+            lancamento.get("origem", ""),          # W
+            "SIM" if lancamento.get("gera_operacional") else "NÃO",  # X
+            "SIM" if lancamento.get("gera_rt") else "NÃO",           # Y
+            _json(lancamento.get("piscinas")),     # Z
+            _json(lancamento.get("dosagens")),     # AA
+            _json(lancamento.get("fotos_drive_ids", [])), # AB
+        ]
+
+        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_lancamento_campo", e)
+        return False
+
+        aba = sh.worksheet("🔬 Visitas")
+        todos = aba.get_all_values()
+
+        # Encontra próxima linha vazia após o cabeçalho (linha 6 = índice 5)
+        proxima_linha = len(todos) + 1
+
+        # Gera ID da visita
+        visitas_existentes = [r for r in todos if r and r[1] and r[1].startswith("V")]
+        proximo_num = len(visitas_existentes) + 1
+        id_visita = f"V{proximo_num:05d}"
+
+        # Busca ID do cliente
+        aba_clientes = sh.worksheet("👥 Clientes")
+        clientes = aba_clientes.get_all_values()
+        id_cliente = ""
+        for row in clientes:
+            if len(row) > 2 and nome_condominio.lower() in str(row[2]).lower():
+                id_cliente = row[1]
+                break
 
         nova_linha = [
-            "",                                        # col A  - vazia
-            id_visita,                                 # col B  - ID visita
-            lancamento.get("data", ""),                # col C  - Data
-            id_cliente,                                # col D  - ID cliente
-            nome_condominio,                           # col E  - Condomínio
-            lancamento.get("ph", ""),                  # col F  - pH
-            lancamento.get("cloro_livre", ""),         # col G  - CRL
-            lancamento.get("cloro_total", ""),         # col H  - CT
-            lancamento.get("alcalinidade", ""),        # col I  - Alcalinidade
-            lancamento.get("dureza", ""),              # col J  - Dureza
-            lancamento.get("cianurico", ""),           # col K  - CYA
-            " | ".join(fotos_antes),                   # col L  - foto antes
-            " | ".join(fotos_depois),                  # col M  - foto depois
-            " | ".join(fotos_cmaq),                    # col N  - foto casa máquinas
-            lancamento.get("observacao", ""),          # col O  - Observação
-            _json_seguro(dosagens),                    # col P  - dosagens JSON
-            "",                                        # col Q  - reservado
-            "",                                        # col R  - reservado
-            "",                                        # col S  - reservado
-            "Concluída",                               # col T  - Status
-            lancamento.get("operador", ""),            # col U  - Operador
-            lancamento.get("problemas", ""),           # col V  - Problemas
-            origem,                                    # col W  - origem
-            "SIM" if gera_operacional else "NÃO",     # col X  - gera operacional
-            "SIM" if gera_rt else "NÃO",              # col Y  - gera RT
-            _json_seguro(piscinas),                    # col Z  - piscinas JSON
-            _json_seguro(lancamento.get("fotos_drive_ids", [])),  # col AA - fotos drive ids
+            "",                                    # col A  - vazia
+            id_visita,                             # col B  - ID visita
+            lancamento.get("data", ""),            # col C  - Data
+            id_cliente,                            # col D  - ID cliente
+            nome_condominio,                       # col E  - Condomínio
+            lancamento.get("ph", ""),              # col F  - pH
+            lancamento.get("cloro_livre", ""),     # col G  - CRL
+            lancamento.get("cloro_total", ""),     # col H  - CT ← adicionado
+            lancamento.get("alcalinidade", ""),    # col I  - Alcalinidade
+            lancamento.get("dureza", ""),          # col J  - Dureza
+            lancamento.get("cianurico", ""),       # col K  - CYA
+            "",                                    # col L  - foto antes
+            "",                                    # col M  - foto depois
+            "",                                    # col N  - foto casa máquinas
+            lancamento.get("observacao", ""),      # col O  - Observação
+            "",                                    # col P  - dosagem cloro
+            "",                                    # col Q  - dosagem bicarb
+            "",                                    # col R  - alerta pH
+            "",                                    # col S  - alerta cloro
+            "Concluída",                           # col T  - Status
+            lancamento.get("operador", ""),        # col U  - Operador
+            lancamento.get("problemas", ""),       # col V  - Problemas
         ]
 
         aba.append_row(nova_linha, value_input_option="USER_ENTERED")
@@ -538,13 +568,10 @@ def sheets_listar_clientes() -> list[str]:
         return []
 
 
+
 def sheets_listar_clientes_completo() -> list[dict]:
-    """Retorna lista de dicts com dados completos de cada cliente do Sheets.
-    
-    Mapeamento das colunas da planilha:
-      B=ID, C=Nome, D=Volume_m3, E=Contato_Sindico/Telefone, 
-      F=Email_Sindico, G=Endereco, H=Data_Cadastro, I=Status
-    """
+    """Retorna lista de dicts com dados completos de cada cliente do Sheets,
+    enriquecendo com metadados estruturados salvos localmente."""
     import re as _re
     try:
         sh = conectar_sheets()
@@ -562,78 +589,54 @@ def sheets_listar_clientes_completo() -> list[dict]:
             nome = str(row[2]).strip() if len(row) > 2 else ""
             if not nome:
                 continue
-            # Detecta se col E é telefone ou email
+
             col_e = str(row[4]).strip() if len(row) > 4 else ""
             col_f = str(row[5]).strip() if len(row) > 5 else ""
-            # Se col_e tem @ é email do síndico; senão é telefone
             if "@" in col_e:
                 telefone = ""
-                contato  = ""
-                email    = col_e
+                contato = ""
+                email = col_e
             else:
                 telefone = formatar_telefone(col_e) if col_e else ""
-                contato  = col_f if col_f else ""
-                email    = ""
-            # Volumes das piscinas (colunas J=9, K=10, L=11)
+                contato = col_f if col_f else ""
+                email = ""
+
             def _vol(r, idx):
-                try: return float(str(r[idx]).replace(",",".").strip() or 0) if len(r) > idx else 0.0
-                except: return 0.0
-            vol_adulto   = _vol(row, 9)
+                try:
+                    return float(str(r[idx]).replace(",", ".").strip() or 0) if len(r) > idx else 0.0
+                except Exception:
+                    return 0.0
+
+            vol_adulto = _vol(row, 9)
             vol_infantil = _vol(row, 10)
-            vol_family   = _vol(row, 11)
-            vol_total    = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
+            vol_family = _vol(row, 11)
+            vol_total = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
 
-            _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
-            if not _empresa_cl:
-                _empresa_cl = "Aqua Gestão"
+            empresa = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
+            if not empresa:
+                empresa = "Aqua Gestão"
 
-            usa_operador = _flag_sistema_sim(row[13] if len(row) > 13 else "")
-            contrato_manut = _flag_sistema_sim(row[14] if len(row) > 14 else "")
-            empresa_manut = str(row[15]).strip() if len(row) > 15 else ("Bem Star Piscinas" if "bem star" in _empresa_cl.lower() else "")
-            contrato_rt = _flag_sistema_sim(row[16] if len(row) > 16 else "")
-            empresa_rt = str(row[17]).strip() if len(row) > 17 else ("Aqua Gestão" if "aqua" in _empresa_cl.lower() else "")
-            gera_operacional = _flag_sistema_sim(row[18] if len(row) > 18 else "") or contrato_manut
-            gera_rt = _flag_sistema_sim(row[19] if len(row) > 19 else "") or contrato_rt
-
-            if not contrato_manut and "bem star" in _empresa_cl.lower():
-                contrato_manut = True
-            if not contrato_rt and "aqua" in _empresa_cl.lower():
-                contrato_rt = True
-            if not empresa_manut and contrato_manut:
-                empresa_manut = "Bem Star Piscinas"
-            if not empresa_rt and contrato_rt:
-                empresa_rt = "Aqua Gestão"
-            if not usa_operador and (contrato_manut or contrato_rt):
-                usa_operador = True
-
-            clientes.append({
-                "id":           id_val,
-                "nome":         nome,
-                "cnpj":         "",
-                "telefone":     telefone,
-                "contato":      contato,
-                "email":        email,
-                "endereco":     str(row[6]).strip() if len(row) > 6 else "",
-                "status":       str(row[8]).strip() if len(row) > 8 else "Ativo",
-                "vol_total":    vol_total,
-                "vol_adulto":   vol_adulto,
+            cliente = {
+                "id": id_val,
+                "nome": nome,
+                "cnpj": "",
+                "telefone": telefone,
+                "contato": contato,
+                "email": email,
+                "endereco": str(row[6]).strip() if len(row) > 6 else "",
+                "status": str(row[8]).strip() if len(row) > 8 else "Ativo",
+                "vol_total": vol_total,
+                "vol_adulto": vol_adulto,
                 "vol_infantil": vol_infantil,
-                "vol_family":   vol_family,
-                "empresa":      _empresa_cl,
-                "Usa_Operador": "SIM" if usa_operador else "NÃO",
-                "Contrato_Manutencao_Ativo": "SIM" if contrato_manut else "NÃO",
-                "Empresa_Manutencao": empresa_manut,
-                "Contrato_RT_Ativo": "SIM" if contrato_rt else "NÃO",
-                "Empresa_RT": empresa_rt,
-                "Gera_Relatorio_Operacional": "SIM" if gera_operacional else "NÃO",
-                "Gera_Relatorio_RT": "SIM" if gera_rt else "NÃO",
-                "piscinas_extras": [],  # carregado do JSON local se disponível
-            })
+                "vol_family": vol_family,
+                "empresa": empresa,
+                "piscinas_extras": [],
+            }
+            clientes.append(enriquecer_cliente_com_metadados(cliente))
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
         return []
-
 
 
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
@@ -1648,6 +1651,135 @@ def buscar_cep(cep: str) -> dict:
     return {}
 
 
+
+def _flag_sim(valor) -> bool:
+    return str(valor or "").strip().lower() in ("sim", "true", "1", "ativo", "yes")
+
+
+def _empresa_para_vinculos(empresa: str) -> dict:
+    emp = str(empresa or "").strip().lower()
+    if emp == "ambas":
+        return {
+            "Contrato_Manutencao_Ativo": "SIM",
+            "Empresa_Manutencao": "Bem Star Piscinas",
+            "Contrato_RT_Ativo": "SIM",
+            "Empresa_RT": "Aqua Gestão",
+            "Usa_Operador": "SIM",
+            "Gera_Relatorio_Operacional": "SIM",
+            "Gera_Relatorio_RT": "SIM",
+        }
+    if "bem star" in emp:
+        return {
+            "Contrato_Manutencao_Ativo": "SIM",
+            "Empresa_Manutencao": "Bem Star Piscinas",
+            "Contrato_RT_Ativo": "NÃO",
+            "Empresa_RT": "",
+            "Usa_Operador": "SIM",
+            "Gera_Relatorio_Operacional": "SIM",
+            "Gera_Relatorio_RT": "NÃO",
+        }
+    return {
+        "Contrato_Manutencao_Ativo": "NÃO",
+        "Empresa_Manutencao": "",
+        "Contrato_RT_Ativo": "SIM",
+        "Empresa_RT": "Aqua Gestão",
+        "Usa_Operador": "SIM",
+        "Gera_Relatorio_Operacional": "NÃO",
+        "Gera_Relatorio_RT": "SIM",
+    }
+
+
+def salvar_metadados_cliente_estruturado(nome: str, payload: dict | None = None) -> bool:
+    """Salva vínculos estruturados do condomínio em JSON local."""
+    try:
+        if not nome or not str(nome).strip():
+            return False
+        pasta = GENERATED_DIR / slugify_nome(str(nome).strip())
+        pasta.mkdir(parents=True, exist_ok=True)
+        dados = carregar_dados_condominio(pasta) or {}
+        dados["nome_condominio"] = str(nome).strip()
+        payload = payload or {}
+        for k, v in payload.items():
+            dados[k] = v
+        salvar_dados_condominio(pasta, dados)
+        return True
+    except Exception:
+        return False
+
+
+def carregar_metadados_cliente_estruturado(nome: str) -> dict:
+    try:
+        if not nome or not str(nome).strip():
+            return {}
+        pasta = GENERATED_DIR / slugify_nome(str(nome).strip())
+        return carregar_dados_condominio(pasta) or {}
+    except Exception:
+        return {}
+
+
+def enriquecer_cliente_com_metadados(cliente: dict) -> dict:
+    if not isinstance(cliente, dict):
+        return {}
+    nome = str(cliente.get("nome", "")).strip()
+    meta = carregar_metadados_cliente_estruturado(nome)
+    if not meta:
+        base = dict(cliente)
+        # fallback legado pelo campo empresa
+        fallback = _empresa_para_vinculos(base.get("empresa", "Aqua Gestão"))
+        for k, v in fallback.items():
+            base.setdefault(k, v)
+        base.setdefault("piscinas_extras", [])
+        return base
+
+    combinado = dict(cliente)
+    for campo in [
+        "Usa_Operador",
+        "Contrato_Manutencao_Ativo",
+        "Empresa_Manutencao",
+        "Contrato_RT_Ativo",
+        "Empresa_RT",
+        "Gera_Relatorio_Operacional",
+        "Gera_Relatorio_RT",
+        "Piscinas_Extras_JSON",
+        "Observacoes",
+        "piscinas_extras",
+    ]:
+        if campo in meta:
+            combinado[campo] = meta[campo]
+
+    if meta.get("piscinas_extras") and not combinado.get("piscinas_extras"):
+        combinado["piscinas_extras"] = meta.get("piscinas_extras", [])
+
+    # fallback legado
+    fallback = _empresa_para_vinculos(combinado.get("empresa", "Aqua Gestão"))
+    for k, v in fallback.items():
+        combinado.setdefault(k, v)
+        if not str(combinado.get(k, "")).strip():
+            combinado[k] = v
+    return combinado
+
+
+def cliente_tem_rt(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    c = enriquecer_cliente_com_metadados(cliente)
+    return _flag_sim(c.get("Contrato_RT_Ativo")) or _flag_sim(c.get("Gera_Relatorio_RT"))
+
+
+def cliente_tem_manutencao(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    c = enriquecer_cliente_com_metadados(cliente)
+    return _flag_sim(c.get("Contrato_Manutencao_Ativo")) or _flag_sim(c.get("Gera_Relatorio_Operacional"))
+
+
+def cliente_usa_operador(cliente: dict) -> bool:
+    if not isinstance(cliente, dict):
+        return False
+    c = enriquecer_cliente_com_metadados(cliente)
+    return _flag_sim(c.get("Usa_Operador")) or cliente_tem_rt(c) or cliente_tem_manutencao(c)
+
+
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     """Filtra lista de clientes pelo campo empresa.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
@@ -1664,38 +1796,6 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
         elif empresa_ativa == "aqua_gestao" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
             resultado.append(c)
     return resultado
-
-
-def cliente_tem_vinculo_rt(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    if _flag_sistema_sim(cliente.get("Contrato_RT_Ativo", cliente.get("contrato_rt_ativo", ""))):
-        return True
-    if _flag_sistema_sim(cliente.get("Gera_Relatorio_RT", cliente.get("gera_relatorio_rt", ""))):
-        return True
-    empresa_rt = str(cliente.get("Empresa_RT", cliente.get("empresa_rt", ""))).strip().lower()
-    empresa = str(cliente.get("empresa", "")).strip().lower()
-    return "aqua" in empresa_rt or empresa in ("aqua gestão", "aqua gestao", "ambas")
-
-
-def cliente_tem_vinculo_bem_star(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    if _flag_sistema_sim(cliente.get("Contrato_Manutencao_Ativo", cliente.get("contrato_manutencao_ativo", ""))):
-        return True
-    if _flag_sistema_sim(cliente.get("Gera_Relatorio_Operacional", cliente.get("gera_relatorio_operacional", ""))):
-        return True
-    empresa_manut = str(cliente.get("Empresa_Manutencao", cliente.get("empresa_manutencao", ""))).strip().lower()
-    empresa = str(cliente.get("empresa", "")).strip().lower()
-    return "bem star" in empresa_manut or empresa in ("bem star piscinas", "ambas")
-
-
-def cliente_usa_operador_vinculado(cliente: dict) -> bool:
-    if not isinstance(cliente, dict):
-        return False
-    if _flag_sistema_sim(cliente.get("Usa_Operador", cliente.get("usa_operador", ""))):
-        return True
-    return cliente_tem_vinculo_rt(cliente) or cliente_tem_vinculo_bem_star(cliente)
 
 
 def slugify_nome(texto: str) -> str:
@@ -6670,14 +6770,6 @@ def _autosave_rascunho_relatorio():
     except Exception:
         pass
 
-
-def _autosave_rascunho():
-    """Compatibilidade: redireciona o autosave legado para o rascunho do relatório."""
-    try:
-        return _autosave_rascunho_relatorio()
-    except Exception:
-        return None
-
 def excluir_rascunho_relatorio(pasta_condominio: Path):
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     if caminho.exists():
@@ -7050,30 +7142,12 @@ if _modo_interno == "entrada":
     st.stop()
 
 
-# CSS dinâmico / portal
-if "portal_area" not in st.session_state:
-    st.session_state["portal_area"] = "bem_star" if st.session_state.get("empresa_ativa") == "bem_star" else "aqua"
-
+# CSS dinâmico: oculta seções Aqua Gestão quando empresa Bem Star está ativa
 _empresa_css_flag = st.session_state.get("empresa_ativa", "aqua_gestao")
-_portal_area_css = st.session_state.get("portal_area", "aqua")
-
-if _portal_area_css == "aqua":
-    st.markdown("""
-    <style>
-    div.bs-only { display: none !important; }
-    </style>
-    """, unsafe_allow_html=True)
-elif _portal_area_css == "bem_star":
+if _empresa_css_flag == "bem_star":
     st.markdown("""
     <style>
     div.aq-only { display: none !important; }
-    </style>
-    """, unsafe_allow_html=True)
-elif _portal_area_css == "operador":
-    st.markdown("""
-    <style>
-    div.aq-only { display: none !important; }
-    div.bs-only { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -7089,40 +7163,6 @@ if _modo_interno in ("escritorio", "operador"):
         if _modo_interno == "operador":
             st.session_state["op_pin_ok"] = False
         st.rerun()
-
-if _modo_interno == "escritorio":
-    st.markdown("**Área ativa**")
-    _portal_labels = {
-        "aqua": "🔵 Aqua Gestão – Gestão Técnica",
-        "bem_star": "⭐ Bem Star – Operacional",
-        "operador": "📱 Modo Operador",
-    }
-    _portal_atual = st.session_state.get("portal_area", "aqua")
-    _portal_idx = ["aqua", "bem_star", "operador"].index(_portal_atual if _portal_atual in ("aqua","bem_star","operador") else "aqua")
-    _portal_escolhido_label = st.radio(
-        "Área ativa",
-        [_portal_labels["aqua"], _portal_labels["bem_star"], _portal_labels["operador"]],
-        index=_portal_idx,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="portal_area_selector_escritorio",
-    )
-    _portal_inv = {v:k for k,v in _portal_labels.items()}
-    _novo_portal = _portal_inv.get(_portal_escolhido_label, "aqua")
-    if st.session_state.get("portal_area") != _novo_portal:
-        st.session_state["portal_area"] = _novo_portal
-        if _novo_portal == "aqua":
-            st.session_state["empresa_ativa"] = "aqua_gestao"
-        elif _novo_portal == "bem_star":
-            st.session_state["empresa_ativa"] = "bem_star"
-        st.rerun()
-
-    if st.session_state.get("portal_area") == "aqua":
-        st.info("Área Aqua Gestão ativa: filtros, clientes e relatórios priorizam contratos de RT.")
-    elif st.session_state.get("portal_area") == "bem_star":
-        st.info("Área Bem Star ativa: filtros e relatórios operacionais priorizam manutenção ativa.")
-    else:
-        st.info("Modo Operador ativo: a mesma visita alimenta operacional, RT ou ambos conforme o cadastro do condomínio.")
 
 # =========================================
 # MODO OPERADOR — LANÇAMENTO DE CAMPO
@@ -7274,24 +7314,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.success("✅ Rascunho restaurado! Continue de onde parou.")
 
     _clientes_todos_op = _buscar_clientes_sheets_completo()
+    _clientes_operador_base = [c for c in _clientes_todos_op if cliente_usa_operador(c)]
+    clientes_sheets = [c["nome"] for c in _clientes_operador_base if c.get("nome")]
 
-    def _cliente_disponivel_no_modo_operador(c: dict) -> bool:
-        if not isinstance(c, dict):
-            return False
-
-        usa_operador = _flag_sistema_sim(c.get("Usa_Operador", c.get("usa_operador", "")))
-        contrato_manut = _flag_sistema_sim(c.get("Contrato_Manutencao_Ativo", c.get("contrato_manutencao_ativo", "")))
-        contrato_rt = _flag_sistema_sim(c.get("Contrato_RT_Ativo", c.get("contrato_rt_ativo", "")))
-
-        # fallback retroativo para cadastros antigos
-        empresa = str(c.get("empresa", "")).strip().lower()
-        legado_manut = "bem star" in empresa
-        legado_rt = "aqua" in empresa
-
-        return usa_operador or contrato_manut or contrato_rt or legado_manut or legado_rt
-
-    _clientes_operador_base = [c for c in _clientes_todos_op if _cliente_disponivel_no_modo_operador(c)]
-    clientes_sheets = sorted([c["nome"] for c in _clientes_operador_base if c.get("nome")])
     st.caption("O vínculo operacional e/ou RT será definido automaticamente pelo cadastro do condomínio.")
 
     # Combina clientes do Sheets com os locais
@@ -7333,7 +7358,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
     else:
         if opcoes_cond:
-            op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond", help="Selecione somente o condomínio.")
+            op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
             
             # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
             if op_nome_cond:
@@ -8113,27 +8138,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     _salvar_assinatura_local(assinatura_responsavel_b64, pasta_assinaturas / assinatura_responsavel_arquivo)
 
                 dados_ex = carregar_dados_condominio(pasta_op) or {}
-
-                _cliente_sel = next(
-                    (c for c in _clientes_todos_op if str(c.get("nome", "")).strip().lower() == op_nome_cond.strip().lower()),
-                    {}
-                )
-                gera_operacional = _flag_sistema_sim(_cliente_sel.get("Gera_Relatorio_Operacional", _cliente_sel.get("gera_relatorio_operacional", "")))
-                gera_rt = _flag_sistema_sim(_cliente_sel.get("Gera_Relatorio_RT", _cliente_sel.get("gera_relatorio_rt", "")))
-
-                if not gera_operacional:
-                    gera_operacional = _flag_sistema_sim(_cliente_sel.get("Contrato_Manutencao_Ativo", _cliente_sel.get("contrato_manutencao_ativo", "")))
-                if not gera_rt:
-                    gera_rt = _flag_sistema_sim(_cliente_sel.get("Contrato_RT_Ativo", _cliente_sel.get("contrato_rt_ativo", "")))
-
-                # fallback retroativo por empresa antiga
-                _empresa_legado = str(_cliente_sel.get("empresa", "")).strip().lower()
-                if not gera_operacional and "bem star" in _empresa_legado:
-                    gera_operacional = True
-                if not gera_rt and "aqua" in _empresa_legado:
-                    gera_rt = True
-
-                dados_ex = carregar_dados_condominio(pasta_op) or {}
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
@@ -8160,9 +8164,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_depois_b64": fotos_depois_b64,
                     "fotos_cmaq_b64": fotos_cmaq_b64,
                     "condominio": op_nome_cond.strip(),
-                    "origem": "operador",
-                    "gera_operacional": gera_operacional,
-                    "gera_rt": gera_rt,
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
                 pendentes = dados_ex.get("lancamentos_campo", [])
@@ -8172,6 +8173,18 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if op_dosagens:
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
+
+                # Herda automaticamente os vínculos do cadastro do condomínio
+                _cliente_sel = next(
+                    (c for c in _clientes_todos_op if str(c.get("nome", "")).strip().lower() == op_nome_cond.strip().lower()),
+                    {}
+                )
+                _cliente_sel = enriquecer_cliente_com_metadados(_cliente_sel)
+                lancamento["gera_operacional"] = cliente_tem_manutencao(_cliente_sel)
+                lancamento["gera_rt"] = cliente_tem_rt(_cliente_sel)
+                lancamento["origem"] = "modo_operador"
+                lancamento["piscinas"] = analises_novas
+                lancamento["dosagens"] = op_dosagens
 
                 # Salva também no Google Sheets
                 ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
@@ -8329,57 +8342,17 @@ itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencen
 itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
 
 # =========================================
+# DASHBOARD EXECUTIVO / BEM STAR
 # =========================================
-# DASHBOARD EXECUTIVO / PORTAIS
-# =========================================
 
-if _modo_interno == "escritorio" and st.session_state.get("portal_area") == "operador":
-    _clientes_op_painel = [c for c in sheets_listar_clientes_completo() if cliente_usa_operador_vinculado(c)]
-    _qtd_rt_op = len([c for c in _clientes_op_painel if cliente_tem_vinculo_rt(c)])
-    _qtd_bs_op = len([c for c in _clientes_op_painel if cliente_tem_vinculo_bem_star(c)])
-
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("📱 Painel do Modo Operador")
-    p1, p2, p3 = st.columns(3)
-    with p1:
-        st.markdown(
-            f"<div class='dash-mini'><div class='dash-title'>Condomínios disponíveis</div><div class='dash-value'>{len(_clientes_op_painel)}</div><div class='dash-sub'>Seleção por condomínio</div></div>",
-            unsafe_allow_html=True,
-        )
-    with p2:
-        st.markdown(
-            f"<div class='dash-mini'><div class='dash-title'>Com vínculo RT</div><div class='dash-value'>{_qtd_rt_op}</div><div class='dash-sub'>Alimentam Aqua Gestão</div></div>",
-            unsafe_allow_html=True,
-        )
-    with p3:
-        st.markdown(
-            f"<div class='dash-mini'><div class='dash-title'>Com vínculo operacional</div><div class='dash-value'>{_qtd_bs_op}</div><div class='dash-sub'>Alimentam Bem Star</div></div>",
-            unsafe_allow_html=True,
-        )
-
-    st.info("No Modo Operador, o lançamento escolhe apenas o condomínio. O sistema define sozinho se a visita gera operacional, RT ou ambos.")
-    if _clientes_op_painel:
-        st.markdown("**Condomínios habilitados**")
-        for _c in _clientes_op_painel[:12]:
-            _tags = []
-            if cliente_tem_vinculo_rt(_c):
-                _tags.append("RT")
-            if cliente_tem_vinculo_bem_star(_c):
-                _tags.append("Operacional")
-            st.markdown(f"- **{_c.get('nome','Sem nome')}** — {' | '.join(_tags) if _tags else 'Sem vínculo'}")
-    else:
-        st.warning("Nenhum condomínio habilitado para o modo operador foi encontrado.")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
-
-elif st.session_state.get("portal_area") == "bem_star" or st.session_state.get("empresa_ativa") == "bem_star":
+if st.session_state.get("empresa_ativa") == "bem_star":
     # --- DASHBOARD BEM STAR ---
     with st.spinner("Carregando indicadores Bem Star..."):
         metricas_bs = obter_metricas_bem_star()
-
+    
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("⭐ Painel Bem Star Piscinas")
-
+    
     db1, db2, db3 = st.columns(3)
     with db1:
         st.markdown(
@@ -8392,19 +8365,20 @@ elif st.session_state.get("portal_area") == "bem_star" or st.session_state.get("
             unsafe_allow_html=True,
         )
     with db3:
+        # Média de visitas por cliente ativo (exemplo de métrica extra)
         media = (metricas_bs['visitas_mes'] / metricas_bs['total_ativos']) if metricas_bs['total_ativos'] > 0 else 0
         st.markdown(
             f"<div class='dash-mini'><div class='dash-title'>Média Visitas/Cli</div><div class='dash-value'>{media:.1f}</div><div class='dash-sub'>Frequência mensal média</div></div>",
             unsafe_allow_html=True,
         )
-
+    
     st.markdown("**Últimos pareceres técnicos**")
     if not metricas_bs['ultimos_pareceres']:
         st.info("Nenhum parecer técnico recente encontrado.")
     else:
         for p in metricas_bs['ultimos_pareceres']:
             st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
-
+    
     st.markdown("</div>", unsafe_allow_html=True)
 
 else:
@@ -9294,15 +9268,12 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_editar:
-                    _pasta_extras2 = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras2.mkdir(parents=True, exist_ok=True)
-                    _dados_extras2 = carregar_dados_condominio(_pasta_extras2) or {}
-                    _dados_extras2["piscinas_extras"] = _piscs_extras_editar
-                    _dados_extras2["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras2, _dados_extras2)
-                msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
+                _meta_vinculos = _empresa_para_vinculos(_cc_empresa_val)
+                _meta_vinculos["piscinas_extras"] = _piscs_extras_editar
+                _meta_vinculos["Piscinas_Extras_JSON"] = json.dumps(_piscs_extras_editar, ensure_ascii=False)
+                _meta_vinculos["Observacoes"] = ""
+                salvar_metadados_cliente_estruturado(cc_nome.strip(), _meta_vinculos)
+                msg_ok = f"✅ Cliente '{cc_nome}' atualizado com cadastro estruturado!"
             else:
                 # Coleta piscinas extras
                 _piscs_extras_salvar = []
@@ -9323,15 +9294,12 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_salvar:
-                    _pasta_extras = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras.mkdir(parents=True, exist_ok=True)
-                    _dados_extras = carregar_dados_condominio(_pasta_extras) or {}
-                    _dados_extras["piscinas_extras"] = _piscs_extras_salvar
-                    _dados_extras["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras, _dados_extras)
-                msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+                _meta_vinculos = _empresa_para_vinculos(_cc_empresa_val)
+                _meta_vinculos["piscinas_extras"] = _piscs_extras_salvar
+                _meta_vinculos["Piscinas_Extras_JSON"] = json.dumps(_piscs_extras_salvar, ensure_ascii=False)
+                _meta_vinculos["Observacoes"] = ""
+                salvar_metadados_cliente_estruturado(cc_nome.strip(), _meta_vinculos)
+                msg_ok = f"✅ Cliente '{cc_nome}' salvo com cadastro estruturado! O operador já pode selecioná-lo no celular."
         if ok:
             st.success(msg_ok)
             st.cache_data.clear()
@@ -9946,13 +9914,11 @@ if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_contain
 st.markdown("</div>", unsafe_allow_html=True)
 
 
-st.markdown("</div>", unsafe_allow_html=True)
-
 # =========================================
 # CONTRATO BEM STAR PISCINAS
 # =========================================
 
-st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("📝 Contrato Bem Star Piscinas")
 st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
 
@@ -9965,7 +9931,7 @@ with st.expander("📋 Preencher e gerar contrato", expanded=st.session_state["b
     # ── Seletor de cliente ────────────────────────────────────────────────────
     @st.cache_data(ttl=30)
     def _clientes_bs_contrato():
-        _todos = [c for c in sheets_listar_clientes_completo() if cliente_tem_vinculo_bem_star(c)]
+        _todos = sheets_listar_clientes_completo()
         _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
         _nomes_sheets = [c["nome"] for c in _todos]
         for _cl in _locais:
@@ -10352,12 +10318,11 @@ st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_all
 st.subheader("Dados do contrato e aditivo")
 
 # ── Seletor de cliente do Sheets ──────────────────────────────────────────────
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def _clientes_completos_cache():
     return sheets_listar_clientes_completo()
 
-_clientes_rt_base = _clientes_completos_cache()
-_clientes_rt = [c for c in _clientes_rt_base if cliente_tem_vinculo_rt(c)]
+_clientes_rt = [c for c in _clientes_completos_cache() if cliente_tem_rt(c)]
 if _clientes_rt:
     _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
     _sel_rt = st.selectbox(
