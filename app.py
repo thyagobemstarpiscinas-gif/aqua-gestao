@@ -1061,7 +1061,7 @@ LOGO_BEM_STAR_CANDIDATOS = [
     BASE_DIR / "bem_star_logo.jpg",
     BASE_DIR / "assets" / "bem_star_logo.png",
 ]
-TEMPLATE_CONTRATO = BASE_DIR / "template_rt_aqua_v2.docx"
+TEMPLATE_CONTRATO = BASE_DIR / "template_rt_aqua_v2_relatorio.docx"
 TEMPLATE_BEM_STAR = BASE_DIR / "template_bem_star.docx"
 TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
