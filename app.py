@@ -8997,8 +8997,16 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
             _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
-            st.session_state["cc_srv_rt"] = _servicos_cc.get("rt", False)
-            st.session_state["cc_srv_limpeza"] = _servicos_cc.get("limpeza", False)
+            # Força os valores dos checkboxes ANTES do rerun para garantir que sejam aplicados
+            st.session_state["cc_srv_rt"]       = bool(_servicos_cc.get("rt", False))
+            st.session_state["cc_srv_limpeza"]  = bool(_servicos_cc.get("limpeza", False))
+            # Se ambos False (dado legado), força pelo campo empresa
+            if not st.session_state["cc_srv_rt"] and not st.session_state["cc_srv_limpeza"]:
+                _emp_legado = str(_cc_cliente_editar.get("empresa", "Aqua Gestão") or "Aqua Gestão").lower()
+                if "bem star" in _emp_legado or "bemstar" in _emp_legado or "limpeza" in _emp_legado:
+                    st.session_state["cc_srv_limpeza"] = True
+                else:
+                    st.session_state["cc_srv_rt"] = True
             st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
