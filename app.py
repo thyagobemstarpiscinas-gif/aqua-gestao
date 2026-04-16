@@ -10335,6 +10335,11 @@ with col2:
         placeholder="R$ 1.621,00",
     )
     st.text_input(
+        "Valor por extenso",
+        key="valor_mensal_extenso",
+        placeholder="um mil, seiscentos e vinte e um reais",
+    )
+    st.text_input(
         "Valor com desconto/aditivo",
         key="valor_aditivo",
         on_change=on_change_valor_aditivo,
@@ -10346,6 +10351,20 @@ with col2:
         key="frequencia_visitas",
         help="Número de visitas técnicas semanais contratadas.",
     )
+    _col_dia, _col_forma = st.columns(2)
+    with _col_dia:
+        st.text_input(
+            "Dia de vencimento",
+            key="dia_pagamento",
+            placeholder="10",
+            max_chars=2,
+        )
+    with _col_forma:
+        st.selectbox(
+            "Forma de pagamento",
+            options=["Pix", "Transferência bancária", "Boleto", "Outro"],
+            key="forma_pagamento",
+        )
     st.text_input(
         "Data de início",
         key="data_inicio",
