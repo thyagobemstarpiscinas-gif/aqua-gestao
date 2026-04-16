@@ -11170,6 +11170,18 @@ def gerar_contrato_bem_star_docx(
 
 def gerar_contrato_e_aditivo():
     email_cliente = st.session_state.email_cliente.strip()
+    dados = {
+        "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
+        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
+        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
+        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
+        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
+        "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
+        "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
+        "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
+    }
     erros = validar_para_geracao(dados, email_cliente)
 
     if erros:
@@ -11347,6 +11359,18 @@ def gerar_contrato_e_aditivo():
 
 def gerar_somente_aditivo_rapido():
     email_cliente = st.session_state.email_cliente.strip()
+    dados = {
+        "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
+        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
+        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
+        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
+        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
+        "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
+        "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
+        "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
+    }
     erros = validar_para_geracao(dados, email_cliente)
 
     if erros:
