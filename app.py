@@ -7184,41 +7184,23 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         disabled=True
     )
 
-    # ── FASE 2: Filtra condomínios pelo vínculo direto do cadastro (PIN → condomínio automático) ──
+    # ── FASE 2: Filtra condomínios combinando vínculo direto E permitidos pelo PIN ──
     if _op_acesso_total or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
         opcoes_cond = opcoes_cond_todas
-    elif _op_conds_vinculo_direto:
-        opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_vinculo_direto, opcoes_cond_todas)
-        # Seleção automática quando há exatamente 1 condomínio vinculado
-        if len(opcoes_cond) == 1:
-            st.markdown(
-                f'<div class="op-note-compact">🔗 Condomínio identificado automaticamente: '
-                f'<strong>{opcoes_cond[0]}</strong></div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                f'<div class="op-note-compact">🔗 {len(opcoes_cond)} condomínio(s) liberado(s) pelo seu PIN.</div>',
-                unsafe_allow_html=True
-            )
-    elif not _op_conds_permitidos:
-        opcoes_cond = opcoes_cond_todas
     else:
-        opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
-        if opcoes_cond:
-            if len(opcoes_cond) == 1:
+        # Une os dois conjuntos: condomínios vinculados diretamente + liberados pelo PIN
+        _todos_permitidos = list(dict.fromkeys(_op_conds_vinculo_direto + list(_op_conds_permitidos)))
+        if _todos_permitidos:
+            opcoes_cond = _resolver_condominios_permitidos_exatos(_todos_permitidos, opcoes_cond_todas)
+            if opcoes_cond:
                 st.markdown(
-                    f'<div class="op-note-compact">✅ Condomínio identificado automaticamente: '
-                    f'<strong>{opcoes_cond[0]}</strong></div>',
+                    f'<div class="op-note-compact">✅ {len(opcoes_cond)} condomínio(s) liberado(s) pelo seu PIN.</div>',
                     unsafe_allow_html=True
                 )
             else:
-                st.markdown(
-                    f'<div class="op-note-compact">✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).</div>',
-                    unsafe_allow_html=True
-                )
+                st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
         else:
-            st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
+            opcoes_cond = opcoes_cond_todas
 
     op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -7232,7 +7214,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                  if _normalizar_chave_acesso(c) not in ("todos", "")]
                 if not _op_acesso_total else []
             )
-            if len(_conds_cadastrados) == 1 and len(opcoes_cond) == 1 and not _op_acesso_total:
+            _total_permitidos = len(list(dict.fromkeys(
+                _op_conds_vinculo_direto + [c for c in _op_conds_permitidos
+                if _normalizar_chave_acesso(c) not in ("todos","")]
+            )))
+            if _total_permitidos == 1 and len(opcoes_cond) == 1 and not _op_acesso_total:
                 op_nome_cond = opcoes_cond[0]
                 st.markdown(
                     f'<div class="op-card" style="background:#f0f7ff;border-color:#1565A8;">'
