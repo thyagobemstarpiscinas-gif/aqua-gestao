@@ -7225,8 +7225,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
     else:
         if opcoes_cond:
-            # Fase 2: se só há 1 condomínio vinculado, pré-seleciona automaticamente (sem mostrar dropdown)
-            if len(opcoes_cond) == 1 and not _op_acesso_total:
+            # Fase 2: card fixo APENAS quando o operador tem exatamente 1 condomínio
+            # registrado no seu cadastro (não conta acesso_total nem lista global)
+            _conds_cadastrados = _op_conds_vinculo_direto or (
+                [c for c in _op_conds_permitidos
+                 if _normalizar_chave_acesso(c) not in ("todos", "")]
+                if not _op_acesso_total else []
+            )
+            if len(_conds_cadastrados) == 1 and len(opcoes_cond) == 1 and not _op_acesso_total:
                 op_nome_cond = opcoes_cond[0]
                 st.markdown(
                     f'<div class="op-card" style="background:#f0f7ff;border-color:#1565A8;">'
