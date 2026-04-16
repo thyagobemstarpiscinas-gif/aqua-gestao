@@ -1061,7 +1061,7 @@ LOGO_BEM_STAR_CANDIDATOS = [
     BASE_DIR / "bem_star_logo.jpg",
     BASE_DIR / "assets" / "bem_star_logo.png",
 ]
-TEMPLATE_CONTRATO = BASE_DIR / "template_rt_aqua.docx"
+TEMPLATE_CONTRATO = BASE_DIR / "template_rt_aqua_v2.docx"
 TEMPLATE_BEM_STAR = BASE_DIR / "template_bem_star.docx"
 TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
@@ -10320,6 +10320,12 @@ with col1:
         on_change=on_change_cpf,
         placeholder="000.000.000-00",
     )
+    st.text_input(
+        "Cargo / qualificação do representante",
+        key="cargo_sindico",
+        placeholder="Ex.: Síndico, Presidente, Administrador",
+        value=st.session_state.get("cargo_sindico", "Síndico"),
+    )
 
 with col2:
     st.text_input(
@@ -10333,6 +10339,12 @@ with col2:
         key="valor_aditivo",
         on_change=on_change_valor_aditivo,
         placeholder="R$ 810,50",
+    )
+    st.selectbox(
+        "Frequência de visitas",
+        options=["1 (uma)", "2 (duas)", "3 (três)", "4 (quatro)"],
+        key="frequencia_visitas",
+        help="Número de visitas técnicas semanais contratadas.",
     )
     st.text_input(
         "Data de início",
@@ -11193,10 +11205,15 @@ def gerar_contrato_e_aditivo():
             "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
             "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
+            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
+            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
             "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
             "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
             "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
             "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
             "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
             "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
@@ -11361,10 +11378,15 @@ def gerar_somente_aditivo_rapido():
             "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
             "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
+            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
+            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
             "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
             "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
             "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
             "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
             "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
             "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
