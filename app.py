@@ -1061,7 +1061,8 @@ LOGO_BEM_STAR_CANDIDATOS = [
     BASE_DIR / "bem_star_logo.jpg",
     BASE_DIR / "assets" / "bem_star_logo.png",
 ]
-TEMPLATE_CONTRATO = Path("/home/ubuntu/template.docx")
+TEMPLATE_CONTRATO = BASE_DIR / "template_rt_aqua.docx"
+TEMPLATE_BEM_STAR = BASE_DIR / "template_bem_star.docx"
 TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
 DADOS_JSON_NAME = "dados_condominio.json"
@@ -1873,6 +1874,7 @@ def sistema_e_windows() -> bool:
 def diagnostico_sistema() -> dict:
     return {
         "template_contrato_ok": TEMPLATE_CONTRATO.exists(),
+        "template_bem_star_ok": TEMPLATE_BEM_STAR.exists(),
         "template_aditivo_ok": TEMPLATE_ADITIVO.exists(),
         "template_relatorio_ok": TEMPLATE_RELATORIO.exists(),
         "generated_ok": GENERATED_DIR.exists(),
@@ -7182,18 +7184,39 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         disabled=True
     )
 
-    # Filtra condomínios pelo vínculo direto do cadastro; se não houver, usa o sistema antigo por PIN
+    # ── FASE 2: Filtra condomínios pelo vínculo direto do cadastro (PIN → condomínio automático) ──
     if _op_acesso_total or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
         opcoes_cond = opcoes_cond_todas
     elif _op_conds_vinculo_direto:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_vinculo_direto, opcoes_cond_todas)
-        st.markdown(f'<div class="op-note-compact">🔗 {len(opcoes_cond)} condomínio(s) liberado(s) por vínculo direto no cadastro.</div>', unsafe_allow_html=True)
+        # Seleção automática quando há exatamente 1 condomínio vinculado
+        if len(opcoes_cond) == 1:
+            st.markdown(
+                f'<div class="op-note-compact">🔗 Condomínio identificado automaticamente: '
+                f'<strong>{opcoes_cond[0]}</strong></div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f'<div class="op-note-compact">🔗 {len(opcoes_cond)} condomínio(s) liberado(s) pelo seu PIN.</div>',
+                unsafe_allow_html=True
+            )
     elif not _op_conds_permitidos:
         opcoes_cond = opcoes_cond_todas
     else:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
         if opcoes_cond:
-            st.markdown(f'<div class="op-note-compact">✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).</div>', unsafe_allow_html=True)
+            if len(opcoes_cond) == 1:
+                st.markdown(
+                    f'<div class="op-note-compact">✅ Condomínio identificado automaticamente: '
+                    f'<strong>{opcoes_cond[0]}</strong></div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f'<div class="op-note-compact">✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).</div>',
+                    unsafe_allow_html=True
+                )
         else:
             st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
 
@@ -7202,7 +7225,30 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
     else:
         if opcoes_cond:
-            op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond")
+            # Fase 2: se só há 1 condomínio vinculado, pré-seleciona automaticamente (sem mostrar dropdown)
+            if len(opcoes_cond) == 1 and not _op_acesso_total:
+                op_nome_cond = opcoes_cond[0]
+                st.markdown(
+                    f'<div class="op-card" style="background:#f0f7ff;border-color:#1565A8;">'
+                    f'<div class="op-title">📍 {op_nome_cond}</div>'
+                    f'<div class="op-sub">Condomínio selecionado automaticamente pelo PIN</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond")
+
+            # Badge de tipo de serviço vinculado ao condomínio selecionado
+            if op_nome_cond and op_nome_cond in clientes_mapa_op:
+                _cliente_sel = clientes_mapa_op[op_nome_cond]
+                _servs = _normalizar_servicos_cliente(_cliente_sel)
+                _badges = []
+                if _servs.get("rt"):
+                    _badges.append('<span class="op-chip" style="background:#e8f0fe;border-color:#1565A8;color:#1565A8;">🔬 RT — Aqua Gestão</span>')
+                if _servs.get("limpeza"):
+                    _badges.append('<span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">🧹 Limpeza — Bem Star</span>')
+                if _badges:
+                    st.markdown(" ".join(_badges), unsafe_allow_html=True)
             
             # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
             if op_nome_cond:
@@ -8270,6 +8316,7 @@ st.subheader("Saúde do sistema")
 s1, s2, s3, s4, s5, s6 = st.columns(6)
 with s1:
     st.markdown(f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    st.markdown(f"Template Bem Star<br><span class='{'health-ok' if diag['template_bem_star_ok'] else 'health-no'}'>{'OK' if diag['template_bem_star_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s2:
     st.markdown(f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
 with s3:
@@ -9900,268 +9947,294 @@ with st.expander("📋 Preencher e gerar contrato", expanded=False):
         elif not (st.session_state.get("bs_cont_valor","")).strip():
             st.error("Informe o valor mensal.")
         else:
-            try:
-                from reportlab.lib.pagesizes import A4
-                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                from reportlab.lib.units import cm
-                from reportlab.lib import colors
-                from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                    Table, TableStyle, HRFlowable)
-                from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
-                import io as _io
-
-                # ── Coleta valores ─────────────────────────────────────────
-                _nome     = (st.session_state.get("bs_cont_nome","")).strip()
-                _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
-                _end      = (st.session_state.get("bs_cont_endereco","")).strip()
-                _contato  = (st.session_state.get("bs_cont_contato","")).strip()
-                _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
-                _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
-                _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
-                _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
-                _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
-                _valor    = (st.session_state.get("bs_cont_valor","")).strip()
-                _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
-                _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
-                _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
-                _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
-                _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
-                _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
-                _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
-                _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
-                _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
-                _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
-                _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
-
-                # ── Estilos ReportLab ──────────────────────────────────────
-                styles = getSampleStyleSheet()
-                s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
-                    fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
-                s_sub = ParagraphStyle("sub", parent=styles["Normal"],
-                    fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
-                s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
-                    fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
-                    textColor=colors.HexColor("#0d3d75"),
-                    borderPad=4, borderColor=colors.HexColor("#0d3d75"),
-                    leftIndent=0)
-                s_body = ParagraphStyle("body", parent=styles["Normal"],
-                    fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
-                    leading=14, leftIndent=8)
-                s_center = ParagraphStyle("center", parent=styles["Normal"],
-                    fontSize=10, alignment=TA_CENTER, spaceBefore=4)
-                s_small = ParagraphStyle("small", parent=styles["Normal"],
-                    fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
-
-                # ── Monta story ────────────────────────────────────────────
-                story = []
-
-                # Logo Bem Star se disponível
-                _logo_bs = encontrar_logo_bem_star()
-                if _logo_bs and _logo_bs.exists():
-                    from reportlab.platypus import Image as RLImage
-                    _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
-                        kind="proportional")
-                    _img.hAlign = "CENTER"
-                    story.append(_img)
-                    story.append(Spacer(1, 0.4*cm))
-
-                story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
-                story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
-                    "sub2", parent=styles["Normal"], fontSize=10,
-                    alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
-                story.append(Spacer(1, 0.3*cm))
-                story.append(HRFlowable(width="100%", thickness=2,
-                    color=colors.HexColor("#0d3d75")))
-                story.append(Spacer(1, 0.3*cm))
-
-                # Tabela identificação
-                id_data = [
-                    ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
-                    ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
-                ]
-                t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
-                t_id.setStyle(TableStyle([
-                    ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
-                    ("FONTSIZE",  (0,0), (-1,-1), 9),
-                    ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
-                    ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
-                    ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
-                    ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
-                    ("TEXTCOLOR", (0,0), (0,-1), colors.white),
-                    ("TOPPADDING",(0,0),(-1,-1), 7),
-                    ("BOTTOMPADDING",(0,0),(-1,-1), 7),
-                    ("LEFTPADDING",(0,0),(-1,-1), 8),
-                    ("RIGHTPADDING",(0,0),(-1,-1), 8),
-                ]))
-                story.append(t_id)
-                story.append(Spacer(1, 0.3*cm))
-                story.append(Paragraph(
-                    "As partes acima identificadas têm entre si justo e contratado o presente "
-                    "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
-
-                # Cláusulas
-                clausulas = [
-                    ("CLÁUSULA 1 — DO OBJETO",
-                     "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
-                     "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
-                     f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
-                     "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
-                     "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
-                     "condições da água e operações rotineiras de circulação e filtração. Este contrato "
-                     "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
-                     "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
-
-                    ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
-                     f"Os serviços serão executados com a seguinte frequência: {_freq}. "
-                     "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
-                     "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
-                     "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
-                     "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
-
-                    ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
-                     f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
-                     + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
-                        "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
-                        "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
-                        "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
-                        if not _prods_inc else "")),
-
-                    ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
-                     f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
-                     f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
-                     f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
-                     "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
-                     "poderá suspender os serviços após comunicação prévia."),
-
-                    ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
-                     f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
-                     f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
-                     "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
-                     "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
-
-                    ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
-                     "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
-                     "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
-                     "manterá sigilo sobre informações não públicas. "
-                     "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
-                     "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
-                     "e efetuará o pagamento na forma e prazo pactuados."),
-
-                    ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
-                     "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
-                     "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
-                     "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
-                     "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
-
-                    ("CLÁUSULA 8 — DA RESCISÃO",
-                     "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
-                     "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
-                     "descumprimento contratual relevante após notificação sem saneamento; ou por "
-                     "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
-                     "serviços efetivamente prestados."),
-
-                    ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
-                     "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
-                     "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
-                     "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
-                     "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
-                     "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
-                ]
-
-                for titulo_cl, texto_cl in clausulas:
-                    story.append(Paragraph(titulo_cl, s_clausula))
-                    story.append(Paragraph(texto_cl, s_body))
-
-                story.append(Spacer(1, 0.5*cm))
-                story.append(HRFlowable(width="100%", thickness=0.5,
-                    color=colors.HexColor("#c0c8d8")))
-                story.append(Spacer(1, 0.3*cm))
-                story.append(Paragraph(
-                    f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
-                    f"vias de igual teor e forma.", s_body))
-                story.append(Spacer(1, 0.2*cm))
-                story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
-                story.append(Spacer(1, 1*cm))
-
-                # Tabela de assinaturas
-                ass_data = [
-                    ["___________________________________",
-                     "___________________________________"],
-                    ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
-                     f"{_nome}\nCONTRATANTE"],
-                    ["", ""],
-                    ["___________________________________",
-                     "___________________________________"],
-                    ["TESTEMUNHA 1\nNome:\nCPF:",
-                     "TESTEMUNHA 2\nNome:\nCPF:"],
-                ]
-                t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
-                t_ass.setStyle(TableStyle([
-                    ("ALIGN",    (0,0), (-1,-1), "CENTER"),
-                    ("FONTSIZE", (0,0), (-1,-1), 9),
-                    ("VALIGN",   (0,0), (-1,-1), "TOP"),
-                    ("TOPPADDING", (0,0),(-1,-1), 4),
-                ]))
-                story.append(t_ass)
-                story.append(Spacer(1, 0.3*cm))
-                story.append(HRFlowable(width="100%", thickness=0.5,
-                    color=colors.HexColor("#0d3d75")))
-                story.append(Spacer(1, 0.15*cm))
-                story.append(Paragraph(
-                    "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
-                    "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
-                    s_small))
-
-                # ── Gera PDF ───────────────────────────────────────────────
-                pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
-                pasta_bs_cont.mkdir(parents=True, exist_ok=True)
-                _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
-
-                _buf = _io.BytesIO()
-                doc_rl = SimpleDocTemplate(
-                    _buf,
-                    pagesize=A4,
-                    topMargin=2*cm, bottomMargin=2*cm,
-                    leftMargin=2.5*cm, rightMargin=2.5*cm,
-                    title=f"Contrato Bem Star — {_nome}",
-                    author="Bem Star Piscinas",
+            # ── Tenta gerar via template_bem_star.docx (preferencial) ──────
+            if TEMPLATE_BEM_STAR.exists():
+                _duracao_bs  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                _prazo_bs    = "indeterminado" if "indeterminado" in _duracao_bs else "12 meses"
+                _fim_bs      = "Indeterminado" if "indeterminado" in _duracao_bs else (
+                    (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
                 )
-                doc_rl.build(story)
-                _pdf_bytes = _buf.getvalue()
-
-                with open(pdf_bs_path, "wb") as _pf:
-                    _pf.write(_pdf_bytes)
-
-                st.success(f"✅ Contrato gerado para {_nome}!")
-                st.download_button(
-                    "⬇️ Baixar Contrato PDF",
-                    data=_pdf_bytes,
-                    file_name=pdf_bs_path.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                    key="btn_dl_contrato_bs",
+                _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
+                                or st.session_state.get("bs_cont_frequencia",""))
+                _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                gerar_contrato_bem_star_docx(
+                    nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
+                    cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
+                    endereco_contratante= (st.session_state.get("bs_cont_endereco","")).strip(),
+                    valor_mensal        = valor_para_template((st.session_state.get("bs_cont_valor","")).strip()),
+                    valor_extenso       = (st.session_state.get("bs_cont_valor_extenso","")).strip(),
+                    dia_pagamento       = (st.session_state.get("bs_cont_vencimento","")).strip() or "10",
+                    forma_pagamento     = st.session_state.get("bs_cont_pagamento","Pix"),
+                    prazo_contrato      = _prazo_bs,
+                    data_inicio         = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br(),
+                    data_fim            = _fim_bs,
+                    local_data_assinatura = f"{(st.session_state.get('bs_cont_local','Uberlândia/MG')).strip()}, {(st.session_state.get('bs_cont_data_ass','')).strip() or hoje_br()}",
+                    piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
+                    produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
+                                          else "Produtos não incluídos no valor mensal"),
                 )
+            else:
+                # ── Fallback ReportLab (mantido para compatibilidade) ──────
+                try:
+                    from reportlab.lib.units import cm
+                    from reportlab.lib import colors
+                    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                        Table, TableStyle, HRFlowable)
+                    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+                    import io as _io
 
-                # ── Bloco de envio ────────────────────────────────────────
-                _msg_cont = montar_mensagem_bem_star(
-                    nome_local   = _nome,
-                    responsavel  = _contato,
-                    tipo         = "contrato",
-                )
-                exibir_bloco_envio_bem_star(
-                    nome_local   = _nome,
-                    pasta        = pasta_bs_cont,
-                    telefone     = _tel,
-                    email        = "",
-                    mensagem     = _msg_cont,
-                    key_suffix   = "contrato",
-                )
+                    # ── Coleta valores ─────────────────────────────────────────
+                    _nome     = (st.session_state.get("bs_cont_nome","")).strip()
+                    _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
+                    _end      = (st.session_state.get("bs_cont_endereco","")).strip()
+                    _contato  = (st.session_state.get("bs_cont_contato","")).strip()
+                    _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
+                    _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
+                    _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
+                    _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                    _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
+                    _valor    = (st.session_state.get("bs_cont_valor","")).strip()
+                    _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
+                    _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
+                    _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
+                    _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
+                    _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                    _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
+                    _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
+                    _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
+                    _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
+                    _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
+                    _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
 
-            except Exception as _e:
-                st.error(f"Erro ao gerar contrato: {_e}")
-                import traceback as _tb
-                st.code(_tb.format_exc(), language="text")
+                    # ── Estilos ReportLab ──────────────────────────────────────
+                    styles = getSampleStyleSheet()
+                    s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
+                        fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
+                    s_sub = ParagraphStyle("sub", parent=styles["Normal"],
+                        fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
+                    s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
+                        fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
+                        textColor=colors.HexColor("#0d3d75"),
+                        borderPad=4, borderColor=colors.HexColor("#0d3d75"),
+                        leftIndent=0)
+                    s_body = ParagraphStyle("body", parent=styles["Normal"],
+                        fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
+                        leading=14, leftIndent=8)
+                    s_center = ParagraphStyle("center", parent=styles["Normal"],
+                        fontSize=10, alignment=TA_CENTER, spaceBefore=4)
+                    s_small = ParagraphStyle("small", parent=styles["Normal"],
+                        fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+
+                    # ── Monta story ────────────────────────────────────────────
+                    story = []
+
+                    # Logo Bem Star se disponível
+                    _logo_bs = encontrar_logo_bem_star()
+                    if _logo_bs and _logo_bs.exists():
+                        from reportlab.platypus import Image as RLImage
+                        _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
+                            kind="proportional")
+                        _img.hAlign = "CENTER"
+                        story.append(_img)
+                        story.append(Spacer(1, 0.4*cm))
+
+                    story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
+                    story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
+                        "sub2", parent=styles["Normal"], fontSize=10,
+                        alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
+                    story.append(Spacer(1, 0.3*cm))
+                    story.append(HRFlowable(width="100%", thickness=2,
+                        color=colors.HexColor("#0d3d75")))
+                    story.append(Spacer(1, 0.3*cm))
+
+                    # Tabela identificação
+                    id_data = [
+                        ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
+                        ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
+                    ]
+                    t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
+                    t_id.setStyle(TableStyle([
+                        ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
+                        ("FONTSIZE",  (0,0), (-1,-1), 9),
+                        ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
+                        ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
+                        ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
+                        ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
+                        ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+                        ("TOPPADDING",(0,0),(-1,-1), 7),
+                        ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                        ("LEFTPADDING",(0,0),(-1,-1), 8),
+                        ("RIGHTPADDING",(0,0),(-1,-1), 8),
+                    ]))
+                    story.append(t_id)
+                    story.append(Spacer(1, 0.3*cm))
+                    story.append(Paragraph(
+                        "As partes acima identificadas têm entre si justo e contratado o presente "
+                        "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
+
+                    # Cláusulas
+                    clausulas = [
+                        ("CLÁUSULA 1 — DO OBJETO",
+                         "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
+                         "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
+                         f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
+                         "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
+                         "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
+                         "condições da água e operações rotineiras de circulação e filtração. Este contrato "
+                         "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
+                         "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
+
+                        ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
+                         f"Os serviços serão executados com a seguinte frequência: {_freq}. "
+                         "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
+                         "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
+                         "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
+                         "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
+
+                        ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
+                         f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
+                         + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
+                            "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
+                            "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
+                            "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
+                            if not _prods_inc else "")),
+
+                        ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
+                         f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
+                         f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
+                         f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
+                         "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
+                         "poderá suspender os serviços após comunicação prévia."),
+
+                        ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
+                         f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
+                         f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
+                         "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
+                         "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
+
+                        ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
+                         "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
+                         "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
+                         "manterá sigilo sobre informações não públicas. "
+                         "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
+                         "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
+                         "e efetuará o pagamento na forma e prazo pactuados."),
+
+                        ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+                         "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
+                         "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
+                         "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
+                         "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
+
+                        ("CLÁUSULA 8 — DA RESCISÃO",
+                         "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
+                         "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
+                         "descumprimento contratual relevante após notificação sem saneamento; ou por "
+                         "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
+                         "serviços efetivamente prestados."),
+
+                        ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
+                         "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
+                         "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
+                         "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
+                         "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
+                         "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
+                    ]
+
+                    for titulo_cl, texto_cl in clausulas:
+                        story.append(Paragraph(titulo_cl, s_clausula))
+                        story.append(Paragraph(texto_cl, s_body))
+
+                    story.append(Spacer(1, 0.5*cm))
+                    story.append(HRFlowable(width="100%", thickness=0.5,
+                        color=colors.HexColor("#c0c8d8")))
+                    story.append(Spacer(1, 0.3*cm))
+                    story.append(Paragraph(
+                        f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
+                        f"vias de igual teor e forma.", s_body))
+                    story.append(Spacer(1, 0.2*cm))
+                    story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
+                    story.append(Spacer(1, 1*cm))
+
+                    # Tabela de assinaturas
+                    ass_data = [
+                        ["___________________________________",
+                         "___________________________________"],
+                        ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
+                         f"{_nome}\nCONTRATANTE"],
+                        ["", ""],
+                        ["___________________________________",
+                         "___________________________________"],
+                        ["TESTEMUNHA 1\nNome:\nCPF:",
+                         "TESTEMUNHA 2\nNome:\nCPF:"],
+                    ]
+                    t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
+                    t_ass.setStyle(TableStyle([
+                        ("ALIGN",    (0,0), (-1,-1), "CENTER"),
+                        ("FONTSIZE", (0,0), (-1,-1), 9),
+                        ("VALIGN",   (0,0), (-1,-1), "TOP"),
+                        ("TOPPADDING", (0,0),(-1,-1), 4),
+                    ]))
+                    story.append(t_ass)
+                    story.append(Spacer(1, 0.3*cm))
+                    story.append(HRFlowable(width="100%", thickness=0.5,
+                        color=colors.HexColor("#0d3d75")))
+                    story.append(Spacer(1, 0.15*cm))
+                    story.append(Paragraph(
+                        "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
+                        "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
+                        s_small))
+
+                    # ── Gera PDF ───────────────────────────────────────────────
+                    pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
+                    pasta_bs_cont.mkdir(parents=True, exist_ok=True)
+                    _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
+
+                    _buf = _io.BytesIO()
+                    doc_rl = SimpleDocTemplate(
+                        _buf,
+                        pagesize=A4,
+                        topMargin=2*cm, bottomMargin=2*cm,
+                        leftMargin=2.5*cm, rightMargin=2.5*cm,
+                        title=f"Contrato Bem Star — {_nome}",
+                        author="Bem Star Piscinas",
+                    )
+                    doc_rl.build(story)
+                    _pdf_bytes = _buf.getvalue()
+
+                    with open(pdf_bs_path, "wb") as _pf:
+                        _pf.write(_pdf_bytes)
+
+                    st.success(f"✅ Contrato gerado para {_nome}!")
+                    st.download_button(
+                        "⬇️ Baixar Contrato PDF",
+                        data=_pdf_bytes,
+                        file_name=pdf_bs_path.name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_dl_contrato_bs",
+                    )
+
+                    # ── Bloco de envio ────────────────────────────────────────
+                    _msg_cont = montar_mensagem_bem_star(
+                        nome_local   = _nome,
+                        responsavel  = _contato,
+                        tipo         = "contrato",
+                    )
+                    exibir_bloco_envio_bem_star(
+                        nome_local   = _nome,
+                        pasta        = pasta_bs_cont,
+                        telefone     = _tel,
+                        email        = "",
+                        mensagem     = _msg_cont,
+                        key_suffix   = "contrato",
+                    )
+
+                except Exception as _e:
+                        st.error(f"Erro ao gerar contrato: {_e}")
+                        import traceback as _tb
+                        st.code(_tb.format_exc(), language="text")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -10992,6 +11065,93 @@ def exibir_bloco_envio(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def gerar_contrato_bem_star_docx(
+    nome_contratante: str,
+    cpf_cnpj: str,
+    endereco_contratante: str,
+    valor_mensal: str,
+    valor_extenso: str,
+    dia_pagamento: str,
+    forma_pagamento: str,
+    prazo_contrato: str,
+    data_inicio: str,
+    data_fim: str,
+    local_data_assinatura: str,
+    piscinas_atendidas: str = "",
+    produtos_incluidos: str = "",
+) -> Path | None:
+    """Gera contrato Bem Star usando template_bem_star.docx.
+    Retorna o Path do arquivo gerado, ou None se o template estiver ausente."""
+    if not TEMPLATE_BEM_STAR.exists():
+        st.warning(
+            "Template do contrato Bem Star não encontrado. "
+            "Certifique-se de que `template_bem_star.docx` está na pasta do projeto."
+        )
+        return None
+
+    placeholders = {
+        "{{CNPJ_CONTRATADA}}": CNPJ_BEM_STAR,
+        "{{ENDERECO_CONTRATADA}}": ENDERECO_BEM_STAR,
+        "{{NOME_CONTRATANTE}}": nome_contratante,
+        "{{CPF_CNPJ_CONTRATANTE}}": cpf_cnpj,
+        "{{ENDERECO_CONTRATANTE}}": endereco_contratante,
+        "{{VALOR_MENSAL}}": valor_mensal,
+        "{{VALOR_MENSAL_EXTENSO}}": valor_extenso,
+        "{{DIA_PAGAMENTO}}": dia_pagamento,
+        "{{FORMA_PAGAMENTO}}": forma_pagamento,
+        "{{PRAZO_CONTRATO}}": prazo_contrato,
+        "{{DATA_INICIO_CONTRATO}}": data_inicio,
+        "{{DATA_FIM_CONTRATO}}": data_fim,
+        "{{LOCAL_DATA_ASSINATURA}}": local_data_assinatura,
+        "{{PISCINAS_ATENDIDAS}}": piscinas_atendidas or "Conforme acordado entre as partes",
+        "{{PRODUTOS_INCLUIDOS}}": produtos_incluidos or "Conforme proposta comercial",
+    }
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nome_pasta = slugify_nome(nome_contratante)
+    pasta = GENERATED_DIR / nome_pasta
+    pasta.mkdir(parents=True, exist_ok=True)
+    base_nome = limpar_nome_arquivo(f"Contrato_Limpeza_{nome_contratante}_{timestamp}")
+    output_docx = pasta / f"{base_nome}.docx"
+    output_pdf  = pasta / f"{base_nome}.pdf"
+
+    gerar_documento(
+        template_path=TEMPLATE_BEM_STAR,
+        output_docx=output_docx,
+        placeholders=placeholders,
+        incluir_assinaturas=False,
+    )
+
+    ok_pdf, erro_pdf = converter_docx_para_pdf(output_docx, output_pdf)
+
+    st.success("✅ Contrato Bem Star gerado com sucesso!")
+    col1, col2 = st.columns(2)
+    with col1:
+        if output_docx.exists():
+            with open(output_docx, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar DOCX",
+                    data=f,
+                    file_name=output_docx.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+    with col2:
+        if ok_pdf and output_pdf.exists():
+            with open(output_pdf, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar PDF",
+                    data=f,
+                    file_name=output_pdf.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+        elif erro_pdf:
+            st.warning(f"PDF não gerado: {erro_pdf}")
+
+    return output_docx
+
+
 def gerar_contrato_e_aditivo():
     email_cliente = st.session_state.email_cliente.strip()
     erros = validar_para_geracao(dados, email_cliente)
@@ -11024,8 +11184,8 @@ def gerar_contrato_e_aditivo():
         aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
 
         placeholders = {
-            "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
-            "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
+            "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
+            "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
             "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
             "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
@@ -11192,8 +11352,8 @@ def gerar_somente_aditivo_rapido():
         aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
 
         placeholders = {
-            "{{CNPJ_CONTRATADA}}": "26.799.958/0001-88",
-            "{{ENDERECO_CONTRATADA}}": "Av. Getúlio Vargas, 4411, Uberlândia/MG, CEP 38.412-316",
+            "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
+            "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
             "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
             "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
