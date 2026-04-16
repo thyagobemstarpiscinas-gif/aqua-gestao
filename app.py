@@ -562,7 +562,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
             _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
             if not _empresa_cl:
                 _empresa_cl = "Aqua Gestão"
-            clientes.append({
+            cliente_base = {
                 "id":           id_val,
                 "nome":         nome,
                 "cnpj":         "",
@@ -577,7 +577,8 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "vol_family":   vol_family,
                 "empresa":      _empresa_cl,
                 "piscinas_extras": [],  # carregado do JSON local se disponível
-            })
+            }
+            clientes.append(_enriquecer_cliente_com_dados_locais(cliente_base))
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
@@ -1094,7 +1095,7 @@ LOGO_CANDIDATOS = [
 GENERATED_DIR.mkdir(exist_ok=True)
 
 st.set_page_config(
-    page_title="Aqua Gestão RT",
+    page_title="",
     page_icon="📘",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1223,7 +1224,7 @@ st.markdown(
             border-radius: 16px;
             padding: 14px;
             background: linear-gradient(135deg, #ffffff 0%, #fbfdff 100%);
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         }
 
         .venc-nome {
@@ -1598,21 +1599,111 @@ def buscar_cep(cep: str) -> dict:
 
 
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
-    """Filtra lista de clientes pelo campo empresa.
+    """Filtra clientes por serviço/empresa compatível.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
-    Clientes com empresa='Ambas' aparecem nas duas.
-    Clientes sem campo empresa (legados) aparecem para Aqua Gestão.
+    Clientes legados sem serviço explícito continuam compatíveis via campo empresa.
     """
     resultado = []
     for c in clientes:
-        emp = c.get("empresa", "Aqua Gestão")
-        if emp == "Ambas":
+        servicos = _normalizar_servicos_cliente(c)
+        if empresa_ativa == "bem_star" and servicos.get("limpeza"):
             resultado.append(c)
-        elif empresa_ativa == "bem_star" and emp == "Bem Star Piscinas":
-            resultado.append(c)
-        elif empresa_ativa == "aqua_gestao" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
+        elif empresa_ativa == "aqua_gestao" and servicos.get("rt"):
             resultado.append(c)
     return resultado
+
+
+def _normalizar_lista_textos_unicos(valores) -> list[str]:
+    resultado = []
+    vistos = set()
+    for item in valores or []:
+        valor = re.sub(r"\s+", " ", str(item or "").strip())
+        if not valor:
+            continue
+        chave = _normalizar_chave_acesso(valor)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        resultado.append(valor)
+    return resultado
+
+
+def _empresa_para_servicos(empresa: str) -> dict:
+    emp = _normalizar_chave_acesso(empresa)
+    if emp == "ambas":
+        return {"rt": True, "limpeza": True}
+    if "bem star" in emp:
+        return {"rt": False, "limpeza": True}
+    return {"rt": True, "limpeza": False}
+
+
+def _normalizar_servicos_cliente(dados: dict | None) -> dict:
+    dados = dados or {}
+    servicos = dados.get("servicos") if isinstance(dados.get("servicos"), dict) else {}
+    rt = bool(servicos.get("rt"))
+    limpeza = bool(servicos.get("limpeza"))
+    if not rt and not limpeza:
+        legado = _empresa_para_servicos(str(dados.get("empresa", "Aqua Gestão") or "Aqua Gestão"))
+        rt = legado["rt"]
+        limpeza = legado["limpeza"]
+    return {"rt": rt, "limpeza": limpeza}
+
+
+def _servicos_para_empresa(servicos: dict | None) -> str:
+    servicos_norm = _normalizar_servicos_cliente({"servicos": servicos or {}})
+    if servicos_norm.get("rt") and servicos_norm.get("limpeza"):
+        return "Ambas"
+    if servicos_norm.get("limpeza"):
+        return "Bem Star Piscinas"
+    return "Aqua Gestão"
+
+
+def _carregar_dados_cliente_local(nome_condominio: str) -> dict:
+    nome_limpo = str(nome_condominio or "").strip()
+    if not nome_limpo:
+        return {}
+    pasta = GENERATED_DIR / slugify_nome(nome_limpo)
+    if not pasta.exists():
+        return {}
+    dados = carregar_dados_condominio(pasta) or {}
+    if not isinstance(dados, dict):
+        return {}
+    dados["servicos"] = _normalizar_servicos_cliente(dados)
+    dados["operadores_vinculados"] = _normalizar_lista_textos_unicos(dados.get("operadores_vinculados", []))
+    dados["empresa"] = _servicos_para_empresa(dados.get("servicos"))
+    return dados
+
+
+def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
+    cliente_final = dict(cliente or {})
+    nome = str(cliente_final.get("nome", "") or "").strip()
+    dados_locais = _carregar_dados_cliente_local(nome)
+
+    servicos = _normalizar_servicos_cliente({
+        "servicos": dados_locais.get("servicos") if dados_locais else cliente_final.get("servicos"),
+        "empresa": dados_locais.get("empresa") if dados_locais else cliente_final.get("empresa", "Aqua Gestão"),
+    })
+    cliente_final["servicos"] = servicos
+    cliente_final["empresa"] = _servicos_para_empresa(servicos)
+    cliente_final["operadores_vinculados"] = _normalizar_lista_textos_unicos(
+        dados_locais.get("operadores_vinculados", cliente_final.get("operadores_vinculados", []))
+    )
+
+    for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family"]:
+        valor_local = dados_locais.get(chave)
+        if valor_local not in (None, ""):
+            cliente_final[chave] = valor_local
+
+    if dados_locais.get("endereco_condominio"):
+        cliente_final["endereco"] = dados_locais.get("endereco_condominio", cliente_final.get("endereco", ""))
+    if dados_locais.get("cnpj_condominio"):
+        cliente_final["cnpj"] = dados_locais.get("cnpj_condominio", cliente_final.get("cnpj", ""))
+    if dados_locais.get("nome_sindico") and not cliente_final.get("contato"):
+        cliente_final["contato"] = dados_locais.get("nome_sindico", "")
+    if "piscinas_extras" in dados_locais:
+        cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+
+    return cliente_final
 
 
 def slugify_nome(texto: str) -> str:
@@ -2754,7 +2845,7 @@ def gerar_html_resumo_cadastro(item: dict) -> str:
                 border: 1px solid #d7e6f7;
                 border-radius: 12px;
                 padding: 14px 16px;
-                margin-bottom: 12px;
+                margin-bottom: 8px;
                 background: #fbfdff;
             }}
             .line {{
@@ -6558,8 +6649,8 @@ if "empresa_selecionada" not in st.session_state:
 logo = encontrar_logo()
 logo_bs = encontrar_logo_bem_star()
 
-# Topo só aparece fora da tela de entrada
-if st.session_state.get("modo_atual", "entrada") != "entrada":
+# Topo só aparece no modo escritório (não na entrada nem no operador)
+if st.session_state.get("modo_atual", "entrada") == "escritorio":
     _empresa_topo = st.session_state.get("empresa_ativa", "aqua_gestao")
     _eh_bs_topo = _empresa_topo == "bem_star"
 
@@ -6611,7 +6702,8 @@ if st.session_state.get("modo_atual", "entrada") != "entrada":
 # =========================================
 
 with st.sidebar:
-    st.header("Histórico recente")
+    if st.session_state.get("modo_atual", "entrada") != "operador":
+        st.header("Histórico recente")
 
     st.number_input(
         "Lembrete de vencimento (dias)",
@@ -6809,66 +6901,63 @@ if _modo_interno == "entrada":
     st.markdown("""
     <style>
     .entrada-card {
-        border: 1px solid rgba(20,85,160,0.15);
+        border: 1px solid rgba(20,85,160,0.12);
         border-radius: 20px;
-        padding: 32px 24px;
-        background: linear-gradient(135deg, #ffffff 0%, #f4f9ff 100%);
-        box-shadow: 0 6px 24px rgba(10,50,100,0.08);
-        margin: 12px 0;
-        text-align: center;
+        padding: 18px 22px 16px 22px;
+        background: linear-gradient(135deg, #ffffff 0%, #f7fbff 100%);
+        box-shadow: 0 6px 20px rgba(10,50,100,0.06);
+        margin: 4px 0 10px 0;
+        text-align: left;
     }
-    .entrada-title { font-size: 1.3rem; font-weight: 700; color: #0d3d75; margin-bottom: 6px; }
-    .entrada-sub { font-size: 0.9rem; color: #5d7288; margin-bottom: 20px; }
-    .entrada-link { font-size: 0.75rem; color: #aab8c8; margin-top: 18px; }
+    .entrada-eyebrow { font-size: 0.76rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6f86a2; margin-bottom: 4px; }
+    .entrada-title { font-size: 1.28rem; font-weight: 700; color: #0d3d75; margin-bottom: 4px; }
+    .entrada-sub { font-size: 0.90rem; color: #5d7288; margin-bottom: 14px; line-height: 1.4; }
+    .entrada-admin-note { font-size: 0.76rem; color: #8ea0b5; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-    col_e1, col_e2, col_e3 = st.columns([1, 2, 1])
+    col_e1, col_e2, col_e3 = st.columns([1.2, 1.6, 1.2])
     with col_e2:
-        st.markdown('<div class="entrada-card">', unsafe_allow_html=True)
-
-        # Seleção de empresa
-        _empresa_sel = st.radio(
-            "Empresa",
-            ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-            key="empresa_selecionada",
-            horizontal=True,
-            label_visibility="collapsed",
+        st.markdown('<div class="entrada-eyebrow"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="entrada-sub">Entre com seu PIN e selecione o condomínio liberado.<br>'
+            'O sistema identifica automaticamente os clientes vinculados.</div>',
+            unsafe_allow_html=True
         )
-        _eh_bem_star = "Bem Star" in _empresa_sel
-        nova_empresa = "bem_star" if _eh_bem_star else "aqua_gestao"
-        if st.session_state.get("empresa_ativa") != nova_empresa:
-            st.session_state["empresa_ativa"] = nova_empresa
-            st.rerun()
-
-        if _eh_bem_star:
-            _logo_bs_b64 = logo_para_base64(encontrar_logo_bem_star())
-            if _logo_bs_b64:
-                st.markdown(f'<img src="{_logo_bs_b64}" style="max-width:220px;max-height:90px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="entrada-title">⭐ Bem Star Piscinas</div>', unsafe_allow_html=True)
-            st.markdown('<div class="entrada-sub">Manutenção e Tratamento de Piscinas<br>CNPJ: 26.799.958/0001-88</div>', unsafe_allow_html=True)
-        else:
-            _logo_aq_b64 = logo_para_base64(encontrar_logo())
-            if _logo_aq_b64:
-                st.markdown(f'<img src="{_logo_aq_b64}" style="max-width:220px;max-height:120px;object-fit:contain;margin-bottom:10px;" />', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="entrada-title">🔵 Aqua Gestão</div>', unsafe_allow_html=True)
-            st.markdown('<div class="entrada-sub">Gestão de Água<br>Controle Técnico de Piscinas<br>Thyago Fernando da Silveira | CRQ-MG 2ª Região</div>', unsafe_allow_html=True)
 
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
             st.session_state["modo_atual"] = "operador"
+            st.session_state["mostrar_pin_admin"] = False
             st.rerun()
 
-        # Acesso ao escritório — com PIN administrativo
-        st.markdown('<div class="entrada-link">Acesso administrativo</div>', unsafe_allow_html=True)
-        if st.button("·  ·  ·", use_container_width=False, key="btn_escritorio_oculto"):
-            st.session_state["mostrar_pin_admin"] = True
+        if st.button("🔐 Acesso administrativo", use_container_width=True, key="btn_admin_limpo"):
+            st.session_state["mostrar_pin_admin"] = not st.session_state.get("mostrar_pin_admin", False)
+
+        st.markdown('<div class="entrada-admin-note">Uso interno do escritório</div>', unsafe_allow_html=True)
 
         if st.session_state.get("mostrar_pin_admin"):
-            pin_admin = st.text_input("PIN administrativo", type="password",
-                key="pin_admin_input", placeholder="Digite o PIN", label_visibility="collapsed")
-            if st.button("Entrar", key="btn_pin_admin_ok", use_container_width=True):
+            _empresa_sel_admin = st.radio(
+                "Empresa do escritório",
+                ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+                key="empresa_selecionada_admin",
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+            _eh_bem_star_admin = "Bem Star" in _empresa_sel_admin
+            nova_empresa = "bem_star" if _eh_bem_star_admin else "aqua_gestao"
+            if st.session_state.get("empresa_ativa") != nova_empresa:
+                st.session_state["empresa_ativa"] = nova_empresa
+                st.rerun()
+
+            pin_admin = st.text_input(
+                "PIN administrativo",
+                type="password",
+                key="pin_admin_input",
+                placeholder="Digite o PIN administrativo",
+                label_visibility="collapsed"
+            )
+            if st.button("Entrar no escritório", key="btn_pin_admin_ok", use_container_width=True):
                 if pin_admin == "@Anajullya10":
                     st.session_state["modo_atual"] = "escritorio"
                     st.session_state["mostrar_pin_admin"] = False
@@ -6876,7 +6965,6 @@ if _modo_interno == "entrada":
                 else:
                     st.error("PIN incorreto.")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
 
@@ -6912,19 +7000,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.markdown("""
     <style>
     section[data-testid="stSidebar"] { display: none !important; }
-    .main .block-container { padding: 0.5rem 0.8rem 2rem !important; max-width: 100% !important; }
+    .main .block-container { padding: 0.35rem 0.7rem 1.2rem !important; max-width: 100% !important; }
     .op-card {
         border: 1px solid rgba(20,85,160,0.18);
         border-radius: 16px;
-        padding: 16px;
+        padding: 12px 14px;
         background: #ffffff;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     }
-    .op-title { font-size: 1.2rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; }
+    .op-title { font-size: 1.02rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; line-height: 1.2; }
     /* Campo oculto para captura de assinatura via canvas HTML */
     div[data-testid="stTextInput"]:has(input[aria-label="assinatura_b64_hidden"]) { display: none !important; }
-    .op-sub { font-size: 0.82rem; color: #5d7288; margin-bottom: 10px; }
+    .op-sub { font-size: 0.78rem; color: #5d7288; margin-bottom: 6px; }
     .op-salvo {
         border: 1px solid rgba(30,140,70,0.3);
         border-radius: 12px;
@@ -6936,12 +7024,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     }
     .stTextInput input, .stTextArea textarea {
         font-size: 1rem !important;
-        min-height: 48px !important;
+        min-height: 42px !important;
         border-radius: 10px !important;
     }
     .stButton > button {
-        min-height: 52px !important;
-        font-size: 1.05rem !important;
+        min-height: 46px !important;
+        font-size: 0.98rem !important;
         border-radius: 12px !important;
     }
     .stTextInput label, .stSelectbox label, .stTextArea label {
@@ -6949,7 +7037,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         font-weight: 600 !important;
         color: #1a3a5c !important;
     }
-    .element-container { margin-bottom: 6px !important; }
+    .element-container { margin-bottom: 4px !important; }
+    [data-testid="stExpander"] { border-radius: 12px !important; }
+    [data-testid="stExpander"] details summary p { font-size: 0.96rem !important; font-weight: 600 !important; }
+    .op-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#edf5ff; border:1px solid #d3e6ff; color:#134b8a; font-size:0.78rem; margin: 2px 6px 6px 0; }
+    .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
+    
     .pin-box {
         border: 2px solid rgba(20,85,160,0.25);
         border-radius: 20px;
@@ -6966,8 +7059,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if not st.session_state.get("op_pin_ok"):
         st.markdown('<div class="pin-box">', unsafe_allow_html=True)
         st.markdown("### 🔐 Área do Operador")
-        st.markdown("**Aqua Gestão – Controle Técnico de Piscinas**")
-        st.markdown("Digite o PIN para acessar o lançamento de campo.")
+        st.markdown("**Acesso simplificado por PIN**")
+        st.markdown("Digite o PIN para acessar o lançamento de campo dos condomínios autorizados.")
         pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
             placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
         if st.button("Entrar", type="primary", use_container_width=True):
@@ -6978,7 +7071,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.rerun()
             else:
                 st.error("PIN incorreto. Tente novamente.")
-        st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
     # Dados do operador logado
@@ -6993,8 +7085,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.rerun()
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="op-title">📱 Lançamento de Campo — {_op_nome_logado}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="op-sub">Aqua Gestão – Controle Técnico de Piscinas | Thyago Fernando da Silveira</div>', unsafe_allow_html=True)
+    st.markdown('<div class="op-title">📱 Lançamento de Campo</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong></div>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua + Bem Star</span>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -7040,7 +7133,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita_html",
                     )
 
-    # Busca clientes do Google Sheets filtrados pela empresa ativa
+    # Busca clientes do Google Sheets sem filtrar por empresa no modo operador
     @st.cache_data(ttl=60)
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
@@ -7052,55 +7145,73 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
         st.success("✅ Rascunho restaurado! Continue de onde parou.")
 
-    _empresa_ativa_op = st.session_state.get("empresa_ativa", "aqua_gestao")
     _clientes_todos_op = _buscar_clientes_sheets_completo()
-    _clientes_filtrados_op = filtrar_clientes_por_empresa(_clientes_todos_op, _empresa_ativa_op)
-    clientes_sheets = [c["nome"] for c in _clientes_filtrados_op]
+    clientes_mapa_op = {c["nome"]: c for c in _clientes_todos_op if c.get("nome")}
 
-    # Combina clientes do Sheets com os locais
+    # Combina clientes do Sheets com os locais, sem depender da empresa ativa
     pastas_disponiveis = sorted([
         p for p in GENERATED_DIR.iterdir() if p.is_dir()
     ], key=lambda p: p.name) if GENERATED_DIR.exists() else []
 
-    opcoes_cond_local = []
     for p in pastas_disponiveis:
-        dados_c = carregar_dados_condominio(p)
+        dados_c = carregar_dados_condominio(p) or {}
         nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
-        opcoes_cond_local.append(nome_ex)
+        if not nome_ex:
+            continue
+        cliente_local = _enriquecer_cliente_com_dados_locais({
+            "nome": nome_ex,
+            "empresa": dados_c.get("empresa", "Aqua Gestão"),
+            "operadores_vinculados": dados_c.get("operadores_vinculados", []),
+            "servicos": dados_c.get("servicos", {}),
+        })
+        clientes_mapa_op.setdefault(nome_ex, cliente_local)
 
-    # Une as duas listas sem duplicar
-    opcoes_cond_todas = list(dict.fromkeys(clientes_sheets + opcoes_cond_local))
+    opcoes_cond_todas = list(clientes_mapa_op.keys())
+
+    _op_conds_vinculo_direto = []
+    _op_nome_norm = _normalizar_chave_acesso(_op_nome_logado)
+    if _op_nome_norm and not _op_acesso_total:
+        for _nome_cond, _cliente_cond in clientes_mapa_op.items():
+            _ops_vinc = _normalizar_lista_textos_unicos(_cliente_cond.get("operadores_vinculados", []))
+            if any(_normalizar_chave_acesso(_op) == _op_nome_norm for _op in _ops_vinc):
+                _op_conds_vinculo_direto.append(_nome_cond)
 
     # Operador logado via PIN — nome vem do cadastro, não digitado
     _op_nome_logado_disp = _op_nome_logado if _op_nome_logado != "Operador" else ""
     op_operador = st.text_input(
-        "Seu nome (operador)",
+        "Operador identificado",
         key="op_operador",
         value=_op_nome_logado_disp,
         placeholder="Ex.: João Silva",
-        help="Preenchido automaticamente pelo seu PIN de acesso."
+        help="Preenchido automaticamente pelo seu PIN de acesso.",
+        disabled=True
     )
 
-    # Filtra condomínios pelo PIN do operador logado
-    if _op_acesso_total or not _op_conds_permitidos or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
+    # Filtra condomínios pelo vínculo direto do cadastro; se não houver, usa o sistema antigo por PIN
+    if _op_acesso_total or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
+        opcoes_cond = opcoes_cond_todas
+    elif _op_conds_vinculo_direto:
+        opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_vinculo_direto, opcoes_cond_todas)
+        st.markdown(f'<div class="op-note-compact">🔗 {len(opcoes_cond)} condomínio(s) liberado(s) por vínculo direto no cadastro.</div>', unsafe_allow_html=True)
+    elif not _op_conds_permitidos:
         opcoes_cond = opcoes_cond_todas
     else:
         opcoes_cond = _resolver_condominios_permitidos_exatos(_op_conds_permitidos, opcoes_cond_todas)
         if opcoes_cond:
-            st.caption(f"✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).")
+            st.markdown(f'<div class="op-note-compact">✅ Acesso liberado para {len(opcoes_cond)} condomínio(s).</div>', unsafe_allow_html=True)
         else:
             st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
 
-    op_usar_novo = st.checkbox("Lançar para local não cadastrado", key="op_novo_cond")
+    op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
     else:
         if opcoes_cond:
-            op_nome_cond = st.selectbox("Selecione o condomínio", opcoes_cond, key="op_sel_cond")
+            op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond")
             
             # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
             if op_nome_cond:
-                with st.expander("🕒 Últimas 3 visitas", expanded=False):
+                with st.expander("🕒 Histórico recente", expanded=False):
                     with st.spinner("Buscando histórico..."):
                         historico_v = sheets_listar_lancamentos(op_nome_cond)
                         if not historico_v:
@@ -7142,7 +7253,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             except Exception:
                 pass
 
-    st.text_input("Data (digite só números: ddmmaaaa)",
+    st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -7156,8 +7267,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
 
         # Admin pode definir piscinas pelo painel — operador vê as já configuradas
-        with st.expander("🏊 Piscinas deste condomínio", expanded=False):
-            st.caption("Configure as piscinas deste condomínio. Salvo automaticamente.")
+        with st.expander("🏊 Piscinas configuradas", expanded=False):
+            st.caption("Selecione as piscinas ativas deste local.")
             _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
             _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
             _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
@@ -7259,7 +7370,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
             return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
-        with st.expander("📋 Faixas de referência", expanded=False):
+        with st.expander("📋 Faixas ideais", expanded=False):
             st.markdown("""
 | Parâmetro | Faixa ideal |
 |---|---|
@@ -7479,7 +7590,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         if not op_dosagens and op_piscinas_dados:
             op_dosagens = op_piscinas_dados[0].get("dosagens", [])
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Fotos categorizadas — com salvamento imediato ───────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7554,7 +7664,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     shutil.rmtree(str(_pasta_fotos_rasc))
                 st.rerun()
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Problemas / Ocorrências ───────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7563,7 +7672,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             label_visibility="collapsed",
             placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Observação geral ──────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7571,7 +7679,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_obs = st.text_area("Obs", key="op_obs_campo", height=80,
             label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Responsável no local ──────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7580,7 +7687,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             label_visibility="collapsed",
             placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)",
             on_change=_autosave_rascunho)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Parecer da visita ─────────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7593,7 +7699,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             horizontal=True,
             on_change=_autosave_rascunho,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Assinatura do responsável ─────────────────────────────────────────
         # Implementação com canvas HTML nativo — sem dependência de streamlit-drawable-canvas
@@ -7751,7 +7856,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 )
             except Exception:
                 pass
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Botão salvar rascunho ─────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -7772,7 +7876,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             _rasc_exists = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json").exists() if op_nome_cond.strip() else False
             if _rasc_exists:
                 st.caption("📋 Rascunho salvo")
-        st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         if st.button("💾 Salvar lançamento", type="primary", use_container_width=True):
@@ -7942,7 +8045,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 for lc in reversed(pend_hc[-3:]):
                     ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
                     st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     # Para o restante da página não renderizar no modo operador
     st.stop()
@@ -8811,14 +8913,22 @@ with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
 # Mostra clientes já cadastrados no Sheets
 @st.cache_data(ttl=30)
 def _clientes_cadastrados():
-    return sheets_listar_clientes()
+    return sheets_listar_clientes_completo()
 
 clientes_cadastrados = _clientes_cadastrados()
 
 if clientes_cadastrados:
     st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) no Google Sheets:")
     for c in clientes_cadastrados:
-        st.caption(f"• {c}")
+        _serv = _normalizar_servicos_cliente(c)
+        _badges = []
+        if _serv.get("rt"):
+            _badges.append("🔵 RT")
+        if _serv.get("limpeza"):
+            _badges.append("⭐ Limpeza")
+        _ops = _normalizar_lista_textos_unicos(c.get("operadores_vinculados", []))
+        _ops_txt = f" • Operadores: {', '.join(_ops)}" if _ops else ""
+        st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
 else:
     st.info("Nenhum cliente cadastrado ainda. Use o formulário abaixo para adicionar.")
 
@@ -8829,6 +8939,9 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
+    st.session_state["cc_srv_rt"] = False
+    st.session_state["cc_srv_limpeza"] = False
+    st.session_state["cc_operadores_vinculados"] = []
 
 # ── Seletor de edição ────────────────────────────────────────────────────────
 _cc_modo = st.radio("Ação", ["➕ Novo cliente", "✏️ Editar cliente existente"],
@@ -8849,12 +8962,10 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
-            # Pré-seleciona empresa no radio
-            _emp_carregada = _cc_cliente_editar.get("empresa","Aqua Gestão")
-            _emp_map_inv = {"Aqua Gestão": "🔵 Aqua Gestão",
-                            "Bem Star Piscinas": "⭐ Bem Star Piscinas",
-                            "Ambas": "🔵⭐ Ambas"}
-            st.session_state["cc_empresa"] = _emp_map_inv.get(_emp_carregada, "🔵 Aqua Gestão")
+            _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
+            st.session_state["cc_srv_rt"] = _servicos_cc.get("rt", False)
+            st.session_state["cc_srv_limpeza"] = _servicos_cc.get("limpeza", False)
+            st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
@@ -8876,17 +8987,42 @@ def _mask_cc_cnpj():
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-# Seletor de empresa no cadastro
-cc_empresa = st.radio(
-    "Empresa vinculada",
-    ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas", "🔵⭐ Ambas"],
-    key="cc_empresa",
-    horizontal=True,
-    help="Define para qual empresa este cliente pertence."
+# Serviços vinculados ao condomínio
+st.markdown("**🧩 Serviços vinculados ao condomínio**")
+_cc_srv1, _cc_srv2 = st.columns(2)
+with _cc_srv1:
+    cc_srv_rt = st.checkbox(
+        "🔵 RT (Aqua Gestão)",
+        key="cc_srv_rt",
+        help="Marque quando o condomínio possui atendimento técnico/RT pela Aqua Gestão."
+    )
+with _cc_srv2:
+    cc_srv_limpeza = st.checkbox(
+        "⭐ Limpeza (Bem Star)",
+        key="cc_srv_limpeza",
+        help="Marque quando o condomínio possui serviço de limpeza operacional pela Bem Star."
+    )
+
+_cc_servicos = {"rt": bool(cc_srv_rt), "limpeza": bool(cc_srv_limpeza)}
+if not any(_cc_servicos.values()):
+    _cc_servicos["rt"] = True
+_cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+st.caption(f"Empresa derivada automaticamente para compatibilidade: {_cc_empresa_val}")
+
+_operadores_disponiveis = []
+for _op in (sheets_listar_operadores() or []) + (carregar_operadores() or []):
+    _nome_op = re.sub(r"\s+", " ", str(_op.get("nome", "") or "").strip())
+    if _nome_op and _nome_op not in _operadores_disponiveis:
+        _operadores_disponiveis.append(_nome_op)
+
+cc_operadores_vinculados = st.multiselect(
+    "Operadores vinculados ao condomínio",
+    options=_operadores_disponiveis,
+    key="cc_operadores_vinculados",
+    help="Esses operadores verão este condomínio automaticamente ao entrar com o PIN."
 )
-_cc_empresa_val = {"🔵 Aqua Gestão": "Aqua Gestão",
-                   "⭐ Bem Star Piscinas": "Bem Star Piscinas",
-                   "🔵⭐ Ambas": "Ambas"}.get(cc_empresa, "Aqua Gestão")
+if not _operadores_disponiveis:
+    st.caption("Cadastre operadores no módulo de operadores para depois vinculá-los aos condomínios.")
 
 cc1, cc2 = st.columns(2)
 with cc1:
@@ -8973,19 +9109,23 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_i = _parse_vol(cc_vol_infantil)
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
+            _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
+            _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
+            _piscs_extras_form = []
+            for _en, _ev in [
+                (st.session_state.get("cc_pisc_extra1_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra1_vol","").strip()),
+                (st.session_state.get("cc_pisc_extra2_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra2_vol","").strip()),
+            ]:
+                if _en:
+                    try:
+                        _ev_f = float(_ev.replace(",",".")) if _ev else 0
+                    except:
+                        _ev_f = 0
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
+
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
-                # Coleta piscinas extras
-                _piscs_extras_editar = []
-                for _en, _ev in [
-                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
-                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
-                ]:
-                    if _en:
-                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
-                        except: _ev_f = 0
-                        _piscs_extras_editar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_editar_cliente(
                     id_cliente=_cc_cliente_editar["id"],
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
@@ -8994,28 +9134,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_editar:
-                    _pasta_extras2 = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras2.mkdir(parents=True, exist_ok=True)
-                    _dados_extras2 = carregar_dados_condominio(_pasta_extras2) or {}
-                    _dados_extras2["piscinas_extras"] = _piscs_extras_editar
-                    _dados_extras2["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras2, _dados_extras2)
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
-                # Coleta piscinas extras
-                _piscs_extras_salvar = []
-                for _en, _ev in [
-                    (st.session_state.get("cc_pisc_extra1_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra1_vol","").strip()),
-                    (st.session_state.get("cc_pisc_extra2_nome","").strip(),
-                     st.session_state.get("cc_pisc_extra2_vol","").strip()),
-                ]:
-                    if _en:
-                        try: _ev_f = float(_ev.replace(",",".")) if _ev else 0
-                        except: _ev_f = 0
-                        _piscs_extras_salvar.append({"nome": _en, "vol": _ev_f})
                 ok = sheets_salvar_cliente(
                     nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
                     endereco=cc_endereco.strip(), contato=cc_contato.strip(),
@@ -9023,15 +9143,30 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
                 )
-                # Salva piscinas extras no JSON local
-                if _piscs_extras_salvar:
-                    _pasta_extras = GENERATED_DIR / slugify_nome(cc_nome.strip())
-                    _pasta_extras.mkdir(parents=True, exist_ok=True)
-                    _dados_extras = carregar_dados_condominio(_pasta_extras) or {}
-                    _dados_extras["piscinas_extras"] = _piscs_extras_salvar
-                    _dados_extras["nome_condominio"] = cc_nome.strip()
-                    salvar_dados_condominio(_pasta_extras, _dados_extras)
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+
+            _pasta_cliente = GENERATED_DIR / slugify_nome(cc_nome.strip())
+            _pasta_cliente.mkdir(parents=True, exist_ok=True)
+            _dados_cliente_local = carregar_dados_condominio(_pasta_cliente) or {}
+            _dados_cliente_local.update({
+                "nome_condominio": cc_nome.strip(),
+                "cnpj_condominio": cc_cnpj.strip(),
+                "cnpj": cc_cnpj.strip(),
+                "cep": cc_cep.strip(),
+                "endereco_condominio": cc_endereco.strip(),
+                "endereco": cc_endereco.strip(),
+                "nome_sindico": cc_contato.strip(),
+                "contato": cc_contato.strip(),
+                "telefone": cc_telefone.strip(),
+                "vol_adulto": _vol_a,
+                "vol_infantil": _vol_i,
+                "vol_family": _vol_f,
+                "empresa": _cc_empresa_val,
+                "servicos": _cc_servicos_norm,
+                "operadores_vinculados": _cc_operadores_sel,
+                "piscinas_extras": _piscs_extras_form,
+            })
+            salvar_dados_condominio(_pasta_cliente, _dados_cliente_local)
         if ok:
             st.success(msg_ok)
             st.cache_data.clear()
@@ -10445,7 +10580,6 @@ if _clientes_rel:
                     st.session_state["rel_cpf_cnpj_representante"] = ""
                     st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório!")
                     st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
@@ -11015,7 +11149,6 @@ def gerar_contrato_e_aditivo():
             else:
                 st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         mensagem = montar_mensagem_envio(
             nome_condominio=nome_condominio,
@@ -11140,7 +11273,6 @@ def gerar_somente_aditivo_rapido():
             else:
                 st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
         mensagem = montar_mensagem_envio(
             nome_condominio=nome_condominio,
