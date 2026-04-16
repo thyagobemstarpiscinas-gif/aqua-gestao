@@ -7044,13 +7044,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
     
     .pin-box {
-        border: 2px solid rgba(20,85,160,0.25);
-        border-radius: 20px;
-        padding: 32px 20px;
-        background: #ffffff;
+        padding: 20px 0;
         text-align: center;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-        margin: 20px 0;
     }
     </style>
     """, unsafe_allow_html=True)
