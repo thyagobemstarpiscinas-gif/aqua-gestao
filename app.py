@@ -1095,6 +1095,10 @@ LOGO_CANDIDATOS = [
 
 GENERATED_DIR.mkdir(exist_ok=True)
 
+# Fallback global — sobrescrito pelo Modo Operador quando necessário
+def _autosave_rascunho():
+    pass
+
 st.set_page_config(
     page_title="",
     page_icon="📘",
