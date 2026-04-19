@@ -8659,7 +8659,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     try:
                         _clv = sheets_listar_clientes_completo()
                         for _cv2 in _clv:
-                            if _cv2["nome"].lower().strip() == op_nome_cond.strip().lower():
+                            if nomes_condominio_equivalentes(_cv2["nome"], op_nome_cond):
                                 if _vol_key:
                                     # Piscina padrão (adulto/infantil/family)
                                     _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
@@ -8674,15 +8674,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                                 break
                     except Exception:
                         pass
-                    _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
+                _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
 
-                    _sugestoes = []
-                    if _vol_usar > 0:
-                        _sugestoes = calcular_sugestoes_dosagem(
-                            ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
-                            volume_m3=_vol_usar
-                        )
-                    if _sugestoes:
+                _sugestoes = []
+                if _vol_usar > 0:
+                    _sugestoes = calcular_sugestoes_dosagem(
+                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
+                        volume_m3=_vol_usar
+                    )
+                if _sugestoes:
                         st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
                         for _s in _sugestoes:
                             _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
