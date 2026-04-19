@@ -8653,27 +8653,27 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         _vol_m3 = 0.0
 
                 # Usa volume específico da piscina se disponível
-                    _vol_pisc = 0.0
-                    _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
-                    _vol_key = _slug_map2.get(pisc_nome, "")
-                    try:
-                        _clv = sheets_listar_clientes_completo()
-                        for _cv2 in _clv:
-                            if nomes_condominio_equivalentes(_cv2["nome"], op_nome_cond):
-                                if _vol_key:
-                                    # Piscina padrão (adulto/infantil/family)
-                                    _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
-                                else:
-                                    # Piscina extra — busca no JSON local
-                                    _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-                                    _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
-                                    for _pe in _dados_extra_vol.get("piscinas_extras", []):
-                                        if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
-                                            _vol_pisc = float(_pe.get("vol", 0) or 0)
-                                            break
-                                break
-                    except Exception:
-                        pass
+                _vol_pisc = 0.0
+                _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
+                _vol_key = _slug_map2.get(pisc_nome, "")
+                try:
+                    _clv = sheets_listar_clientes_completo()
+                    for _cv2 in _clv:
+                        if nomes_condominio_equivalentes(_cv2["nome"], op_nome_cond):
+                            if _vol_key:
+                                # Piscina padrão (adulto/infantil/family)
+                                _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
+                            else:
+                                # Piscina extra — busca no JSON local
+                                _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                                _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
+                                for _pe in _dados_extra_vol.get("piscinas_extras", []):
+                                    if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
+                                        _vol_pisc = float(_pe.get("vol", 0) or 0)
+                                        break
+                            break
+                except Exception:
+                    pass
                 _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
 
                 _sugestoes = []
