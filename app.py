@@ -8683,33 +8683,31 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         volume_m3=_vol_usar
                     )
                 if _sugestoes:
-                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
-                        for _s in _sugestoes:
-                            _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
-                            if _s["quantidade"] and _s["quantidade"] > 0:
-                                st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
-                                st.caption(f"↳ {_s['acao']}")
-                            else:
-                                st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
-                            with st.expander("ℹ️ Base técnica", expanded=False):
-                                st.caption(_s["justificativa"])
-                                st.caption(f"📚 {_s.get('norma','')}")
-                        # Botão aplicar sugestões nas dosagens desta piscina
-                        if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
-                                key=f"btn_aplicar_sug_{pisc_slug}",
-                                use_container_width=True):
-                            # Salva sugestões no session_state para preencher dosagens
-                            _key_sug = f"_sug_pisc_{pisc_slug}"
-                            st.session_state[_key_sug] = [
-                                s for s in _sugestoes
-                                if s.get("quantidade") and s["quantidade"] > 0
-                            ]
-                            st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
-                            st.rerun()
-                    else:
-                        st.success("✅ Todos os parâmetros dentro da faixa ideal.")
+                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
+                    for _s in _sugestoes:
+                        _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
+                        if _s["quantidade"] and _s["quantidade"] > 0:
+                            st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
+                            st.caption(f"↳ {_s['acao']}")
+                        else:
+                            st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
+                        with st.expander("ℹ️ Base técnica", expanded=False):
+                            st.caption(_s["justificativa"])
+                            st.caption(f"📚 {_s.get('norma','')}")
+                    # Botão aplicar sugestões nas dosagens desta piscina
+                    if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
+                            key=f"btn_aplicar_sug_{pisc_slug}",
+                            use_container_width=True):
+                        # Salva sugestões no session_state para preencher dosagens
+                        _key_sug = f"_sug_pisc_{pisc_slug}"
+                        st.session_state[_key_sug] = [
+                            s for s in _sugestoes
+                            if s.get("quantidade") and s["quantidade"] > 0
+                        ]
+                        st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
+                        st.rerun()
                 else:
-                    st.caption("⚠️ Volume m³ não cadastrado — adicione na planilha para calcular doses.")
+                    st.success("✅ Todos os parâmetros dentro da faixa ideal.")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
