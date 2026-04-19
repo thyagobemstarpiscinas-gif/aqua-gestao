@@ -373,7 +373,12 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
-        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        linha_destino = max(len(todos) + 1, 8)
+        aba.update(
+            f"A{linha_destino}:Z{linha_destino}",
+            [nova_linha],
+            value_input_option="RAW"
+        )
         st.session_state.pop("_operadores_erro", None)
         return True
     except Exception as e:
@@ -455,6 +460,55 @@ def conectar_sheets():
         return None
 
 
+
+def limpar_payload_para_sheets(dados: dict) -> dict:
+    """Remove campos pesados antes de salvar payload no Google Sheets.
+
+    O Google Sheets limita cada célula a 50.000 caracteres.
+    Fotos/base64/assinaturas/canvas não devem ser salvos em célula.
+    """
+    if not isinstance(dados, dict):
+        return {}
+
+    proibidos = {
+        "foto", "fotos", "imagem", "imagens", "image", "images",
+        "base64", "bytes", "arquivo", "arquivos", "upload",
+        "assinatura", "assinatura_base64", "signature",
+        "canvas", "drawing", "pdf", "html"
+    }
+
+    limpo = {}
+
+    for k, v in dados.items():
+        chave = str(k).lower()
+
+        if any(p in chave for p in proibidos):
+            continue
+
+        if isinstance(v, dict):
+            limpo[k] = limpar_payload_para_sheets(v)
+
+        elif isinstance(v, list):
+            nova_lista = []
+            for item in v:
+                if isinstance(item, dict):
+                    nova_lista.append(limpar_payload_para_sheets(item))
+                else:
+                    texto = str(item)
+                    if len(texto) <= 1000:
+                        nova_lista.append(item)
+            limpo[k] = nova_lista
+
+        else:
+            texto = str(v)
+            if len(texto) > 1000:
+                limpo[k] = texto[:1000] + "..."
+            else:
+                limpo[k] = v
+
+    return limpo
+
+
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
 
@@ -484,9 +538,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             )
 
         todos = aba.get_all_values()
-        HEADER_ROWS = 7
         visitas_existentes = [
-            r for r in todos[HEADER_ROWS:]
+            r for r in todos
             if len(r) > 1 and str(r[1]).strip().startswith("V")
         ]
         proximo_num = len(visitas_existentes) + 1
@@ -558,7 +611,12 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
-        aba.append_row(nova_linha, value_input_option="RAW", table_range="B8")
+        linha_destino = max(len(todos) + 1, 8)
+        aba.update(
+            f"A{linha_destino}:Z{linha_destino}",
+            [nova_linha],
+            value_input_option="RAW"
+        )
         return True
 
     except Exception as e:
@@ -850,8 +908,7 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         todos = aba.get_all_values()
         lancamentos = []
 
-        HEADER_ROWS = 7
-        for row in todos[HEADER_ROWS:]:
+        for row in todos:
             if len(row) < 5:
                 continue
 
@@ -1328,7 +1385,7 @@ def exibir_sugestoes_dosagem(sugestoes: list[dict]):
 # =========================================
 
 APP_TITLE = "Aqua Gestão – Controle Técnico de Piscinas"
-APP_VERSION = "v20_empresas_separadas_aqua_bemstar"
+APP_VERSION = "v6_relatorio_premium_aqua_final"
 RESPONSAVEL_TÉCNICO = "Thyago Fernando da Silveira"
 RESPONSAVEL_TECNICO_ASSINATURA = "Thyago Fernando da Silveira | CRQ 024025748 | Técnico em Química"
 CRQ = "CRQ-MG 2ª Região | CRQ 024025748"
@@ -4282,46 +4339,120 @@ def garantir_logo_aqua_oficial() -> Path | None:
 
 
 def _rl_valor(valor, padrao="—"):
+    """Valor seguro para células do PDF: evita vazios aparentes e caracteres problemáticos."""
     texto = str(valor or "").strip()
     return texto if texto else padrao
 
 
-def _rl_f(valor):
-    if valor is None:
-        return ""
-    return str(valor).strip()
+def _rl_f(valor, padrao="—"):
+    texto = str(valor or "").strip()
+    return texto if texto else padrao
+
+
+def _limpar_texto_pdf(texto: str) -> str:
+    """Remove marcações HTML e caracteres que costumam quebrar na fonte padrão do PDF."""
+    texto = str(texto or "")
+    texto = re.sub(r"<[^>]+>", "", texto)
+    texto = texto.replace("CaCO3", "CaCO3").replace("CaCO3", "CaCO3")
+    texto = texto.replace("■", "□")
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
+def _pegar_alias(item: dict, *chaves, padrao=""):
+    for chave in chaves:
+        valor = item.get(chave, "") if isinstance(item, dict) else ""
+        if str(valor or "").strip():
+            return valor
+    return padrao
 
 
 def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
+    """Monta linhas da tabela de análises com aliases e traços para campos não informados."""
     linhas = []
     for item in dados_relatorio.get("analises", []) or []:
-        if any(str(item.get(k, "")).strip() for k in ["data", "ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico", "operador"]):
+        if not isinstance(item, dict):
+            continue
+        data = _pegar_alias(item, "data", "Data")
+        ph = _pegar_alias(item, "ph", "pH")
+        crl = _pegar_alias(item, "cloro_livre", "cl", "crl", "CRL")
+        ct = _pegar_alias(item, "cloro_total", "ct", "cl_total", "CT")
+        alc = _pegar_alias(item, "alcalinidade", "alc", "AT")
+        dc = _pegar_alias(item, "dureza", "dc", "dureza_calcica", "DC")
+        cya = _pegar_alias(item, "cianurico", "cya", "acido_cianurico", "CYA")
+        operador = _pegar_alias(item, "operador", "responsavel", "Operador")
+        if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, operador]):
             linhas.append([
-                _rl_valor(item.get("data"), ""),
-                _rl_f(item.get("ph", "")),
-                _rl_f(item.get("cloro_livre", "")),
-                _rl_f(item.get("cloro_total", "")),
-                _rl_f(item.get("alcalinidade", "")),
-                _rl_f(item.get("dureza", "")),
-                _rl_f(item.get("cianurico", "")),
-                _rl_valor(item.get("operador"), ""),
+                _rl_valor(normalizar_data_visita(data) if data else "", "—"),
+                _rl_f(ph),
+                _rl_f(crl),
+                _rl_f(ct),
+                _rl_f(alc),
+                _rl_f(dc),
+                _rl_f(cya),
+                _rl_valor(operador, "—"),
             ])
     return linhas
+
+
+def _normalizar_dosagem_pdf(item: dict) -> dict:
+    """Aceita nomes alternativos de campos de dosagem."""
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "produto": _pegar_alias(item, "produto", "produto_quimico", "nome", "Produto"),
+        "fabricante_lote": _pegar_alias(item, "fabricante_lote", "fabricante", "lote", "marca", "Fabricante / Lote"),
+        "quantidade": _pegar_alias(item, "quantidade", "qtd", "Quantidade"),
+        "unidade": _pegar_alias(item, "unidade", "unid", "Unidade"),
+        "finalidade": _pegar_alias(item, "finalidade", "finalidade_tecnica", "motivo", "acao", "Finalidade"),
+    }
 
 
 def _rl_linhas_dosagens(dados_relatorio: dict) -> list[list[str]]:
+    """Monta tabela de dosagens a partir do formulário, das visitas importadas ou de resumo salvo."""
     linhas = []
-    for item in dados_relatorio.get("dosagens", []) or []:
-        if any(str(v or "").strip() for v in item.values()):
-            linhas.append([
-                _rl_valor(item.get("produto"), ""),
-                _rl_valor(item.get("fabricante_lote"), ""),
-                _rl_valor(item.get("quantidade"), ""),
-                _rl_valor(item.get("unidade"), ""),
-                _rl_valor(item.get("finalidade"), ""),
-            ])
-    return linhas
+    vistos = set()
 
+    def add_dosagem(d: dict):
+        d = _normalizar_dosagem_pdf(d)
+        if not any(str(v or "").strip() for v in d.values()):
+            return
+        chave = tuple(str(d.get(k, "")).strip().lower() for k in ["produto", "fabricante_lote", "quantidade", "unidade", "finalidade"])
+        if chave in vistos:
+            return
+        vistos.add(chave)
+        linhas.append([
+            _rl_valor(d.get("produto"), "—"),
+            _rl_valor(d.get("fabricante_lote"), "—"),
+            _rl_valor(d.get("quantidade"), "—"),
+            _rl_valor(d.get("unidade"), "—"),
+            _rl_valor(d.get("finalidade"), "—"),
+        ])
+
+    for item in dados_relatorio.get("dosagens", []) or []:
+        add_dosagem(item)
+
+    # Dosagens que vieram dentro de lançamentos/visitas/piscinas
+    for item in dados_relatorio.get("analises", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for d in item.get("dosagens", []) or []:
+            add_dosagem(d)
+        resumo = str(item.get("dosagem_resumo", "") or item.get("dosagem", "") or "").strip()
+        if resumo:
+            add_dosagem({"produto": resumo, "finalidade": "Registro importado da visita"})
+
+    for lc in dados_relatorio.get("lancamentos", []) or []:
+        if not isinstance(lc, dict):
+            continue
+        for d in lc.get("dosagens", []) or []:
+            add_dosagem(d)
+        for p in lc.get("piscinas", []) or []:
+            if isinstance(p, dict):
+                for d in p.get("dosagens", []) or []:
+                    add_dosagem(d)
+
+    return linhas
 
 def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[Path] | None, pdf_path: Path) -> tuple[bool, str | None]:
     """Gera PDF premium no padrão Aqua Gestão, sem depender do Word/LibreOffice."""
@@ -4364,7 +4495,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
 
         def P(texto, style="AqBody"):
-            texto = str(texto or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            texto = _limpar_texto_pdf(str(texto or ""))
+            texto = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             return Paragraph(texto, styles[style])
 
         def table(data, widths=None, header=True):
@@ -4489,8 +4621,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["pH", "7,2", "7,8", "—", "Photometer"],
             ["Cloro Residual Livre (CRL)", "0,5", "3,0", "mg/L", "Photometer"],
             ["Cloro Total", "0,5", "3,0", "mg/L", "Photometer"],
-            ["Alcalinidade Total", "80", "120", "mg/L CaCO₃", "Photometer"],
-            ["Dureza Cálcica", "150", "300", "mg/L CaCO₃", "Photometer"],
+            ["Alcalinidade Total", "80", "120", "mg/L CaCO3", "Photometer"],
+            ["Dureza Cálcica", "150", "300", "mg/L CaCO3", "Photometer"],
             ["Ácido Cianúrico", "30", "50", "mg/L", "Photometer"],
         ], widths=[58*mm, 30*mm, 30*mm, 35*mm, 27*mm]))
         story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas in loco. Tais determinações requerem coleta e envio a laboratório acreditado pela ANVISA/Inmetro, sob responsabilidade de contratação do cliente.", "AqWarn"))
@@ -4514,10 +4646,10 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(table([
             ["Item de Verificação – NR-26 / GHS", "Observação", "Status"],
             ["FISPQs disponíveis e atualizadas para os produtos", nr26_obs, "OK"],
-            ["Rótulos GHS nos recipientes", "", "☐ OK ☐ Pend."],
-            ["Sinalização de perigo no estoque de produtos químicos", "", "☐ OK ☐ Pend."],
-            ["Separação de oxidantes e ácidos", "", "☐ OK ☐ Pend."],
-            ["Procedimento de emergência / derramamento disponível", "", "☐ OK ☐ Pend."],
+            ["Rótulos GHS nos recipientes", "", "OK / Pend."],
+            ["Sinalização de perigo no estoque de produtos químicos", "", "OK / Pend."],
+            ["Separação de oxidantes e ácidos", "", "OK / Pend."],
+            ["Procedimento de emergência / derramamento disponível", "", "OK / Pend."],
         ], widths=[83*mm, 72*mm, 25*mm]))
         story.append(P("3.2 NR-06 – Equipamentos de Proteção Individual (EPI)", "AqH2"))
         epis = dados_relatorio.get("epis", {}) or {}
@@ -4557,19 +4689,23 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("5.1 Diagnóstico da Qualidade da Água", "AqH2"))
         status = dados_relatorio.get("status_agua", "") or "EM CORREÇÃO"
         cor_status = verde if status == "CONFORME" else (laranja if status == "EM CORREÇÃO" else vermelho)
-        status_tbl = Table([[P(f"Status geral da água: <b>{status}</b>", "AqCell")]], colWidths=[180*mm])
+        status_tbl = Table([[P(f"Status geral da água: {status}", "AqCellBold")]], colWidths=[180*mm])
         status_tbl.setStyle(TableStyle([("BOX", (0,0), (-1,-1), 0.8, cor_status), ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7FBFD")), ("LEFTPADDING", (0,0), (-1,-1), 7), ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7)]))
         story.append(status_tbl)
         story.append(Spacer(1, 3*mm))
-        story.append(P(f"Diagnóstico: {dados_relatorio.get('diagnostico', '')}", "AqBody"))
+        diagnostico_txt = _limpar_texto_pdf(dados_relatorio.get('diagnostico', ''))
+        # Evita repetir o resumo automático dentro do diagnóstico e depois em lista.
+        diagnostico_txt = re.sub(r"Resumo automático dos desvios:.*", "", diagnostico_txt).strip()
+        if diagnostico_txt:
+            story.append(P(f"Diagnóstico: {diagnostico_txt}", "AqBody"))
         detalhes = dados_relatorio.get("avaliacao_automatica", {}).get("detalhes", []) or []
         if detalhes:
-            story.append(P("Resumo automático dos desvios:", "AqH2"))
-            for d in detalhes[:8]:
+            story.append(P("Resumo técnico dos desvios identificados:", "AqH2"))
+            for d in detalhes[:10]:
                 story.append(P(f"• {d}", "AqSmall"))
         obs = [o for o in (dados_relatorio.get("observacoes", []) or []) if str(o or "").strip()]
         if obs:
-            story.append(P("Observações automáticas / editáveis:", "AqH2"))
+            story.append(P("Observações técnicas complementares:", "AqH2"))
             for o in obs[:8]:
                 story.append(P(f"• {o}", "AqSmall"))
 
@@ -4593,24 +4729,21 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         fotos = [Path(f) for f in (fotos or []) if f and Path(f).exists()]
         if fotos:
             story.append(PageBreak())
-            story.append(P("REGISTRO FOTOGRÁFICO", "AqH1"))
-            for fp in fotos[:12]:
+            story.append(P("7. REGISTRO FOTOGRÁFICO", "AqH1"))
+            story.append(P("Registros visuais do período de referência, inseridos para rastreabilidade técnica e comprovação documental.", "AqBody"))
+            for idx, fp in enumerate(fotos[:12], start=1):
                 try:
-                    story.append(P(fp.name, "AqSmall"))
+                    legenda = "Vista geral da piscina no período de referência" if idx == 1 else "Registro complementar da área da piscina"
+                    story.append(P(f"Foto {idx} — {legenda}", "AqH2"))
                     img = PILImage.open(fp)
                     iw, ih = img.size
                     max_w = 170*mm
-                    max_h = 190*mm
+                    max_h = 175*mm
                     ratio = min(max_w/iw, max_h/ih)
                     story.append(RLImage(str(fp), width=iw*ratio, height=ih*ratio, hAlign="CENTER"))
                     story.append(Spacer(1, 5*mm))
                 except Exception:
-                    story.append(P(f"Não foi possível inserir a foto: {fp.name}", "AqSmall"))
-            story.append(P("COMPLEMENTO AUTOMÁTICO – DADOS ESTRUTURADOS DO RELATÓRIO MENSAL", "AqH2"))
-            story.append(P(f"Condomínio: {dados_relatorio.get('nome_condominio','')}", "AqSmall"))
-            story.append(P(f"Mês/Ano de referência: {dados_relatorio.get('mes_referencia','')}/{dados_relatorio.get('ano_referencia','')}", "AqSmall"))
-            story.append(P(f"ART: {obter_status_art_texto(dados_relatorio)}", "AqSmall"))
-            story.append(P(f"Data de emissão: {dados_relatorio.get('data_emissao','')}", "AqSmall"))
+                    story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
         doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
@@ -13067,6 +13200,37 @@ def _importar_lancamentos(lancamentos):
     obs_txt = "\n".join(obs_lista[:10])
     if obs_txt:
         st.session_state["rel_observacoes_gerais"] = obs_txt
+
+# Autoimportação real para o relatório mensal.
+# Se houver lançamentos de campo no período, o relatório é alimentado automaticamente
+# uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
+if lancamentos_disponiveis:
+    try:
+        _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
+        _assinatura_auto = "|".join([
+            str(nome_rel_atual),
+            str(mes_ref),
+            str(ano_ref),
+            str(len(lancamentos_disponiveis)),
+            str(_ultimo_lc.get("id_visita", "")),
+            str(_ultimo_lc.get("data", "")),
+            str(_ultimo_lc.get("operador", "")),
+        ])
+
+        if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
+            st.session_state["_rel_autoimport_msg"] = (
+                f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
+                f"para o relatório {mes_ref}/{ano_ref}."
+            )
+            st.rerun()
+    except Exception as e:
+        _log_sheets_erro("autoimportar_lancamentos_relatorio_mensal", e)
+
+_auto_msg = st.session_state.pop("_rel_autoimport_msg", "")
+if _auto_msg:
+    st.success(_auto_msg)
 
 if lancamentos_disponiveis:
     _total = len(lancamentos_disponiveis)
