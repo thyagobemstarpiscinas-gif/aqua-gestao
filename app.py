@@ -1959,7 +1959,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
     if _pasta_fotos_rasc.exists():
         for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
-            for _cat in ["antes", "depois", "cmaq"]:
+            for _cat in ["antes", "depois", "cmaq", "extras"]:
                 if f"rasc_{_cat}_" in _fp.name:
                     dados["fotos_rascunho"][_cat].append(_fp.name)
     return dados
@@ -8462,31 +8462,37 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
 
-        # Admin pode definir piscinas pelo painel — operador vê as já configuradas
-        with st.expander("🏊 Piscinas configuradas", expanded=False):
-            st.caption("Selecione as piscinas ativas deste local.")
-            _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
-            _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
-            _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
-            _pisc_outra_check = st.checkbox("Outra piscina", value=any(p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"] for p in _piscinas_config), key="op_pisc_outra_check")
-            _pisc_outra_nome = ""
-            if _pisc_outra_check:
-                _outra_default = next((p for p in _piscinas_config if p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"]), "")
-                _pisc_outra_nome = st.text_input("Nome da outra piscina", value=_outra_default, key="op_pisc_outra_nome", placeholder="Ex.: Piscina Olímpica")
-            _piscinas_ativas = []
-            if _pisc_adulto: _piscinas_ativas.append("Piscina Adulto")
-            if _pisc_infant: _piscinas_ativas.append("Piscina Infantil")
-            if _pisc_family: _piscinas_ativas.append("Piscina Family")
-            if _pisc_outra_check and _pisc_outra_nome.strip(): _piscinas_ativas.append(_pisc_outra_nome.strip())
-            if not _piscinas_ativas: _piscinas_ativas = ["Piscina Adulto"]
-            if st.button("💾 Salvar configuração de piscinas", key="btn_salvar_piscinas"):
-                _pasta_cond_op.mkdir(parents=True, exist_ok=True)
-                _dados_upd = carregar_dados_condominio(_pasta_cond_op) or {}
-                _dados_upd["piscinas"] = _piscinas_ativas
-                _dados_upd["nome_condominio"] = op_nome_cond.strip()
-                salvar_dados_condominio(_pasta_cond_op, _dados_upd)
-                st.success(f"✅ Piscinas salvas: {', '.join(_piscinas_ativas)}")
-                st.rerun()
+        # Piscinas vem automaticamente do cadastro da ADM — operador nao configura
+        if _piscinas_config and _piscinas_config != ["Piscina Adulto"]:
+            # ADM ja cadastrou as piscinas — usa direto
+            _piscinas_ativas = _piscinas_config
+            st.info(f"🏊 {len(_piscinas_ativas)} piscina(s) deste local: {chr(10).join(f'  • {p}' for p in _piscinas_ativas)}")
+        else:
+            # Fallback: ADM ainda nao cadastrou — operador pode configurar
+            with st.expander("🏊 Piscinas (configure uma vez)", expanded=True):
+                st.caption("O administrador ainda nao cadastrou as piscinas deste local. Configure abaixo.")
+                _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
+                _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
+                _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
+                _pisc_outra_check = st.checkbox("Outra piscina", value=any(p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"] for p in _piscinas_config), key="op_pisc_outra_check")
+                _pisc_outra_nome = ""
+                if _pisc_outra_check:
+                    _outra_default = next((p for p in _piscinas_config if p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"]), "")
+                    _pisc_outra_nome = st.text_input("Nome da outra piscina", value=_outra_default, key="op_pisc_outra_nome", placeholder="Ex.: Piscina Olímpica")
+                _piscinas_ativas = []
+                if _pisc_adulto: _piscinas_ativas.append("Piscina Adulto")
+                if _pisc_infant: _piscinas_ativas.append("Piscina Infantil")
+                if _pisc_family: _piscinas_ativas.append("Piscina Family")
+                if _pisc_outra_check and _pisc_outra_nome.strip(): _piscinas_ativas.append(_pisc_outra_nome.strip())
+                if not _piscinas_ativas: _piscinas_ativas = ["Piscina Adulto"]
+                if st.button("💾 Salvar configuração de piscinas", key="btn_salvar_piscinas"):
+                    _pasta_cond_op.mkdir(parents=True, exist_ok=True)
+                    _dados_upd = carregar_dados_condominio(_pasta_cond_op) or {}
+                    _dados_upd["piscinas"] = _piscinas_ativas
+                    _dados_upd["nome_condominio"] = op_nome_cond.strip()
+                    salvar_dados_condominio(_pasta_cond_op, _dados_upd)
+                    st.success(f"✅ Piscinas salvas: {', '.join(_piscinas_ativas)}")
+                    st.rerun()
         piscinas_ativas = _piscinas_ativas
 
         # ── Indicador de autosave ────────────────────────────────────────────
@@ -8793,6 +8799,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_antes")
         op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_depois")
         op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_cmaq")
+        op_fotos_extras = st.file_uploader("📋 Outras fotos (bordas, ralos, equipamentos...)", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_extras")
 
         # ── Salvamento imediato ao upload ─────────────────────────────────────
         # Pasta temporária de fotos do rascunho
@@ -8817,12 +8824,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _fotos_rasc_antes  = _salvar_foto_imediato(op_fotos_antes,  "antes")
         _fotos_rasc_depois = _salvar_foto_imediato(op_fotos_depois, "depois")
         _fotos_rasc_cmaq   = _salvar_foto_imediato(op_fotos_cmaq,   "cmaq")
+        op_fotos_extras = st.session_state.get("op_fotos_extras") or []
+        _fotos_rasc_extras = _salvar_foto_imediato(op_fotos_extras, "extras")
 
         # Também mostra fotos já salvas do rascunho anterior (sessão anterior)
-        _fotos_rasc_existentes = {"antes": [], "depois": [], "cmaq": []}
+        _fotos_rasc_existentes = {"antes": [], "depois": [], "cmaq": [], "extras": []}
         if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
             for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
-                for _cat in ["antes", "depois", "cmaq"]:
+                for _cat in ["antes", "depois", "cmaq", "extras"]:
                     if f"rasc_{_cat}_" in _fp.name:
                         _fotos_rasc_existentes[_cat].append(_fp)
 
@@ -8831,6 +8840,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             ("🔵 Antes", op_fotos_antes, _fotos_rasc_existentes["antes"]),
             ("🟢 Depois", op_fotos_depois, _fotos_rasc_existentes["depois"]),
             ("🔧 Casa máq.", op_fotos_cmaq, _fotos_rasc_existentes["cmaq"]),
+            ("📋 Outras", op_fotos_extras, _fotos_rasc_existentes["extras"]),
         ]
         _total_fotos_rasc = sum(len(v) for v in _fotos_rasc_existentes.values())
         if _total_fotos_rasc > 0:
@@ -9129,6 +9139,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(op_fotos_antes,  "antes")
                 fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(op_fotos_depois, "depois")
                 fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
+                op_fotos_extras_final = st.session_state.get("op_fotos_extras") or []
+                fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(op_fotos_extras_final, "extras")
 
                 # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
                 _pasta_rasc_f = pasta_op / "fotos_rascunho"
@@ -9161,8 +9173,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     # Remove pasta de rascunho de fotos após incorporar
                     _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
 
-                fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes
-                fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids
+                fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes + fotos_extras_nomes
+                fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids + fotos_extras_ids
 
                 assinatura_responsavel_b64 = _normalizar_assinatura_b64(st.session_state.get("op_assinatura_responsavel_b64", ""))
                 assinatura_responsavel_arquivo = ""
@@ -9198,6 +9210,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_antes_b64": fotos_antes_b64,
                     "fotos_depois_b64": fotos_depois_b64,
                     "fotos_cmaq_b64": fotos_cmaq_b64,
+                    "fotos_extras": fotos_extras_nomes,
+                    "fotos_extras_ids": fotos_extras_ids,
+                    "fotos_extras_b64": fotos_extras_b64,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 }
@@ -10406,6 +10421,15 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                 "operadores_vinculados": _cc_operadores_sel,
                 "piscinas_extras": _piscs_extras_form,
             })
+            # Monta lista de piscinas ativas para o operador (sem precisar configurar)
+            _piscinas_adm = []
+            if _vol_a: _piscinas_adm.append("Piscina Adulto")
+            if _vol_i: _piscinas_adm.append("Piscina Infantil")
+            if _vol_f: _piscinas_adm.append("Piscina Family")
+            for _pe in _piscs_extras_form:
+                if _pe.get("nome"): _piscinas_adm.append(_pe["nome"])
+            if _piscinas_adm:
+                _dados_cliente_local["piscinas"] = _piscinas_adm
             salvar_dados_condominio(_pasta_cliente, _dados_cliente_local)
         if ok:
             st.success(msg_ok)
