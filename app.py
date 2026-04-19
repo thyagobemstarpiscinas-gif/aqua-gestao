@@ -2,6 +2,7 @@ import os
 import re
 import json
 import shutil
+import unicodedata
 from datetime import date, datetime, timedelta
 import platform
 from pathlib import Path
@@ -143,6 +144,92 @@ def _normalizar_chave_acesso(texto: str) -> str:
     """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
     texto = re.sub(r"\s+", " ", str(texto or "").strip())
     return texto.casefold()
+
+
+
+
+def normalizar_texto_busca(valor: str) -> str:
+    """Normaliza texto para comparação robusta: remove acento, caixa, espaços e símbolos."""
+    valor = str(valor or "").strip().lower()
+    valor = unicodedata.normalize("NFKD", valor)
+    valor = "".join(c for c in valor if not unicodedata.combining(c))
+    valor = re.sub(r"[^a-z0-9]+", " ", valor)
+    valor = re.sub(r"\s+", " ", valor).strip()
+    return valor
+
+
+def nomes_condominio_equivalentes(a: str, b: str) -> bool:
+    """Compara nomes de condomínios tolerando acentos, espaços e pequenas variações."""
+    na = normalizar_texto_busca(a)
+    nb = normalizar_texto_busca(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def normalizar_data_visita(valor) -> str:
+    """Converte datas como 17/04/26, 170426, 2026-04-17 para dd/mm/aaaa."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return ""
+
+    formatos = [
+        "%d/%m/%Y", "%d/%m/%y",
+        "%d-%m-%Y", "%d-%m-%y",
+        "%Y-%m-%d",
+        "%d%m%Y", "%d%m%y",
+    ]
+    for fmt in formatos:
+        try:
+            dt = datetime.strptime(texto, fmt)
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+
+    digitos = re.sub(r"\D", "", texto)
+    if len(digitos) == 6:
+        try:
+            dt = datetime.strptime(digitos, "%d%m%y")
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    if len(digitos) == 8:
+        for fmt in ("%d%m%Y", "%Y%m%d"):
+            try:
+                dt = datetime.strptime(digitos, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+    return texto
+
+
+def lancamento_pertence_mes_ano(data_lancamento: str, mes: str, ano: str) -> bool:
+    """Confere se uma visita pertence ao mês/ano do relatório."""
+    data_norm = normalizar_data_visita(data_lancamento)
+    try:
+        dt = datetime.strptime(data_norm, "%d/%m/%Y")
+        mes_int = int(str(mes).zfill(2))
+        ano_int = int(str(ano))
+    except Exception:
+        return False
+    return dt.month == mes_int and dt.year == ano_int
+
+
+def _montar_resumo_dosagens_lancamento(lancamento: dict) -> str:
+    """Monta texto resumido das dosagens para gravar em planilha."""
+    dosagens = lancamento.get("dosagens", []) or []
+    partes = []
+    for d in dosagens:
+        if not isinstance(d, dict):
+            continue
+        produto = str(d.get("produto", "")).strip()
+        qtd = str(d.get("quantidade", "")).strip()
+        unid = str(d.get("unidade", "")).strip()
+        finalidade = str(d.get("finalidade", "")).strip()
+        if produto or qtd or finalidade:
+            partes.append(f"{produto} {qtd}{unid} - {finalidade}".strip(" -"))
+    return " | ".join(partes)
 
 
 def _condominios_organizar(condominios: list[str] | None) -> list[str]:
@@ -369,59 +456,111 @@ def conectar_sheets():
 
 
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
-    """Salva lançamento de campo na aba Visitas do Google Sheets."""
+    """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
+
+    Esta função é crítica para o relatório mensal: PDF de visita não alimenta relatório
+    se a linha não for gravada no Sheets. Por isso, grava dados básicos e também um
+    Payload JSON completo para preservar múltiplas piscinas, fotos e dosagens.
+    """
     try:
         sh = conectar_sheets()
         if sh is None:
             return False
 
-        aba = sh.worksheet("🔬 Visitas")
+        try:
+            aba = sh.worksheet("🔬 Visitas")
+        except Exception:
+            aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
+            aba.update(
+                "A1:Z1",
+                [[
+                    "", "ID Visita", "Data", "ID Cliente", "Condomínio",
+                    "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA",
+                    "Foto Antes", "Foto Depois", "Foto Casa Máquinas", "Observação",
+                    "Dosagem Cloro", "Dosagem Bicarb", "Alerta pH", "Alerta Cloro",
+                    "Status", "Operador", "Problemas", "Payload JSON", "Salvo em",
+                    "Fonte", "Mês/Ano",
+                ]]
+            )
+
         todos = aba.get_all_values()
-
-        # Encontra próxima linha vazia após o cabeçalho (linha 6 = índice 5)
-        proxima_linha = len(todos) + 1
-
-        # Gera ID da visita
-        visitas_existentes = [r for r in todos if r and r[1] and r[1].startswith("V")]
+        HEADER_ROWS = 7
+        visitas_existentes = [
+            r for r in todos[HEADER_ROWS:]
+            if len(r) > 1 and str(r[1]).strip().startswith("V")
+        ]
         proximo_num = len(visitas_existentes) + 1
         id_visita = f"V{proximo_num:05d}"
 
-        # Busca ID do cliente
-        aba_clientes = sh.worksheet("👥 Clientes")
-        clientes = aba_clientes.get_all_values()
+        data_normalizada = normalizar_data_visita(lancamento.get("data", ""))
+        nome_condominio = str(nome_condominio or lancamento.get("condominio", "")).strip()
+
+        # Busca ID do cliente por nome normalizado
         id_cliente = ""
-        for row in clientes:
-            if len(row) > 2 and nome_condominio.lower() in str(row[2]).lower():
-                id_cliente = row[1]
-                break
+        try:
+            aba_clientes = sh.worksheet("👥 Clientes")
+            clientes = aba_clientes.get_all_values()
+            for row in clientes:
+                if len(row) > 2 and nomes_condominio_equivalentes(nome_condominio, row[2]):
+                    id_cliente = row[1]
+                    break
+        except Exception:
+            id_cliente = ""
+
+        # Se houver múltiplas piscinas, grava os parâmetros principais com a primeira piscina,
+        # mas conserva tudo no Payload JSON.
+        piscinas = lancamento.get("piscinas", []) or []
+        base_param = piscinas[0] if isinstance(piscinas, list) and piscinas and isinstance(piscinas[0], dict) else lancamento
+
+        dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
+
+        payload = dict(lancamento)
+        payload["data"] = data_normalizada
+        payload["condominio"] = nome_condominio
+        payload["id_visita"] = id_visita
+        payload["status"] = payload.get("status", "Concluída")
+        try:
+            payload_json = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            payload_json = ""
+
+        mes_ano = ""
+        try:
+            dt = datetime.strptime(data_normalizada, "%d/%m/%Y")
+            mes_ano = dt.strftime("%m/%Y")
+        except Exception:
+            pass
 
         nova_linha = [
-            "",                                    # col A  - vazia
-            id_visita,                             # col B  - ID visita
-            lancamento.get("data", ""),            # col C  - Data
-            id_cliente,                            # col D  - ID cliente
-            nome_condominio,                       # col E  - Condomínio
-            lancamento.get("ph", ""),              # col F  - pH
-            lancamento.get("cloro_livre", ""),     # col G  - CRL
-            lancamento.get("cloro_total", ""),     # col H  - CT ← adicionado
-            lancamento.get("alcalinidade", ""),    # col I  - Alcalinidade
-            lancamento.get("dureza", ""),          # col J  - Dureza
-            lancamento.get("cianurico", ""),       # col K  - CYA
-            "",                                    # col L  - foto antes
-            "",                                    # col M  - foto depois
-            "",                                    # col N  - foto casa máquinas
-            lancamento.get("observacao", ""),      # col O  - Observação
-            "",                                    # col P  - dosagem cloro
-            "",                                    # col Q  - dosagem bicarb
-            "",                                    # col R  - alerta pH
-            "",                                    # col S  - alerta cloro
-            "Concluída",                           # col T  - Status
-            lancamento.get("operador", ""),        # col U  - Operador
-            lancamento.get("problemas", ""),       # col V  - Problemas
+            "",                                      # A
+            id_visita,                               # B
+            data_normalizada,                        # C
+            id_cliente,                              # D
+            nome_condominio,                         # E
+            base_param.get("ph", lancamento.get("ph", "")),
+            base_param.get("cloro_livre", lancamento.get("cloro_livre", "")),
+            base_param.get("cloro_total", lancamento.get("cloro_total", "")),
+            base_param.get("alcalinidade", lancamento.get("alcalinidade", "")),
+            base_param.get("dureza", lancamento.get("dureza", "")),
+            base_param.get("cianurico", lancamento.get("cianurico", "")),
+            "",                                      # L foto antes
+            "",                                      # M foto depois
+            "",                                      # N foto casa máquinas
+            lancamento.get("observacao", ""),        # O
+            dosagem_txt,                              # P
+            "", "", "",                              # Q/R/S
+            "Concluída",                             # T
+            lancamento.get("operador", ""),          # U
+            lancamento.get("problemas", ""),         # V
+            payload_json,                             # W
+            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "Modo Campo",                             # Y
+            mes_ano,                                  # Z
         ]
 
-        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
+        aba.append_row(nova_linha, value_input_option="RAW", table_range="B8")
         return True
+
     except Exception as e:
         _log_sheets_erro("sheets_salvar_lancamento_campo", e)
         return False
@@ -701,59 +840,223 @@ def validar_pin_operador(pin: str) -> dict | None:
     return None
 
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
-    """Retorna lançamentos de visitas de um condomínio."""
+    """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas."""
     try:
         sh = conectar_sheets()
         if sh is None:
             return []
+
         aba = sh.worksheet("🔬 Visitas")
         todos = aba.get_all_values()
         lancamentos = []
-        for row in todos:
-            if len(row) > 4 and nome_condominio.lower() in str(row[4]).lower():
-                def _r(i): return row[i] if len(row) > i else ""
-                # Detecta formato antigo (sem CT na col H) vs novo (com CT)
-                # No formato novo: col H = CT, col I = Alc, col J = DC, col K = CYA
-                # No formato antigo: col H = Alc, col I = DC, col J = CYA
-                # Heurística: se col H parece alcalinidade (valor > 30), é formato antigo
-                _col_h = _r(7)
-                try:
-                    _h_float = float(str(_col_h).replace(",",".").strip() or 0)
-                    _formato_novo = _h_float < 10  # CT raramente > 10, Alc sempre > 30
-                except Exception:
-                    _formato_novo = True
 
-                if _formato_novo:
-                    lancamentos.append({
-                        "data":        _r(2),
-                        "ph":          _r(5),
-                        "cloro_livre": _r(6),
-                        "cloro_total": _r(7),
-                        "alcalinidade":_r(8),
-                        "dureza":      _r(9),
-                        "cianurico":   _r(10),
-                        "observacao":  _r(14),
-                        "operador":    _r(20),
-                        "problemas":   _r(21),
-                    })
-                else:
-                    # Formato antigo — sem CT
-                    lancamentos.append({
-                        "data":        _r(2),
-                        "ph":          _r(5),
-                        "cloro_livre": _r(6),
-                        "cloro_total": "",
-                        "alcalinidade":_r(7),
-                        "dureza":      _r(8),
-                        "cianurico":   _r(9),
-                        "observacao":  _r(13),
-                        "operador":    _r(19),
-                        "problemas":   "",
-                    })
+        HEADER_ROWS = 7
+        for row in todos[HEADER_ROWS:]:
+            if len(row) < 5:
+                continue
+
+            id_visita = str(row[1]).strip() if len(row) > 1 else ""
+            data_raw = str(row[2]).strip() if len(row) > 2 else ""
+            cond_linha = str(row[4]).strip() if len(row) > 4 else ""
+
+            # Ignora cabeçalho e linhas que não são visita real.
+            if not id_visita.startswith("V"):
+                continue
+
+            if not nomes_condominio_equivalentes(nome_condominio, cond_linha):
+                continue
+
+            def _r(i):
+                return row[i] if len(row) > i else ""
+
+            data_norm = normalizar_data_visita(data_raw)
+            payload = {}
+            payload_raw = _r(22)  # Coluna W
+            if payload_raw:
+                try:
+                    payload = json.loads(payload_raw)
+                except Exception:
+                    payload = {}
+
+            if payload:
+                payload["id_visita"] = payload.get("id_visita", id_visita)
+                payload["data"] = normalizar_data_visita(payload.get("data", data_norm))
+                payload["condominio"] = payload.get("condominio", cond_linha)
+                payload["status"] = payload.get("status", _r(19))
+                payload["operador"] = payload.get("operador", _r(20))
+                lancamentos.append(payload)
+                continue
+
+            # Compatibilidade com linhas antigas sem Payload JSON.
+            lancamentos.append({
+                "id_visita": id_visita,
+                "data": data_norm,
+                "condominio": cond_linha,
+                "ph": _r(5),
+                "cloro_livre": _r(6),
+                "cloro_total": _r(7),
+                "alcalinidade": _r(8),
+                "dureza": _r(9),
+                "cianurico": _r(10),
+                "observacao": _r(14),
+                "dosagem_resumo": _r(15),
+                "status": _r(19),
+                "operador": _r(20),
+                "problemas": _r(21),
+            })
+
         return lancamentos
+
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
         return []
+
+
+def extrair_lancamento_de_pdf_visita(pdf_bytes: bytes, nome_condominio_padrao: str = "") -> dict:
+    """Extrai dados básicos de um PDF de Relatório de Visita Aqua Gestão.
+
+    Uso: permite recuperar visitas antigas que geraram PDF, mas não foram gravadas
+    na aba 🔬 Visitas do Google Sheets. Não inventa dados: só preenche o que achar no PDF.
+    """
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        texto = "\n".join(page.get_text("text") for page in doc)
+    except Exception as e:
+        _log_sheets_erro("extrair_lancamento_de_pdf_visita/fitz", e)
+        return {}
+
+    linhas = [re.sub(r"\s+", " ", l).strip() for l in texto.splitlines() if str(l).strip()]
+
+    def _apos(rotulo: str) -> str:
+        rot = normalizar_texto_busca(rotulo)
+        for i, linha in enumerate(linhas):
+            if normalizar_texto_busca(linha) == rot and i + 1 < len(linhas):
+                return linhas[i + 1].strip()
+        return ""
+
+    nome_cond = _apos("CONDOMÍNIO / LOCAL") or nome_condominio_padrao
+    data_vis = normalizar_data_visita(_apos("DATA DA VISITA"))
+    operador = _apos("OPERADOR")
+    resp = _apos("RESP. TÉCNICO")
+
+    observacao = ""
+    for i, linha in enumerate(linhas):
+        if normalizar_texto_busca(linha) == "observacoes" and i + 1 < len(linhas):
+            prox = linhas[i + 1].strip().strip('"')
+            if normalizar_texto_busca(prox) not in ("registro fotografico", "antes do tratamento"):
+                observacao = prox
+            break
+
+    def _extrair_bloco(nome_piscina: str, inicio_idx: int, fim_idx: int) -> dict:
+        bloco = linhas[inicio_idx:fim_idx]
+
+        def _valor(prefixos: list[str]) -> str:
+            for ln in bloco:
+                ln_limpa = ln.strip()
+                ln_norm = normalizar_texto_busca(ln_limpa)
+                for pref in prefixos:
+                    pref_norm = normalizar_texto_busca(pref)
+                    if ln_norm.startswith(pref_norm):
+                        resto = ln_limpa
+                        for alvo in ["pH", "CRL mg/L", "CRL", "CT mg/L", "CT", "Alc. mg/L (15d)", "Alc", "Dureza mg/L (15d)", "Dureza", "CYA mg/L (15d)", "CYA", "Cloraminas"]:
+                            if normalizar_texto_busca(resto).startswith(normalizar_texto_busca(alvo)):
+                                resto = re.sub(re.escape(alvo), "", resto, count=1, flags=re.IGNORECASE).strip()
+                                break
+                        m = re.search(r"(—|-|\d+(?:[,.]\d+)?)", resto)
+                        return m.group(1) if m else ""
+            return ""
+
+        return {
+            "nome": nome_piscina,
+            "ph": _valor(["pH"]),
+            "cloro_livre": _valor(["CRL mg/L", "CRL"]),
+            "cloro_total": _valor(["CT mg/L", "CT"]),
+            "alcalinidade": _valor(["Alc. mg/L (15d)", "Alc"]),
+            "dureza": _valor(["Dureza mg/L (15d)", "Dureza"]),
+            "cianurico": _valor(["CYA mg/L (15d)", "CYA"]),
+            "cloraminas": _valor(["Cloraminas"]),
+        }
+
+    indices_piscinas = []
+    for i, linha in enumerate(linhas):
+        ln = normalizar_texto_busca(linha)
+        if "piscina adulto" in ln:
+            indices_piscinas.append(("Piscina Adulto", i))
+        elif "piscina infantil" in ln:
+            indices_piscinas.append(("Piscina Infantil", i))
+        elif "piscina family" in ln or "piscina spa" in ln:
+            indices_piscinas.append((linha.replace("■", "").strip(), i))
+
+    piscinas = []
+    for pos, (nome_pisc, idx) in enumerate(indices_piscinas):
+        fim = indices_piscinas[pos + 1][1] if pos + 1 < len(indices_piscinas) else len(linhas)
+        for j in range(idx + 1, fim):
+            if normalizar_texto_busca(linhas[j]) in ("alertas tecnicos", "dosagens aplicadas", "observacoes", "registro fotografico"):
+                fim = j
+                break
+        p = _extrair_bloco(nome_pisc, idx, fim)
+        if any(p.get(k) for k in ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico", "cloraminas"]):
+            piscinas.append(p)
+
+    dosagens = []
+    for i, linha in enumerate(linhas):
+        if normalizar_texto_busca(linha) == "dosagens aplicadas":
+            for ln in linhas[i + 1:i + 8]:
+                ln_norm = normalizar_texto_busca(ln)
+                if ln_norm in ("produto quantidade finalidade", "observacoes", "registro fotografico"):
+                    continue
+                if ln_norm.startswith("observacoes") or ln_norm.startswith("registro fotografico"):
+                    break
+                m = re.match(r"(.+?)\s+(\d+(?:[,.]\d+)?\s*(?:kg|g|ml|l|litros?))\s+(.+)$", ln, flags=re.IGNORECASE)
+                if m:
+                    dosagens.append({
+                        "produto": m.group(1).strip(),
+                        "quantidade": m.group(2).strip(),
+                        "unidade": "",
+                        "finalidade": m.group(3).strip(),
+                    })
+                    break
+            break
+
+    problemas = []
+    coletando = False
+    for ln in linhas:
+        ln_norm = normalizar_texto_busca(ln)
+        if ln_norm == "alertas tecnicos":
+            coletando = True
+            continue
+        if coletando and ln_norm in ("dosagens aplicadas", "observacoes", "registro fotografico"):
+            break
+        if coletando:
+            problemas.append(ln.replace("■", "").strip())
+
+    base = piscinas[0] if piscinas else {}
+    lancamento = {
+        "data": data_vis,
+        "operador": operador,
+        "responsavel_tecnico_pdf": resp,
+        "condominio": nome_cond,
+        "ph": base.get("ph", ""),
+        "cloro_livre": base.get("cloro_livre", ""),
+        "cloro_total": base.get("cloro_total", ""),
+        "cloraminas": base.get("cloraminas", ""),
+        "alcalinidade": base.get("alcalinidade", ""),
+        "dureza": base.get("dureza", ""),
+        "cianurico": base.get("cianurico", ""),
+        "piscinas": piscinas,
+        "problemas": " | ".join(problemas),
+        "observacao": observacao,
+        "dosagens": dosagens,
+        "parecer": "Importado de PDF de visita",
+        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "fonte": "PDF de Relatório de Visita",
+    }
+    if not lancamento.get("data") and not piscinas and not dosagens:
+        return {}
+    if not lancamento.get("condominio"):
+        lancamento["condominio"] = nome_condominio_padrao
+    return lancamento
 
 # =========================================
 # OPERADORES — CONTROLE DE ACESSO
@@ -1025,6 +1328,7 @@ def exibir_sugestoes_dosagem(sugestoes: list[dict]):
 # =========================================
 
 APP_TITLE = "Aqua Gestão – Controle Técnico de Piscinas"
+APP_VERSION = "v20_empresas_separadas_aqua_bemstar"
 RESPONSAVEL_TÉCNICO = "Thyago Fernando da Silveira"
 RESPONSAVEL_TECNICO_ASSINATURA = "Thyago Fernando da Silveira | CRQ 024025748 | Técnico em Química"
 CRQ = "CRQ-MG 2ª Região | CRQ 024025748"
@@ -1067,8 +1371,38 @@ TEMPLATE_ADITIVO = BASE_DIR / "aditivo.docx"
 TEMPLATE_RELATORIO = BASE_DIR / "relatorio_mensal.docx"
 DADOS_JSON_NAME = "dados_condominio.json"
 MANIFEST_JSON_NAME = "manifest.json"
-ANALISES_PADRAO = 9
+ANALISES_PADRAO = 12
 ANALISES_MAX_SUGERIDO = 40
+
+
+def calcular_linhas_analises_por_frequencia(verificacoes_semanais: int | str | None = None, mes: str | None = None, ano: str | None = None) -> int:
+    """Calcula quantas linhas de análise o relatório deve abrir.
+
+    Regra operacional adotada: 12 linhas como padrão mínimo.
+    Para clientes com rotina cadastrada, usa verificações semanais × 4 semanas.
+    Se o mês tiver mais lançamentos reais importados, o sistema expande automaticamente.
+    """
+    try:
+        freq = int(float(str(verificacoes_semanais or "").replace(",", ".")))
+    except Exception:
+        freq = 3
+    freq = max(1, min(freq, 7))
+    return max(ANALISES_PADRAO, min(freq * 4, ANALISES_MAX_SUGERIDO))
+
+
+def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
+    """Obtém a frequência semanal cadastrada para o cliente, com fallback para 3x/semana."""
+    dados = cliente_ou_dados or {}
+    for chave in ["verificacoes_semanais", "frequencia_verificacoes_semanais", "visitas_semanais", "frequencia_semanal"]:
+        valor = dados.get(chave)
+        try:
+            iv = int(float(str(valor or "").replace(",", ".")))
+            if iv > 0:
+                return max(1, min(iv, 7))
+        except Exception:
+            pass
+    return 3
+
 
 ASSINATURA_RT_CANDIDATOS = [
     BASE_DIR / "assinatura_rt.png",
@@ -1105,6 +1439,55 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# =========================================
+# PROTEÇÃO CONTRA TRADUÇÃO AUTOMÁTICA DO NAVEGADOR
+# =========================================
+# O Google Tradutor/Chrome Translate altera nós internos do React/Streamlit e pode gerar
+# erros de front-end como: NotFoundError: Failed to execute 'removeChild' on 'Node'.
+# Também distorce siglas técnicas (CT -> TC, ALC -> Álcool, CYA -> Tchau).
+def bloquear_traducao_navegador():
+    """Marca a página como não traduzível para evitar quebra do front-end do Streamlit."""
+    try:
+        components.html(
+            """
+            <script>
+            (function() {
+                try {
+                    const doc = window.parent.document;
+                    doc.documentElement.setAttribute('translate', 'no');
+                    doc.documentElement.setAttribute('lang', 'pt-BR');
+                    doc.documentElement.classList.add('notranslate');
+                    doc.body.setAttribute('translate', 'no');
+                    doc.body.classList.add('notranslate');
+
+                    let meta = doc.querySelector('meta[name="google"]');
+                    if (!meta) {
+                        meta = doc.createElement('meta');
+                        meta.setAttribute('name', 'google');
+                        doc.head.appendChild(meta);
+                    }
+                    meta.setAttribute('content', 'notranslate');
+
+                    let style = doc.getElementById('aqua-notranslate-style');
+                    if (!style) {
+                        style = doc.createElement('style');
+                        style.id = 'aqua-notranslate-style';
+                        style.innerHTML = '* { -webkit-locale: "pt-BR"; } .notranslate { translate: no; }';
+                        doc.head.appendChild(style);
+                    }
+                } catch (e) {}
+            })();
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+    except Exception:
+        pass
+
+bloquear_traducao_navegador()
+
 
 # =========================================
 # ESTILO VISUAL
@@ -1618,6 +2001,25 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     return resultado
 
 
+def _empresa_ativa_codigo() -> str:
+    """Retorna o painel ativo do escritório."""
+    return st.session_state.get("empresa_ativa", "aqua_gestao")
+
+
+def _empresa_ativa_nome() -> str:
+    return "Bem Star Piscinas" if _empresa_ativa_codigo() == "bem_star" else "Aqua Gestão"
+
+
+def _servicos_padrao_empresa_ativa() -> dict:
+    """Serviços gravados automaticamente no cadastro conforme o painel ativo."""
+    return {"rt": _empresa_ativa_codigo() == "aqua_gestao", "limpeza": _empresa_ativa_codigo() == "bem_star"}
+
+
+def _filtrar_clientes_painel_ativo(clientes: list[dict]) -> list[dict]:
+    """Mantém os clientes separados visualmente por empresa/painel."""
+    return filtrar_clientes_por_empresa(clientes or [], _empresa_ativa_codigo())
+
+
 def _normalizar_lista_textos_unicos(valores) -> list[str]:
     resultado = []
     vistos = set()
@@ -1694,7 +2096,7 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
         dados_locais.get("operadores_vinculados", cliente_final.get("operadores_vinculados", []))
     )
 
-    for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family"]:
+    for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family", "verificacoes_semanais", "analises_mensais_padrao"]:
         valor_local = dados_locais.get(chave)
         if valor_local not in (None, ""):
             cliente_final[chave] = valor_local
@@ -2134,9 +2536,59 @@ def salvar_snapshot_formulario() -> dict:
         "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
+        "parametros_ultimos": obter_parametros_ultimos_relatorio(),
         "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
         "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
     }
+
+
+def obter_parametros_ultimos_relatorio() -> list[dict]:
+    """Coleta as análises físico-químicas atuais para reutilizar como último padrão do condomínio."""
+    itens = []
+    qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    qtd = max(ANALISES_PADRAO, min(qtd, ANALISES_MAX_SUGERIDO))
+    for i in range(qtd):
+        itens.append({
+            "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
+            "ph": (st.session_state.get(f"rel_analise_ph_{i}") or "").strip(),
+            "cl": (st.session_state.get(f"rel_analise_cl_{i}") or "").strip(),
+            "ct": (st.session_state.get(f"rel_analise_ct_{i}") or "").strip(),
+            "alc": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
+            "dc": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
+            "cya": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
+            "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
+        })
+    return itens
+
+
+def aplicar_parametros_ultimos_no_relatorio(dados_salvos: dict | None):
+    """Restaura as últimas análises físico-químicas salvas para o condomínio."""
+    parametros = []
+    if isinstance(dados_salvos, dict):
+        parametros = (
+            dados_salvos.get("parametros_ultimos")
+            or dados_salvos.get("analises_ultimas")
+            or dados_salvos.get("analises")
+            or []
+        )
+    if not isinstance(parametros, list):
+        parametros = []
+
+    qtd = max(len(parametros), ANALISES_PADRAO)
+    qtd = max(ANALISES_PADRAO, min(qtd, ANALISES_MAX_SUGERIDO))
+    garantir_campos_analises(qtd)
+    st.session_state["rel_analises_total"] = qtd
+
+    for i in range(qtd):
+        item = parametros[i] if i < len(parametros) and isinstance(parametros[i], dict) else {}
+        st.session_state[f"rel_analise_data_{i}"] = str(item.get("data") or "").strip()
+        st.session_state[f"rel_analise_ph_{i}"] = str(item.get("ph") or "").strip()
+        st.session_state[f"rel_analise_cl_{i}"] = str(item.get("cl") or item.get("cloro_livre") or "").strip()
+        st.session_state[f"rel_analise_ct_{i}"] = str(item.get("ct") or item.get("cloro_total") or "").strip()
+        st.session_state[f"rel_analise_alc_{i}"] = str(item.get("alc") or item.get("alcalinidade") or "").strip()
+        st.session_state[f"rel_analise_dc_{i}"] = str(item.get("dc") or item.get("dureza") or "").strip()
+        st.session_state[f"rel_analise_cya_{i}"] = str(item.get("cya") or item.get("cianurico") or "").strip()
+        st.session_state[f"rel_analise_operador_{i}"] = str(item.get("operador") or "").strip()
 
 
 def obter_dosagens_ultimas_relatorio() -> list[dict]:
@@ -2168,8 +2620,9 @@ def aplicar_dosagens_ultimas_no_relatorio(dados_salvos: dict | None):
 
 def aplicar_snapshot_relatorio_independente(dados: dict):
     for key, value in dados.items():
-        if key != "dosagens_ultimas": # Dosagens são aplicadas separadamente
+        if key not in ("dosagens_ultimas", "parametros_ultimos", "analises_ultimas", "analises"):
             st.session_state[key] = value
+    aplicar_parametros_ultimos_no_relatorio(dados)
     aplicar_dosagens_ultimas_no_relatorio(dados)
 
 def obter_snapshot_relatorio_independente() -> dict:
@@ -2184,6 +2637,7 @@ def obter_snapshot_relatorio_independente() -> dict:
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
         "ultima_origem_relatorio": (st.session_state.get("rel_tipo_atendimento") or "").strip(),
+        "parametros_ultimos": obter_parametros_ultimos_relatorio(),
         "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
         "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
     }
@@ -2205,7 +2659,12 @@ def sincronizar_relatorio_com_cadastro():
 
 
 def carregar_dados_cadastro_no_relatorio():
-    st.session_state.rel_nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
+    _nome_base_cad = (st.session_state.get("nome_condominio") or "").strip()
+    _dados_locais_cad = _carregar_dados_cliente_local(_nome_base_cad) if _nome_base_cad else {}
+    _freq_cad = obter_verificacoes_semanais_cliente(_dados_locais_cad)
+    st.session_state["rel_verificacoes_semanais"] = _freq_cad
+    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_cad)
+    st.session_state.rel_nome_condominio = _nome_base_cad
     st.session_state.rel_cnpj_condominio = (st.session_state.get("cnpj_condominio") or "").strip()
     st.session_state.rel_endereco_condominio = (st.session_state.get("endereco_condominio") or "").strip()
     st.session_state.rel_representante = (st.session_state.get("nome_sindico") or "").strip()
@@ -2318,12 +2777,14 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.email_cliente = dados_salvos.get("email_cliente", "")
     st.session_state.observacoes_internas = dados_salvos.get("observacoes_internas", "")
     st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Emitida")
+    st.session_state.rel_art_status_widget = st.session_state.rel_art_status
     st.session_state.rel_art_numero = dados_salvos.get("rel_art_numero", "")
     st.session_state.rel_art_inicio = dados_salvos.get("rel_art_inicio", "")
     st.session_state.rel_art_fim = dados_salvos.get("rel_art_fim", "")
     st.session_state.origem_dados_carregados = dados_salvos.get("nome_condominio", "")
 
     carregar_dados_cadastro_no_relatorio()
+    aplicar_parametros_ultimos_no_relatorio(dados_salvos)
     aplicar_dosagens_ultimas_no_relatorio(dados_salvos)
 
 
@@ -3000,7 +3461,7 @@ def _mockup_dados_relatorio_demo() -> dict:
 
 def _coletar_analises_preview_formulario() -> list[dict]:
     """Coleta as linhas atuais do formulário de relatório mensal para a prévia."""
-    total = int(st.session_state.get("rel_analises_total", 9) or 9)
+    total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     linhas = []
     for i in range(total):
         item = {
@@ -3791,6 +4252,373 @@ def obter_status_art_texto(dados_relatorio: dict) -> str:
     return "ART não emitida até a data de emissão deste relatório"
 
 
+# =========================================
+# RELATÓRIO RT PREMIUM — PDF DIRETO REPORTLAB
+# =========================================
+LOGO_AQUA_OFICIAL_B64 = """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"""
+
+
+def garantir_logo_aqua_oficial() -> Path | None:
+    """Garante um arquivo de logo oficial local para uso nos PDFs premium."""
+    try:
+        candidatos = [
+            BASE_DIR / "Logo Aqua.jpeg",
+            BASE_DIR / "Logo_Aqua.jpeg",
+            BASE_DIR / "logo_aqua.jpeg",
+            BASE_DIR / "aqua_gestao_logo.png",
+            BASE_DIR / "aqua_gestao_logo.jpg",
+            BASE_DIR / "assets" / "Logo Aqua.jpeg",
+            BASE_DIR / "assets" / "aqua_gestao_logo.png",
+        ]
+        for p in candidatos:
+            if p.exists():
+                return p
+        p = BASE_DIR / "Logo Aqua.jpeg"
+        import base64 as _b64
+        p.write_bytes(_b64.b64decode(LOGO_AQUA_OFICIAL_B64))
+        return p if p.exists() else None
+    except Exception:
+        return None
+
+
+def _rl_valor(valor, padrao="—"):
+    texto = str(valor or "").strip()
+    return texto if texto else padrao
+
+
+def _rl_f(valor):
+    if valor is None:
+        return ""
+    return str(valor).strip()
+
+
+def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
+    linhas = []
+    for item in dados_relatorio.get("analises", []) or []:
+        if any(str(item.get(k, "")).strip() for k in ["data", "ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico", "operador"]):
+            linhas.append([
+                _rl_valor(item.get("data"), ""),
+                _rl_f(item.get("ph", "")),
+                _rl_f(item.get("cloro_livre", "")),
+                _rl_f(item.get("cloro_total", "")),
+                _rl_f(item.get("alcalinidade", "")),
+                _rl_f(item.get("dureza", "")),
+                _rl_f(item.get("cianurico", "")),
+                _rl_valor(item.get("operador"), ""),
+            ])
+    return linhas
+
+
+def _rl_linhas_dosagens(dados_relatorio: dict) -> list[list[str]]:
+    linhas = []
+    for item in dados_relatorio.get("dosagens", []) or []:
+        if any(str(v or "").strip() for v in item.values()):
+            linhas.append([
+                _rl_valor(item.get("produto"), ""),
+                _rl_valor(item.get("fabricante_lote"), ""),
+                _rl_valor(item.get("quantidade"), ""),
+                _rl_valor(item.get("unidade"), ""),
+                _rl_valor(item.get("finalidade"), ""),
+            ])
+    return linhas
+
+
+def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[Path] | None, pdf_path: Path) -> tuple[bool, str | None]:
+    """Gera PDF premium no padrão Aqua Gestão, sem depender do Word/LibreOffice."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            Image as RLImage, PageBreak, HRFlowable
+        )
+        from PIL import Image as PILImage
+
+        pdf_path = Path(pdf_path)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        azul = colors.HexColor("#173A5E")
+        azul2 = colors.HexColor("#1D78A8")
+        azul_claro = colors.HexColor("#D9EAF4")
+        cinza = colors.HexColor("#4D5661")
+        verde = colors.HexColor("#2E7D32")
+        laranja = colors.HexColor("#C96B2C")
+        vermelho = colors.HexColor("#B42318")
+        branco = colors.white
+        preto = colors.HexColor("#222222")
+
+        logo_path = garantir_logo_aqua_oficial()
+
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=azul, alignment=TA_CENTER, spaceAfter=2))
+        styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10.5, leading=13, textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
+        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4))
+        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4))
+        styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
+        styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
+        styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=9.2, textColor=preto))
+        styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.5, leading=9.2, textColor=azul))
+        styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
+
+        def P(texto, style="AqBody"):
+            texto = str(texto or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return Paragraph(texto, styles[style])
+
+        def table(data, widths=None, header=True):
+            conv = []
+            for r, row in enumerate(data):
+                out = []
+                for c in row:
+                    if isinstance(c, Paragraph):
+                        out.append(c)
+                    else:
+                        out.append(P(c, "AqCellBold" if (header and r == 0) else "AqCell"))
+                conv.append(out)
+            t = Table(conv, colWidths=widths, repeatRows=1 if header else 0, hAlign="LEFT")
+            cmds = [
+                ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#AEBFCC")),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("LEFTPADDING", (0,0), (-1,-1), 5),
+                ("RIGHTPADDING", (0,0), (-1,-1), 5),
+                ("TOPPADDING", (0,0), (-1,-1), 5),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+            ]
+            if header:
+                cmds += [
+                    ("BACKGROUND", (0,0), (-1,0), azul),
+                    ("TEXTCOLOR", (0,0), (-1,0), branco),
+                    ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                    ("ALIGN", (0,0), (-1,0), "CENTER"),
+                ]
+            for i in range(1 if header else 0, len(data)):
+                if i % 2 == 0:
+                    cmds.append(("BACKGROUND", (0,i), (-1,i), azul_claro))
+            t.setStyle(TableStyle(cmds))
+            return t
+
+        doc = SimpleDocTemplate(
+            str(pdf_path), pagesize=A4,
+            leftMargin=14*mm, rightMargin=14*mm,
+            topMargin=24*mm, bottomMargin=18*mm,
+            title="Relatório Mensal de Responsabilidade Técnica",
+            author=dados_relatorio.get("responsavel_tecnico", RESPONSAVEL_TÉCNICO),
+        )
+        w, h = A4
+
+        def header_footer(canvas, doc_obj):
+            canvas.saveState()
+            if logo_path and Path(logo_path).exists():
+                try:
+                    canvas.drawImage(str(logo_path), 15*mm, h-19*mm, width=23*mm, height=16*mm, preserveAspectRatio=True, mask="auto")
+                except Exception:
+                    pass
+            canvas.setStrokeColor(azul2)
+            canvas.setLineWidth(1.1)
+            canvas.line(14*mm, h-22*mm, w-14*mm, h-22*mm)
+            canvas.setFont("Helvetica-Bold", 8.7)
+            canvas.setFillColor(azul)
+            canvas.drawRightString(w-15*mm, h-14*mm, "RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA")
+            canvas.setFont("Helvetica", 7.2)
+            canvas.setFillColor(cinza)
+            canvas.drawRightString(w-15*mm, h-18*mm, f"RT: {dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)} | CRQ 024025748 | Técnico em Química")
+            canvas.setStrokeColor(azul2)
+            canvas.setLineWidth(0.8)
+            canvas.line(14*mm, 13*mm, w-14*mm, 13*mm)
+            canvas.setFont("Helvetica", 7)
+            canvas.setFillColor(cinza)
+            canvas.drawString(14*mm, 8.5*mm, "Aqua Gestão – Controle Técnico de Piscinas")
+            canvas.drawRightString(w-14*mm, 8.5*mm, f"Página {doc_obj.page}")
+            canvas.restoreState()
+
+        story = []
+        story.append(Spacer(1, 4*mm))
+        if logo_path and Path(logo_path).exists():
+            try:
+                story.append(RLImage(str(logo_path), width=58*mm, height=40*mm, kind="proportional", hAlign="CENTER"))
+                story.append(Spacer(1, 4*mm))
+            except Exception:
+                pass
+        story.append(P("RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA", "AqTitle"))
+        story.append(P("Controle Técnico-Operacional de Piscinas", "AqSubtitle"))
+        story.append(HRFlowable(width="100%", thickness=1.2, color=azul2, spaceBefore=2, spaceAfter=8))
+
+        ident = [
+            ["IDENTIFICAÇÃO DO DOCUMENTO", ""],
+            ["Responsável Técnico", dados_relatorio.get("responsavel_tecnico", RESPONSAVEL_TÉCNICO)],
+            ["Registro CRQ", "CRQ-MG 2ª Região | CRQ 024025748"],
+            ["Qualificação", dados_relatorio.get("qualificacao", QUALIFICACAO_RT)],
+            ["Empresa", dados_relatorio.get("empresa_rt", EMPRESA_RT)],
+            ["Cliente / Estabelecimento", dados_relatorio.get("nome_condominio", "")],
+            ["Endereço do Local", dados_relatorio.get("endereco_condominio", "")],
+            ["Período de Referência", f"Mês: {dados_relatorio.get('mes_referencia','')} / Ano: {dados_relatorio.get('ano_referencia','')}"],
+            ["Nº ART – CRQ", obter_status_art_texto(dados_relatorio)],
+            ["Data de Emissão", dados_relatorio.get("data_emissao", hoje_br())],
+        ]
+        t_ident = table(ident, widths=[55*mm, 125*mm], header=False)
+        t_ident.setStyle(TableStyle([
+            ("SPAN", (0,0), (1,0)), ("BACKGROUND", (0,0), (1,0), azul), ("TEXTCOLOR", (0,0), (1,0), branco),
+            ("FONTNAME", (0,0), (1,0), "Helvetica-Bold"), ("ALIGN", (0,0), (1,0), "CENTER"),
+            ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#EAF3F8")),
+            ("BACKGROUND", (0,2), (1,2), azul_claro), ("BACKGROUND", (0,4), (1,4), azul_claro),
+            ("BACKGROUND", (0,6), (1,6), azul_claro), ("BACKGROUND", (0,8), (1,8), azul_claro),
+            ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#AEBFCC")),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6),
+            ("TOPPADDING", (0,0), (-1,-1), 6), ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ]))
+        story.append(t_ident)
+
+        story.append(P("1. CONFORMIDADE LEGAL – CFQ / CRQ", "AqH1"))
+        story.append(P("Este Relatório de Responsabilidade Técnica é emitido em atendimento às obrigações legais do RT habilitado perante o Conselho Regional de Química de Minas Gerais — CRQ-MG 2ª Região, nos termos:", "AqBody"))
+        story.append(table([
+            ["Instrumento Normativo", "Atendimento Declarado"],
+            ["Lei Federal nº 2.800/1956", "Regulamenta a profissão de Químico e as atribuições do Técnico em Química."],
+            ["Decreto nº 85.877/1981 e normas profissionais aplicáveis do Sistema CFQ/CRQs", "Define atividades técnicas relacionadas ao controle de tratamento de água."],
+            ["Resolução CFQ nº 332/2025", "Dispõe sobre Responsabilidade Técnica e emissão de ART."],
+            ["Portaria GM/MS nº 888/2021", "Referência sanitária complementar para parâmetros de água."],
+        ], widths=[58*mm, 122*mm]))
+
+        story.append(P("2. NORMAS TÉCNICAS ABNT APLICÁVEIS", "AqH1"))
+        story.append(P("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "AqH2"))
+        story.append(P("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados in loco com o aparelho Photometer Color Q.", "AqBody"))
+        story.append(table([
+            ["Parâmetro", "Mínimo", "Máximo", "Unidade", "Método"],
+            ["pH", "7,2", "7,8", "—", "Photometer"],
+            ["Cloro Residual Livre (CRL)", "0,5", "3,0", "mg/L", "Photometer"],
+            ["Cloro Total", "0,5", "3,0", "mg/L", "Photometer"],
+            ["Alcalinidade Total", "80", "120", "mg/L CaCO₃", "Photometer"],
+            ["Dureza Cálcica", "150", "300", "mg/L CaCO₃", "Photometer"],
+            ["Ácido Cianúrico", "30", "50", "mg/L", "Photometer"],
+        ], widths=[58*mm, 30*mm, 30*mm, 35*mm, 27*mm]))
+        story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas in loco. Tais determinações requerem coleta e envio a laboratório acreditado pela ANVISA/Inmetro, sob responsabilidade de contratação do cliente.", "AqWarn"))
+
+        story.append(P("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "AqH2"))
+        conf = dados_relatorio.get("conformidades", {}) or {}
+        nbr_status = conf.get("nbr_11238_status", {}) or {}
+        nbr_obs = conf.get("nbr_11238", "") or "Sem observações adicionais registradas."
+        story.append(table([
+            ["Requisito NBR 11238", "Evidência / Observação", "Conforme?"],
+            ["Sinalização de profundidade visível", nbr_obs, _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
+            ["Retrolavagem do sistema de filtragem", "", _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
+            ["Limpeza de skimmers e decantadores", "", _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
+            ["Área de circulação antiderrapante", "", _texto_sim_nao_marcado(nbr_status.get("circulacao", ""))],
+            ["Chuveiro obrigatório antes do acesso", "", _texto_sim_nao_marcado(nbr_status.get("chuveiro", ""))],
+        ], widths=[78*mm, 78*mm, 24*mm]))
+
+        story.append(P("3. GESTÃO DE RISCOS E SEGURANÇA DO TRABALHO", "AqH1"))
+        story.append(P("3.1 NR-26 – Sinalização / GHS – Produtos Químicos", "AqH2"))
+        nr26_obs = conf.get("nr_26", "") or "Checklist de GHS/FDS/FISPQ sem observações adicionais registradas."
+        story.append(table([
+            ["Item de Verificação – NR-26 / GHS", "Observação", "Status"],
+            ["FISPQs disponíveis e atualizadas para os produtos", nr26_obs, "OK"],
+            ["Rótulos GHS nos recipientes", "", "☐ OK ☐ Pend."],
+            ["Sinalização de perigo no estoque de produtos químicos", "", "☐ OK ☐ Pend."],
+            ["Separação de oxidantes e ácidos", "", "☐ OK ☐ Pend."],
+            ["Procedimento de emergência / derramamento disponível", "", "☐ OK ☐ Pend."],
+        ], widths=[83*mm, 72*mm, 25*mm]))
+        story.append(P("3.2 NR-06 – Equipamentos de Proteção Individual (EPI)", "AqH2"))
+        epis = dados_relatorio.get("epis", {}) or {}
+        def epi_status(base):
+            stt = epis.get(f"{base}_status", "Conforme") or "Conforme"
+            ca = epis.get(f"{base}_ca", "") or "Conforme"
+            fornecido = "Sim" if stt == "Conforme" else "Não"
+            fiscalizado = "Sim" if stt == "Conforme" else "Não"
+            return ca, fornecido, fiscalizado
+        luvas = epi_status("luvas"); oculos = epi_status("oculos"); respirador = epi_status("respirador"); botas = epi_status("botas")
+        story.append(table([
+            ["EPI", "CA nº", "Fornecido?", "Uso Fiscalizado?"],
+            ["Luvas de nitrila resistentes a produtos químicos", luvas[0], luvas[1], luvas[2]],
+            ["Óculos de proteção contra respingos", oculos[0], oculos[1], oculos[2]],
+            ["Respirador para vapores químicos", respirador[0], respirador[1], respirador[2]],
+            ["Botas/calçado fechado resistente a produtos químicos", botas[0], botas[1], botas[2]],
+        ], widths=[82*mm, 42*mm, 28*mm, 28*mm]))
+
+        story.append(P("4. CONTROLE OPERACIONAL – MONITORAMENTO IN LOCO", "AqH1"))
+        story.append(P("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da ABNT NBR 10339.", "AqBody"))
+        story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
+        linhas_a = _rl_linhas_analises(dados_relatorio)
+        if linhas_a:
+            story.append(table([["Data", "pH", "CRL (ppm)", "Cl. Total (ppm)", "Alcalinidade (ppm)", "Dureza Cálcica (ppm)", "Ác. Cianúrico (ppm)", "Operador"]] + linhas_a,
+                widths=[22*mm, 16*mm, 19*mm, 22*mm, 27*mm, 27*mm, 28*mm, 19*mm]))
+        else:
+            story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
+        story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
+        linhas_d = _rl_linhas_dosagens(dados_relatorio)
+        if linhas_d:
+            story.append(table([["Produto Químico", "Fabricante / Lote", "Qtd.", "Unid.", "Finalidade Técnica"]] + linhas_d,
+                widths=[48*mm, 38*mm, 22*mm, 22*mm, 50*mm]))
+        else:
+            story.append(P("Nenhuma dosagem foi informada para o período de referência.", "AqWarn"))
+
+        story.append(P("5. PARECER TÉCNICO", "AqH1"))
+        story.append(P("5.1 Diagnóstico da Qualidade da Água", "AqH2"))
+        status = dados_relatorio.get("status_agua", "") or "EM CORREÇÃO"
+        cor_status = verde if status == "CONFORME" else (laranja if status == "EM CORREÇÃO" else vermelho)
+        status_tbl = Table([[P(f"Status geral da água: <b>{status}</b>", "AqCell")]], colWidths=[180*mm])
+        status_tbl.setStyle(TableStyle([("BOX", (0,0), (-1,-1), 0.8, cor_status), ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7FBFD")), ("LEFTPADDING", (0,0), (-1,-1), 7), ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7)]))
+        story.append(status_tbl)
+        story.append(Spacer(1, 3*mm))
+        story.append(P(f"Diagnóstico: {dados_relatorio.get('diagnostico', '')}", "AqBody"))
+        detalhes = dados_relatorio.get("avaliacao_automatica", {}).get("detalhes", []) or []
+        if detalhes:
+            story.append(P("Resumo automático dos desvios:", "AqH2"))
+            for d in detalhes[:8]:
+                story.append(P(f"• {d}", "AqSmall"))
+        obs = [o for o in (dados_relatorio.get("observacoes", []) or []) if str(o or "").strip()]
+        if obs:
+            story.append(P("Observações automáticas / editáveis:", "AqH2"))
+            for o in obs[:8]:
+                story.append(P(f"• {o}", "AqSmall"))
+
+        story.append(P("5.2 Recomendações Técnicas ao Cliente", "AqH2"))
+        recs = []
+        for idx, r in enumerate(dados_relatorio.get("recomendacoes", []) or [], start=1):
+            if str(r.get("recomendacao", "")).strip():
+                recs.append([str(idx), r.get("recomendacao", ""), r.get("prazo", ""), r.get("responsavel", "")])
+        if not recs:
+            recs = [["1", "Manter rotina de monitoramento e registrar as leituras no sistema.", "Próxima rotina", "Operação / RT"]]
+        story.append(table([["Nº", "Recomendação Técnica", "Prazo", "Responsável"]] + recs, widths=[13*mm, 100*mm, 32*mm, 35*mm]))
+
+        story.append(P("6. ASSINATURAS E VALIDAÇÃO", "AqH1"))
+        assinatura = [
+            ["RESPONSÁVEL TÉCNICO", "REPRESENTANTE DO ESTABELECIMENTO"],
+            [f"\n\n{dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)}\nCRQ 024025748 – Técnico em Química\nData: ______ / ______ / __________", "\n\nNome: _________________________________\nCPF / CNPJ: ___________________________\nData: ______ / ______ / __________"],
+        ]
+        story.append(table(assinatura, widths=[90*mm, 90*mm], header=True))
+        story.append(P("AVISO LEGAL: Documento de uso profissional restrito. Emitido sob responsabilidade técnica do RT acima identificado. Arquivar por no mínimo 5 anos para fins de compliance, rastreabilidade, auditoria e segurança jurídica. Análises microbiológicas in loco não integram este relatório e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.", "AqWarn"))
+
+        fotos = [Path(f) for f in (fotos or []) if f and Path(f).exists()]
+        if fotos:
+            story.append(PageBreak())
+            story.append(P("REGISTRO FOTOGRÁFICO", "AqH1"))
+            for fp in fotos[:12]:
+                try:
+                    story.append(P(fp.name, "AqSmall"))
+                    img = PILImage.open(fp)
+                    iw, ih = img.size
+                    max_w = 170*mm
+                    max_h = 190*mm
+                    ratio = min(max_w/iw, max_h/ih)
+                    story.append(RLImage(str(fp), width=iw*ratio, height=ih*ratio, hAlign="CENTER"))
+                    story.append(Spacer(1, 5*mm))
+                except Exception:
+                    story.append(P(f"Não foi possível inserir a foto: {fp.name}", "AqSmall"))
+            story.append(P("COMPLEMENTO AUTOMÁTICO – DADOS ESTRUTURADOS DO RELATÓRIO MENSAL", "AqH2"))
+            story.append(P(f"Condomínio: {dados_relatorio.get('nome_condominio','')}", "AqSmall"))
+            story.append(P(f"Mês/Ano de referência: {dados_relatorio.get('mes_referencia','')}/{dados_relatorio.get('ano_referencia','')}", "AqSmall"))
+            story.append(P(f"ART: {obter_status_art_texto(dados_relatorio)}", "AqSmall"))
+            story.append(P(f"Data de emissão: {dados_relatorio.get('data_emissao','')}", "AqSmall"))
+
+        doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+        return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
+    except Exception as e:
+        _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab", e)
+        return False, str(e)
+
+
 LIMITES_RELATORIO = {
     "ph": (7.2, 7.8, "pH"),
     "cloro_livre": (0.5, 3.0, "cloro residual livre"),
@@ -3915,14 +4743,47 @@ def preencher_tabela_identificacao(doc: Document, dados_relatorio: dict):
     return True
 
 
+
+def _texto_sim_nao_marcado(valor) -> str:
+    """Converte bool/texto em marcação visual para o relatório."""
+    v = str(valor or "").strip().lower()
+    if v in ("sim", "true", "1", "ok", "conforme"):
+        return "☑ Sim   ☐ Não"
+    if v in ("não", "nao", "false", "0", "pendente", "não conforme", "nao conforme"):
+        return "☐ Sim   ☑ Não"
+    return "☐ Sim   ☐ Não"
+
+
+def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> str:
+    """Retorna status Sim/Não para cada requisito da NBR 11238."""
+    status = (dados_relatorio.get("conformidades", {}) or {}).get("nbr_11238_status", {}) or {}
+    t = normalizar_texto(texto_requisito)
+    mapa = [
+        ("profundidade", "profundidade"),
+        ("retrolavagem", "retrolavagem"),
+        ("skimmers", "skimmers"),
+        ("decantadores", "skimmers"),
+        ("circulacao", "circulacao"),
+        ("antiderrapante", "circulacao"),
+        ("chuveiro", "chuveiro"),
+    ]
+    for pedaco, chave in mapa:
+        if pedaco in t:
+            return _texto_sim_nao_marcado(status.get(chave, ""))
+    return _texto_sim_nao_marcado("")
+
 def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
     tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
     if tabela_nbr is not None and len(tabela_nbr.rows) > 1:
         observacao = dados_relatorio["conformidades"].get("nbr_11238", "") or "Sem observações adicionais registradas."
         for idx in range(1, len(tabela_nbr.rows)):
             row = tabela_nbr.rows[idx]
-            if len(row.cells) > 1 and idx == 1:
-                set_cell_text(row.cells[1], observacao)
+            if len(row.cells) > 1:
+                # Mantém a observação geral preenchida em todas as linhas em branco,
+                # evitando relatório com campo vazio quando o modelo tiver várias linhas.
+                set_cell_text(row.cells[1], observacao if idx == 1 else "")
+            if len(row.cells) > 2:
+                set_cell_text(row.cells[2], _status_nbr11238_por_texto(row.cells[0].text, dados_relatorio))
 
     tabela_nr26 = encontrar_tabela_por_keywords(doc, ["NR-26", "GHS", "FISPQs"])
     if tabela_nr26 is not None and len(tabela_nr26.rows) > 1:
@@ -4152,6 +5013,13 @@ def coletar_observacoes_relatorio() -> list[str]:
 def coletar_conformidades_relatorio() -> dict:
     return {
         "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
+        "nbr_11238_status": {
+            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "Sim").strip(),
+            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "Sim").strip(),
+            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "Sim").strip(),
+            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "Sim").strip(),
+            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "Sim").strip(),
+        },
         "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
         "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
     }
@@ -5973,6 +6841,75 @@ def gerar_relatorio_visita_docx(
 
 
 
+
+def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
+    """Retorna AAAA-MM para buscar fotos do relatório no Drive/local.
+
+    Aceita mês em formatos como "04", "4", "Abril" ou "04 - Abril".
+    Se vier vazio ou inválido, usa o mês/ano atual.
+    """
+    try:
+        meses_nome = {
+            "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3,
+            "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+            "agosto": 8, "setembro": 9, "outubro": 10,
+            "novembro": 11, "dezembro": 12,
+        }
+
+        mes_txt = str(mes or "").strip().lower()
+        ano_txt = str(ano or "").strip()
+
+        mes_num = None
+        m = re.search(r"\d{1,2}", mes_txt)
+        if m:
+            mes_num = int(m.group(0))
+        else:
+            for nome_mes, numero in meses_nome.items():
+                if nome_mes in mes_txt:
+                    mes_num = numero
+                    break
+
+        ano_num = None
+        m_ano = re.search(r"\d{4}", ano_txt)
+        if m_ano:
+            ano_num = int(m_ano.group(0))
+
+        hoje = datetime.now()
+        if not mes_num or mes_num < 1 or mes_num > 12:
+            mes_num = hoje.month
+        if not ano_num:
+            ano_num = hoje.year
+
+        return f"{ano_num:04d}-{mes_num:02d}"
+    except Exception:
+        return datetime.now().strftime("%Y-%m")
+
+
+def _salvar_uploads_relatorio_preview(pasta_preview: Path):
+    """Salva fotos anexadas apenas na pasta de prévia.
+
+    Diferente de salvar_uploads_relatorio(), esta função não envia os arquivos
+    para o Google Drive, evitando duplicidade quando o usuário apenas clica em
+    prévia antes de gerar o relatório definitivo.
+    """
+    caminhos = []
+    arquivos = st.session_state.get("rel_fotos_upload") or []
+    pasta_preview.mkdir(parents=True, exist_ok=True)
+    for idx, arquivo in enumerate(arquivos, start=1):
+        try:
+            nome_original = getattr(arquivo, "name", f"foto_{idx}.jpg")
+            nome = limpar_nome_arquivo(
+                f"foto_previa_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{nome_original}"
+            )
+            destino = pasta_preview / nome
+            foto_bytes = arquivo.getbuffer()
+            with open(destino, "wb") as f:
+                f.write(foto_bytes)
+            caminhos.append(destino)
+        except Exception:
+            continue
+    return caminhos
+
 def _resolver_fotos_relatorio_rt(pasta_condominio: Path, nome_condominio: str, mes: str = "", ano: str = "", preview: bool = False) -> tuple[list[Path], str]:
     """Resolve as fotos do relatório RT usando a mesma lógica para prévia e geração final."""
     if preview:
@@ -6137,7 +7074,14 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     relatorio_pdf = pasta_saida / f"{base_nome}.pdf"
 
     preencher_relatorio_mensal_docx(TEMPLATE_RELATORIO, relatorio_docx, dados_relatorio, fotos=fotos_salvas)
-    ok_pdf, erro_pdf = converter_docx_para_pdf(relatorio_docx, relatorio_pdf)
+
+    # PDF oficial premium Aqua Gestão: gerado diretamente por ReportLab para manter
+    # cores, tabelas, logo e fotos mesmo quando Word/LibreOffice não estiver disponível.
+    ok_pdf, erro_pdf = gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio, fotos_salvas, relatorio_pdf)
+
+    # Fallback técnico: se o PDF premium falhar, tenta converter o DOCX.
+    if not ok_pdf:
+        ok_pdf, erro_pdf = converter_docx_para_pdf(relatorio_docx, relatorio_pdf)
 
     if not preview:
         registrar_documento_manifest(
@@ -6307,20 +7251,92 @@ def gerar_previa_exata_relatorio(empresa: str = "Aqua Gestão") -> dict:
 
 
 def exibir_pdf_previa_exata(pdf_path: Path, height: int = 1200):
-    import base64 as _b64
-    if not pdf_path or not Path(pdf_path).exists():
+    """Exibe a prévia do PDF dentro do Streamlit de forma confiável.
+
+    O visual anterior usava iframe/base64. Em algumas versões do Chrome/Streamlit
+    isso aparece como uma folha branca, mesmo quando o PDF foi gerado corretamente.
+
+    Esta versão renderiza o PDF como imagem usando PyMuPDF quando disponível.
+    """
+    pdf_path = Path(pdf_path) if pdf_path else None
+    if not pdf_path or not pdf_path.exists():
         st.warning("O PDF da prévia ainda não está disponível.")
         return
-    pdf_b64 = _b64.b64encode(Path(pdf_path).read_bytes()).decode("utf-8")
-    components.html(
-        f"""
-        <div style="background:#eef3fb;border:1px solid #d0d8e4;border-radius:14px;padding:10px;">
-          <iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="{height}" style="border:none;border-radius:10px;background:#fff;"></iframe>
-        </div>
-        """,
-        height=height + 28,
-        scrolling=False,
-    )
+
+    # Botão sempre disponível, mesmo se a visualização interna falhar.
+    try:
+        with open(pdf_path, "rb") as _f_prev_pdf:
+            st.download_button(
+                "⬇️ Baixar PDF da prévia para conferir",
+                data=_f_prev_pdf,
+                file_name=pdf_path.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"btn_download_previa_pdf_inline_{chave_segura(str(pdf_path))}",
+            )
+    except Exception:
+        pass
+
+    # Principal: renderiza páginas do PDF como imagens PNG.
+    try:
+        import fitz  # PyMuPDF
+        import io as _io
+
+        doc_pdf = fitz.open(str(pdf_path))
+        total_paginas = len(doc_pdf)
+        if total_paginas == 0:
+            st.warning("O PDF foi gerado, mas não possui páginas.")
+            doc_pdf.close()
+            return
+
+        max_paginas = min(total_paginas, 6)
+        st.caption(f"Prévia renderizada em imagem: {max_paginas} de {total_paginas} página(s).")
+
+        for idx in range(max_paginas):
+            pagina = doc_pdf.load_page(idx)
+            matriz = fitz.Matrix(1.45, 1.45)
+            pix = pagina.get_pixmap(matrix=matriz, alpha=False)
+            img_bytes = pix.tobytes("png")
+            st.image(_io.BytesIO(img_bytes), use_container_width=True)
+            if idx < max_paginas - 1:
+                st.markdown("---")
+
+        if total_paginas > max_paginas:
+            st.info(
+                f"Prévia limitada às {max_paginas} primeiras páginas para manter o sistema leve. "
+                "Baixe o PDF para ver o relatório completo."
+            )
+        doc_pdf.close()
+        return
+
+    except Exception as e:
+        st.warning(
+            "A prévia visual em imagem não pôde ser carregada. "
+            "O PDF foi gerado; use o botão de download acima para conferir. "
+            "Para exibir dentro do sistema, inclua `PyMuPDF` no requirements.txt."
+        )
+        st.caption(f"Detalhe técnico: {type(e).__name__}: {e}")
+
+    # Fallback: tentativa por object/base64. Pode ficar branco em alguns navegadores.
+    try:
+        import base64 as _b64
+        pdf_b64 = _b64.b64encode(pdf_path.read_bytes()).decode("utf-8")
+        components.html(
+            f"""
+            <div style="background:#eef3fb;border:1px solid #d0d8e4;border-radius:14px;padding:10px;">
+              <object data="data:application/pdf;base64,{pdf_b64}" type="application/pdf"
+                      width="100%" height="{height}"
+                      style="border:none;border-radius:10px;background:#fff;">
+                <p>Seu navegador não exibiu o PDF embutido. Baixe o arquivo pelo botão acima.</p>
+              </object>
+            </div>
+            """,
+            height=height + 28,
+            scrolling=True,
+        )
+    except Exception:
+        pass
+
 
 # =========================================
 # PROCESSAMENTO DE VALIDAÇÃO
@@ -6373,6 +7389,7 @@ def inicializar_campos():
         "rel_salvar_alteracoes_cadastro": False,
         "rel_ano_referencia": str(datetime.now().year),
         "rel_art_status": "Emitida",
+        "rel_art_status_widget": "Emitida",
         "rel_art_numero": "",
         "rel_art_inicio": "",
         "rel_art_fim": "",
@@ -6440,6 +7457,7 @@ def limpar_formulario():
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
     st.session_state.rel_art_status = "Emitida"
+    st.session_state.rel_art_status_widget = "Emitida"
     st.session_state.rel_art_numero = ""
     st.session_state.rel_art_inicio = ""
     st.session_state.rel_art_fim = ""
@@ -6567,6 +7585,7 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
         "rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao",
         "rel_art_status", "rel_art_numero", "rel_art_inicio", "rel_art_fim",
         "rel_status_agua", "rel_diagnostico", "rel_nbr_11238", "rel_nr_26", "rel_nr_06",
+        "rel_nbr11238_profundidade", "rel_nbr11238_retrolavagem", "rel_nbr11238_skimmers", "rel_nbr11238_circulacao", "rel_nbr11238_chuveiro",
         "rel_epi_luvas_status", "rel_epi_luvas_ca", "rel_epi_oculos_status", "rel_epi_oculos_ca",
         "rel_epi_respirador_status", "rel_epi_respirador_ca", "rel_epi_botas_status", "rel_epi_botas_ca",
     ]
@@ -6691,7 +7710,7 @@ if st.session_state.get("modo_atual", "entrada") == "escritorio":
                 <div class="top-card">
                     <div class="top-title">{APP_TITLE}</div>
                     <div class="top-subtitle">
-                        Sistema profissional para geração automatizada de contrato e aditivo de RT
+                        Responsabilidade Técnica, controle documental, relatórios, POPs e ART
                     </div>
                     <div>
                         <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
@@ -6944,7 +7963,7 @@ if _modo_interno == "entrada":
 
         if st.session_state.get("mostrar_pin_admin"):
             _empresa_sel_admin = st.radio(
-                "Empresa do escritório",
+                "Escolha o painel da empresa",
                 ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
                 key="empresa_selecionada_admin",
                 horizontal=True,
@@ -6975,12 +7994,19 @@ if _modo_interno == "entrada":
     st.stop()
 
 
-# CSS dinâmico: oculta seções Aqua Gestão quando empresa Bem Star está ativa
+# CSS dinâmico: separa visualmente os módulos por empresa ativa.
+# Aqua Gestão vê somente RT/controle técnico; Bem Star vê somente limpeza/manutenção.
 _empresa_css_flag = st.session_state.get("empresa_ativa", "aqua_gestao")
 if _empresa_css_flag == "bem_star":
     st.markdown("""
     <style>
     div.aq-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+    div.bs-only { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -7088,7 +8114,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown('<div class="op-title">📱 Lançamento de Campo</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong></div>', unsafe_allow_html=True)
-    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua + Bem Star</span>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Acesso separado por empresa e serviço</span>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -7242,7 +8268,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if _servs.get("rt"):
                     _badges.append('<span class="op-chip" style="background:#e8f0fe;border-color:#1565A8;color:#1565A8;">🔬 RT — Aqua Gestão</span>')
                 if _servs.get("limpeza"):
-                    _badges.append('<span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">🧹 Limpeza — Bem Star</span>')
+                    _badges.append('<span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">🧹 Limpeza/Manutenção</span>')
                 if _badges:
                     st.markdown(" ".join(_badges), unsafe_allow_html=True)
             
@@ -8052,14 +9078,24 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
 
-                # Salva também no Google Sheets
+                # Salva também no Google Sheets. Sem esta linha, o relatório mensal não consegue importar a visita.
                 ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
-                if not ok_sheets:
+                if ok_sheets:
+                    st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
+                else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
                     if erro_sh:
-                        st.warning(f"⚠️ Salvo localmente, mas falhou no Google Sheets.\n\nDiagnóstico:\n```\n{erro_sh[:600]}\n```")
+                        st.warning(
+                            "⚠️ A visita foi salva localmente e o PDF pode ser gerado, "
+                            "mas falhou ao gravar no Google Sheets. Sem essa gravação, "
+                            "o relatório mensal não conseguirá importar automaticamente."
+                        )
+                        st.code(erro_sh[:1500])
                     else:
-                        st.warning("⚠️ Salvo localmente, mas não foi possível enviar ao Google Sheets. Verifique a conexão.")
+                        st.warning(
+                            "⚠️ A visita foi salva localmente, mas não foi enviada ao Google Sheets. "
+                            "Verifique a conexão e as permissões da conta de serviço."
+                        )
                 st.session_state["op_salvo_sucesso"] = {
                     "nome": op_nome_cond, "data": data_vis,
                     "operador": op_operador.strip() or "Não informado",
@@ -8498,20 +9534,26 @@ def _gerar_exportacao_operadores_csv(lista_ops: list[dict]) -> str:
 
 
 def _filtrar_clientes_admin_por_empresa(clientes: list[dict], empresa_filtro: str) -> list[str]:
+    """Filtra nomes de clientes por painel/serviço.
+
+    A separação aqui é por vínculo de serviço, não apenas pelo texto legado
+    da coluna Empresa. Assim, no painel Aqua aparecem clientes RT; no painel
+    Bem Star aparecem clientes de limpeza/manutenção.
+    """
     empresa_filtro = str(empresa_filtro or "Todas").strip()
     nomes = []
     for c in clientes or []:
         nome = str(c.get("nome", "")).strip()
         if not nome:
             continue
-        emp = str(c.get("empresa", "Aqua Gestão") or "Aqua Gestão").strip()
+        serv = _normalizar_servicos_cliente(c)
         if empresa_filtro == "Todas":
             nomes.append(nome)
-        elif empresa_filtro == "Aqua Gestão" and emp in ("Aqua Gestão", "", "Aqua Gestao"):
+        elif empresa_filtro == "Aqua Gestão" and serv.get("rt"):
             nomes.append(nome)
-        elif empresa_filtro == "Bem Star Piscinas" and emp == "Bem Star Piscinas":
+        elif empresa_filtro == "Bem Star Piscinas" and serv.get("limpeza"):
             nomes.append(nome)
-        elif empresa_filtro == "Ambas" and emp == "Ambas":
+        elif empresa_filtro == "Ambas" and serv.get("rt") and serv.get("limpeza"):
             nomes.append(nome)
     return _condominios_organizar(nomes)
 
@@ -8910,8 +9952,12 @@ st.markdown("</div>", unsafe_allow_html=True)
 # =========================================
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("👥 Cadastro de Clientes")
-st.caption("Clientes cadastrados aqui ficam disponíveis para o operador selecionar no celular.")
+_empresa_cadastro_nome = _empresa_ativa_nome()
+st.subheader(f"👥 Cadastro de Clientes — {_empresa_cadastro_nome}")
+if _empresa_ativa_codigo() == "aqua_gestao":
+    st.caption("Neste painel aparecem somente clientes de RT/controle técnico da Aqua Gestão.")
+else:
+    st.caption("Neste painel aparecem somente clientes de limpeza/manutenção da Bem Star Piscinas.")
 
 # ── Diagnóstico de conexão (visível para admin) ──────────────────────────────
 with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
@@ -8953,10 +9999,11 @@ with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
 def _clientes_cadastrados():
     return sheets_listar_clientes_completo()
 
-clientes_cadastrados = _clientes_cadastrados()
+clientes_cadastrados_todos = _clientes_cadastrados()
+clientes_cadastrados = _filtrar_clientes_painel_ativo(clientes_cadastrados_todos)
 
 if clientes_cadastrados:
-    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) no Google Sheets:")
+    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) para {_empresa_cadastro_nome} no Google Sheets:")
     for c in clientes_cadastrados:
         _serv = _normalizar_servicos_cliente(c)
         _badges = []
@@ -8968,7 +10015,7 @@ if clientes_cadastrados:
         _ops_txt = f" • Operadores: {', '.join(_ops)}" if _ops else ""
         st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
 else:
-    st.info("Nenhum cliente cadastrado ainda. Use o formulário abaixo para adicionar.")
+    st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
@@ -8977,6 +10024,8 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
+    # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
+    st.session_state["cc_verificacoes_semanais"] = 3
     st.session_state["cc_srv_rt"] = False
     st.session_state["cc_srv_limpeza"] = False
     st.session_state["cc_operadores_vinculados"] = []
@@ -8990,7 +10039,7 @@ if _cc_modo == "✏️ Editar cliente existente":
     @st.cache_data(ttl=30)
     def _clientes_completos_edit():
         return sheets_listar_clientes_completo()
-    _clientes_edit = _clientes_completos_edit()
+    _clientes_edit = _filtrar_clientes_painel_ativo(_clientes_completos_edit())
     if _clientes_edit:
         _nomes_edit = [c["nome"] for c in _clientes_edit]
         _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
@@ -9000,23 +10049,20 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
-            _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
-            # Força os valores dos checkboxes ANTES do rerun para garantir que sejam aplicados
+            _servicos_cc = _servicos_padrao_empresa_ativa()
+            # No cadastro separado, o serviço é determinado pelo painel ativo.
             st.session_state["cc_srv_rt"]       = bool(_servicos_cc.get("rt", False))
             st.session_state["cc_srv_limpeza"]  = bool(_servicos_cc.get("limpeza", False))
-            # Se ambos False (dado legado), força pelo campo empresa
-            if not st.session_state["cc_srv_rt"] and not st.session_state["cc_srv_limpeza"]:
-                _emp_legado = str(_cc_cliente_editar.get("empresa", "Aqua Gestão") or "Aqua Gestão").lower()
-                if "bem star" in _emp_legado or "bemstar" in _emp_legado or "limpeza" in _emp_legado:
-                    st.session_state["cc_srv_limpeza"] = True
-                else:
-                    st.session_state["cc_srv_rt"] = True
             st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
             st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
             st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
             st.session_state["cc_vol_infantil"] = str(_cc_cliente_editar.get("vol_infantil","") or "")
             st.session_state["cc_vol_family"]   = str(_cc_cliente_editar.get("vol_family","") or "")
+            try:
+                st.session_state["cc_verificacoes_semanais"] = int(_cc_cliente_editar.get("verificacoes_semanais", 3) or 3)
+            except Exception:
+                st.session_state["cc_verificacoes_semanais"] = 3
             _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
             st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
             st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
@@ -9033,27 +10079,17 @@ def _mask_cc_cnpj():
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-# Serviços vinculados ao condomínio
-st.markdown("**🧩 Serviços vinculados ao condomínio**")
-_cc_srv1, _cc_srv2 = st.columns(2)
-with _cc_srv1:
-    cc_srv_rt = st.checkbox(
-        "🔵 RT (Aqua Gestão)",
-        key="cc_srv_rt",
-        help="Marque quando o condomínio possui atendimento técnico/RT pela Aqua Gestão."
-    )
-with _cc_srv2:
-    cc_srv_limpeza = st.checkbox(
-        "⭐ Limpeza (Bem Star)",
-        key="cc_srv_limpeza",
-        help="Marque quando o condomínio possui serviço de limpeza operacional pela Bem Star."
-    )
-
-_cc_servicos = {"rt": bool(cc_srv_rt), "limpeza": bool(cc_srv_limpeza)}
-if not any(_cc_servicos.values()):
-    _cc_servicos["rt"] = True
+# Serviço vinculado ao cadastro conforme painel ativo
+st.markdown("**🧩 Serviço vinculado ao cadastro**")
+_cc_servicos = _servicos_padrao_empresa_ativa()
 _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
-st.caption(f"Empresa derivada automaticamente para compatibilidade: {_cc_empresa_val}")
+if _empresa_ativa_codigo() == "aqua_gestao":
+    st.info("🔵 Este cadastro será salvo como cliente de RT / Controle Técnico da Aqua Gestão.")
+else:
+    st.info("⭐ Este cadastro será salvo como cliente de Limpeza / Manutenção da Bem Star Piscinas.")
+# Mantém as chaves antigas coerentes para não quebrar edições/sessão.
+st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
+st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
 
 _operadores_disponiveis = []
 for _op in (sheets_listar_operadores() or []) + (carregar_operadores() or []):
@@ -9141,6 +10177,29 @@ with _cv_extra4:
     cc_pisc_extra2_vol  = st.text_input("Volume (m³) ", key="cc_pisc_extra2_vol",
         placeholder="ex: 120")
 
+
+st.markdown("**🧪 Rotina de verificação técnica**")
+# Sanitiza a frequência antes de criar o widget. Isso evita erro visual do Streamlit
+# ao alternar entre Novo cliente / Editar cliente existente com estados antigos.
+try:
+    _cc_freq_atual = int(st.session_state.get("cc_verificacoes_semanais", 3) or 3)
+except Exception:
+    _cc_freq_atual = 3
+_cc_freq_atual = max(1, min(7, _cc_freq_atual))
+st.session_state["cc_verificacoes_semanais"] = _cc_freq_atual
+
+_cc_freq_col1, _cc_freq_col2 = st.columns([1, 2.2])
+with _cc_freq_col1:
+    cc_verificacoes_semanais = st.number_input(
+        "Verificações por semana",
+        min_value=1, max_value=7, value=_cc_freq_atual,
+        step=1, key="cc_verificacoes_semanais",
+        help="Ex.: 3 verificações semanais geram 12 linhas padrão no relatório mensal."
+    )
+with _cc_freq_col2:
+    _linhas_previstas = calcular_linhas_analises_por_frequencia(int(cc_verificacoes_semanais or 3))
+    st.caption(f"Com {int(cc_verificacoes_semanais)}x por semana, o relatório mensal abrirá pelo menos {_linhas_previstas} linhas de análises. Se houver mais visitas importadas, o sistema expande automaticamente.")
+
 def _parse_vol(v):
     try: return float(str(v).replace(",",".").strip() or 0)
     except: return 0.0
@@ -9155,6 +10214,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_i = _parse_vol(cc_vol_infantil)
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
+            _cc_servicos = _servicos_padrao_empresa_ativa()
+            _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
@@ -9207,6 +10268,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                 "vol_adulto": _vol_a,
                 "vol_infantil": _vol_i,
                 "vol_family": _vol_f,
+                "verificacoes_semanais": int(cc_verificacoes_semanais or 3),
+                "analises_mensais_padrao": calcular_linhas_analises_por_frequencia(int(cc_verificacoes_semanais or 3)),
                 "empresa": _cc_empresa_val,
                 "servicos": _cc_servicos_norm,
                 "operadores_vinculados": _cc_operadores_sel,
@@ -9504,757 +10567,759 @@ st.markdown("</div>", unsafe_allow_html=True)
 # CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
 # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Clientes sem RT — Relatório Técnico Simples")
-st.caption("Para condomínios que não possuem contrato de RT mas recebem visita técnica com análise e dosagem.")
-
-with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
-
-    # Lista clientes sem RT já cadastrados
-    CLIENTES_SEM_RT_JSON = GENERATED_DIR / "_clientes_sem_rt.json"
-
-    def carregar_clientes_sem_rt() -> list:
-        if CLIENTES_SEM_RT_JSON.exists():
-            try:
-                return json.loads(CLIENTES_SEM_RT_JSON.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
-
-    def salvar_clientes_sem_rt(lista: list):
-        GENERATED_DIR.mkdir(exist_ok=True)
-        CLIENTES_SEM_RT_JSON.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    clientes_sem_rt = carregar_clientes_sem_rt()
-
-    # ── Importar do Sheets ────────────────────────────────────────────────────
-    @st.cache_data(ttl=60)
-    def _clientes_sheets_csr():
-        return sheets_listar_clientes_completo()
-
-    _cls_sheets = _clientes_sheets_csr()
-    if _cls_sheets:
-        _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
-        _sel_csr_imp = st.selectbox(
-            "🔗 Importar cliente do Google Sheets",
-            _opcoes_csr_imp,
-            key="sel_importar_csr",
-            help="Importa os dados do cadastro principal para o formulário abaixo."
-        )
-        if _sel_csr_imp and _sel_csr_imp != "— Importar do cadastro principal (Sheets) —":
-            if st.button("⬇️ Importar dados", key="btn_imp_csr", use_container_width=False):
-                _d = next((c for c in _cls_sheets if c["nome"] == _sel_csr_imp), {})
-                if _d:
-                    st.session_state["csr_nome"]     = _d.get("nome", "")
-                    st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
-                    st.session_state["csr_endereco"] = _d.get("endereco", "")
-                    st.session_state["csr_contato"]  = _d.get("contato", "")
-                    st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
-                    st.success(f"✅ Dados de '{_sel_csr_imp}' importados!")
-                    st.rerun()
-        st.markdown("---")
-
-    st.markdown("**Novo cliente sem RT:**")
-
-    def _mask_csr_cnpj():
-        st.session_state["csr_cnpj"] = formatar_cnpj(st.session_state.get("csr_cnpj", ""))
-
-    def _mask_csr_telefone():
-        st.session_state["csr_telefone"] = formatar_telefone(st.session_state.get("csr_telefone", ""))
-
-    csr1, csr2 = st.columns(2)
-    with csr1:
-        csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
-        if st.session_state.get("_csr_cep_fmt"):
-            st.session_state["csr_cep"] = st.session_state.pop("_csr_cep_fmt")
-        _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
-        with _csr_cep_c1:
-            st.text_input("CEP", key="csr_cep", placeholder="00000-000",
-                help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
-        with _csr_cep_c2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _btn_csr_cep = st.button("🔍", key="btn_buscar_cep_csr", help="Buscar CEP")
-        if _btn_csr_cep:
-            _cep_v = re.sub(r"\D", "", st.session_state.get("csr_cep", ""))
-            if len(_cep_v) == 8:
-                with st.spinner("Buscando CEP..."):
-                    _dc = buscar_cep(_cep_v)
-                if _dc:
-                    _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
-                    st.session_state["csr_endereco"] = _end
-                    st.session_state["_csr_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
-                    st.rerun()
-                else:
-                    st.error("CEP não encontrado.")
-            else:
-                st.warning("Digite um CEP válido com 8 dígitos.")
-        csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
-    with csr2:
-        csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
-        csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
-        csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
-
-    if st.button("➕ Salvar cliente (Bem Star)", use_container_width=True):
-        if not csr_nome.strip():
-            st.error("Informe o nome do local.")
-        else:
-            novo = {
-                "nome": csr_nome.strip(),
-                "cnpj": formatar_cnpj(csr_cnpj.strip()),
-                "endereco": csr_endereco.strip(),
-                "contato": csr_contato.strip(),
-                "telefone": formatar_telefone(csr_telefone.strip()),
-                "cadastrado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            }
-            # Atualiza se já existe, senão adiciona
-            nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
-            if csr_nome.strip().lower() in nomes_existentes:
-                idx_ex = nomes_existentes.index(csr_nome.strip().lower())
-                clientes_sem_rt[idx_ex] = novo
-                st.success(f"Cliente '{csr_nome}' atualizado.")
-            else:
-                clientes_sem_rt.append(novo)
-                st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
-            salvar_clientes_sem_rt(clientes_sem_rt)
-            # Salva também no Google Sheets (col M = Bem Star Piscinas)
-            with st.spinner("Sincronizando com Google Sheets..."):
-                _cl_sheets = sheets_listar_clientes_completo()
-                _existe_sheets = next((c for c in _cl_sheets
-                    if c["nome"].lower().strip() == csr_nome.strip().lower()), None)
-                if _existe_sheets:
-                    sheets_editar_cliente(
-                        id_cliente=_existe_sheets["id"],
-                        nome=csr_nome.strip(),
-                        cnpj=formatar_cnpj(csr_cnpj.strip()),
-                        endereco=csr_endereco.strip(),
-                        contato=csr_contato.strip(),
-                        telefone=formatar_telefone(csr_telefone.strip()),
-                        empresa="Bem Star Piscinas",
-                    )
-                else:
-                    sheets_salvar_cliente(
-                        nome=csr_nome.strip(),
-                        cnpj=formatar_cnpj(csr_cnpj.strip()),
-                        endereco=csr_endereco.strip(),
-                        contato=csr_contato.strip(),
-                        telefone=formatar_telefone(csr_telefone.strip()),
-                        empresa="Bem Star Piscinas",
-                    )
-            st.cache_data.clear()
-            # Cria pasta do cliente no generated
-            pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
-            pasta_csr.mkdir(parents=True, exist_ok=True)
-            salvar_dados_condominio(pasta_csr, {
-                "nome_condominio": csr_nome.strip(),
-                "cnpj_condominio": csr_cnpj.strip(),
-                "endereco_condominio": csr_endereco.strip(),
-                "nome_sindico": csr_contato.strip(),
-                "tipo": "sem_rt",
-                "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            })
-            st.rerun()
-
-    if clientes_sem_rt:
-        st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
-        for c in clientes_sem_rt:
-            st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
-
-# ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
-st.markdown("---")
-st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
-
-# Carrega clientes Bem Star do Sheets (fonte principal) + fallback JSON local
-@st.cache_data(ttl=30)
-def _clientes_bem_star_relatorio():
-    _todos = sheets_listar_clientes_completo()
-    _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
-    # Fallback: também inclui clientes do JSON local
-    _json_local = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
-    _nomes_sheets = {c["nome"].lower() for c in _bs}
-    for _cl in _json_local:
-        if _cl["nome"].lower() not in _nomes_sheets:
-            _bs.append(_cl)
-    return _bs
-
-clientes_sem_rt_reload = _clientes_bem_star_relatorio()
-opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
-
-if not opcoes_csr:
-    st.info("Cadastre um cliente Bem Star acima para gerar o relatório técnico.")
-else:
-    rts1, rts2, rts3 = st.columns([2, 1, 1])
-    with rts1:
-        csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
-    with rts2:
-        csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
-    with rts3:
-        csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
-
-    csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
-
-    # ── Busca lançamentos: JSON local + Google Sheets ──────────────────────
-    pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
-    _lanc_local_csr = []
-    if pasta_csr_sel and pasta_csr_sel.exists():
-        _dados_json_csr = carregar_dados_condominio(pasta_csr_sel)
-        _lanc_local_csr = (_dados_json_csr or {}).get("lancamentos_campo", [])
-
-    _lanc_sheets_csr = []
-    if csr_sel:
-        try:
-            _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
-        except Exception:
-            _lanc_sheets_csr = []
-
-    # Deduplica local + Sheets
-    _vistos_csr = set()
-    _lanc_todos_csr = []
-    for _lc in _lanc_local_csr + _lanc_sheets_csr:
-        _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
-        if _ch not in _vistos_csr:
-            _vistos_csr.add(_ch)
-            _lanc_todos_csr.append(_lc)
-
-    # Filtra por mês/ano
-    def _filtrar_mes_csr(lancamentos, mes, ano):
-        if not mes or not ano:
-            return lancamentos
-        filtrados = []
-        for lc in lancamentos:
-            data = lc.get("data", "")
-            try:
-                if "/" in data:
-                    p = data.split("/")
-                    if len(p) == 3 and p[1] == mes.zfill(2) and p[2] == ano:
-                        filtrados.append(lc)
-                elif "-" in data:
-                    p = data.split("-")
-                    if len(p) == 3 and p[1] == mes.zfill(2) and p[0] == ano:
-                        filtrados.append(lc)
-            except Exception:
-                filtrados.append(lc)
-        return filtrados
-
-    _mes_csr  = (csr_mes or "").strip()
-    _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
-    lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
-
-    # ── Painel de lançamentos disponíveis ────────────────────────────────
-    if lancamentos_csr:
-        _fonte_csr = "📱 local + Sheets" if _lanc_sheets_csr else "📱 local"
-        _periodo_csr = f"{lancamentos_csr[0].get('data','?')} → {lancamentos_csr[-1].get('data','?')}"
-        st.markdown(
-            f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;"
-            f"background:rgba(20,120,60,0.07);margin-bottom:12px;'>"
-            f"<strong>📱 {len(lancamentos_csr)} lançamento(s) encontrado(s) — {_fonte_csr}</strong><br>"
-            f"<span style='font-size:0.85rem;color:#3a6a3a;'>Período: {_periodo_csr}</span></div>",
-            unsafe_allow_html=True,
-        )
-        with st.expander("👁 Ver lançamentos"):
-            for _lc in lancamentos_csr:
-                st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
-    else:
-        st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
-
-    csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
-    csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
-        placeholder="Condições gerais da piscina, ocorrências, recomendações...")
-
-    # ── Coleta fotos das visitas ─────────────────────────────────────────
-    pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
-    fotos_csr = []
-    if pasta_fotos_csr and pasta_fotos_csr.exists():
-        for _lc in lancamentos_csr:
-            for _nf in _lc.get("fotos", []):
-                _pf = pasta_fotos_csr / _nf
-                if _pf.exists():
-                    fotos_csr.append((_lc.get("data",""), _pf))
-
-    if fotos_csr:
-        st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
-
+# =========================================
+# MÓDULOS EXCLUSIVOS BEM STAR — só renderizam no painel Bem Star
+# =========================================
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("Bem Star — Relatório Técnico Simples / Operacional")
+    st.caption("Módulo exclusivo da Bem Star Piscinas para limpeza, manutenção, visitas operacionais, análises básicas, dosagens e relatório sem RT.")
     
-if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
-    try:
-        with st.spinner("Gerando relatório Bem Star..."):
-            _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
-
-        if not _resultado_bs.get("ok"):
-            st.error(_resultado_bs.get("mensagem", "Erro ao gerar relatório Bem Star."))
-        else:
-            docx_csr = Path(_resultado_bs["docx"])
-            pdf_csr = Path(_resultado_bs["pdf"])
-            ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
-            err_pdf_csr = _resultado_bs.get("erro_pdf")
-            _ctx_bs = _resultado_bs.get("dados", {})
-            st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
-            dl1, dl2 = st.columns(2)
-            with dl1:
-                with open(docx_csr, "rb") as _f:
-                    st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True)
-            with dl2:
-                if ok_pdf_csr and pdf_csr.exists():
-                    with open(pdf_csr, "rb") as _f:
-                        st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
-                            mime="application/pdf", use_container_width=True)
-                else:
-                    st.warning(f"PDF não gerado: {err_pdf_csr}")
-
-            _msg_rel = montar_mensagem_bem_star(
-                nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
-                responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
-                tipo="relatorio",
-                mes=_ctx_bs.get("mes", csr_mes),
-                ano=_ctx_bs.get("ano", csr_ano),
-            )
-            exibir_bloco_envio_bem_star(
-                nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
-                pasta=Path(_resultado_bs["pasta"]),
-                telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
-                email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
-                mensagem=_msg_rel,
-                key_suffix="relatorio",
-            )
-
-    except Exception as e:
-        st.error(f"Erro ao gerar relatório Bem Star: {e}")
-        import traceback
-        st.code(traceback.format_exc(), language="text")
-
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# =========================================
-# CONTRATO BEM STAR PISCINAS
-# =========================================
-
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("📝 Contrato Bem Star Piscinas")
-st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
-
-with st.expander("📋 Preencher e gerar contrato", expanded=False):
-
-    # ── Seletor de cliente ────────────────────────────────────────────────────
-    @st.cache_data(ttl=30)
-    def _clientes_bs_contrato():
-        _todos = sheets_listar_clientes_completo()
-        _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
-        _nomes_sheets = [c["nome"] for c in _todos]
-        for _cl in _locais:
-            if _cl["nome"] not in _nomes_sheets:
-                _todos.append(_cl)
-        return _todos
-
-    _bs_clientes = _clientes_bs_contrato()
-    _bs_nomes = ["— selecione ou preencha manualmente —"] + [c["nome"] for c in _bs_clientes]
-
-    _bs_sel = st.selectbox("Carregar dados de cliente cadastrado", _bs_nomes,
-        key="bs_cont_cliente_sel")
-
-    if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
-        _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
-        if _bs_dado:
-            st.session_state["bs_cont_nome"]     = _bs_dado.get("nome", "")
-            st.session_state["bs_cont_cnpj"]     = _bs_dado.get("cnpj", "")
-            st.session_state["bs_cont_endereco"] = _bs_dado.get("endereco", "")
-            st.session_state["bs_cont_contato"]  = _bs_dado.get("contato", "")
-            st.session_state["bs_cont_telefone"] = _bs_dado.get("telefone", "")
-            st.success(f"✅ Dados de '{_bs_dado['nome']}' carregados.")
-            st.rerun()
-
-    st.markdown("---")
-    st.markdown("**Dados do Contratante**")
-
-    _bc1, _bc2 = st.columns(2)
-    with _bc1:
-        bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
-            placeholder="Ex.: Condomínio Residencial Bella Vista")
-        bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
-            height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
-    with _bc2:
-        bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
-            placeholder="00.000.000/0000-00")
-        bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
-            placeholder="Nome completo do responsável")
-        bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
-            placeholder="(34) 99999-9999")
-
-    st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
-    bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
-        height=60,
-        placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
-
-    st.markdown("**Condições do serviço**")
-    _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
-    with _bs_c1:
-        bs_frequencia = st.selectbox("Frequência de visitas", 
-            ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Outra"],
-            key="bs_cont_frequencia")
-        if bs_frequencia == "Outra":
-            bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
-                placeholder="Ex.: quinzenal")
-    with _bs_c2:
-        bs_produtos = st.radio("Produtos químicos", 
-            ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
-            key="bs_cont_produtos")
-    with _bs_c3:
-        bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
-            placeholder="Ex.: 12")
-
-    st.markdown("**Valores e pagamento**")
-    _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
-    with _bs_v1:
-        bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
-            placeholder="Ex.: 350,00")
-    with _bs_v2:
-        bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
-            placeholder="Ex.: trezentos e cinquenta reais")
-    with _bs_v3:
-        bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
-            placeholder="Ex.: 10")
-    with _bs_v4:
-        bs_pagamento = st.selectbox("Forma de pagamento",
-            ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
-            key="bs_cont_pagamento")
-
-    st.markdown("**Duração do Contrato**")
-    bs_duracao = st.radio("Tipo de contrato", 
-        ["Por tempo indeterminado", "12 meses com prorrogação automática"],
-        key="bs_cont_duracao", horizontal=True)
-
-    st.markdown("**Datas**")
-    _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
-    with _bs_d1:
-        bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
-            placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_inicio)
-    with _bs_d2:
-        if "indeterminado" in bs_duracao:
-            st.text_input("Data de término", value="Indeterminado", disabled=True)
-        else:
-            bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
-                placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
-    with _bs_d3:
-        bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
-            placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
-    bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
-        placeholder="dd/mm/aaaa", value=hoje_br())
-
-    st.markdown("---")
-
-    if st.button("📄 Gerar Contrato Bem Star (PDF)", type="primary", use_container_width=True,
-            key="btn_gerar_contrato_bs"):
-        if not (st.session_state.get("bs_cont_nome","")).strip():
-            st.error("Informe o nome do contratante.")
-        elif not (st.session_state.get("bs_cont_valor","")).strip():
-            st.error("Informe o valor mensal.")
-        else:
-            # ── Tenta gerar via template_bem_star.docx (preferencial) ──────
-            if TEMPLATE_BEM_STAR.exists():
-                _duracao_bs  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
-                _prazo_bs    = "indeterminado" if "indeterminado" in _duracao_bs else "12 meses"
-                _fim_bs      = "Indeterminado" if "indeterminado" in _duracao_bs else (
-                    (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
-                )
-                _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
-                                or st.session_state.get("bs_cont_frequencia",""))
-                _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
-                gerar_contrato_bem_star_docx(
-                    nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
-                    cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
-                    endereco_contratante= (st.session_state.get("bs_cont_endereco","")).strip(),
-                    valor_mensal        = valor_para_template((st.session_state.get("bs_cont_valor","")).strip()),
-                    valor_extenso       = (st.session_state.get("bs_cont_valor_extenso","")).strip(),
-                    dia_pagamento       = (st.session_state.get("bs_cont_vencimento","")).strip() or "10",
-                    forma_pagamento     = st.session_state.get("bs_cont_pagamento","Pix"),
-                    prazo_contrato      = _prazo_bs,
-                    data_inicio         = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br(),
-                    data_fim            = _fim_bs,
-                    local_data_assinatura = f"{(st.session_state.get('bs_cont_local','Uberlândia/MG')).strip()}, {(st.session_state.get('bs_cont_data_ass','')).strip() or hoje_br()}",
-                    piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
-                    produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
-                                          else "Produtos não incluídos no valor mensal"),
-                )
-            else:
-                # ── Fallback ReportLab (mantido para compatibilidade) ──────
+    with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
+    
+        # Lista clientes sem RT já cadastrados
+        CLIENTES_SEM_RT_JSON = GENERATED_DIR / "_clientes_sem_rt.json"
+    
+        def carregar_clientes_sem_rt() -> list:
+            if CLIENTES_SEM_RT_JSON.exists():
                 try:
-                    from reportlab.lib.units import cm
-                    from reportlab.lib import colors
-                    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                        Table, TableStyle, HRFlowable)
-                    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
-                    import io as _io
-
-                    # ── Coleta valores ─────────────────────────────────────────
-                    _nome     = (st.session_state.get("bs_cont_nome","")).strip()
-                    _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
-                    _end      = (st.session_state.get("bs_cont_endereco","")).strip()
-                    _contato  = (st.session_state.get("bs_cont_contato","")).strip()
-                    _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
-                    _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
-                    _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
-                    _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
-                    _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
-                    _valor    = (st.session_state.get("bs_cont_valor","")).strip()
-                    _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
-                    _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
-                    _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
-                    _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
-                    _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
-                    _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
-                    _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
-                    _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
-                    _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
-                    _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
-                    _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
-
-                    # ── Estilos ReportLab ──────────────────────────────────────
-                    styles = getSampleStyleSheet()
-                    s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
-                        fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
-                    s_sub = ParagraphStyle("sub", parent=styles["Normal"],
-                        fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
-                    s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
-                        fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
-                        textColor=colors.HexColor("#0d3d75"),
-                        borderPad=4, borderColor=colors.HexColor("#0d3d75"),
-                        leftIndent=0)
-                    s_body = ParagraphStyle("body", parent=styles["Normal"],
-                        fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
-                        leading=14, leftIndent=8)
-                    s_center = ParagraphStyle("center", parent=styles["Normal"],
-                        fontSize=10, alignment=TA_CENTER, spaceBefore=4)
-                    s_small = ParagraphStyle("small", parent=styles["Normal"],
-                        fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
-
-                    # ── Monta story ────────────────────────────────────────────
-                    story = []
-
-                    # Logo Bem Star se disponível
-                    _logo_bs = encontrar_logo_bem_star()
-                    if _logo_bs and _logo_bs.exists():
-                        from reportlab.platypus import Image as RLImage
-                        _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
-                            kind="proportional")
-                        _img.hAlign = "CENTER"
-                        story.append(_img)
-                        story.append(Spacer(1, 0.4*cm))
-
-                    story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
-                    story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
-                        "sub2", parent=styles["Normal"], fontSize=10,
-                        alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
-                    story.append(Spacer(1, 0.3*cm))
-                    story.append(HRFlowable(width="100%", thickness=2,
-                        color=colors.HexColor("#0d3d75")))
-                    story.append(Spacer(1, 0.3*cm))
-
-                    # Tabela identificação
-                    id_data = [
-                        ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
-                        ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
-                    ]
-                    t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
-                    t_id.setStyle(TableStyle([
-                        ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
-                        ("FONTSIZE",  (0,0), (-1,-1), 9),
-                        ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
-                        ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
-                        ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
-                        ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
-                        ("TEXTCOLOR", (0,0), (0,-1), colors.white),
-                        ("TOPPADDING",(0,0),(-1,-1), 7),
-                        ("BOTTOMPADDING",(0,0),(-1,-1), 7),
-                        ("LEFTPADDING",(0,0),(-1,-1), 8),
-                        ("RIGHTPADDING",(0,0),(-1,-1), 8),
-                    ]))
-                    story.append(t_id)
-                    story.append(Spacer(1, 0.3*cm))
-                    story.append(Paragraph(
-                        "As partes acima identificadas têm entre si justo e contratado o presente "
-                        "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
-
-                    # Cláusulas
-                    clausulas = [
-                        ("CLÁUSULA 1 — DO OBJETO",
-                         "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
-                         "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
-                         f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
-                         "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
-                         "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
-                         "condições da água e operações rotineiras de circulação e filtração. Este contrato "
-                         "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
-                         "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
-
-                        ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
-                         f"Os serviços serão executados com a seguinte frequência: {_freq}. "
-                         "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
-                         "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
-                         "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
-                         "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
-
-                        ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
-                         f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
-                         + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
-                            "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
-                            "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
-                            "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
-                            if not _prods_inc else "")),
-
-                        ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
-                         f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
-                         f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
-                         f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
-                         "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
-                         "poderá suspender os serviços após comunicação prévia."),
-
-                        ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
-                         f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
-                         f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
-                         "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
-                         "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
-
-                        ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
-                         "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
-                         "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
-                         "manterá sigilo sobre informações não públicas. "
-                         "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
-                         "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
-                         "e efetuará o pagamento na forma e prazo pactuados."),
-
-                        ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
-                         "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
-                         "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
-                         "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
-                         "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
-
-                        ("CLÁUSULA 8 — DA RESCISÃO",
-                         "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
-                         "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
-                         "descumprimento contratual relevante após notificação sem saneamento; ou por "
-                         "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
-                         "serviços efetivamente prestados."),
-
-                        ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
-                         "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
-                         "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
-                         "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
-                         "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
-                         "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
-                    ]
-
-                    for titulo_cl, texto_cl in clausulas:
-                        story.append(Paragraph(titulo_cl, s_clausula))
-                        story.append(Paragraph(texto_cl, s_body))
-
-                    story.append(Spacer(1, 0.5*cm))
-                    story.append(HRFlowable(width="100%", thickness=0.5,
-                        color=colors.HexColor("#c0c8d8")))
-                    story.append(Spacer(1, 0.3*cm))
-                    story.append(Paragraph(
-                        f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
-                        f"vias de igual teor e forma.", s_body))
-                    story.append(Spacer(1, 0.2*cm))
-                    story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
-                    story.append(Spacer(1, 1*cm))
-
-                    # Tabela de assinaturas
-                    ass_data = [
-                        ["___________________________________",
-                         "___________________________________"],
-                        ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
-                         f"{_nome}\nCONTRATANTE"],
-                        ["", ""],
-                        ["___________________________________",
-                         "___________________________________"],
-                        ["TESTEMUNHA 1\nNome:\nCPF:",
-                         "TESTEMUNHA 2\nNome:\nCPF:"],
-                    ]
-                    t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
-                    t_ass.setStyle(TableStyle([
-                        ("ALIGN",    (0,0), (-1,-1), "CENTER"),
-                        ("FONTSIZE", (0,0), (-1,-1), 9),
-                        ("VALIGN",   (0,0), (-1,-1), "TOP"),
-                        ("TOPPADDING", (0,0),(-1,-1), 4),
-                    ]))
-                    story.append(t_ass)
-                    story.append(Spacer(1, 0.3*cm))
-                    story.append(HRFlowable(width="100%", thickness=0.5,
-                        color=colors.HexColor("#0d3d75")))
-                    story.append(Spacer(1, 0.15*cm))
-                    story.append(Paragraph(
-                        "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
-                        "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
-                        s_small))
-
-                    # ── Gera PDF ───────────────────────────────────────────────
-                    pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
-                    pasta_bs_cont.mkdir(parents=True, exist_ok=True)
-                    _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
-
-                    _buf = _io.BytesIO()
-                    doc_rl = SimpleDocTemplate(
-                        _buf,
-                        pagesize=A4,
-                        topMargin=2*cm, bottomMargin=2*cm,
-                        leftMargin=2.5*cm, rightMargin=2.5*cm,
-                        title=f"Contrato Bem Star — {_nome}",
-                        author="Bem Star Piscinas",
+                    return json.loads(CLIENTES_SEM_RT_JSON.read_text(encoding="utf-8"))
+                except Exception:
+                    return []
+            return []
+    
+        def salvar_clientes_sem_rt(lista: list):
+            GENERATED_DIR.mkdir(exist_ok=True)
+            CLIENTES_SEM_RT_JSON.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+        clientes_sem_rt = carregar_clientes_sem_rt()
+    
+        # ── Importar do Sheets ────────────────────────────────────────────────────
+        @st.cache_data(ttl=60)
+        def _clientes_sheets_csr():
+            return sheets_listar_clientes_completo()
+    
+        _cls_sheets = filtrar_clientes_por_empresa(_clientes_sheets_csr(), "bem_star")
+        if _cls_sheets:
+            _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
+            _sel_csr_imp = st.selectbox(
+                "🔗 Importar cliente do Google Sheets",
+                _opcoes_csr_imp,
+                key="sel_importar_csr",
+                help="Importa os dados do cadastro principal para o formulário abaixo."
+            )
+            if _sel_csr_imp and _sel_csr_imp != "— Importar do cadastro principal (Sheets) —":
+                if st.button("⬇️ Importar dados", key="btn_imp_csr", use_container_width=False):
+                    _d = next((c for c in _cls_sheets if c["nome"] == _sel_csr_imp), {})
+                    if _d:
+                        st.session_state["csr_nome"]     = _d.get("nome", "")
+                        st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
+                        st.session_state["csr_endereco"] = _d.get("endereco", "")
+                        st.session_state["csr_contato"]  = _d.get("contato", "")
+                        st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
+                        st.success(f"✅ Dados de '{_sel_csr_imp}' importados!")
+                        st.rerun()
+            st.markdown("---")
+    
+        st.markdown("**Novo cliente sem RT:**")
+    
+        def _mask_csr_cnpj():
+            st.session_state["csr_cnpj"] = formatar_cnpj(st.session_state.get("csr_cnpj", ""))
+    
+        def _mask_csr_telefone():
+            st.session_state["csr_telefone"] = formatar_telefone(st.session_state.get("csr_telefone", ""))
+    
+        csr1, csr2 = st.columns(2)
+        with csr1:
+            csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+            if st.session_state.get("_csr_cep_fmt"):
+                st.session_state["csr_cep"] = st.session_state.pop("_csr_cep_fmt")
+            _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
+            with _csr_cep_c1:
+                st.text_input("CEP", key="csr_cep", placeholder="00000-000",
+                    help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+            with _csr_cep_c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                _btn_csr_cep = st.button("🔍", key="btn_buscar_cep_csr", help="Buscar CEP")
+            if _btn_csr_cep:
+                _cep_v = re.sub(r"\D", "", st.session_state.get("csr_cep", ""))
+                if len(_cep_v) == 8:
+                    with st.spinner("Buscando CEP..."):
+                        _dc = buscar_cep(_cep_v)
+                    if _dc:
+                        _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                        st.session_state["csr_endereco"] = _end
+                        st.session_state["_csr_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                        st.rerun()
+                    else:
+                        st.error("CEP não encontrado.")
+                else:
+                    st.warning("Digite um CEP válido com 8 dígitos.")
+            csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+        with csr2:
+            csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
+            csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
+            csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
+    
+        if st.button("➕ Salvar cliente (Bem Star)", use_container_width=True):
+            if not csr_nome.strip():
+                st.error("Informe o nome do local.")
+            else:
+                novo = {
+                    "nome": csr_nome.strip(),
+                    "cnpj": formatar_cnpj(csr_cnpj.strip()),
+                    "endereco": csr_endereco.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": formatar_telefone(csr_telefone.strip()),
+                    "cadastrado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                }
+                # Atualiza se já existe, senão adiciona
+                nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
+                if csr_nome.strip().lower() in nomes_existentes:
+                    idx_ex = nomes_existentes.index(csr_nome.strip().lower())
+                    clientes_sem_rt[idx_ex] = novo
+                    st.success(f"Cliente '{csr_nome}' atualizado.")
+                else:
+                    clientes_sem_rt.append(novo)
+                    st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
+                salvar_clientes_sem_rt(clientes_sem_rt)
+                # Salva também no Google Sheets (col M = Bem Star Piscinas)
+                with st.spinner("Sincronizando com Google Sheets..."):
+                    _cl_sheets = sheets_listar_clientes_completo()
+                    _existe_sheets = next((c for c in _cl_sheets
+                        if c["nome"].lower().strip() == csr_nome.strip().lower()), None)
+                    if _existe_sheets:
+                        sheets_editar_cliente(
+                            id_cliente=_existe_sheets["id"],
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                    else:
+                        sheets_salvar_cliente(
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                st.cache_data.clear()
+                # Cria pasta do cliente no generated
+                pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
+                pasta_csr.mkdir(parents=True, exist_ok=True)
+                _dados_csr_local = carregar_dados_condominio(pasta_csr) or {}
+                _dados_csr_local.update({
+                    "nome_condominio": csr_nome.strip(),
+                    "cnpj_condominio": csr_cnpj.strip(),
+                    "cnpj": csr_cnpj.strip(),
+                    "endereco_condominio": csr_endereco.strip(),
+                    "endereco": csr_endereco.strip(),
+                    "nome_sindico": csr_contato.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": csr_telefone.strip(),
+                    "empresa": "Bem Star Piscinas",
+                    "servicos": {"rt": False, "limpeza": True},
+                    "tipo": "sem_rt",
+                    "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                })
+                salvar_dados_condominio(pasta_csr, _dados_csr_local)
+                st.rerun()
+    
+        if clientes_sem_rt:
+            st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
+            for c in clientes_sem_rt:
+                st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
+    
+    # ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
+    st.markdown("---")
+    st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
+    
+    # Carrega clientes Bem Star do Sheets (fonte principal) + fallback JSON local
+    @st.cache_data(ttl=30)
+    def _clientes_bem_star_relatorio():
+        _todos = sheets_listar_clientes_completo()
+        _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
+        # Fallback: também inclui clientes do JSON local
+        _json_local = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+        _nomes_sheets = {c["nome"].lower() for c in _bs}
+        for _cl in _json_local:
+            if _cl["nome"].lower() not in _nomes_sheets:
+                _bs.append(_cl)
+        return _bs
+    
+    clientes_sem_rt_reload = _clientes_bem_star_relatorio()
+    opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
+    
+    if not opcoes_csr:
+        st.info("Cadastre um cliente Bem Star acima para gerar o relatório técnico.")
+    else:
+        rts1, rts2, rts3 = st.columns([2, 1, 1])
+        with rts1:
+            csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
+        with rts2:
+            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
+        with rts3:
+            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
+    
+        csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
+    
+        # ── Busca lançamentos: JSON local + Google Sheets ──────────────────────
+        pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
+        _lanc_local_csr = []
+        if pasta_csr_sel and pasta_csr_sel.exists():
+            _dados_json_csr = carregar_dados_condominio(pasta_csr_sel)
+            _lanc_local_csr = (_dados_json_csr or {}).get("lancamentos_campo", [])
+    
+        _lanc_sheets_csr = []
+        if csr_sel:
+            try:
+                _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+            except Exception:
+                _lanc_sheets_csr = []
+    
+        # Deduplica local + Sheets
+        _vistos_csr = set()
+        _lanc_todos_csr = []
+        for _lc in _lanc_local_csr + _lanc_sheets_csr:
+            _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
+            if _ch not in _vistos_csr:
+                _vistos_csr.add(_ch)
+                _lanc_todos_csr.append(_lc)
+    
+        # Filtra por mês/ano
+        def _filtrar_mes_csr(lancamentos, mes, ano):
+            """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
+            if not mes or not ano:
+                return lancamentos
+            return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
+    
+        _mes_csr  = (csr_mes or "").strip()
+        _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
+        lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
+    
+        # ── Painel de lançamentos disponíveis ────────────────────────────────
+        if lancamentos_csr:
+            _fonte_csr = "📱 local + Sheets" if _lanc_sheets_csr else "📱 local"
+            _periodo_csr = f"{lancamentos_csr[0].get('data','?')} → {lancamentos_csr[-1].get('data','?')}"
+            st.markdown(
+                f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;"
+                f"background:rgba(20,120,60,0.07);margin-bottom:12px;'>"
+                f"<strong>📱 {len(lancamentos_csr)} lançamento(s) encontrado(s) — {_fonte_csr}</strong><br>"
+                f"<span style='font-size:0.85rem;color:#3a6a3a;'>Período: {_periodo_csr}</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("👁 Ver lançamentos"):
+                for _lc in lancamentos_csr:
+                    st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
+        else:
+            st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
+    
+        csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
+        csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
+            placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+    
+        # ── Coleta fotos das visitas ─────────────────────────────────────────
+        pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+        fotos_csr = []
+        if pasta_fotos_csr and pasta_fotos_csr.exists():
+            for _lc in lancamentos_csr:
+                for _nf in _lc.get("fotos", []):
+                    _pf = pasta_fotos_csr / _nf
+                    if _pf.exists():
+                        fotos_csr.append((_lc.get("data",""), _pf))
+    
+        if fotos_csr:
+            st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
+    
+        
+    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Gerando relatório Bem Star..."):
+                _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
+    
+            if not _resultado_bs.get("ok"):
+                st.error(_resultado_bs.get("mensagem", "Erro ao gerar relatório Bem Star."))
+            else:
+                docx_csr = Path(_resultado_bs["docx"])
+                pdf_csr = Path(_resultado_bs["pdf"])
+                ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
+                err_pdf_csr = _resultado_bs.get("erro_pdf")
+                _ctx_bs = _resultado_bs.get("dados", {})
+                st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
+                dl1, dl2 = st.columns(2)
+                with dl1:
+                    with open(docx_csr, "rb") as _f:
+                        st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True)
+                with dl2:
+                    if ok_pdf_csr and pdf_csr.exists():
+                        with open(pdf_csr, "rb") as _f:
+                            st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
+                                mime="application/pdf", use_container_width=True)
+                    else:
+                        st.warning(f"PDF não gerado: {err_pdf_csr}")
+    
+                _msg_rel = montar_mensagem_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
+                    tipo="relatorio",
+                    mes=_ctx_bs.get("mes", csr_mes),
+                    ano=_ctx_bs.get("ano", csr_ano),
+                )
+                exibir_bloco_envio_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    pasta=Path(_resultado_bs["pasta"]),
+                    telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
+                    email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
+                    mensagem=_msg_rel,
+                    key_suffix="relatorio",
+                )
+    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório Bem Star: {e}")
+            import traceback
+            st.code(traceback.format_exc(), language="text")
+    
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    
+    # =========================================
+    # CONTRATO BEM STAR PISCINAS
+    # =========================================
+    
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("📝 Contrato Bem Star Piscinas")
+    st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
+    
+    with st.expander("📋 Preencher e gerar contrato", expanded=False):
+    
+        # ── Seletor de cliente ────────────────────────────────────────────────────
+        @st.cache_data(ttl=30)
+        def _clientes_bs_contrato():
+            _todos = sheets_listar_clientes_completo()
+            _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+            _nomes_sheets = [c["nome"] for c in _todos]
+            for _cl in _locais:
+                if _cl["nome"] not in _nomes_sheets:
+                    _todos.append(_cl)
+            return _todos
+    
+        _bs_clientes = _clientes_bs_contrato()
+        _bs_nomes = ["— selecione ou preencha manualmente —"] + [c["nome"] for c in _bs_clientes]
+    
+        _bs_sel = st.selectbox("Carregar dados de cliente cadastrado", _bs_nomes,
+            key="bs_cont_cliente_sel")
+    
+        if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
+            _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
+            if _bs_dado:
+                st.session_state["bs_cont_nome"]     = _bs_dado.get("nome", "")
+                st.session_state["bs_cont_cnpj"]     = _bs_dado.get("cnpj", "")
+                st.session_state["bs_cont_endereco"] = _bs_dado.get("endereco", "")
+                st.session_state["bs_cont_contato"]  = _bs_dado.get("contato", "")
+                st.session_state["bs_cont_telefone"] = _bs_dado.get("telefone", "")
+                st.success(f"✅ Dados de '{_bs_dado['nome']}' carregados.")
+                st.rerun()
+    
+        st.markdown("---")
+        st.markdown("**Dados do Contratante**")
+    
+        _bc1, _bc2 = st.columns(2)
+        with _bc1:
+            bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
+                placeholder="Ex.: Condomínio Residencial Bella Vista")
+            bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
+                height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
+        with _bc2:
+            bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
+                placeholder="00.000.000/0000-00")
+            bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
+                placeholder="Nome completo do responsável")
+            bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
+                placeholder="(34) 99999-9999")
+    
+        st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
+        bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
+            height=60,
+            placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
+    
+        st.markdown("**Condições do serviço**")
+        _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
+        with _bs_c1:
+            bs_frequencia = st.selectbox("Frequência de visitas", 
+                ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Outra"],
+                key="bs_cont_frequencia")
+            if bs_frequencia == "Outra":
+                bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
+                    placeholder="Ex.: quinzenal")
+        with _bs_c2:
+            bs_produtos = st.radio("Produtos químicos", 
+                ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
+                key="bs_cont_produtos")
+        with _bs_c3:
+            bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
+                placeholder="Ex.: 12")
+    
+        st.markdown("**Valores e pagamento**")
+        _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
+        with _bs_v1:
+            bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
+                placeholder="Ex.: 350,00")
+        with _bs_v2:
+            bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
+                placeholder="Ex.: trezentos e cinquenta reais")
+        with _bs_v3:
+            bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
+                placeholder="Ex.: 10")
+        with _bs_v4:
+            bs_pagamento = st.selectbox("Forma de pagamento",
+                ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
+                key="bs_cont_pagamento")
+    
+        st.markdown("**Duração do Contrato**")
+        bs_duracao = st.radio("Tipo de contrato", 
+            ["Por tempo indeterminado", "12 meses com prorrogação automática"],
+            key="bs_cont_duracao", horizontal=True)
+    
+        st.markdown("**Datas**")
+        _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
+        with _bs_d1:
+            bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
+                placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_inicio)
+        with _bs_d2:
+            if "indeterminado" in bs_duracao:
+                st.text_input("Data de término", value="Indeterminado", disabled=True)
+            else:
+                bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
+                    placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
+        with _bs_d3:
+            bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
+                placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
+        bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
+            placeholder="dd/mm/aaaa", value=hoje_br())
+    
+        st.markdown("---")
+    
+        if st.button("📄 Gerar Contrato Bem Star (PDF)", type="primary", use_container_width=True,
+                key="btn_gerar_contrato_bs"):
+            if not (st.session_state.get("bs_cont_nome","")).strip():
+                st.error("Informe o nome do contratante.")
+            elif not (st.session_state.get("bs_cont_valor","")).strip():
+                st.error("Informe o valor mensal.")
+            else:
+                # ── Tenta gerar via template_bem_star.docx (preferencial) ──────
+                if TEMPLATE_BEM_STAR.exists():
+                    _duracao_bs  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                    _prazo_bs    = "indeterminado" if "indeterminado" in _duracao_bs else "12 meses"
+                    _fim_bs      = "Indeterminado" if "indeterminado" in _duracao_bs else (
+                        (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
                     )
-                    doc_rl.build(story)
-                    _pdf_bytes = _buf.getvalue()
-
-                    with open(pdf_bs_path, "wb") as _pf:
-                        _pf.write(_pdf_bytes)
-
-                    st.success(f"✅ Contrato gerado para {_nome}!")
-                    st.download_button(
-                        "⬇️ Baixar Contrato PDF",
-                        data=_pdf_bytes,
-                        file_name=pdf_bs_path.name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key="btn_dl_contrato_bs",
+                    _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
+                                    or st.session_state.get("bs_cont_frequencia",""))
+                    _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                    gerar_contrato_bem_star_docx(
+                        nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
+                        cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
+                        endereco_contratante= (st.session_state.get("bs_cont_endereco","")).strip(),
+                        valor_mensal        = valor_para_template((st.session_state.get("bs_cont_valor","")).strip()),
+                        valor_extenso       = (st.session_state.get("bs_cont_valor_extenso","")).strip(),
+                        dia_pagamento       = (st.session_state.get("bs_cont_vencimento","")).strip() or "10",
+                        forma_pagamento     = st.session_state.get("bs_cont_pagamento","Pix"),
+                        prazo_contrato      = _prazo_bs,
+                        data_inicio         = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br(),
+                        data_fim            = _fim_bs,
+                        local_data_assinatura = f"{(st.session_state.get('bs_cont_local','Uberlândia/MG')).strip()}, {(st.session_state.get('bs_cont_data_ass','')).strip() or hoje_br()}",
+                        piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
+                        produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
+                                              else "Produtos não incluídos no valor mensal"),
                     )
-
-                    # ── Bloco de envio ────────────────────────────────────────
-                    _msg_cont = montar_mensagem_bem_star(
-                        nome_local   = _nome,
-                        responsavel  = _contato,
-                        tipo         = "contrato",
-                    )
-                    exibir_bloco_envio_bem_star(
-                        nome_local   = _nome,
-                        pasta        = pasta_bs_cont,
-                        telefone     = _tel,
-                        email        = "",
-                        mensagem     = _msg_cont,
-                        key_suffix   = "contrato",
-                    )
-
-                except Exception as _e:
-                        st.error(f"Erro ao gerar contrato: {_e}")
-                        import traceback as _tb
-                        st.code(_tb.format_exc(), language="text")
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-# =========================================
-# FORMULÁRIO
-# =========================================
+                else:
+                    # ── Fallback ReportLab (mantido para compatibilidade) ──────
+                    try:
+                        from reportlab.lib.units import cm
+                        from reportlab.lib import colors
+                        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                            Table, TableStyle, HRFlowable)
+                        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+                        import io as _io
+    
+                        # ── Coleta valores ─────────────────────────────────────────
+                        _nome     = (st.session_state.get("bs_cont_nome","")).strip()
+                        _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
+                        _end      = (st.session_state.get("bs_cont_endereco","")).strip()
+                        _contato  = (st.session_state.get("bs_cont_contato","")).strip()
+                        _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
+                        _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
+                        _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
+                        _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                        _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
+                        _valor    = (st.session_state.get("bs_cont_valor","")).strip()
+                        _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
+                        _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
+                        _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
+                        _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
+                        _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                        _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
+                        _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
+                        _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
+                        _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
+                        _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
+                        _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
+    
+                        # ── Estilos ReportLab ──────────────────────────────────────
+                        styles = getSampleStyleSheet()
+                        s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
+                            fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
+                        s_sub = ParagraphStyle("sub", parent=styles["Normal"],
+                            fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
+                        s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
+                            fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
+                            textColor=colors.HexColor("#0d3d75"),
+                            borderPad=4, borderColor=colors.HexColor("#0d3d75"),
+                            leftIndent=0)
+                        s_body = ParagraphStyle("body", parent=styles["Normal"],
+                            fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
+                            leading=14, leftIndent=8)
+                        s_center = ParagraphStyle("center", parent=styles["Normal"],
+                            fontSize=10, alignment=TA_CENTER, spaceBefore=4)
+                        s_small = ParagraphStyle("small", parent=styles["Normal"],
+                            fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+    
+                        # ── Monta story ────────────────────────────────────────────
+                        story = []
+    
+                        # Logo Bem Star se disponível
+                        _logo_bs = encontrar_logo_bem_star()
+                        if _logo_bs and _logo_bs.exists():
+                            from reportlab.platypus import Image as RLImage
+                            _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
+                                kind="proportional")
+                            _img.hAlign = "CENTER"
+                            story.append(_img)
+                            story.append(Spacer(1, 0.4*cm))
+    
+                        story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
+                        story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
+                            "sub2", parent=styles["Normal"], fontSize=10,
+                            alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(HRFlowable(width="100%", thickness=2,
+                            color=colors.HexColor("#0d3d75")))
+                        story.append(Spacer(1, 0.3*cm))
+    
+                        # Tabela identificação
+                        id_data = [
+                            ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
+                            ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
+                        ]
+                        t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
+                        t_id.setStyle(TableStyle([
+                            ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
+                            ("FONTSIZE",  (0,0), (-1,-1), 9),
+                            ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
+                            ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
+                            ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
+                            ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
+                            ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+                            ("TOPPADDING",(0,0),(-1,-1), 7),
+                            ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                            ("LEFTPADDING",(0,0),(-1,-1), 8),
+                            ("RIGHTPADDING",(0,0),(-1,-1), 8),
+                        ]))
+                        story.append(t_id)
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(Paragraph(
+                            "As partes acima identificadas têm entre si justo e contratado o presente "
+                            "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
+    
+                        # Cláusulas
+                        clausulas = [
+                            ("CLÁUSULA 1 — DO OBJETO",
+                             "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
+                             "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
+                             f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
+                             "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
+                             "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
+                             "condições da água e operações rotineiras de circulação e filtração. Este contrato "
+                             "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
+                             "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
+    
+                            ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
+                             f"Os serviços serão executados com a seguinte frequência: {_freq}. "
+                             "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
+                             "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
+                             "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
+                             "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
+    
+                            ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
+                             f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
+                             + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
+                                "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
+                                "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
+                                "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
+                                if not _prods_inc else "")),
+    
+                            ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
+                             f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
+                             f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
+                             f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
+                             "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
+                             "poderá suspender os serviços após comunicação prévia."),
+    
+                            ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
+                             f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
+                             f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
+                             "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
+                             "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
+    
+                            ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
+                             "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
+                             "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
+                             "manterá sigilo sobre informações não públicas. "
+                             "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
+                             "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
+                             "e efetuará o pagamento na forma e prazo pactuados."),
+    
+                            ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+                             "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
+                             "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
+                             "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
+                             "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
+    
+                            ("CLÁUSULA 8 — DA RESCISÃO",
+                             "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
+                             "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
+                             "descumprimento contratual relevante após notificação sem saneamento; ou por "
+                             "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
+                             "serviços efetivamente prestados."),
+    
+                            ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
+                             "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
+                             "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
+                             "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
+                             "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
+                             "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
+                        ]
+    
+                        for titulo_cl, texto_cl in clausulas:
+                            story.append(Paragraph(titulo_cl, s_clausula))
+                            story.append(Paragraph(texto_cl, s_body))
+    
+                        story.append(Spacer(1, 0.5*cm))
+                        story.append(HRFlowable(width="100%", thickness=0.5,
+                            color=colors.HexColor("#c0c8d8")))
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(Paragraph(
+                            f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
+                            f"vias de igual teor e forma.", s_body))
+                        story.append(Spacer(1, 0.2*cm))
+                        story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
+                        story.append(Spacer(1, 1*cm))
+    
+                        # Tabela de assinaturas
+                        ass_data = [
+                            ["___________________________________",
+                             "___________________________________"],
+                            ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
+                             f"{_nome}\nCONTRATANTE"],
+                            ["", ""],
+                            ["___________________________________",
+                             "___________________________________"],
+                            ["TESTEMUNHA 1\nNome:\nCPF:",
+                             "TESTEMUNHA 2\nNome:\nCPF:"],
+                        ]
+                        t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
+                        t_ass.setStyle(TableStyle([
+                            ("ALIGN",    (0,0), (-1,-1), "CENTER"),
+                            ("FONTSIZE", (0,0), (-1,-1), 9),
+                            ("VALIGN",   (0,0), (-1,-1), "TOP"),
+                            ("TOPPADDING", (0,0),(-1,-1), 4),
+                        ]))
+                        story.append(t_ass)
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(HRFlowable(width="100%", thickness=0.5,
+                            color=colors.HexColor("#0d3d75")))
+                        story.append(Spacer(1, 0.15*cm))
+                        story.append(Paragraph(
+                            "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
+                            "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
+                            s_small))
+    
+                        # ── Gera PDF ───────────────────────────────────────────────
+                        pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
+                        pasta_bs_cont.mkdir(parents=True, exist_ok=True)
+                        _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
+    
+                        _buf = _io.BytesIO()
+                        doc_rl = SimpleDocTemplate(
+                            _buf,
+                            pagesize=A4,
+                            topMargin=2*cm, bottomMargin=2*cm,
+                            leftMargin=2.5*cm, rightMargin=2.5*cm,
+                            title=f"Contrato Bem Star — {_nome}",
+                            author="Bem Star Piscinas",
+                        )
+                        doc_rl.build(story)
+                        _pdf_bytes = _buf.getvalue()
+    
+                        with open(pdf_bs_path, "wb") as _pf:
+                            _pf.write(_pdf_bytes)
+    
+                        st.success(f"✅ Contrato gerado para {_nome}!")
+                        st.download_button(
+                            "⬇️ Baixar Contrato PDF",
+                            data=_pdf_bytes,
+                            file_name=pdf_bs_path.name,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_contrato_bs",
+                        )
+    
+                        # ── Bloco de envio ────────────────────────────────────────
+                        _msg_cont = montar_mensagem_bem_star(
+                            nome_local   = _nome,
+                            responsavel  = _contato,
+                            tipo         = "contrato",
+                        )
+                        exibir_bloco_envio_bem_star(
+                            nome_local   = _nome,
+                            pasta        = pasta_bs_cont,
+                            telefone     = _tel,
+                            email        = "",
+                            mensagem     = _msg_cont,
+                            key_suffix   = "contrato",
+                        )
+    
+                    except Exception as _e:
+                            st.error(f"Erro ao gerar contrato: {_e}")
+                            import traceback as _tb
+                            st.code(_tb.format_exc(), language="text")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # =========================================
+    # FORMULÁRIO
+    # =========================================
+    
+    # Encerra aqui para impedir que módulos Aqua Gestão apareçam no painel Bem Star.
+    st.stop()
 
 st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_allow_html=True)
-st.subheader("Dados do contrato e aditivo")
+st.subheader("Dados do contrato de Responsabilidade Técnica")
 
 # ── Seletor de cliente do Sheets ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def _clientes_completos_cache():
     return sheets_listar_clientes_completo()
 
-_clientes_rt = _clientes_completos_cache()
+_clientes_rt = filtrar_clientes_por_empresa(_clientes_completos_cache(), "aqua_gestao")
 if _clientes_rt:
     _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
     _sel_rt = st.selectbox(
@@ -10339,12 +11404,6 @@ with col2:
         key="valor_mensal_extenso",
         placeholder="um mil, seiscentos e vinte e um reais",
     )
-    st.text_input(
-        "Valor com desconto/aditivo",
-        key="valor_aditivo",
-        on_change=on_change_valor_aditivo,
-        placeholder="R$ 810,50",
-    )
     st.selectbox(
         "Frequência de visitas",
         options=["1 (uma)", "2 (duas)", "3 (três)", "4 (quatro)"],
@@ -10410,7 +11469,7 @@ else:
         st.text_input("E-mail do cliente", key="email_cliente")
 
 st.text_area(
-    "Observações internas (não vai para contrato/aditivo)",
+    "Observações internas (não vai para o contrato)",
     key="observacoes_internas",
     height=100,
     placeholder="Ex.: condição comercial específica, observação operacional, histórico jurídico...",
@@ -10455,33 +11514,1149 @@ with r3:
     )
 
 st.markdown("---")
-st.markdown("**Geração de documentos contratuais**")
+st.markdown("**Geração de documento contratual — RT/ART**")
+st.info(
+    "Fluxo ajustado para CRQ/ART: gera somente contrato único de Responsabilidade Técnica, "
+    "sem aditivo de desconto e sem valor reduzido. O contrato preserva remuneração técnica compatível "
+    "com as exigências documentais do CRQ-MG."
+)
 
-col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.5, 1.5, 1, 1])
+col_btn1, col_btn2, col_btn3 = st.columns([1.6, 1, 1])
 
 with col_btn1:
     gerar = st.button(
-        "✅ Gerar contrato + aditivo",
+        "✅ Gerar contrato RT",
         type="primary",
         use_container_width=True,
     )
 
-with col_btn2:
-    gerar_aditivo_rapido = st.button(
-        "📄 Gerar somente aditivo rápido",
-        use_container_width=True,
-    )
+# Mantido como variável para não quebrar o processamento no final do arquivo.
+gerar_aditivo_rapido = False
 
-with col_btn3:
+with col_btn2:
     if st.button("🗑️ Limpar formulário", use_container_width=True):
         limpar_formulario()
         st.rerun()
 
-with col_btn4:
+with col_btn3:
     if st.button("📁 Abrir pasta gerada", use_container_width=True):
         abrir_pasta_windows(GENERATED_DIR)
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# POPs ADAPTATIVOS — RT / ROTINA OPERACIONAL
+# =========================================
+
+def _dados_pops_rt_do_formulario() -> dict:
+    """Coleta dados atuais do formulário para gerar o Caderno de POPs."""
+    return {
+        "nome_condominio": (st.session_state.get("nome_condominio") or "").strip(),
+        "cnpj_condominio": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "endereco_condominio": (st.session_state.get("endereco_condominio") or "").strip(),
+        "nome_sindico": (st.session_state.get("nome_sindico") or "").strip(),
+        "cpf_sindico": (st.session_state.get("cpf_sindico") or "").strip(),
+        "cargo_sindico": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+        "data_assinatura": (st.session_state.get("data_assinatura") or hoje_br()).strip(),
+        "volumes_piscinas": st.session_state.get("volumes_piscinas", ""),
+        "executor_operacional": st.session_state.get("pops_executor_operacional", "Prestador externo"),
+        "frequencia_operacional": st.session_state.get("pops_frequencia_operacional", "3 vezes por semana"),
+        "observacao_pops": (st.session_state.get("pops_observacao") or "").strip(),
+    }
+
+
+def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
+    """Retorna a lista base de POPs adaptada ao executor e à frequência operacional."""
+    executor_txt = executor or "equipe operacional designada pela CONTRATANTE"
+    frequencia_txt = frequencia or "conforme rotina definida pela CONTRATANTE"
+
+    responsavel_execucao = "Equipe operacional designada pela CONTRATANTE"
+    if "prestador" in executor_txt.lower():
+        responsavel_execucao = "Prestador externo indicado ou contratado pela CONTRATANTE"
+    elif "empresa" in executor_txt.lower():
+        responsavel_execucao = "Empresa contratada contratada pela CONTRATANTE"
+    elif "zelador" in executor_txt.lower():
+        responsavel_execucao = "Zelador ou responsável local designado pela CONTRATANTE"
+    elif "funcionário" in executor_txt.lower() or "funcionario" in executor_txt.lower():
+        responsavel_execucao = "Funcionário próprio designado pela CONTRATANTE"
+    elif "mista" in executor_txt.lower():
+        responsavel_execucao = "Equipe operacional mista designada pela CONTRATANTE"
+
+    freq_visita = frequencia_txt
+    if "sem rotina" in frequencia_txt.lower():
+        freq_visita = "sempre que houver visita operacional ou solicitação formal da CONTRATANTE"
+
+    return [
+        {
+            "codigo": "POP 01",
+            "titulo": "Chegada ao condomínio e inspeção inicial",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Estabelecer uma rotina mínima de conferência antes do início da manutenção operacional da piscina.",
+            "procedimento": [
+                "Identificar-se na chegada, quando houver controle de acesso.",
+                "Verificar visualmente a piscina antes de qualquer intervenção.",
+                "Observar transparência da água, presença de sujeira, espuma, odor forte, alteração de cor, reclamações de usuários e condições gerais da área.",
+                "Conferir a casa de máquinas, cestos, pré-filtro, pressão do filtro e disponibilidade dos produtos necessários.",
+            ],
+            "cuidados": [
+                "Não liberar uso da piscina quando houver suspeita de risco sanitário, ausência de cloro residual ou condição visual insegura.",
+                "Comunicar ao síndico/responsável local e ao RT situações críticas ou fora da rotina.",
+            ],
+            "registros": "Registrar data, horário, responsável pela visita e observações iniciais."
+        },
+        {
+            "codigo": "POP 02",
+            "titulo": "Medição de parâmetros físico-químicos",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Padronizar a medição dos parâmetros mínimos de controle da água.",
+            "procedimento": [
+                "Coletar amostra em ponto representativo da piscina, longe do retorno imediato de água tratada.",
+                "Medir pH e cloro livre em toda visita operacional.",
+                "Medir cloro total, alcalinidade, dureza, ácido cianúrico, temperatura e demais parâmetros conforme orientação do RT ou rotina definida.",
+                "Utilizar reagentes dentro da validade e equipamento limpo.",
+            ],
+            "cuidados": [
+                "Não registrar valores estimados ou aproximados sem medição real.",
+                "Quando houver dúvida no resultado, repetir a análise antes de dosar produto.",
+            ],
+            "registros": "Registrar todos os parâmetros na planilha, aplicativo ou formulário oficial do condomínio."
+        },
+        {
+            "codigo": "POP 03",
+            "titulo": "Registro obrigatório da visita",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Garantir rastreabilidade técnica das ações executadas na rotina operacional.",
+            "procedimento": [
+                "Registrar data, horário, nome do executante e piscinas atendidas.",
+                "Registrar parâmetros medidos antes das correções.",
+                "Registrar produtos aplicados, quantidade, unidade e finalidade.",
+                "Registrar lavagem de filtro, limpeza de cestos, observações e não conformidades.",
+            ],
+            "cuidados": [
+                "A ausência de registro compromete a rastreabilidade técnica e poderá ser apontada como não conformidade.",
+                "Não alterar registros anteriores sem justificativa formal.",
+            ],
+            "registros": "Planilha diária, ficha de visita, aplicativo ou outro meio definido pela CONTRATANTE e validado pelo RT."
+        },
+        {
+            "codigo": "POP 04",
+            "titulo": "Limpeza física da piscina",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Remover sujeiras físicas que prejudicam a qualidade visual e aumentam a demanda química da água.",
+            "procedimento": [
+                "Realizar peneiração da superfície quando necessário.",
+                "Escovar bordas, paredes, escadas, cantos e áreas com acúmulo visível.",
+                "Aspirar o fundo conforme necessidade operacional.",
+                "Remover sujidades grosseiras antes de realizar correções químicas mais intensas.",
+            ],
+            "cuidados": [
+                "Não realizar aspiração ou manobras hidráulicas sem conhecimento do sistema.",
+                "Comunicar excesso recorrente de sujeira, areia, folhas ou material orgânico.",
+            ],
+            "registros": "Registrar se houve peneiração, escovação, aspiração e qualquer anormalidade observada."
+        },
+        {
+            "codigo": "POP 05",
+            "titulo": "Limpeza de cestos e pré-filtro",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Evitar perda de vazão, esforço da motobomba e redução da eficiência de filtração.",
+            "procedimento": [
+                "Desligar a motobomba antes de abrir pré-filtro ou manusear cestos quando aplicável.",
+                "Limpar cestos de skimmer, coadeira, ralo de superfície e pré-filtro da bomba.",
+                "Reinstalar corretamente as tampas, vedações e cestos antes de religar o sistema.",
+                "Observar ruídos, entrada de ar, vazamentos ou dificuldade de escorva.",
+            ],
+            "cuidados": [
+                "Nunca abrir pré-filtro com sistema pressurizado ou bomba em funcionamento.",
+                "Comunicar vazamentos, tampa danificada, anel de vedação comprometido ou ruído anormal.",
+            ],
+            "registros": "Registrar limpeza realizada e anormalidades no conjunto hidráulico."
+        },
+        {
+            "codigo": "POP 06",
+            "titulo": "Retrolavagem e enxágue do filtro",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Conforme pressão do filtro, perda de vazão, orientação técnica ou rotina operacional definida.",
+            "objetivo": "Padronizar a limpeza do meio filtrante sem causar retorno de sujeira para a piscina.",
+            "procedimento": [
+                "Verificar pressão do filtro e condição visual da água.",
+                "Desligar a bomba antes de mudar a posição da válvula seletora.",
+                "Executar retrolavagem pelo tempo necessário até melhora visual da água de descarte.",
+                "Executar enxágue antes de retornar para a posição filtrar.",
+                "Religar o sistema e conferir vazamentos, pressão e funcionamento.",
+            ],
+            "cuidados": [
+                "Nunca mudar a válvula seletora com a bomba ligada.",
+                "Comunicar aumento recorrente de pressão, baixa vazão ou necessidade excessiva de retrolavagem.",
+            ],
+            "registros": "Registrar data, execução de retrolavagem, enxágue e qualquer observação do filtro."
+        },
+        {
+            "codigo": "POP 07",
+            "titulo": "Dosagem segura de produtos químicos",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Somente após medição e conforme orientação técnica, rótulo, FISPQ/FDS e POP aplicável.",
+            "objetivo": "Evitar dosagens aleatórias, incompatibilidades químicas e riscos à segurança dos usuários e operadores.",
+            "procedimento": [
+                "Medir os parâmetros antes da dosagem.",
+                "Selecionar o produto conforme orientação técnica e finalidade da correção.",
+                "Utilizar EPIs compatíveis antes de manusear produtos.",
+                "Aplicar o produto conforme rótulo, orientação técnica e condição operacional da piscina.",
+                "Registrar produto, quantidade, unidade, horário e finalidade.",
+            ],
+            "cuidados": [
+                "Não misturar produtos químicos entre si.",
+                "Não aplicar produto sem identificação, vencido, contaminado ou armazenado inadequadamente.",
+                "Não executar dosagem corretiva sem registro.",
+            ],
+            "registros": "Registro obrigatório de todos os produtos aplicados ou recomendados."
+        },
+        {
+            "codigo": "POP 08",
+            "titulo": "Uso de EPIs e segurança química",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Sempre que houver manipulação, transporte, diluição, dosagem ou armazenamento de produtos químicos.",
+            "objetivo": "Reduzir risco de acidentes durante o manuseio de produtos químicos de piscina.",
+            "procedimento": [
+                "Utilizar luvas de proteção química, óculos de segurança, calçado fechado antiderrapante e vestimenta compatível.",
+                "Utilizar máscara ou respirador compatível quando houver produto volátil, pó, odor intenso ou recomendação em FISPQ/FDS.",
+                "Manter acesso à água corrente para lavagem em caso de contato acidental.",
+                "Ler rótulos e seguir FISPQ/FDS, POPs e orientações do RT.",
+            ],
+            "cuidados": [
+                "Interromper a atividade se não houver condição segura ou EPI mínimo disponível.",
+                "Comunicar vazamentos, derramamentos, produto sem rótulo, odor forte ou condição insegura.",
+            ],
+            "registros": "Registrar não conformidades de EPI ou segurança química quando identificadas."
+        },
+        {
+            "codigo": "POP 09",
+            "titulo": "Organização da casa de máquinas e produtos",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Manter ambiente técnico organizado, seguro e rastreável.",
+            "procedimento": [
+                "Manter produtos fechados, identificados e separados de acordo com compatibilidade.",
+                "Evitar armazenamento direto no piso quando houver risco de umidade ou contaminação.",
+                "Manter acesso livre aos equipamentos, registros, painéis e produtos de emergência.",
+                "Não deixar recipientes abertos, ferramentas soltas ou resíduos após a visita.",
+            ],
+            "cuidados": [
+                "Não armazenar produtos incompatíveis juntos.",
+                "Comunicar ausência de identificação, embalagem comprometida ou condição de risco.",
+            ],
+            "registros": "Registrar não conformidades na casa de máquinas, quando existentes."
+        },
+        {
+            "codigo": "POP 10",
+            "titulo": "Comunicação de não conformidades",
+            "responsavel": responsavel_execucao + " e responsável local da CONTRATANTE",
+            "frequencia": "Sempre que identificada anormalidade técnica, sanitária, operacional ou de segurança.",
+            "objetivo": "Garantir comunicação rápida de situações que exigem correção, registro ou decisão administrativa.",
+            "procedimento": [
+                "Identificar a não conformidade e registrar evidências quando possível.",
+                "Comunicar o síndico/responsável local e o RT quando houver risco relevante.",
+                "Informar parâmetros medidos, condição visual, produtos disponíveis e ação executada.",
+                "Aguardar orientação técnica em situações críticas ou fora da rotina.",
+            ],
+            "cuidados": [
+                "Não ocultar não conformidade operacional.",
+                "Não liberar uso da piscina quando houver recomendação técnica de restrição.",
+            ],
+            "registros": "Registrar comunicação por meio rastreável: aplicativo, mensagem, e-mail, ficha ou relatório."
+        },
+        {
+            "codigo": "POP 11",
+            "titulo": "Verificação visual nos dias sem visita operacional",
+            "responsavel": "Responsável local designado pela CONTRATANTE",
+            "frequencia": "Diariamente nos dias sem visita do prestador/operador, quando aplicável.",
+            "objetivo": "Criar rotina mínima de observação entre as visitas operacionais.",
+            "procedimento": [
+                "Observar transparência da água, odor forte, espuma, alteração de cor, sujeira excessiva e reclamações de usuários.",
+                "Verificar se há sinal evidente de equipamento parado, vazamento ou área insegura.",
+                "Comunicar imediatamente o síndico, prestador operacional e/ou RT em caso de anormalidade.",
+            ],
+            "cuidados": [
+                "Esta verificação não substitui análise técnica nem rotina operacional completa.",
+                "Em caso de suspeita de risco, evitar o uso até orientação do responsável técnico ou administrativo.",
+            ],
+            "registros": "Registrar a ocorrência e comunicação quando houver anormalidade."
+        },
+        {
+            "codigo": "POP 12",
+            "titulo": "Restrição preventiva de uso",
+            "responsavel": "CONTRATANTE, com orientação do RT quando aplicável",
+            "frequencia": "Sempre que houver suspeita de risco sanitário, químico, físico ou operacional.",
+            "objetivo": "Definir conduta mínima para reduzir risco aos usuários em situações críticas.",
+            "procedimento": [
+                "Identificar sinais de risco: água turva, ausência de cloro residual, odor forte, suspeita de contaminação, acidente, equipamento crítico parado ou orientação técnica expressa.",
+                "Comunicar imediatamente o síndico/responsável local e o RT.",
+                "Sinalizar a restrição de uso quando houver decisão administrativa ou recomendação técnica.",
+                "Registrar a ocorrência, horário, responsável pela decisão e medidas adotadas.",
+            ],
+            "cuidados": [
+                "Não priorizar liberação da piscina em detrimento da segurança sanitária.",
+                "A decisão administrativa cabe à CONTRATANTE, sem prejuízo da recomendação técnica do RT.",
+            ],
+            "registros": "Notificação, relatório, mensagem rastreável e/ou checklist de ocorrência."
+        },
+        {
+            "codigo": "POP 13",
+            "titulo": "Controle de acesso a produtos e casa de máquinas",
+            "responsavel": "CONTRATANTE e responsável local",
+            "frequencia": "Contínua.",
+            "objetivo": "Reduzir acesso indevido de usuários, crianças, visitantes ou pessoas não autorizadas aos produtos e equipamentos.",
+            "procedimento": [
+                "Manter casa de máquinas e armazenamento de produtos com acesso controlado.",
+                "Permitir acesso apenas a pessoas autorizadas e orientadas.",
+                "Manter produtos fora do alcance de usuários e devidamente identificados.",
+                "Comunicar imediatamente sinais de acesso indevido, violação, vazamento ou produto fora de local.",
+            ],
+            "cuidados": [
+                "Não armazenar produtos em áreas de circulação comum.",
+                "Não permitir que pessoa não orientada manipule produto químico.",
+            ],
+            "registros": "Registrar acesso indevido, ausência de identificação ou condição insegura."
+        },
+        {
+            "codigo": "POP 14",
+            "titulo": "Auditoria técnica dos registros pelo RT",
+            "responsavel": "Aqua Gestão — Responsável Técnico",
+            "frequencia": "Conforme periodicidade contratada e disponibilidade dos registros.",
+            "objetivo": "Verificar tecnicamente os registros operacionais e apontar tendências, falhas ou não conformidades.",
+            "procedimento": [
+                "Avaliar registros de parâmetros, dosagens, ocorrências e comunicações.",
+                "Confrontar resultados com histórico, condição da água e recomendações anteriores.",
+                "Registrar não conformidades documentais ou operacionais.",
+                "Emitir orientação técnica, relatório, notificação ou recomendação de correção quando necessário.",
+            ],
+            "cuidados": [
+                "A ausência de registro ou dado incompleto limita a análise técnica.",
+                "A auditoria técnica não substitui a execução operacional diária pela equipe designada pela CONTRATANTE.",
+            ],
+            "registros": "Relatório técnico, checklist, notificação ou observação em sistema."
+        },
+        {
+            "codigo": "POP 15",
+            "titulo": "Revisão técnica dos POPs",
+            "responsavel": "Aqua Gestão — Responsável Técnico",
+            "frequencia": "Sempre que houver alteração relevante na rotina, equipamento, risco, recorrência de falhas ou necessidade técnica.",
+            "objetivo": "Manter os procedimentos atualizados com a realidade operacional do condomínio.",
+            "procedimento": [
+                "Revisar POPs quando houver mudança de prestador, equipe, produto, equipamento, frequência operacional ou não conformidade recorrente.",
+                "Registrar versão, data e motivo da revisão.",
+                "Comunicar a versão atualizada à CONTRATANTE e à equipe operacional designada.",
+            ],
+            "cuidados": [
+                "POPs desatualizados podem gerar falhas de execução e rastreabilidade.",
+                "A CONTRATANTE deve garantir que a equipe operacional tenha acesso à versão vigente.",
+            ],
+            "registros": "Controle de versão do Caderno de POPs e termos de ciência relacionados."
+        },
+    ]
+
+
+def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
+    """Gera PDF Premium com Caderno de POPs adaptativo."""
+    import io as _io
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#2F3742")
+    CINZA_CLARO = colors.HexColor("#F4F7FA")
+    BORDA = colors.HexColor("#D9E2EC")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def val(chave, padrao="Dado não informado"):
+        v = str(dados.get(chave, "") or "").strip()
+        return v if v else padrao
+
+    nome_cond = val("nome_condominio")
+    cnpj = val("cnpj_condominio")
+    endereco = val("endereco_condominio")
+    sindico = val("nome_sindico")
+    cargo_sindico = val("cargo_sindico", "Síndico/Representante legal")
+    data_ass = val("data_assinatura", hoje_br())
+    volumes = val("volumes_piscinas", "Volumes não informados")
+    executor = val("executor_operacional", "Prestador externo")
+    frequencia = val("frequencia_operacional", "3 vezes por semana")
+    obs = val("observacao_pops", "")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.6 * cm,
+        rightMargin=1.6 * cm,
+        topMargin=2.4 * cm,
+        bottomMargin=1.8 * cm,
+        title=f"Caderno de POPs — {nome_cond}",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="PopsTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=16, leading=20, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=5))
+    styles.add(ParagraphStyle(name="PopsSub", parent=styles["Normal"], fontName="Helvetica", fontSize=9, leading=12, textColor=CINZA_TEXTO, alignment=TA_CENTER, spaceAfter=8))
+    styles.add(ParagraphStyle(name="PopsH", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13.5, textColor=AZUL_ESCURO, spaceBefore=8, spaceAfter=4))
+    styles.add(ParagraphStyle(name="PopsMiniH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.4, leading=10.5, textColor=AZUL_MEDIO, spaceBefore=3, spaceAfter=2))
+    styles.add(ParagraphStyle(name="PopsBody", parent=styles["Normal"], fontName="Helvetica", fontSize=8.45, leading=11.8, textColor=CINZA_TEXTO, alignment=TA_JUSTIFY, spaceAfter=4))
+    styles.add(ParagraphStyle(name="PopsTableHead", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=colors.white, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="PopsTable", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=9.7, textColor=CINZA_TEXTO, alignment=TA_LEFT))
+    styles.add(ParagraphStyle(name="PopsBullet", parent=styles["Normal"], fontName="Helvetica", fontSize=8.15, leading=10.6, textColor=CINZA_TEXTO, leftIndent=8, firstLineIndent=-6, spaceAfter=2))
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, h - 1.45 * cm, w, 1.45 * cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.50 * cm, w, 0.06 * cm, fill=1, stroke=0)
+
+        logo = encontrar_logo()
+        if logo:
+            try:
+                canvas.drawImage(str(logo), 1.35 * cm, h - 1.27 * cm, width=2.55 * cm, height=0.92 * cm, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.65 * cm, "AQUA GESTÃO — CONTROLE TÉCNICO DE PISCINAS")
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawRightString(w - 1.45 * cm, h - 1.02 * cm, "Caderno de POPs | Responsabilidade Técnica | Rotina Operacional")
+
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.4)
+        canvas.line(1.45 * cm, 1.22 * cm, w - 1.45 * cm, 1.22 * cm)
+        canvas.setFillColor(CINZA_TEXTO)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(1.45 * cm, 0.82 * cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+        canvas.drawRightString(w - 1.45 * cm, 0.82 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
+    story = []
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("CADERNO DE POPs DO CONDOMÍNIO", styles["PopsTitle"]))
+    story.append(Paragraph("Procedimentos Operacionais Padrão adaptados à rotina operacional informada pela CONTRATANTE.", styles["PopsSub"]))
+
+    dados_table = [
+        [Paragraph("<b>Condomínio</b>", styles["PopsTableHead"]), Paragraph("<b>Rotina operacional</b>", styles["PopsTableHead"])],
+        [
+            Paragraph(f"{nome_cond}<br/>CNPJ: {cnpj}<br/>Endereço: {endereco}<br/>Representante: {sindico} — {cargo_sindico}", styles["PopsTable"]),
+            Paragraph(f"Executor informado: {executor}<br/>Frequência operacional: {frequencia}<br/>Piscinas/volumes: {volumes}<br/>Data: {data_ass}", styles["PopsTable"]),
+        ],
+    ]
+    t = Table(dados_table, colWidths=[8.4 * cm, 8.6 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+        ("GRID", (0, 0), (-1, -1), 0.4, BORDA),
+        ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 6 * mm))
+
+    def p(txt):
+        story.append(Paragraph(txt, styles["PopsBody"]))
+
+    story.append(Paragraph("1. Finalidade e delimitação técnica", styles["PopsH"]))
+    p("Este caderno integra a documentação técnica de Responsabilidade Técnica do condomínio e estabelece procedimentos mínimos recomendados para a rotina operacional de piscinas de uso coletivo.")
+    p("A execução dos procedimentos caberá à equipe operacional designada pela CONTRATANTE, seja funcionário próprio, zelador, piscineiro, empresa terceirizada ou prestador de manutenção, competindo à Aqua Gestão a orientação técnica, supervisão documental e registro de não conformidades no âmbito da Responsabilidade Técnica contratada.")
+    p("A Aqua Gestão não assume, por este documento, a execução operacional diária da limpeza, dosagem, manutenção física ou operação contínua dos equipamentos, salvo contratação específica em instrumento próprio.")
+
+    if obs and obs != "Dado não informado":
+        story.append(Paragraph("Observação específica informada", styles["PopsMiniH"]))
+        p(obs)
+
+    box = Table([[Paragraph("A aplicação destes POPs deve respeitar rótulos, FISPQ/FDS, orientações do Responsável Técnico, condições reais da instalação e normas aplicáveis. Na dúvida, a atividade deve ser interrompida e comunicada ao responsável local e/ou ao RT.", styles["PopsBody"])]], colWidths=[17 * cm])
+    box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), ALERTA),
+        ("BOX", (0, 0), (-1, -1), 0.6, DOURADO),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(box)
+    story.append(PageBreak())
+
+    def bullet_list(items):
+        for item in items:
+            story.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+
+    pops = _lista_pops_adaptativos(executor, frequencia)
+    for pop in pops:
+        bloco = []
+        bloco.append(Paragraph(f"{pop['codigo']} — {pop['titulo']}", styles["PopsH"]))
+        meta = Table([
+            [
+                Paragraph("<b>Responsável</b>", styles["PopsTableHead"]),
+                Paragraph("<b>Frequência</b>", styles["PopsTableHead"]),
+            ],
+            [
+                Paragraph(pop["responsavel"], styles["PopsTable"]),
+                Paragraph(pop["frequencia"], styles["PopsTable"]),
+            ],
+        ], colWidths=[8.4 * cm, 8.4 * cm])
+        meta.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL_MEDIO),
+            ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+            ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        bloco.append(meta)
+        bloco.append(Spacer(1, 3 * mm))
+        bloco.append(Paragraph("<b>Objetivo</b>", styles["PopsMiniH"]))
+        bloco.append(Paragraph(pop["objetivo"], styles["PopsBody"]))
+        bloco.append(Paragraph("<b>Procedimento mínimo</b>", styles["PopsMiniH"]))
+        for item in pop["procedimento"]:
+            bloco.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+        bloco.append(Paragraph("<b>Cuidados críticos</b>", styles["PopsMiniH"]))
+        for item in pop["cuidados"]:
+            bloco.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+        bloco.append(Paragraph("<b>Registro obrigatório</b>", styles["PopsMiniH"]))
+        bloco.append(Paragraph(pop["registros"], styles["PopsBody"]))
+        bloco.append(Spacer(1, 4 * mm))
+        story.append(KeepTogether(bloco))
+
+    story.append(PageBreak())
+    story.append(Paragraph("Termo de recebimento dos POPs", styles["PopsTitle"]))
+    p("A CONTRATANTE declara ciência de que recebeu este Caderno de Procedimentos Operacionais Padrão — POPs, comprometendo-se a disponibilizar seu conteúdo à equipe operacional própria ou terceirizada responsável pela rotina da piscina.")
+    p("A equipe operacional designada pela CONTRATANTE deverá seguir os procedimentos aqui descritos, registrar as ações executadas e comunicar não conformidades ao síndico/responsável local e/ou ao Responsável Técnico quando aplicável.")
+    story.append(Spacer(1, 12 * mm))
+    story.append(Paragraph(f"Uberlândia/MG, {data_ass}.", styles["PopsBody"]))
+    story.append(Spacer(1, 15 * mm))
+
+    ass = [[
+        Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["PopsTable"]),
+        Paragraph(f"_________________________________________<br/>{sindico}<br/>{cargo_sindico}<br/>{nome_cond}", styles["PopsTable"]),
+    ]]
+    t_ass = Table(ass, colWidths=[8.3 * cm, 8.3 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_ass)
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+def gerar_caderno_pops_pdf() -> tuple[bool, str | None, Path | None]:
+    """Gera e salva o Caderno de POPs adaptativo do condomínio."""
+    try:
+        dados = _dados_pops_rt_do_formulario()
+        nome_cond = dados.get("nome_condominio") or "condominio"
+        if not dados.get("nome_condominio"):
+            return False, "Informe o nome do condomínio antes de gerar os POPs.", None
+
+        pasta = GENERATED_DIR / slugify_nome(nome_cond)
+        pasta.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saida = pasta / f"{limpar_nome_arquivo('Caderno_POPs_' + nome_cond + '_' + timestamp)}.pdf"
+        pdf_bytes = _gerar_pdf_caderno_pops(dados)
+        saida.write_bytes(pdf_bytes)
+
+        ultimos = dict(st.session_state.get("ultimos_docs_gerados") or {})
+        ultimos["caderno_pops_pdf"] = str(saida)
+        st.session_state.ultimos_docs_gerados = ultimos
+        st.session_state.ultima_pasta_gerada = str(pasta)
+
+        try:
+            registrar_documento_manifest(
+                pasta_condominio=pasta,
+                nome_condominio=nome_cond,
+                tipo="Caderno de POPs — Procedimentos Operacionais Padrão",
+                arquivo_docx=None,
+                arquivo_pdf=saida,
+                pdf_gerado=True,
+                erro_pdf=None,
+                dados_utilizados=dados,
+                extras={
+                    "documento": "caderno_pops",
+                    "executor_operacional": dados.get("executor_operacional"),
+                    "frequencia_operacional": dados.get("frequencia_operacional"),
+                    "pops_adaptativos": True,
+                },
+            )
+        except Exception:
+            pass
+
+        return True, None, saida
+    except Exception as e:
+        return False, str(e), None
+
+
+# =========================================
+# TERMOS DE CIÊNCIA — RT / EPIs
+# =========================================
+# FUNÇÕES — TERMOS DE CIÊNCIA E SEGURANÇA OPERACIONAL
+# =========================================
+
+def _dados_termos_rt_do_formulario() -> dict:
+    """Coleta dados atuais do formulário para gerar Termos de Ciência.
+
+    Importante: os Termos usam chaves próprias (termo_*).
+    Isso evita erro do Streamlit ao tentar alterar st.session_state de widgets
+    do contrato RT depois que eles já foram instanciados na página.
+    Quando os campos próprios dos termos estiverem vazios, usa os dados do contrato
+    como fallback.
+    """
+    def _termo_ou_base(chave_termo: str, chave_base: str, padrao: str = "") -> str:
+        return str(st.session_state.get(chave_termo) or st.session_state.get(chave_base) or padrao or "").strip()
+
+    return {
+        "nome_condominio": _termo_ou_base("termo_nome_condominio", "nome_condominio"),
+        "cnpj_condominio": _termo_ou_base("termo_cnpj_condominio", "cnpj_condominio"),
+        "endereco_condominio": _termo_ou_base("termo_endereco_condominio", "endereco_condominio"),
+        "nome_sindico": _termo_ou_base("termo_nome_sindico", "nome_sindico"),
+        "cpf_sindico": _termo_ou_base("termo_cpf_sindico", "cpf_sindico"),
+        "cargo_sindico": _termo_ou_base("termo_cargo_sindico", "cargo_sindico", "Síndico"),
+        "nome_operador": (st.session_state.get("termo_nome_operador") or "").strip(),
+        "cpf_operador": (st.session_state.get("termo_cpf_operador") or "").strip(),
+        "funcao_operador": (st.session_state.get("termo_funcao_operador") or "Operador/Zelador").strip(),
+        "data_assinatura": (st.session_state.get("termo_data_assinatura") or st.session_state.get("data_assinatura") or hoje_br()).strip(),
+        "volumes_piscinas": _termo_ou_base("termo_volumes_piscinas", "volumes_piscinas"),
+    }
+
+
+def _gerar_pdf_termo_ciencia_base(dados: dict, tipo: str) -> bytes:
+    """Gera PDF Premium para Termo de Ciência do Síndico ou Operador."""
+    import io as _io
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#2F3742")
+    CINZA_CLARO = colors.HexColor("#F4F7FA")
+    BORDA = colors.HexColor("#D9E2EC")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def val(chave, padrao="Dado não informado"):
+        v = str(dados.get(chave, "") or "").strip()
+        return v if v else padrao
+
+    nome_cond = val("nome_condominio")
+    cnpj = val("cnpj_condominio")
+    endereco = val("endereco_condominio")
+    sindico = val("nome_sindico")
+    cpf_sindico = val("cpf_sindico")
+    cargo_sindico = val("cargo_sindico", "Síndico/Representante legal")
+    operador = val("nome_operador", "Operador/Zelador indicado pela CONTRATANTE")
+    cpf_operador = val("cpf_operador")
+    funcao_operador = val("funcao_operador", "Operador/Zelador")
+    data_ass = val("data_assinatura", hoje_br())
+    volumes = val("volumes_piscinas", "Volumes não informados")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.7 * cm,
+        rightMargin=1.7 * cm,
+        topMargin=2.4 * cm,
+        bottomMargin=1.8 * cm,
+        title=f"Termo de Ciência — {tipo} — Aqua Gestão",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="TermoTitulo", parent=styles["Title"], fontName="Helvetica-Bold",
+        fontSize=15.5, leading=19, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoSub", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=9, leading=12, textColor=CINZA_TEXTO, alignment=TA_CENTER, spaceAfter=9,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoH", parent=styles["Heading2"], fontName="Helvetica-Bold",
+        fontSize=10, leading=13, textColor=AZUL_ESCURO, spaceBefore=8, spaceAfter=3,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoBody", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=8.7, leading=12.2, textColor=CINZA_TEXTO, alignment=TA_JUSTIFY, spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoTableHead", parent=styles["Normal"], fontName="Helvetica-Bold",
+        fontSize=8.2, leading=10, textColor=colors.white, alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoTable", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=7.8, leading=9.8, textColor=CINZA_TEXTO, alignment=TA_LEFT,
+    ))
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, h - 1.45 * cm, w, 1.45 * cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.50 * cm, w, 0.06 * cm, fill=1, stroke=0)
+
+        logo = encontrar_logo()
+        if logo:
+            try:
+                canvas.drawImage(str(logo), 1.35 * cm, h - 1.27 * cm, width=2.55 * cm, height=0.92 * cm, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.65 * cm, "AQUA GESTÃO — CONTROLE TÉCNICO DE PISCINAS")
+        canvas.setFont("Helvetica", 7.3)
+        canvas.drawRightString(w - 1.45 * cm, h - 1.02 * cm, "Termo de Ciência | POPs | Segurança Química | EPIs")
+
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.35)
+        canvas.line(1.5 * cm, 1.23 * cm, w - 1.5 * cm, 1.23 * cm)
+        canvas.setFillColor(CINZA_TEXTO)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(1.5 * cm, 0.84 * cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+        canvas.drawRightString(w - 1.5 * cm, 0.84 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
+    story = []
+
+    titulo = "TERMO DE CIÊNCIA DO SÍNDICO / REPRESENTANTE" if tipo == "sindico" else "TERMO DE CIÊNCIA DO OPERADOR / ZELADOR"
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(titulo, styles["TermoTitulo"]))
+    story.append(Paragraph("Responsabilidade Técnica — Piscinas de Uso Coletivo", styles["TermoSub"]))
+
+    id_rows = [
+        [Paragraph("CONDOMÍNIO / CONTRATANTE", styles["TermoTableHead"]), Paragraph("DADOS DO RESPONSÁVEL", styles["TermoTableHead"])],
+        [
+            Paragraph(f"<b>{nome_cond}</b><br/>CNPJ/CPF: {cnpj}<br/>Endereço: {endereco}<br/>Piscinas/volumes: {volumes}", styles["TermoTable"]),
+            Paragraph(
+                (f"<b>{sindico}</b><br/>CPF: {cpf_sindico}<br/>Qualificação: {cargo_sindico}" if tipo == "sindico" else
+                 f"<b>{operador}</b><br/>CPF: {cpf_operador}<br/>Função: {funcao_operador}<br/>Responsável administrativo: {sindico}"),
+                styles["TermoTable"],
+            ),
+        ],
+    ]
+    t = Table(id_rows, colWidths=[8.6 * cm, 8.4 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+        ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 5 * mm))
+
+    def h(txt):
+        story.append(Paragraph(txt, styles["TermoH"]))
+    def p(txt):
+        story.append(Paragraph(txt, styles["TermoBody"]))
+    def bullets(items):
+        for item in items:
+            story.append(Paragraph(f"• {item}", styles["TermoBody"]))
+
+    if tipo == "sindico":
+        h("1. Ciência sobre a Responsabilidade Técnica")
+        p("A CONTRATANTE declara ciência de que a Aqua Gestão Controle Técnico Ltda atua no escopo de Responsabilidade Técnica, abrangendo supervisão, orientação, análise técnica, registros, relatórios técnicos, recomendações e comunicação de não conformidades relacionadas ao tratamento químico e ao controle da qualidade da água das piscinas de uso coletivo.")
+        p("A ciência firmada neste termo não substitui o contrato principal, mas complementa a documentação técnica do condomínio e reforça as obrigações operacionais, administrativas e de segurança necessárias para a execução adequada da RT.")
+
+        h("2. Obrigações operacionais da CONTRATANTE")
+        bullets([
+            "manter equipe, operador, zelador ou prestador responsável pela rotina operacional diária das piscinas;",
+            "garantir acesso do Responsável Técnico às piscinas, casa de máquinas, registros, produtos e informações necessárias;",
+            "executar ou fazer executar as orientações técnicas e POPs emitidos pela Aqua Gestão;",
+            "manter registros de parâmetros, dosagens, ocorrências, lavagens de filtro e intervenções realizadas;",
+            "comunicar imediatamente anormalidades, água turva, odor forte, suspeita de contaminação, acidente, reclamação de usuário ou risco sanitário;",
+            "providenciar produtos, reagentes, equipamentos, instrumentos de medição e condições mínimas de segurança compatíveis com o tratamento da água.",
+        ])
+
+        h("3. Ciência sobre EPIs e segurança química")
+        p("A CONTRATANTE declara ciência de que a manipulação, transporte, diluição, dosagem e armazenamento de produtos químicos para tratamento de piscinas exige o uso de Equipamentos de Proteção Individual — EPIs adequados ao risco da atividade.")
+        p("Compete à CONTRATANTE disponibilizar, fiscalizar e exigir o uso dos EPIs necessários pela equipe operacional própria ou terceirizada, incluindo, quando aplicável: luvas de proteção química, óculos de segurança, máscara ou respirador compatível com o produto utilizado, calçado fechado antiderrapante e vestimenta compatível com a atividade.")
+        p("A ausência, insuficiência ou não utilização dos EPIs pela equipe operacional será tratada como não conformidade de segurança, podendo ser registrada pela Responsabilidade Técnica em relatório técnico, checklist ou notificação de não conformidade.")
+
+        h("4. Ciência sobre POPs e não conformidades")
+        p("A CONTRATANTE declara ciência de que os Procedimentos Operacionais Padrão — POPs, checklists, relatórios técnicos e notificações emitidos pela Aqua Gestão compõem a rotina técnica mínima recomendada para controle da água e segurança operacional.")
+        p("O descumprimento de POPs, a ausência de registros, a falta de produtos, o impedimento de acesso ou a execução de rotinas contrárias à orientação técnica poderão ser registrados em relatório técnico e poderão limitar a responsabilidade da Aqua Gestão quanto aos efeitos decorrentes da conduta operacional da CONTRATANTE ou de seus prepostos.")
+
+        h("5. Restrição de uso ou interdição preventiva")
+        p("A CONTRATANTE declara ciência de que, diante de risco sanitário, químico, operacional ou de segurança, o Responsável Técnico poderá recomendar restrição de uso ou interdição técnica preventiva da piscina até a regularização das condições identificadas.")
+
+    else:
+        h("1. Ciência sobre a função operacional")
+        p("O OPERADOR/ZELADOR declara ciência de que sua atuação na rotina da piscina deve seguir as orientações técnicas, POPs, registros e recomendações fornecidas pela Aqua Gestão e/ou pelo responsável administrativo do condomínio.")
+        p("O operador reconhece que não deve alterar dosagens, misturar produtos, improvisar procedimentos ou executar intervenção fora de sua capacitação sem comunicação prévia ao responsável local e/ou ao Responsável Técnico, especialmente em situações de risco químico ou sanitário.")
+
+        h("2. Declaração de ciência sobre uso obrigatório de EPIs")
+        p("Declaro estar ciente de que é obrigatório o uso de Equipamentos de Proteção Individual — EPIs durante a manipulação, diluição, dosagem, transporte ou armazenamento de produtos químicos utilizados no tratamento da piscina.")
+        p("Declaro estar ciente de que não devo manipular produtos químicos sem os EPIs adequados, especialmente luvas de proteção química, óculos de segurança, máscara ou respirador quando aplicável, calçado fechado antiderrapante e vestimenta compatível com a atividade.")
+        p("Declaro estar ciente de que a não utilização de EPIs ou o uso inadequado de produtos químicos pode representar risco à saúde, à segurança operacional e à qualidade da água, devendo a atividade ser interrompida sempre que não houver condição segura para sua execução.")
+
+        h("3. Condutas obrigatórias de segurança química")
+        bullets([
+            "não misturar produtos químicos entre si;",
+            "não adicionar água sobre produto químico concentrado sem orientação técnica específica;",
+            "não inalar vapores, poeiras ou gases provenientes de produtos químicos;",
+            "não manipular produto sem rótulo, identificação ou orientação de uso;",
+            "não armazenar produtos incompatíveis juntos;",
+            "manter produtos fechados, identificados, organizados e fora do acesso de usuários;",
+            "seguir rótulos, FISPQ/FDS, POPs e recomendações do Responsável Técnico;",
+            "comunicar imediatamente vazamentos, derramamentos, odor forte, contato acidental, irritação, queimadura química, ausência de EPI ou condição insegura.",
+        ])
+
+        h("4. EPIs mínimos recomendados")
+        bullets([
+            "luvas de proteção química;",
+            "óculos de segurança;",
+            "máscara ou respirador compatível com o produto utilizado, quando aplicável;",
+            "calçado fechado antiderrapante;",
+            "vestimenta compatível com a atividade;",
+            "acesso à água corrente para lavagem em caso de contato acidental.",
+        ])
+
+        h("5. Registros e comunicação de ocorrências")
+        p("O operador declara ciência de que deve registrar os parâmetros avaliados, dosagens realizadas, lavagem/retrolavagem de filtro, anormalidades observadas e qualquer ocorrência que possa comprometer a qualidade da água ou a segurança dos usuários.")
+        p("Na presença de água turva, odor forte, cloro combinado elevado, ausência de cloro residual, contaminação fecal, acidente, suspeita de produto inadequado ou qualquer risco sanitário, o operador deverá comunicar imediatamente o síndico/responsável local e aguardar orientação técnica antes de liberar o uso da piscina, quando aplicável.")
+
+    story.append(Spacer(1, 4 * mm))
+    aviso = Table([[Paragraph("Este termo deve ser arquivado junto aos documentos de Responsabilidade Técnica do condomínio e apresentado quando solicitado em auditorias, fiscalizações, reuniões internas ou comprovações de ciência operacional.", styles["TermoBody"])]], colWidths=[17 * cm])
+    aviso.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), ALERTA),
+        ("BOX", (0, 0), (-1, -1), 0.6, DOURADO),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(aviso)
+    story.append(Spacer(1, 9 * mm))
+    story.append(Paragraph(f"Uberlândia/MG, {data_ass}.", styles["TermoBody"]))
+    story.append(Spacer(1, 15 * mm))
+
+    if tipo == "sindico":
+        ass = [[
+            Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["TermoTable"]),
+            Paragraph(f"_________________________________________<br/>{sindico}<br/>{cargo_sindico}<br/>{nome_cond}", styles["TermoTable"]),
+        ]]
+    else:
+        ass = [[
+            Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["TermoTable"]),
+            Paragraph(f"_________________________________________<br/>{operador}<br/>{funcao_operador}<br/>CPF: {cpf_operador}", styles["TermoTable"]),
+        ]]
+
+    t_ass = Table(ass, colWidths=[8.3 * cm, 8.3 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_ass)
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+def gerar_termo_ciencia_pdf(tipo: str) -> tuple[bool, str | None, Path | None]:
+    """Gera e salva Termo de Ciência de síndico ou operador."""
+    try:
+        dados = _dados_termos_rt_do_formulario()
+        nome_cond = dados.get("nome_condominio") or "condominio"
+        if not dados.get("nome_condominio"):
+            return False, "Informe o nome do condomínio antes de gerar o termo.", None
+        if tipo == "operador" and not dados.get("nome_operador"):
+            return False, "Informe o nome do operador/zelador antes de gerar o termo.", None
+
+        pasta = GENERATED_DIR / slugify_nome(nome_cond)
+        pasta.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_tipo = "Termo_Ciencia_Sindico" if tipo == "sindico" else "Termo_Ciencia_Operador_EPI"
+        saida = pasta / f"{limpar_nome_arquivo(nome_tipo + '_' + nome_cond + '_' + timestamp)}.pdf"
+        pdf_bytes = _gerar_pdf_termo_ciencia_base(dados, tipo)
+        saida.write_bytes(pdf_bytes)
+
+        ultimos = dict(st.session_state.get("ultimos_docs_gerados") or {})
+        if tipo == "sindico":
+            ultimos["termo_sindico_pdf"] = str(saida)
+        else:
+            ultimos["termo_operador_pdf"] = str(saida)
+        st.session_state.ultimos_docs_gerados = ultimos
+        st.session_state.ultima_pasta_gerada = str(pasta)
+
+        try:
+            registrar_documento_manifest(
+                pasta_condominio=pasta,
+                nome_condominio=nome_cond,
+                tipo="Termo de Ciência — Síndico" if tipo == "sindico" else "Termo de Ciência — Operador/EPIs",
+                arquivo_docx=None,
+                arquivo_pdf=saida,
+                pdf_gerado=True,
+                erro_pdf=None,
+                dados_utilizados=dados,
+                extras={"documento": "termo_ciencia", "tipo": tipo, "epi_sem_avental_padrao": True},
+            )
+        except Exception:
+            pass
+
+        return True, None, saida
+    except Exception as e:
+        return False, str(e), None
+
+# =========================================
+
+st.markdown('<div class="section-card aq-only" id="sec-termos-ciencia">', unsafe_allow_html=True)
+st.subheader("Termos de ciência e segurança operacional")
+st.caption(
+    "Gere termos complementares para arquivar junto ao contrato de RT. "
+    "Os termos reforçam ciência sobre POPs, registros operacionais, comunicação de não conformidades, segurança química e uso de EPIs."
+)
+
+# ── Carregamento de dados do condomínio também nos Termos de Ciência ──────────
+# Os termos usam os mesmos campos-base do contrato RT. Este bloco evita digitação
+# duplicada quando o usuário acessa diretamente a seção de termos.
+_clientes_termos = filtrar_clientes_por_empresa((_clientes_completos_cache() if "_clientes_completos_cache" in globals() else sheets_listar_clientes_completo()), "aqua_gestao")
+if _clientes_termos:
+    _opcoes_termos = ["— Selecionar cliente cadastrado —"] + [c.get("nome", "") for c in _clientes_termos if c.get("nome")]
+    _sel_termos = st.selectbox(
+        "🔗 Carregar dados do condomínio cadastrado",
+        _opcoes_termos,
+        key="sel_cliente_termos_ciencia",
+        help="Preenche os dados do condomínio, CNPJ, endereço e representante para gerar os termos."
+    )
+    if _sel_termos and _sel_termos != "— Selecionar cliente cadastrado —":
+        if st.button("⬇️ Preencher termos com dados deste condomínio", key="btn_carregar_cliente_termos", use_container_width=True):
+            _dados_termos = next((c for c in _clientes_termos if c.get("nome") == _sel_termos), {})
+            if _dados_termos:
+                st.session_state["termo_nome_condominio"] = _dados_termos.get("nome", "")
+                st.session_state["termo_cnpj_condominio"] = formatar_cnpj(_dados_termos.get("cnpj", ""))
+                st.session_state["termo_endereco_condominio"] = _dados_termos.get("endereco", "")
+                st.session_state["termo_nome_sindico"] = _dados_termos.get("contato", "")
+                st.session_state["termo_whatsapp_cliente"] = formatar_telefone(_dados_termos.get("telefone", ""))
+                st.session_state["termo_email_cliente"] = _dados_termos.get("email", "")
+
+                _vols = []
+                try:
+                    if float(_dados_termos.get("vol_adulto") or 0) > 0:
+                        _vols.append(f"Piscina adulto: {_dados_termos.get('vol_adulto')} m³")
+                    if float(_dados_termos.get("vol_infantil") or 0) > 0:
+                        _vols.append(f"Piscina infantil: {_dados_termos.get('vol_infantil')} m³")
+                    if float(_dados_termos.get("vol_family") or 0) > 0:
+                        _vols.append(f"Piscina family: {_dados_termos.get('vol_family')} m³")
+                except Exception:
+                    _vols = []
+                if _vols:
+                    st.session_state["termo_volumes_piscinas"] = " | ".join(_vols)
+
+                st.success(f"✅ Dados de '{_sel_termos}' carregados para os termos.")
+                st.rerun()
+else:
+    st.info("💡 Cadastre o condomínio ou preencha os dados do contrato RT antes de gerar os termos.")
+
+with st.expander("📌 Dados do condomínio usados nos termos", expanded=False):
+    _dados_preview_termos = _dados_termos_rt_do_formulario()
+    st.write(f"**Condomínio:** {_dados_preview_termos.get('nome_condominio') or 'Não informado'}")
+    st.write(f"**CNPJ:** {_dados_preview_termos.get('cnpj_condominio') or 'Não informado'}")
+    st.write(f"**Endereço:** {_dados_preview_termos.get('endereco_condominio') or 'Não informado'}")
+    st.write(f"**Representante:** {_dados_preview_termos.get('nome_sindico') or 'Não informado'}")
+    st.write(f"**Volumes:** {_dados_preview_termos.get('volumes_piscinas') or 'Não informado'}")
+
+_tc1, _tc2, _tc3 = st.columns([1.25, 1.1, 1.1])
+with _tc1:
+    st.text_input(
+        "Nome do operador/zelador",
+        key="termo_nome_operador",
+        placeholder="Ex.: José da Silva",
+    )
+with _tc2:
+    st.text_input(
+        "CPF do operador/zelador",
+        key="termo_cpf_operador",
+        placeholder="000.000.000-00",
+    )
+with _tc3:
+    st.text_input(
+        "Função",
+        key="termo_funcao_operador",
+        value=st.session_state.get("termo_funcao_operador", "Operador/Zelador"),
+    )
+
+st.info(
+    "EPIs mínimos nos termos: luvas de proteção química, óculos de segurança, máscara ou respirador quando aplicável, "
+    "calçado fechado antiderrapante, vestimenta compatível e acesso à água corrente. O avental não foi incluído como item padrão."
+)
+
+_tbtn1, _tbtn2 = st.columns(2)
+with _tbtn1:
+    if st.button("📄 Gerar Termo de Ciência do Síndico", use_container_width=True):
+        with st.spinner("Gerando Termo de Ciência do Síndico..."):
+            ok, erro, caminho = gerar_termo_ciencia_pdf("sindico")
+        if ok and caminho and caminho.exists():
+            st.success("Termo de Ciência do Síndico gerado com sucesso.")
+            with open(caminho, "rb") as f:
+                st.download_button(
+                    "Baixar Termo do Síndico em PDF",
+                    data=f,
+                    file_name=caminho.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_termo_sindico_imediato",
+                )
+        else:
+            st.error(f"Não foi possível gerar o termo: {erro}")
+
+with _tbtn2:
+    if st.button("👷 Gerar Termo de Ciência do Operador — EPIs", use_container_width=True):
+        with st.spinner("Gerando Termo de Ciência do Operador..."):
+            ok, erro, caminho = gerar_termo_ciencia_pdf("operador")
+        if ok and caminho and caminho.exists():
+            st.success("Termo de Ciência do Operador gerado com sucesso.")
+            with open(caminho, "rb") as f:
+                st.download_button(
+                    "Baixar Termo do Operador em PDF",
+                    data=f,
+                    file_name=caminho.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_termo_operador_imediato",
+                )
+        else:
+            st.error(f"Não foi possível gerar o termo: {erro}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# POPs — PROCEDIMENTOS OPERACIONAIS PADRÃO
+# =========================================
+
+st.markdown('<div class="section-card aq-only" id="sec-pops-adaptativos">', unsafe_allow_html=True)
+st.subheader("POPs — Procedimentos Operacionais Padrão")
+st.caption(
+    "Gere um Caderno de POPs no padrão Aqua Gestão, adaptado ao tipo de operação do condomínio. "
+    "Indicado para condomínios com prestador externo, zelador do condomínio, funcionário próprio, empresa contratada ou rotina mista."
+)
+
+# Normaliza valores antigos/estranhos salvos no session_state para não manter textos quebrados na tela.
+_opcoes_executor_pops = [
+    "Prestador externo",
+    "Empresa contratada",
+    "Zelador do condomínio",
+    "Funcionário próprio do condomínio",
+    "Rotina mista",
+]
+_mapa_executor_pops_antigo = {
+    "Prestador externo": "Prestador externo",
+    "Prestador ado": "Prestador externo",
+    "Empresa contratada": "Empresa contratada",
+    "Zelador": "Zelador do condomínio",
+}
+_valor_executor_atual = st.session_state.get("pops_executor_operacional", "Prestador externo")
+st.session_state["pops_executor_operacional"] = _mapa_executor_pops_antigo.get(_valor_executor_atual, _valor_executor_atual)
+if st.session_state["pops_executor_operacional"] not in _opcoes_executor_pops:
+    st.session_state["pops_executor_operacional"] = "Prestador externo"
+
+_popc1, _popc2 = st.columns(2)
+with _popc1:
+    st.selectbox(
+        "Quem executa a rotina operacional da piscina?",
+        _opcoes_executor_pops,
+        key="pops_executor_operacional",
+        index=_opcoes_executor_pops.index(st.session_state["pops_executor_operacional"]),
+    )
+
+with _popc2:
+    st.selectbox(
+        "Frequência operacional informada",
+        [
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ],
+        key="pops_frequencia_operacional",
+        index=[
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ].index(st.session_state.get("pops_frequencia_operacional", "3 vezes por semana"))
+        if st.session_state.get("pops_frequencia_operacional", "3 vezes por semana") in [
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ] else 0,
+    )
+
+st.text_area(
+    "Observação específica para este caderno de POPs (opcional)",
+    key="pops_observacao",
+    placeholder="Ex.: O condomínio possui prestador externo 3 vezes por semana e responsável local para verificação visual nos demais dias.",
+    height=80,
+)
+
+st.info(
+    "O caderno deixa claro que a execução operacional cabe à equipe designada pela CONTRATANTE, "
+    "enquanto a equipe técnica da Aqua Gestão atua na orientação técnica, supervisão documental e registro de não conformidades no âmbito da RT."
+)
+
+if st.button("📘 Gerar Caderno de POPs do Condomínio", use_container_width=True):
+    with st.spinner("Gerando Caderno de POPs adaptativo..."):
+        ok, erro, caminho = gerar_caderno_pops_pdf()
+    if ok and caminho and caminho.exists():
+        st.success("Caderno de POPs gerado com sucesso.")
+        with open(caminho, "rb") as f:
+            st.download_button(
+                "Baixar Caderno de POPs em PDF",
+                data=f,
+                file_name=caminho.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_caderno_pops_imediato",
+            )
+    else:
+        st.error(f"Não foi possível gerar os POPs: {erro}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
 
 # =========================================
 # DOWNLOADS DOS ÚLTIMOS DOCUMENTOS GERADOS
@@ -10492,31 +12667,77 @@ _ultimos = st.session_state.get("ultimos_docs_gerados")
 if _ultimos:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("⬇️ Últimos documentos gerados")
+
     _dc1, _dc2 = st.columns(2)
     with _dc1:
-        st.markdown("**Contrato**")
+        st.markdown("**Contrato RT — Aqua Gestão**")
         _p = _ultimos.get("contrato_docx")
         if _p and Path(_p).exists():
             with open(_p, "rb") as _f:
-                st.download_button("Baixar DOCX do contrato", data=_f, file_name=Path(_p).name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_contrato_docx_top")
-        _p = _ultimos.get("contrato_pdf")
-        if _p and Path(_p).exists():
-            with open(_p, "rb") as _f:
-                st.download_button("Baixar PDF do contrato", data=_f, file_name=Path(_p).name,
-                    mime="application/pdf", use_container_width=True, key="dl_contrato_pdf_top")
+                st.download_button(
+                    "Baixar DOCX editável do contrato",
+                    data=_f,
+                    file_name=Path(_p).name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="dl_contrato_docx_top",
+                )
     with _dc2:
-        st.markdown("**Aditivo**")
-        _p = _ultimos.get("aditivo_docx")
+        st.markdown("**PDF para envio**")
+        _p = _ultimos.get("contrato_pdf_premium")
         if _p and Path(_p).exists():
             with open(_p, "rb") as _f:
-                st.download_button("Baixar DOCX do aditivo", data=_f, file_name=Path(_p).name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_aditivo_docx_top")
-        _p = _ultimos.get("aditivo_pdf")
-        if _p and Path(_p).exists():
-            with open(_p, "rb") as _f:
-                st.download_button("Baixar PDF do aditivo", data=_f, file_name=Path(_p).name,
-                    mime="application/pdf", use_container_width=True, key="dl_aditivo_pdf_top")
+                st.download_button(
+                    "📄 Baixar PDF Premium Aqua Gestão",
+                    data=_f,
+                    file_name=Path(_p).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_contrato_pdf_premium_top",
+                )
+
+    _p_termo_sindico = _ultimos.get("termo_sindico_pdf")
+    _p_termo_operador = _ultimos.get("termo_operador_pdf")
+    if (_p_termo_sindico and Path(_p_termo_sindico).exists()) or (_p_termo_operador and Path(_p_termo_operador).exists()):
+        st.markdown("**Termos de ciência — RT / EPIs**")
+        _dt1, _dt2 = st.columns(2)
+        with _dt1:
+            if _p_termo_sindico and Path(_p_termo_sindico).exists():
+                with open(_p_termo_sindico, "rb") as _f:
+                    st.download_button(
+                        "Baixar Termo do Síndico",
+                        data=_f,
+                        file_name=Path(_p_termo_sindico).name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="dl_termo_sindico_top",
+                    )
+        with _dt2:
+            if _p_termo_operador and Path(_p_termo_operador).exists():
+                with open(_p_termo_operador, "rb") as _f:
+                    st.download_button(
+                        "Baixar Termo do Operador — EPIs",
+                        data=_f,
+                        file_name=Path(_p_termo_operador).name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="dl_termo_operador_top",
+                    )
+
+    _p_pops = _ultimos.get("caderno_pops_pdf")
+    if _p_pops and Path(_p_pops).exists():
+        st.markdown("**POPs — Procedimentos Operacionais Padrão**")
+        with open(_p_pops, "rb") as _f:
+            st.download_button(
+                "📘 Baixar Caderno de POPs",
+                data=_f,
+                file_name=Path(_p_pops).name,
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_caderno_pops_top",
+            )
+
+
     _p_rel = _ultimos.get("relatorio_docx")
     _p_rel_pdf = _ultimos.get("relatorio_pdf")
     if (_p_rel and Path(_p_rel).exists()) or (_p_rel_pdf and Path(_p_rel_pdf).exists()):
@@ -10541,15 +12762,10 @@ if _ultimos:
 
 st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allow_html=True)
 st.subheader("👁️ Pré-visualizar relatório final")
-st.caption("Esta área agora pode montar a prévia exata do relatório final usando os dados reais preenchidos no formulário e as fotos anexadas, com o mesmo pipeline DOCX/PDF usado na geração oficial do app.")
+st.caption("A prévia usa a empresa ativa no acesso administrativo, mantendo Aqua Gestão e Bem Star separadas dentro do sistema.")
 
-_prev_empresa = st.radio(
-    "Empresa do relatório",
-    ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-    horizontal=True,
-    key="preview_rel_empresa",
-)
-_prev_empresa_val = "Bem Star Piscinas" if "Bem Star" in _prev_empresa else "Aqua Gestão"
+_prev_empresa_val = "Bem Star Piscinas" if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star" else "Aqua Gestão"
+st.info(f"Empresa ativa para esta prévia: {_prev_empresa_val}")
 _prev_usar_form = st.checkbox(
     "Usar dados reais do formulário e fotos anexadas (prévia exata)",
     value=True,
@@ -10659,7 +12875,7 @@ st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | 
 def _clientes_completos_rel_cache():
     return sheets_listar_clientes_completo()
 
-_clientes_rel = _clientes_completos_rel_cache()
+_clientes_rel = filtrar_clientes_por_empresa(_clientes_completos_rel_cache(), "aqua_gestao")
 if _clientes_rel:
     _opcoes_rel = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rel]
     _rel_col1, _rel_col2 = st.columns([3, 1])
@@ -10681,7 +12897,11 @@ if _clientes_rel:
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
                     st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
                     st.session_state["rel_cpf_cnpj_representante"] = ""
-                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório!")
+                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
+                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
+                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
+                    st.session_state["_rel_auto_importar_cliente"] = True
+                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
                     st.rerun()
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
@@ -10713,25 +12933,92 @@ if nome_rel_atual:
 mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
 ano_ref = (st.session_state.get("rel_ano_referencia") or str(datetime.now().year)).strip()
 
+# Diagnóstico de importação de visitas — ajuda a separar problema de filtro vs. problema de gravação no Sheets.
+with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
+    st.write("**Condomínio usado na busca:**", nome_rel_atual or "Não informado")
+    st.write("**Mês/Ano do relatório:**", f"{mes_ref or 'mês não informado'}/{ano_ref or 'ano não informado'}")
+    st.write("**Lançamentos locais encontrados:**", len(lancamentos_local))
+    st.write("**Lançamentos no Google Sheets encontrados para este condomínio:**", len(lancamentos_sheets))
+
+    if lancamentos_sheets:
+        st.write("**Últimas datas encontradas no Sheets:**")
+        for lc in lancamentos_sheets[-10:]:
+            st.write(
+                f"- {lc.get('data', '')} | "
+                f"{lc.get('condominio', '')} | "
+                f"Operador: {lc.get('operador', '')} | "
+                f"ID: {lc.get('id_visita', '')}"
+            )
+    else:
+        st.warning(
+            "Nenhuma visita foi encontrada na aba 🔬 Visitas para este condomínio. "
+            "Se existe apenas PDF, o relatório mensal não consegue importar automaticamente. "
+            "A visita precisa estar salva no Google Sheets."
+        )
+
+    erro_sheets = st.session_state.get("_sheets_ultimo_erro", "")
+    if erro_sheets:
+        st.code(erro_sheets[:1500])
+
+    st.markdown("---")
+    st.markdown("**📄 Recuperar visita antiga a partir de PDF**")
+    st.caption(
+        "Use isto quando o PDF da visita existe, mas a linha não foi gravada na aba 🔬 Visitas. "
+        "O sistema extrai os dados do PDF, salva no Google Sheets e libera a importação no relatório mensal."
+    )
+    pdf_visita_import = st.file_uploader(
+        "Enviar PDF do Relatório de Visita para recuperar lançamento",
+        type=["pdf"],
+        key="rel_pdf_visita_importador",
+    )
+
+    if pdf_visita_import is not None:
+        if st.button("📥 Importar este PDF para a aba 🔬 Visitas", key="btn_importar_pdf_visita_sheets"):
+            try:
+                pdf_bytes = pdf_visita_import.getvalue()
+                lanc_pdf = extrair_lancamento_de_pdf_visita(pdf_bytes, nome_rel_atual)
+                if not lanc_pdf:
+                    st.error("Não consegui extrair dados suficientes deste PDF. Confira se é um Relatório de Visita gerado pelo sistema.")
+                else:
+                    cond_pdf = lanc_pdf.get("condominio") or nome_rel_atual
+                    ok_pdf = sheets_salvar_lancamento_campo(lanc_pdf, cond_pdf)
+
+                    try:
+                        pasta_pdf = GENERATED_DIR / slugify_nome(cond_pdf)
+                        pasta_pdf.mkdir(exist_ok=True)
+                        dados_pdf = carregar_dados_condominio(pasta_pdf) or {}
+                        pend_pdf = dados_pdf.get("lancamentos_campo", [])
+                        pend_pdf.append(lanc_pdf)
+                        dados_pdf["lancamentos_campo"] = pend_pdf
+                        dados_pdf["nome_condominio"] = dados_pdf.get("nome_condominio", cond_pdf)
+                        salvar_dados_condominio(pasta_pdf, dados_pdf)
+                    except Exception as e:
+                        _log_sheets_erro("salvar_pdf_importado_json_local", e)
+
+                    if ok_pdf:
+                        st.success(
+                            f"✅ PDF importado e salvo como visita: {cond_pdf} — {lanc_pdf.get('data','data não identificada')}"
+                        )
+                        st.session_state["_rel_auto_importar_cliente"] = True
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "Consegui ler o PDF, mas não consegui salvar na aba 🔬 Visitas. "
+                            "Veja o erro técnico abaixo."
+                        )
+                        erro_pdf = st.session_state.get("_sheets_ultimo_erro", "")
+                        if erro_pdf:
+                            st.code(erro_pdf[:2000])
+            except Exception as e:
+                _log_sheets_erro("importar_pdf_visita_ui", e)
+                st.error("Erro ao importar o PDF de visita.")
+                st.code(st.session_state.get("_sheets_ultimo_erro", "")[:2000])
+
 def _filtrar_mes(lancamentos, mes, ano):
+    """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
     if not mes or not ano:
         return lancamentos
-    filtrados = []
-    for lc in lancamentos:
-        data = lc.get("data","")
-        # Formato dd/mm/aaaa ou aaaa-mm-dd
-        try:
-            if "/" in data:
-                partes = data.split("/")
-                if len(partes) == 3 and partes[1] == mes.zfill(2) and partes[2] == ano:
-                    filtrados.append(lc)
-            elif "-" in data:
-                partes = data.split("-")
-                if len(partes) == 3 and partes[1] == mes.zfill(2) and partes[0] == ano:
-                    filtrados.append(lc)
-        except Exception:
-            filtrados.append(lc)
-    return filtrados
+    return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
 
 # Une local + Sheets sem duplicar (por data+operador)
 _vistos = set()
@@ -10747,7 +13034,9 @@ lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref
 
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    garantir_campos_analises(max(len(lancamentos), ANALISES_PADRAO))
+    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
+    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -10826,6 +13115,17 @@ else:
     if nome_rel_atual:
         st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
 
+
+# Importação automática após carregar cliente cadastrado: evita depender do botão manual
+# e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
+if st.session_state.pop("_rel_auto_importar_cliente", False):
+    if lancamentos_disponiveis:
+        _importar_lancamentos(lancamentos_disponiveis)
+        st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) de visita importado(s) automaticamente para o relatório.")
+        st.rerun()
+    elif nome_rel_atual:
+        st.warning(f"Cliente carregado, mas nenhum lançamento de visita foi encontrado para {nome_rel_atual} no período informado.")
+
 st.markdown("**Dados do condomínio / local atendido**")
 rd1, rd2 = st.columns(2)
 with rd1:
@@ -10877,7 +13177,27 @@ with r1:
 with r2:
     st.text_input("Ano de referência", key="rel_ano_referencia", placeholder="2026")
 with r3:
-    st.selectbox("Status da ART", ["Emitida", "Não emitida", "Em tramitação"], key="rel_art_status", on_change=on_change_rel_art_status)
+    opcoes_art = ["Emitida", "Não emitida", "Em tramitação"]
+    status_atual_art = (st.session_state.get("rel_art_status") or "Emitida").strip()
+    if status_atual_art not in opcoes_art:
+        status_atual_art = "Emitida"
+        st.session_state["rel_art_status"] = status_atual_art
+    if st.session_state.get("rel_art_status_widget") not in opcoes_art:
+        st.session_state["rel_art_status_widget"] = status_atual_art
+
+    status_selecionado_art = st.selectbox(
+        "Status da ART",
+        opcoes_art,
+        key="rel_art_status_widget",
+    )
+
+    if status_selecionado_art != st.session_state.get("rel_art_status"):
+        st.session_state["rel_art_status"] = status_selecionado_art
+        if status_selecionado_art != "Emitida":
+            st.session_state["rel_art_numero"] = ""
+            st.session_state["rel_art_inicio"] = ""
+            st.session_state["rel_art_fim"] = ""
+        st.rerun()
 with r4:
     st.text_input("Data de emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_data_emissao"))
 
@@ -10904,6 +13224,16 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
+st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
+_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
+with _freq_rel_col1:
+    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
+with _freq_rel_col2:
+    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
+if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
+    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
     if st.button("Preencher parecer automático", use_container_width=True):
@@ -10914,23 +13244,42 @@ with c_auto2:
 st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeholder="Será preenchido automaticamente conforme os parâmetros, mas permanece editável.")
 
 st.markdown("**Análises físico-químicas**")
-garantir_campos_analises(st.session_state.get("rel_analises_total", ANALISES_PADRAO))
-ctrl_a1, ctrl_a2 = st.columns([1, 3])
+_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
+ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
         adicionar_analise_extra()
         st.rerun()
 with ctrl_a2:
-    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Base padrão: 9 análises mensais.")
+    if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
+        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+        if nome_rel:
+            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
+            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
+            aplicar_parametros_ultimos_no_relatorio(dados_rel_salvos)
+        else:
+            aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
+        st.rerun()
+with ctrl_a3:
+    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
+# Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
+cab_cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
+for _col, _label in zip(
+    cab_cols,
+    ["Data", "pH", "Cloro livre", "Cloro total", "Alcalinidade", "Dureza", "Ácido cianúrico", "Operador"],
+):
+    _col.caption(f"**{_label}**")
+
 for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
-    cols = st.columns([1.05,0.7,0.8,0.8,0.9,0.9,0.9,1.1])
+    cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
     cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
-    cols[2].text_input(f"CRL {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
-    cols[3].text_input(f"CT {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
-    cols[4].text_input(f"ALC {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alc")
-    cols[5].text_input(f"DC {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="DC")
-    cols[6].text_input(f"CYA {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="CYA")
+    cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="Cloro livre")
+    cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="Cloro total")
+    cols[4].text_input(f"Alcalinidade {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alcalinidade")
+    cols[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="Dureza")
+    cols[6].text_input(f"Ácido cianúrico {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="Ácido cianúrico")
     cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
 
 st.markdown("**Dosagens de produtos químicos**")
@@ -10946,7 +13295,7 @@ with ctrl_d1:
             aplicar_dosagens_ultimas_no_relatorio(obter_snapshot_relatorio_independente())
         st.rerun()
 with ctrl_d2:
-    st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usados pela última vez.")
+    st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usadas pela última vez.")
 for i in range(7):
     cols = st.columns([1.4,1.1,0.7,0.7,1.3])
     cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico", on_change=_autosave_rascunho)
@@ -10965,9 +13314,23 @@ for i in range(5):
     cols[1].text_input(f"Prazo {i+1}", key=f"rel_rec_prazo_{i}", label_visibility="collapsed", placeholder="Prazo")
     cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
 
+st.markdown("**NBR 11238 — Segurança e higiene operacional**")
+st.caption("Marque os requisitos verificados. Esses campos alimentam a coluna ‘Conforme?’ do relatório final.")
+_nbr_cols = st.columns([1.6, 1.2, 1.6, 1.6, 1.2])
+with _nbr_cols[0]:
+    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True)
+with _nbr_cols[1]:
+    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True)
+with _nbr_cols[2]:
+    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True)
+with _nbr_cols[3]:
+    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True)
+with _nbr_cols[4]:
+    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True)
+
 cx1, cx2, cx3 = st.columns(3)
 with cx1:
-    st.text_area("ABNT NBR 10339 / segurança operacional – Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Profundidade, circulação, higienização, retrolavagem, condição geral operacional...")
+    st.text_area("NBR 11238 — Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Ex.: sinalização visível, retrolavagem realizada, área antiderrapante preservada...")
 with cx2:
     st.text_area("NR-26 / GHS – Checklist", key="rel_nr_26", height=90, placeholder="FISPQs/FDS, rótulos GHS, sinalização, incompatibilidade, emergência...")
 with cx3:
@@ -11187,7 +13550,687 @@ def gerar_contrato_bem_star_docx(
     return output_docx
 
 
+
+# =========================================
+# CONTRATO RT — PDF PREMIUM REPORTLAB V12
+# =========================================
+
+def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
+    """Gera o contrato RT da Aqua Gestão em PDF premium, sem LibreOffice.
+
+    Objetivo:
+    - evitar o PDF sem logo/cores gerado pela conversão DOCX -> PDF;
+    - manter layout institucional da Aqua Gestão;
+    - gerar arquivo pronto para envio ao condomínio/jurídico.
+    """
+    import io
+    import html
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+        PageBreak,
+        KeepTogether,
+        HRFlowable,
+    )
+
+    buffer = io.BytesIO()
+
+    # Identidade Aqua Gestão
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    AZUL_SUAVE = colors.HexColor("#F4FAFF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#263442")
+    CINZA_MEDIO = colors.HexColor("#5E6F82")
+    CINZA_CLARO = colors.HexColor("#F5F7FA")
+    BORDA = colors.HexColor("#D7E1EA")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def _valor(*nomes, padrao=""):
+        for nome in nomes:
+            chaves = [nome, f"{{{{{nome}}}}}"]
+            for chave in chaves:
+                if chave in dados:
+                    valor = dados.get(chave)
+                    if valor is not None and str(valor).strip():
+                        return str(valor).strip()
+        return padrao
+
+    def _esc(valor):
+        return html.escape(str(valor or ""), quote=False).replace("\n", "<br/>")
+
+    def _p(texto, estilo):
+        return Paragraph(_esc(texto), estilo)
+
+    def _pb(texto, estilo):
+        # Texto controlado internamente. Permite <b>, <br/> e <font>.
+        return Paragraph(str(texto or ""), estilo)
+
+    nome_contratante = _valor("NOME_CONTRATANTE", "NOME_CONDOMINIO", padrao="Dado não informado")
+    cpf_cnpj_contratante = _valor("CPF_CNPJ_CONTRATANTE", "CNPJ_CONDOMINIO", padrao="Dado não informado")
+    endereco_contratante = _valor("ENDERECO_CONTRATANTE", "ENDERECO_CONDOMINIO", padrao="Dado não informado")
+    representante = _valor("REPRESENTANTE_CONTRATANTE", "NOME_SINDICO", padrao="Dado não informado")
+    cpf_sindico = _valor("CPF_SINDICO", padrao="Dado não informado")
+    qualificacao_representante = _valor("QUALIFICACAO_REPRESENTANTE", padrao="Síndico")
+    valor_mensal = _valor("VALOR_MENSAL", padrao="Dado não informado")
+    valor_mensal_extenso = _valor("VALOR_MENSAL_EXTENSO", padrao="")
+    dia_pagamento = _valor("DIA_PAGAMENTO", padrao="Dado não informado")
+    forma_pagamento = _valor("FORMA_PAGAMENTO", padrao="Pix")
+    frequencia_visitas = _valor("FREQUENCIA_VISITAS", padrao="1")
+    data_inicio = _valor("DATA_INICIO_CONTRATO", "DATA_INICIO", padrao="Dado não informado")
+    data_fim = _valor("DATA_FIM_CONTRATO", "DATA_FIM", padrao="")
+    local_data_assinatura = _valor("LOCAL_DATA_ASSINATURA", "DATA_ASSINATURA", padrao="Uberlândia/MG")
+    volumes_piscinas = _valor("VOLUMES_PISCINAS", padrao="Dado não informado")
+
+    # Normalização visual de frequência para não repetir "(s)" de forma estranha.
+    freq_txt = frequencia_visitas
+    if freq_txt.strip() == "1":
+        freq_frase = "1 (uma) visita técnica semanal"
+    else:
+        freq_frase = f"{freq_txt} visitas técnicas semanais"
+
+    # Prepara logo. Se o PNG não existir, o PDF ainda sai bonito com marca textual.
+    logo_path = encontrar_logo()
+    logo_temp = None
+    if logo_path and logo_path.exists():
+        try:
+            logo_temp = GENERATED_DIR / "_logo_aqua_reportlab.png"
+            with Image.open(logo_path) as im:
+                im = ImageOps.exif_transpose(im)
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGBA")
+                im.thumbnail((900, 360))
+                # Mantém transparência quando possível.
+                im.save(logo_temp, format="PNG")
+        except Exception:
+            logo_temp = logo_path
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.65 * cm,
+        leftMargin=1.65 * cm,
+        topMargin=2.35 * cm,
+        bottomMargin=1.75 * cm,
+        title="Contrato de Responsabilidade Técnica - Aqua Gestão",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    s_title = ParagraphStyle(
+        "AquaTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=19,
+        textColor=AZUL_ESCURO,
+        alignment=TA_CENTER,
+        spaceAfter=5,
+    )
+    s_subtitle = ParagraphStyle(
+        "AquaSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.7,
+        leading=11,
+        textColor=CINZA_MEDIO,
+        alignment=TA_CENTER,
+        spaceAfter=10,
+    )
+    s_h = ParagraphStyle(
+        "AquaClauseTitle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=9.6,
+        leading=12,
+        textColor=AZUL_ESCURO,
+        spaceBefore=7,
+        spaceAfter=3,
+        keepWithNext=True,
+    )
+    s_body = ParagraphStyle(
+        "AquaBody",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.15,
+        leading=11.2,
+        textColor=CINZA_TEXTO,
+        alignment=TA_JUSTIFY,
+        spaceAfter=4.4,
+    )
+    s_body_left = ParagraphStyle(
+        "AquaBodyLeft",
+        parent=s_body,
+        alignment=TA_LEFT,
+    )
+    s_small = ParagraphStyle(
+        "AquaSmall",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.3,
+        leading=9.1,
+        textColor=CINZA_TEXTO,
+        alignment=TA_LEFT,
+    )
+    s_small_center = ParagraphStyle(
+        "AquaSmallCenter",
+        parent=s_small,
+        alignment=TA_CENTER,
+    )
+    s_table_header = ParagraphStyle(
+        "AquaTableHeader",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+    )
+    s_table_cell = ParagraphStyle(
+        "AquaTableCell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.25,
+        leading=8.9,
+        textColor=CINZA_TEXTO,
+        alignment=TA_LEFT,
+    )
+    s_box_title = ParagraphStyle(
+        "AquaBoxTitle",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8.1,
+        leading=10,
+        textColor=AZUL_ESCURO,
+        alignment=TA_LEFT,
+        spaceAfter=2,
+    )
+    s_box = ParagraphStyle(
+        "AquaBox",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.55,
+        leading=9.8,
+        textColor=CINZA_TEXTO,
+        alignment=TA_JUSTIFY,
+    )
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        width, height = A4
+
+        # Cabeçalho premium
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, height - 1.55 * cm, width, 1.55 * cm, fill=1, stroke=0)
+
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, height - 1.61 * cm, width, 0.06 * cm, fill=1, stroke=0)
+
+        # Logo ou marca textual
+        if logo_temp and Path(logo_temp).exists():
+            try:
+                canvas.drawImage(
+                    str(logo_temp),
+                    1.30 * cm,
+                    height - 1.28 * cm,
+                    width=2.70 * cm,
+                    height=0.92 * cm,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 11)
+                canvas.drawString(1.35 * cm, height - 0.92 * cm, "AQUA GESTÃO")
+        else:
+            # Fallback com aparência de logo textual
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica-Bold", 11)
+            canvas.drawString(1.35 * cm, height - 0.92 * cm, "AQUA GESTÃO")
+            canvas.setFillColor(DOURADO)
+            canvas.circle(1.10 * cm, height - 0.90 * cm, 0.12 * cm, fill=1, stroke=0)
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 8.6)
+        canvas.drawRightString(
+            width - 1.45 * cm,
+            height - 0.58 * cm,
+            "CONTRATO DE RESPONSABILIDADE TÉCNICA",
+        )
+        canvas.setFont("Helvetica", 7.1)
+        canvas.drawRightString(
+            width - 1.45 * cm,
+            height - 0.96 * cm,
+            "Aqua Gestão Controle Técnico Ltda | CRQ-MG 2ª Região | CRQ 024025748",
+        )
+
+        # Rodapé
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.4)
+        canvas.line(1.45 * cm, 1.13 * cm, width - 1.45 * cm, 1.13 * cm)
+
+        canvas.setFillColor(CINZA_MEDIO)
+        canvas.setFont("Helvetica", 6.6)
+        canvas.drawString(
+            1.45 * cm,
+            0.74 * cm,
+            "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG | (34) 9777-7227",
+        )
+        canvas.drawRightString(width - 1.45 * cm, 0.74 * cm, f"Página {doc_obj.page}")
+
+        canvas.restoreState()
+
+    story = []
+
+    # Capa resumida
+    story.append(Spacer(1, 2 * mm))
+    story.append(_pb("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>RESPONSABILIDADE TÉCNICA", s_title))
+    story.append(_pb("Controle técnico de piscinas de uso coletivo · Instrumento particular de natureza civil e empresarial · Obrigação de meio", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=7))
+
+    partes = [
+        [_pb("<b>CONTRATADA</b>", s_table_header), _pb("<b>CONTRATANTE</b>", s_table_header)],
+        [
+            _pb(
+                "AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>"
+                "CNPJ: 66.008.795/0001-92<br/>"
+                "R. Benito Segatto, 201, Casa 02, Jardim Europa<br/>"
+                "Uberlândia/MG — CEP 38.414-680<br/>"
+                "Responsável Técnico: Thyago Fernando da Silveira<br/>"
+                "CRQ-MG 2ª Região | CRQ 024025748",
+                s_table_cell,
+            ),
+            _pb(
+                f"{_esc(nome_contratante)}<br/>"
+                f"CPF/CNPJ: {_esc(cpf_cnpj_contratante)}<br/>"
+                f"Endereço: {_esc(endereco_contratante)}<br/>"
+                f"Representante: {_esc(representante)}<br/>"
+                f"CPF: {_esc(cpf_sindico)}<br/>"
+                f"Qualificação: {_esc(qualificacao_representante)}",
+                s_table_cell,
+            ),
+        ],
+    ]
+    t_partes = Table(partes, colWidths=[8.45 * cm, 8.45 * cm], repeatRows=1)
+    t_partes.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("BACKGROUND", (0, 1), (-1, 1), AZUL_SUAVE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(t_partes)
+    story.append(Spacer(1, 5 * mm))
+
+    resumo = Table(
+        [
+            [_pb("<b>Frequência</b>", s_table_header), _pb("<b>Valor mensal</b>", s_table_header), _pb("<b>Vencimento</b>", s_table_header), _pb("<b>Forma</b>", s_table_header)],
+            [_p(freq_frase, s_table_cell), _p(f"{valor_mensal} ({valor_mensal_extenso})", s_table_cell), _p(f"Dia {dia_pagamento}", s_table_cell), _p(forma_pagamento, s_table_cell)],
+        ],
+        colWidths=[4.8 * cm, 5.2 * cm, 3.0 * cm, 3.9 * cm],
+    )
+    resumo.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_MEDIO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(resumo)
+    story.append(Spacer(1, 5 * mm))
+
+    def box_info(titulo, texto, cor_fundo=AZUL_CLARO, cor_borda=AZUL_MEDIO):
+        t = Table(
+            [[_pb(f"<b>{_esc(titulo)}</b>", s_box_title)], [_p(texto, s_box)]],
+            colWidths=[16.9 * cm],
+        )
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), cor_fundo),
+                    ("BOX", (0, 0), (-1, -1), 0.65, cor_borda),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story.append(t)
+        story.append(Spacer(1, 4 * mm))
+
+    box_info(
+        "Natureza técnica do contrato",
+        "O presente instrumento trata de Responsabilidade Técnica para supervisão, orientação, controle documental, emissão de relatórios técnicos e conformidade operacional das piscinas de uso coletivo. Não substitui a execução operacional diária, salvo contratação específica em separado.",
+    )
+
+    box_info(
+        "Finalidade perante o CRQ-MG",
+        "Este instrumento também se destina à comprovação formal do vínculo técnico-profissional perante o Conselho Regional de Química de Minas Gerais — CRQ-MG, para fins de obtenção, renovação ou manutenção da Anotação/Certificado de Responsabilidade Técnica, sem prejuízo das obrigações civis e comerciais aqui pactuadas.",
+        cor_fundo=colors.HexColor("#FFF8E6"),
+        cor_borda=DOURADO,
+    )
+
+    def clausula(titulo, paragrafos):
+        if isinstance(paragrafos, str):
+            paragrafos = [paragrafos]
+        bloco = [_pb(f"<b>{_esc(titulo)}</b>", s_h)]
+        for ptxt in paragrafos:
+            bloco.append(_p(ptxt, s_body))
+        story.append(KeepTogether(bloco))
+
+    clausula(
+        "1. DAS PARTES",
+        f"Pelo presente instrumento particular, de um lado AQUA GESTÃO CONTROLE TÉCNICO LTDA, pessoa jurídica de direito privado inscrita no CNPJ sob nº 66.008.795/0001-92, com atuação técnica vinculada ao Responsável Técnico Thyago Fernando da Silveira, CRQ-MG 2ª Região, CRQ 024025748, doravante denominada CONTRATADA; e, de outro lado, {nome_contratante}, inscrita no CPF/CNPJ sob nº {cpf_cnpj_contratante}, situada em {endereco_contratante}, representada por {representante}, CPF nº {cpf_sindico}, na qualidade de {qualificacao_representante}, doravante denominada CONTRATANTE, resolvem celebrar o presente Contrato de Responsabilidade Técnica.",
+    )
+
+    clausula(
+        "2. DO OBJETO",
+        [
+            "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços técnicos especializados de Responsabilidade Técnica voltados ao controle técnico da qualidade da água das piscinas de uso coletivo mantidas pela CONTRATANTE, mediante atuação técnica, consultiva, orientativa e fiscalizatória, nos limites deste instrumento.",
+            f"Integram o objeto contratual: realização de {freq_frase}; análise técnica das condições gerais das piscinas, casa de máquinas, rotinas operacionais e aspectos relacionados ao tratamento químico; emissão de relatórios técnicos, notificações de não conformidade, orientações técnicas e pareceres; avaliação dos procedimentos adotados pela equipe operacional; elaboração ou revisão de POPs; recomendação de medidas corretivas, preventivas ou emergenciais; e acompanhamento documental para conformidade com normas aplicáveis, incluindo ABNT NBR 10818:2025 e ABNT NBR 10339.",
+            "Fica expressamente ajustado que o contrato não inclui execução operacional diária ou extraordinária do tratamento da água; limpeza física; aspiração; escovação; peneiração; retrolavagem; operação rotineira de equipamentos; fornecimento de mão de obra operacional; fornecimento de produtos, insumos, reagentes, materiais, peças ou EPIs; manutenção corretiva ou preventiva de equipamentos; ou garantia de resultado contínuo dos parâmetros entre as visitas técnicas.",
+            f"Piscina(s) objeto deste contrato: {volumes_piscinas}.",
+        ],
+    )
+
+    clausula(
+        "3. DA PERIODICIDADE E FORMA DE EXECUÇÃO",
+        [
+            f"A prestação dos serviços ocorrerá mediante {freq_frase}, sem caráter de plantão permanente, sem disponibilidade irrestrita e sem permanência contínua nas dependências da CONTRATANTE.",
+            "As visitas poderão sofrer alteração por necessidade técnica, operacional, caso fortuito, força maior ou impedimento justificado, sem que isso configure inadimplemento, desde que haja remarcação em prazo razoável.",
+        ],
+    )
+
+    clausula(
+        "4. DOS PROCEDIMENTOS OPERACIONAIS PADRÃO — POPs",
+        [
+            "Os POPs, checklists, relatórios, notificações de não conformidade, orientações técnicas e demais documentos técnicos emitidos pela CONTRATADA passam a integrar o presente contrato para fins de rastreabilidade e comprovação técnica.",
+            "A CONTRATANTE reconhece que o cumprimento integral e contínuo dos POPs e das orientações técnicas constitui obrigação contratual essencial. A inobservância, execução incompleta, tardia, inadequada ou recusa de cumprimento afastará a responsabilidade da CONTRATADA pelos efeitos daí decorrentes.",
+        ],
+    )
+
+    clausula(
+        "5. DAS OBRIGAÇÕES DA CONTRATADA",
+        [
+            "Prestar os serviços com zelo técnico, diligência profissional e observância das normas aplicáveis ao escopo contratado; manter sua regularidade técnica; manter profissional habilitado vinculado ao serviço; emitir documentos técnicos compatíveis; registrar orientações, recomendações e não conformidades; comunicar risco relevante, irregularidade sanitária, operacional ou documental; responder por erros técnicos, relatórios incorretos e omissões relevantes decorrentes de negligência, imprudência ou imperícia própria; e guardar sigilo sobre informações técnicas, operacionais, comerciais e internas da CONTRATANTE.",
+        ],
+    )
+
+    clausula(
+        "6. DAS OBRIGAÇÕES DA CONTRATANTE",
+        [
+            "Efetuar os pagamentos nos prazos ajustados; garantir acesso às piscinas, casa de máquinas, áreas técnicas, documentos e informações; manter equipe operacional própria ou terceiros habilitados para execução material das rotinas diárias; cumprir e fazer cumprir os POPs, relatórios e orientações técnicas; fornecer informações verdadeiras e atualizadas; comunicar ocorrência anormal, interdição, acidente, falha operacional, suspeita de contaminação ou evento com potencial impacto sanitário; e providenciar produtos, equipamentos, materiais, EPIs, peças, reagentes, acessórios e recursos humanos necessários à operação diária.",
+        ],
+    )
+
+    clausula(
+        "7. DOS HONORÁRIOS, REMUNERAÇÃO TÉCNICA E REGULARIDADE PERANTE O CRQ-MG",
+        [
+            f"Pelos serviços ordinários objeto deste contrato, a CONTRATANTE pagará à CONTRATADA o valor mensal de {valor_mensal} ({valor_mensal_extenso}).",
+            "O valor previsto nesta cláusula corresponde à remuneração técnica mensal pela prestação dos serviços de Responsabilidade Técnica, abrangendo acompanhamento técnico, orientação especializada, registros, relatórios técnicos ordinários e demais obrigações previstas neste instrumento.",
+            "As partes reconhecem que o presente contrato será utilizado para comprovação do vínculo técnico-profissional perante o Conselho Regional de Química de Minas Gerais — CRQ-MG, para fins de obtenção, renovação ou manutenção da Anotação/Certificado de Responsabilidade Técnica, conforme exigências documentais aplicáveis.",
+            "Em razão da exigência documental do CRQ-MG para contratos de Responsabilidade Técnica firmados com profissional autônomo, a remuneração técnica prevista neste instrumento não poderá ser inferior ao salário mínimo vigente, devendo o contrato observar vigência mínima de 12 meses e conter remuneração expressa pelo serviço técnico prestado.",
+            f"O vencimento ocorrerá no dia {dia_pagamento} de cada mês, mediante emissão de nota fiscal, recibo ou documento equivalente pela CONTRATADA. O pagamento será realizado por {forma_pagamento}.",
+            "Eventual revisão de valores somente poderá ocorrer por instrumento formal entre as partes, desde que preservadas as exigências mínimas necessárias à regularidade do vínculo técnico perante o CRQ-MG e sem prejuízo das obrigações técnicas assumidas pela CONTRATADA.",
+            "O atraso no pagamento sujeitará a CONTRATANTE à incidência de multa moratória de 2% sobre o valor em atraso, juros de mora de 1% ao mês pro rata die e correção monetária pelo IPCA, ou índice oficial que o substitua.",
+        ],
+    )
+
+    clausula(
+        "8. DOS ATENDIMENTOS, RESPOSTAS TÉCNICAS E SERVIÇOS EXTRAORDINÁRIOS",
+        [
+            "Estão incluídos no valor mensal os relatórios técnicos ordinários decorrentes das visitas contratadas, as orientações técnicas diretamente relacionadas aos parâmetros avaliados e as comunicações de não conformidade identificadas durante a execução regular do serviço.",
+            "A CONTRATADA responderá às solicitações técnicas ordinárias da CONTRATANTE em até 2 dias úteis, desde que relacionadas ao escopo contratado e que não caracterizem atendimento emergencial, reunião extraordinária, elaboração de documento adicional ou deslocamento presencial fora da periodicidade contratada.",
+            "Situações de risco sanitário imediato, água imprópria para uso, suspeita de contaminação, acidente, interdição ou condição crítica deverão ser comunicadas pela CONTRATANTE imediatamente. Nesses casos, a CONTRATADA deverá emitir orientação inicial ou comunicação técnica em até 24 horas após ciência da ocorrência, sem prejuízo da necessidade de atendimento extraordinário quando aplicável.",
+            "Serão considerados serviços extraordinários, sujeitos a orçamento prévio: visitas adicionais, atendimentos emergenciais presenciais, reuniões com síndico, conselho, administradora ou jurídico, acompanhamento de fiscalização, treinamentos, elaboração de parecer técnico complementar, relatórios adicionais fora da rotina contratada e deslocamentos fora do cronograma.",
+            "O orçamento dos serviços extraordinários será apresentado em até 48 horas úteis após a solicitação, contendo descrição do serviço, prazo estimado e valor aplicável. A execução dependerá de aprovação prévia da CONTRATANTE, salvo situação emergencial de risco sanitário relevante, devidamente registrada.",
+        ],
+    )
+
+    clausula(
+        "9. DO REAJUSTE",
+        "Os honorários contratuais serão reajustados anualmente, no mês de aniversário do contrato, pelo IPCA/IBGE acumulado nos 12 meses anteriores ao reajuste, ou pelo índice que vier a substituí-lo. Na hipótese de índice negativo, os valores permanecerão inalterados até o período seguinte.",
+    )
+
+    clausula(
+        "10. DA RESPONSABILIDADE TÉCNICA, LIMITES E CORRESPONSABILIDADE OPERACIONAL",
+        [
+            "A CONTRATADA responderá pelos atos técnicos praticados no âmbito do serviço contratado, incluindo erros técnicos, omissões relevantes, orientações inadequadas, relatórios técnicos incorretos ou falhas diretamente atribuíveis à sua atuação profissional, quando comprovado nexo causal entre a conduta técnica e o dano verificado.",
+            "A Responsabilidade Técnica assumida pela CONTRATADA abrange a supervisão, orientação, avaliação, registro e comunicação técnica referentes ao tratamento químico e ao controle da qualidade da água das piscinas objeto deste contrato, nos limites da periodicidade contratada, das informações fornecidas e do acesso efetivamente disponibilizado pela CONTRATANTE.",
+            "A CONTRATANTE permanece responsável pela execução operacional diária das rotinas recomendadas, pela disponibilização de equipe, produtos, equipamentos, EPIs, acesso às instalações, registros operacionais e cumprimento das orientações técnicas formalmente emitidas pela CONTRATADA.",
+            "A responsabilidade da CONTRATADA não será afastada por cláusula contratual quando houver erro técnico próprio, negligência, imprudência, imperícia ou omissão relevante comprovada. Por outro lado, a CONTRATADA não responderá por danos decorrentes de descumprimento das orientações técnicas, omissão de informações, impedimento de acesso, falta de produtos, falhas de operação por terceiros ou decisões administrativas da CONTRATANTE contrárias às recomendações técnicas registradas.",
+            "Havendo divergência técnica ou situação de risco sanitário, a CONTRATADA deverá comunicar formalmente a CONTRATANTE, indicando a não conformidade, o risco identificado e as medidas corretivas recomendadas.",
+        ],
+    )
+
+    clausula(
+        "11. DAS NÃO CONFORMIDADES, RISCO SANITÁRIO E INTERDIÇÃO TÉCNICA",
+        [
+            "Verificada situação que represente risco sanitário, operacional, normativo ou de segurança, a CONTRATADA poderá emitir notificação formal de não conformidade, com indicação das providências cabíveis e do prazo recomendado para correção.",
+            "Quando a situação exigir, poderá recomendar restrição de uso ou interdição técnica parcial ou total da piscina até regularização das não conformidades identificadas. A decisão administrativa e a efetiva execução das medidas caberão à CONTRATANTE.",
+        ],
+    )
+
+    clausula(
+        "12. DA IMPOSSIBILIDADE DE EXECUÇÃO POR FATO ATRIBUÍVEL À CONTRATANTE",
+        [
+            "Caso a execução do serviço técnico seja impedida ou substancialmente prejudicada por fato atribuível à CONTRATANTE, incluindo ausência de acesso, falta de informações indispensáveis, inexistência de registros operacionais, ausência de produtos mínimos, impedimento de vistoria ou descumprimento reiterado das orientações técnicas, a CONTRATADA deverá registrar formalmente a ocorrência e comunicar a necessidade de regularização.",
+            "Enquanto o impedimento for pontual ou parcial, a CONTRATADA continuará responsável pelas atividades que ainda puder executar dentro do escopo contratado, registrando no relatório técnico as limitações encontradas.",
+            "Se o impedimento inviabilizar de forma relevante a prestação do serviço por mais de 15 dias, sem regularização pela CONTRATANTE após comunicação formal, a CONTRATADA poderá suspender proporcionalmente as atividades afetadas ou rescindir o contrato por justa causa, permanecendo devidos apenas os valores correspondentes aos serviços já prestados, documentos emitidos, deslocamentos realizados e obrigações técnicas efetivamente executadas até a data da suspensão ou rescisão.",
+            "A suspensão integral da cobrança mensal somente será discutida quando houver impossibilidade total de execução do serviço não atribuível à CONTRATANTE ou por acordo formal entre as partes.",
+        ],
+    )
+
+    clausula(
+        "13. DA AUSÊNCIA DE VÍNCULO TRABALHISTA, OPERACIONAL OU SOCIETÁRIO",
+        "O presente contrato possui natureza estritamente civil e empresarial, inexistindo vínculo empregatício, societário, associativo, de subordinação hierárquica ou de exclusividade entre a CONTRATANTE e os sócios, empregados, prepostos ou profissionais vinculados à CONTRATADA.",
+    )
+
+    clausula(
+        "14. DA CONFIDENCIALIDADE",
+        "As partes obrigam-se a manter sigilo sobre dados, documentos, informações técnicas, operacionais, comerciais, financeiras e estratégicas a que tiverem acesso em razão deste contrato. A obrigação permanecerá vigente por 2 anos após o término do contrato, ressalvadas exigências legais, judiciais, regulatórias ou administrativas.",
+    )
+
+    clausula(
+        "15. DO PRAZO E DA RESCISÃO",
+        [
+            f"O presente contrato terá vigência mínima de 12 meses, iniciando-se em {data_inicio}{f' e com previsão informada até {data_fim}' if data_fim else ''}, em observância às exigências documentais do CRQ-MG para comprovação do vínculo de Responsabilidade Técnica.",
+            "Após o prazo mínimo inicial, o contrato poderá ser renovado, prorrogado, ajustado ou rescindido conforme acordo entre as partes, preservadas as obrigações vencidas e os documentos técnicos já emitidos.",
+            "O contrato poderá ser rescindido por mútuo acordo; por qualquer das partes mediante aviso prévio escrito de 30 dias; por inadimplemento; por descumprimento contratual relevante não sanado em 15 dias após notificação; por recusa reiterada da CONTRATANTE em cumprir POPs, orientações técnicas ou medidas sanitárias essenciais; por perda de confiança objetiva comprovada, obstrução de acesso ou ocultação de informações.",
+        ],
+    )
+
+    clausula(
+        "16. DA PROVA DOCUMENTAL E DAS COMUNICAÇÕES",
+        "Serão considerados meios válidos de prova e comunicação: contratos, aditivos e anexos assinados física ou eletronicamente; relatórios, POPs e notificações técnicas; e-mails; mensagens eletrônicas; registros fotográficos, vídeos e protocolos. A ausência de assinatura da CONTRATANTE em relatório ou notificação técnica não afastará sua validade quando houver prova de envio, entrega ou ciência.",
+    )
+
+    clausula(
+        "17. DA INTEGRALIDADE E HIERARQUIA DOS DOCUMENTOS",
+        "Este contrato representa a integralidade do acordo entre as partes quanto ao seu objeto. Integram este instrumento, para todos os fins, os aditivos contratuais, POPs, checklists, relatórios técnicos, notificações de não conformidade e os Anexos I e II. Em caso de divergência interpretativa, prevalecerá: contrato principal; aditivos; notificações formais; POPs e Anexos; relatórios e checklists.",
+    )
+
+    clausula(
+        "18. DO FORO",
+        "Fica eleito o foro da Comarca de Uberlândia/MG, com renúncia expressa a qualquer outro, por mais privilegiado que seja, para dirimir controvérsias oriundas deste contrato.",
+    )
+
+    story.append(Spacer(1, 7 * mm))
+    story.append(_p(local_data_assinatura, s_body_left))
+    story.append(Spacer(1, 14 * mm))
+
+    assinaturas = Table(
+        [
+            [
+                _pb(
+                    "_________________________________________<br/>"
+                    "AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>"
+                    "Thyago Fernando da Silveira<br/>"
+                    "CRQ-MG 2ª Região | CRQ 024025748",
+                    s_small_center,
+                ),
+                _pb(
+                    f"_________________________________________<br/>"
+                    f"{_esc(nome_contratante)}<br/>"
+                    f"{_esc(representante)}<br/>"
+                    f"{_esc(qualificacao_representante)}",
+                    s_small_center,
+                ),
+            ]
+        ],
+        colWidths=[8.3 * cm, 8.3 * cm],
+    )
+    assinaturas.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(assinaturas)
+
+    story.append(PageBreak())
+
+    # Anexos
+    story.append(_pb("ANEXO I — PARÂMETROS MÍNIMOS DE QUALIDADE DO SERVIÇO TÉCNICO", s_title))
+    story.append(_pb("Relatórios técnicos ordinários emitidos no escopo da Responsabilidade Técnica.", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=8))
+
+    anexo_i_linhas = [
+        ["Parâmetro mínimo", "Critério objetivo"],
+        ["Visitas técnicas", "Realização das visitas técnicas conforme periodicidade contratada, com registro de data, horário, local avaliado e responsável técnico."],
+        ["Parâmetros físico-químicos", "Registro dos parâmetros avaliados, incluindo, quando aplicável: pH, cloro livre, cloro total, alcalinidade total, temperatura, turbidez, ácido cianúrico e demais parâmetros pertinentes."],
+        ["Relatório técnico ordinário", "Emissão em até 48 horas após a visita ou após o recebimento completo das informações necessárias à consolidação técnica."],
+        ["Não conformidade crítica", "Comunicação formal em até 24 horas após sua constatação, quando houver risco sanitário, operacional ou de segurança relevante."],
+        ["Medidas corretivas", "Indicação objetiva das medidas corretivas recomendadas, com prazo sugerido quando aplicável."],
+        ["Limitações de avaliação", "Registro de ausência de dados, falta de acesso, ausência de produtos, limitação operacional, impossibilidade de avaliação completa ou impedimentos verificados."],
+        ["Respostas técnicas", "Resposta às solicitações técnicas ordinárias em até 2 dias úteis, desde que estejam dentro do escopo contratado."],
+        ["POPs", "Revisão ou emissão de POPs quando houver alteração relevante na rotina operacional ou identificação de falha recorrente."],
+    ]
+    t_anexo_i = Table(
+        [[_pb(f"<b>{_esc(c)}</b>" if i == 0 else _esc(c), s_table_header if i == 0 else s_table_cell) for c in row] for i, row in enumerate(anexo_i_linhas)],
+        colWidths=[4.2 * cm, 12.7 * cm],
+        repeatRows=1,
+    )
+    t_anexo_i.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+                ("BACKGROUND", (0, 2), (-1, 2), CINZA_CLARO),
+                ("BACKGROUND", (0, 3), (-1, 3), colors.white),
+                ("BACKGROUND", (0, 4), (-1, 4), CINZA_CLARO),
+                ("BACKGROUND", (0, 5), (-1, 5), colors.white),
+                ("BACKGROUND", (0, 6), (-1, 6), CINZA_CLARO),
+                ("BACKGROUND", (0, 7), (-1, 7), colors.white),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(t_anexo_i)
+    story.append(Spacer(1, 8 * mm))
+
+    story.append(_pb("ANEXO II — TABELA DE SERVIÇOS EXTRAORDINÁRIOS", s_title))
+    story.append(_pb("Serviços fora do escopo ordinário mensal, mediante orçamento prévio.", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=8))
+
+    anexo_ii = [
+        ["Serviço extraordinário", "Critério", "Observação"],
+        ["Visita técnica extraordinária", "Orçamento prévio em até 48 horas úteis", "Aplicável fora da periodicidade regular contratada."],
+        ["Atendimento emergencial presencial", "Conforme urgência, deslocamento e complexidade", "Aplicável em risco sanitário, água imprópria, acidente ou demanda crítica."],
+        ["Reunião técnica com síndico, conselho, administradora ou jurídico", "Conforme duração e preparação técnica", "Pode envolver histórico de parâmetros, orientação normativa e alinhamento documental."],
+        ["Treinamento de operador ou equipe local", "Conforme carga horária", "Pode envolver POPs, GHS, EPIs, medição de parâmetros e segurança química."],
+        ["Relatório técnico complementar", "Conforme escopo solicitado", "Documento adicional fora do relatório técnico mensal ordinário."],
+        ["Acompanhamento de fiscalização oficial", "Conforme demanda e urgência", "Apoio técnico documental em fiscalização, notificação ou exigência formal."],
+    ]
+    t_anexo_ii = Table(
+        [[_pb(f"<b>{_esc(c)}</b>" if i == 0 else _esc(c), s_table_header if i == 0 else s_table_cell) for c in row] for i, row in enumerate(anexo_ii)],
+        colWidths=[5.2 * cm, 5.4 * cm, 6.3 * cm],
+        repeatRows=1,
+    )
+    t_anexo_ii.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CINZA_CLARO]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(t_anexo_ii)
+    story.append(Spacer(1, 5 * mm))
+
+    box_info(
+        "Regra de execução",
+        "Os serviços extraordinários somente serão executados mediante solicitação da CONTRATANTE e aprovação prévia do orçamento, salvo situações emergenciais em que houver risco sanitário ou operacional relevante e necessidade de comunicação técnica imediata.",
+        cor_fundo=ALERTA,
+        cor_borda=DOURADO,
+    )
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
+
+
+def salvar_contrato_rt_pdf_premium_reportlab(dados: dict, output_pdf: Path) -> tuple[bool, str | None]:
+    """Salva o PDF premium do contrato RT e retorna status/erro."""
+    try:
+        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf_bytes = gerar_contrato_rt_pdf_reportlab(dados)
+        output_pdf.write_bytes(pdf_bytes)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+
+# =========================================
+# TERMOS DE CIÊNCIA — RT / EPIs
+# =========================================
+
 def gerar_contrato_e_aditivo():
+    """Gera somente o contrato RT/ART da Aqua Gestão.
+
+    Fluxo v15: removida a geração de aditivo de desconto da tela principal de RT,
+    para manter o contrato limpo para CRQ/ART e alinhado ao item 3.2.
+    """
     email_cliente = st.session_state.email_cliente.strip()
     dados = {
         "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
@@ -11197,14 +14240,13 @@ def gerar_contrato_e_aditivo():
         "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
         "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
         "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
-        "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
         "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
         "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
     }
     erros = validar_para_geracao(dados, email_cliente)
 
     if erros:
-        st.error("Corrija os campos antes de gerar os documentos:")
+        st.error("Corrija os campos antes de gerar o contrato:")
         for erro in erros:
             st.write(f"- {erro}")
         return
@@ -11222,13 +14264,9 @@ def gerar_contrato_e_aditivo():
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_nome_contrato = limpar_nome_arquivo(f"Contrato_RT_{nome_condominio}_{timestamp}")
-        base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
 
         contrato_docx = pasta_condominio / f"{base_nome_contrato}.docx"
-        contrato_pdf = pasta_condominio / f"{base_nome_contrato}.pdf"
-
-        aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
-        aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
+        contrato_pdf_premium = pasta_condominio / f"{base_nome_contrato}_PDF_PREMIUM_AQUA_GESTAO.pdf"
 
         placeholders = {
             "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
@@ -11253,7 +14291,7 @@ def gerar_contrato_e_aditivo():
             "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
         }
 
-        with st.spinner("Gerando contrato..."):
+        with st.spinner("Gerando contrato DOCX editável..."):
             gerar_documento(
                 template_path=TEMPLATE_CONTRATO,
                 output_docx=contrato_docx,
@@ -11261,47 +14299,43 @@ def gerar_contrato_e_aditivo():
                 incluir_assinaturas=False,
             )
 
-        with st.spinner("Gerando aditivo..."):
-            gerar_documento(
-                template_path=TEMPLATE_ADITIVO,
-                output_docx=aditivo_docx,
-                placeholders=placeholders,
-                incluir_assinaturas=False,
+        with st.spinner("Gerando PDF Premium Aqua Gestão..."):
+            ok_contrato_premium, erro_contrato_premium = salvar_contrato_rt_pdf_premium_reportlab(
+                placeholders,
+                contrato_pdf_premium,
             )
 
-        ok_contrato, erro_contrato = converter_docx_para_pdf(contrato_docx, contrato_pdf)
-        ok_aditivo, erro_aditivo = converter_docx_para_pdf(aditivo_docx, aditivo_pdf)
-
         registrar_documento_manifest(
             pasta_condominio=pasta_condominio,
             nome_condominio=nome_condominio,
-            tipo="Contrato",
+            tipo="Contrato RT — Aqua Gestão",
             arquivo_docx=contrato_docx,
-            arquivo_pdf=contrato_pdf,
-            pdf_gerado=ok_contrato,
-            erro_pdf=erro_contrato,
+            arquivo_pdf=contrato_pdf_premium,
+            pdf_gerado=ok_contrato_premium,
+            erro_pdf=erro_contrato_premium,
             dados_utilizados=dados,
-        )
-        registrar_documento_manifest(
-            pasta_condominio=pasta_condominio,
-            nome_condominio=nome_condominio,
-            tipo="Aditivo",
-            arquivo_docx=aditivo_docx,
-            arquivo_pdf=aditivo_pdf,
-            pdf_gerado=ok_aditivo,
-            erro_pdf=erro_aditivo,
-            dados_utilizados=dados,
+            extras={"fluxo": "contrato_unico_sem_aditivo", "crq_item_3_2": True},
         )
 
         st.session_state.ultima_pasta_gerada = str(pasta_condominio)
         st.session_state.ultimos_docs_gerados = {
             "contrato_docx": str(contrato_docx) if contrato_docx.exists() else None,
-            "contrato_pdf": str(contrato_pdf) if ok_contrato and contrato_pdf.exists() else None,
-            "aditivo_docx": str(aditivo_docx) if aditivo_docx.exists() else None,
-            "aditivo_pdf": str(aditivo_pdf) if ok_aditivo and aditivo_pdf.exists() else None,
+            "contrato_pdf_premium": str(contrato_pdf_premium) if ok_contrato_premium and contrato_pdf_premium.exists() else None,
         }
 
-        st.success("Contrato e aditivo gerados com sucesso.")
+        st.success("Contrato RT gerado com sucesso.")
+
+        if not encontrar_logo():
+            st.warning(
+                "Atenção: não encontrei o arquivo de logo da Aqua Gestão na pasta do app. "
+                "O PDF Premium foi gerado com marca textual. Para sair com a logo oficial, mantenha o arquivo "
+                "`aqua_gestao_logo.png` na mesma pasta do app.py ou na pasta assets."
+            )
+
+        st.info(
+            "Fluxo CRQ/ART: foi gerado somente o contrato único de Responsabilidade Técnica, "
+            "sem aditivo de desconto e sem valor reduzido."
+        )
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("Arquivos gerados")
@@ -11309,59 +14343,36 @@ def gerar_contrato_e_aditivo():
         c1, c2 = st.columns(2)
 
         with c1:
-            st.markdown("**Contrato**")
+            st.markdown("**Contrato RT — Aqua Gestão**")
             if contrato_docx.exists():
                 with open(contrato_docx, "rb") as f:
                     st.download_button(
-                        "Baixar DOCX do contrato",
+                        "Baixar DOCX editável do contrato",
                         data=f,
                         file_name=contrato_docx.name,
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         use_container_width=True,
                     )
 
-            if ok_contrato and contrato_pdf.exists():
-                with open(contrato_pdf, "rb") as f:
-                    st.download_button(
-                        "Baixar PDF do contrato",
-                        data=f,
-                        file_name=contrato_pdf.name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-            else:
-                st.warning(f"PDF do contrato não gerado. Erro: {erro_contrato}")
-
         with c2:
-            st.markdown("**Aditivo**")
-            if aditivo_docx.exists():
-                with open(aditivo_docx, "rb") as f:
+            st.markdown("**PDF para envio**")
+            if ok_contrato_premium and contrato_pdf_premium.exists():
+                with open(contrato_pdf_premium, "rb") as f:
                     st.download_button(
-                        "Baixar DOCX do aditivo",
+                        "📄 Baixar PDF Premium Aqua Gestão",
                         data=f,
-                        file_name=aditivo_docx.name,
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True,
-                    )
-
-            if ok_aditivo and aditivo_pdf.exists():
-                with open(aditivo_pdf, "rb") as f:
-                    st.download_button(
-                        "Baixar PDF do aditivo",
-                        data=f,
-                        file_name=aditivo_pdf.name,
+                        file_name=contrato_pdf_premium.name,
                         mime="application/pdf",
                         use_container_width=True,
                     )
             else:
-                st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
-
+                st.error(f"PDF Premium Aqua Gestão não gerado. Erro: {erro_contrato_premium}")
 
         mensagem = montar_mensagem_envio(
             nome_condominio=nome_condominio,
             nome_sindico=nome_sindico,
-            caminho_contrato_pdf=contrato_pdf if contrato_pdf.exists() else None,
-            caminho_aditivo_pdf=aditivo_pdf if aditivo_pdf.exists() else None,
+            caminho_contrato_pdf=contrato_pdf_premium if contrato_pdf_premium.exists() else None,
+            caminho_aditivo_pdf=None,
         )
 
         exibir_bloco_envio(
@@ -11373,7 +14384,8 @@ def gerar_contrato_e_aditivo():
         )
 
     except Exception as e:
-        st.error(f"Erro na geração dos documentos: {e}")
+        st.error(f"Erro na geração do contrato: {e}")
+
 
 
 def gerar_somente_aditivo_rapido():
@@ -11540,5 +14552,5 @@ if rel_gerar:
 
 st.markdown("---")
 st.caption(
-    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v19u"
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
