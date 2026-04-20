@@ -2140,24 +2140,15 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
 
 
 def _empresa_ativa_codigo() -> str:
-    """Retorna a empresa/painel ativo de forma robusta.
+    """Retorna o painel administrativo ativo.
 
-    Aceita somente:
-    - aqua_gestao
-    - bem_star
-
-    Se o session_state perder empresa_ativa depois de um st.rerun,
-    recupera pelo radio da tela inicial.
+    O operador não usa esta escolha; operador é filtrado por PIN/condomínios.
     """
-    valor = st.session_state.get("empresa_ativa", "")
-    if valor not in ("aqua_gestao", "bem_star"):
-        radio_valor = str(st.session_state.get("empresa_selecionada_admin", ""))
-        valor = "bem_star" if "Bem Star" in radio_valor else "aqua_gestao"
+    valor = st.session_state.get("empresa_ativa", "aqua_gestao")
     if valor not in ("aqua_gestao", "bem_star"):
         valor = "aqua_gestao"
     st.session_state["empresa_ativa"] = valor
     return valor
-
 
 def _empresa_ativa_nome() -> str:
     return "Bem Star Piscinas" if _empresa_ativa_codigo() == "bem_star" else "Aqua Gestão"
@@ -7956,6 +7947,42 @@ if st.session_state.get("modo_atual", "entrada") == "escritorio":
 # =========================================
 
 with st.sidebar:
+    if st.session_state.get("modo_atual", "entrada") == "escritorio":
+        # === SELETOR ADMINISTRATIVO DE EMPRESA — INÍCIO ===
+        st.markdown("### Painel administrativo")
+
+        _empresa_atual_admin = st.session_state.get("empresa_ativa", "aqua_gestao")
+        if _empresa_atual_admin not in ("aqua_gestao", "bem_star"):
+            _empresa_atual_admin = "aqua_gestao"
+            st.session_state["empresa_ativa"] = _empresa_atual_admin
+
+        _opcoes_empresa_admin = ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"]
+        _idx_empresa_admin = 1 if _empresa_atual_admin == "bem_star" else 0
+
+        _empresa_escolhida_admin = st.radio(
+            "Empresa ativa",
+            options=_opcoes_empresa_admin,
+            index=_idx_empresa_admin,
+            key="empresa_seletor_admin_sidebar_definitivo",
+            label_visibility="collapsed",
+        )
+
+        _novo_codigo_admin = "bem_star" if "Bem Star" in _empresa_escolhida_admin else "aqua_gestao"
+
+        if st.session_state.get("empresa_ativa") != _novo_codigo_admin:
+            st.session_state["empresa_ativa"] = _novo_codigo_admin
+            st.session_state["empresa_selecionada_admin"] = _empresa_escolhida_admin
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.rerun()
+
+        _nome_painel_admin = "Bem Star Piscinas" if _novo_codigo_admin == "bem_star" else "Aqua Gestão"
+        st.caption(f"Painel ativo: {_nome_painel_admin}")
+        st.divider()
+        # === SELETOR ADMINISTRATIVO DE EMPRESA — FIM ===
+
     if st.session_state.get("modo_atual", "entrada") != "operador":
         st.header("Histórico recente")
 
@@ -8185,28 +8212,18 @@ if _modo_interno == "entrada":
         st.markdown('<div class="entrada-eyebrow"></div>', unsafe_allow_html=True)
         st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="entrada-sub">Entre com seu PIN e selecione o condomínio liberado.<br>'
+            '<div class="entrada-sub">Entre com seu PIN para acessar os condomínios liberados.<br>'
             'O sistema identifica automaticamente os clientes vinculados.</div>',
             unsafe_allow_html=True
         )
 
-        # Selecao de empresa — visivel para operador E administrativo
-        _empresa_sel_entrada = st.radio(
-            "Empresa",
-            ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-            key="empresa_selecionada_admin",
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        _nova_empresa = "bem_star" if "Bem Star" in _empresa_sel_entrada else "aqua_gestao"
-        if st.session_state.get("empresa_ativa") != _nova_empresa:
-            st.session_state["empresa_ativa"] = _nova_empresa
-            st.rerun()
+        # Modo Operador: empresa não é escolhida na entrada.
+        # O PIN define automaticamente os condomínios liberados ao operador,
+        # incluindo clientes Aqua Gestão, Bem Star Piscinas ou Ambas.
+        st.caption("O PIN direciona automaticamente para os condomínios vinculados ao operador.")
 
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
-            # Grava novamente no clique para garantir que o Modo Campo use a empresa escolhida.
-            st.session_state["empresa_ativa"] = _nova_empresa
-            st.session_state["empresa_contexto_operador"] = _nova_empresa
+            # Operador entra por PIN; empresa não é escolhida pelo operador.
             st.session_state["modo_atual"] = "operador"
             st.session_state["mostrar_pin_admin"] = False
             st.session_state["op_pin_ok"] = False
@@ -8266,7 +8283,6 @@ if _modo_interno in ("escritorio", "operador"):
         if _modo_interno == "operador":
             st.session_state["op_pin_ok"] = False
             st.session_state.pop("op_dados_atual", None)
-            st.session_state.pop("empresa_contexto_operador", None)
         st.rerun()
 
 # =========================================
@@ -8355,10 +8371,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
         st.session_state["op_pin_ok"] = False
         st.session_state.pop("op_dados_atual", None)
+        st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
     # Empresa ativa no Modo Campo — preservada desde a tela inicial.
-    _empresa_op_codigo = st.session_state.get("empresa_contexto_operador") or _empresa_ativa_codigo()
+    # Fallback visual: operador nao escolhe empresa; acesso e por PIN/condominios.
+    _empresa_op_codigo = st.session_state.get("empresa_contexto_operador") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if _empresa_op_codigo not in ("aqua_gestao", "bem_star"):
         _empresa_op_codigo = "aqua_gestao"
     st.session_state["empresa_ativa"] = _empresa_op_codigo
@@ -8373,7 +8391,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
-    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Acesso separado por empresa e serviço</span>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -8419,7 +8437,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita_html",
                     )
 
-    # Busca clientes do Google Sheets sem filtrar por empresa no modo operador
+    # Busca TODOS os clientes no modo operador; o filtro é por PIN/condomínio, não por empresa.
     @st.cache_data(ttl=60)
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
@@ -8499,7 +8517,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             else:
                 st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
         else:
-            opcoes_cond = opcoes_cond_todas
+            opcoes_cond = []
+            st.warning("Seu PIN ainda não possui condomínios vinculados. Contate o administrador.")
 
     op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
