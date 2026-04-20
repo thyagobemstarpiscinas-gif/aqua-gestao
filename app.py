@@ -8165,6 +8165,19 @@ if _modo_interno == "entrada":
             unsafe_allow_html=True
         )
 
+        # Selecao de empresa — visivel para operador E administrativo
+        _empresa_sel_entrada = st.radio(
+            "Empresa",
+            ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+            key="empresa_selecionada_admin",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        _nova_empresa = "bem_star" if "Bem Star" in _empresa_sel_entrada else "aqua_gestao"
+        if st.session_state.get("empresa_ativa") != _nova_empresa:
+            st.session_state["empresa_ativa"] = _nova_empresa
+            st.rerun()
+
         if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
             st.session_state["modo_atual"] = "operador"
             st.session_state["mostrar_pin_admin"] = False
@@ -8176,18 +8189,6 @@ if _modo_interno == "entrada":
         st.markdown('<div class="entrada-admin-note">Uso interno do escritório</div>', unsafe_allow_html=True)
 
         if st.session_state.get("mostrar_pin_admin"):
-            _empresa_sel_admin = st.radio(
-                "Escolha o painel da empresa",
-                ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-                key="empresa_selecionada_admin",
-                horizontal=True,
-                label_visibility="collapsed",
-            )
-            _eh_bem_star_admin = "Bem Star" in _empresa_sel_admin
-            nova_empresa = "bem_star" if _eh_bem_star_admin else "aqua_gestao"
-            if st.session_state.get("empresa_ativa") != nova_empresa:
-                st.session_state["empresa_ativa"] = nova_empresa
-                st.rerun()
 
             pin_admin = st.text_input(
                 "PIN administrativo",
