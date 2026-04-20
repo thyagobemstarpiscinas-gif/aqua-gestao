@@ -1860,40 +1860,115 @@ def logo_para_base64(path) -> str:
 
 
 def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
-    """Salva rascunho do lançamento em andamento no modo operador."""
+    """Salva rascunho em arquivo local + Google Sheets (persiste apos sleep do servidor)."""
+    dados["_rascunho_salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    dados["_rascunho_cond"] = nome_cond.strip()
+
+    # 1. Arquivo local (rapido)
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
         pasta.mkdir(parents=True, exist_ok=True)
-        rascunho_path = pasta / "_rascunho_operador.json"
-        dados["_rascunho_salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        dados["_rascunho_cond"] = nome_cond.strip()
-        with open(rascunho_path, "w", encoding="utf-8") as f:
-            json.dump(dados, f, ensure_ascii=False, indent=2)
-        return True
+        dados_local = {k: v for k, v in dados.items()
+                       if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
+        with open(pasta / "_rascunho_operador.json", "w", encoding="utf-8") as f:
+            json.dump(dados_local, f, ensure_ascii=False, indent=2)
     except Exception:
-        return False
+        pass
+
+    # 2. Google Sheets aba _Rascunhos (backup persistente)
+    try:
+        sh = conectar_sheets()
+        if sh:
+            try:
+                aba_rasc = sh.worksheet("_Rascunhos")
+            except Exception:
+                aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
+                aba_rasc.update("A1:D1", [["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
+            dados_sh = {k: v for k, v in dados.items()
+                        if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
+            payload = json.dumps(dados_sh, ensure_ascii=False)
+            if len(payload) > 45000:
+                payload = payload[:45000] + "..."
+            todos = aba_rasc.get_all_values()
+            chave = nome_cond.strip().lower()
+            linha_existente = None
+            for i, row in enumerate(todos[1:], start=2):
+                if row and str(row[0]).strip().lower() == chave:
+                    linha_existente = i
+                    break
+            nova = [nome_cond.strip(), dados.get("operador",""), dados["_rascunho_salvo_em"], payload]
+            if linha_existente:
+                aba_rasc.update(f"A{linha_existente}:D{linha_existente}", [nova], value_input_option="RAW")
+            else:
+                proxima = max(len(todos) + 1, 2)
+                aba_rasc.update(f"A{proxima}:D{proxima}", [nova], value_input_option="RAW")
+    except Exception:
+        pass
+
+    return True
 
 
 def carregar_rascunho_operador(nome_cond: str) -> dict:
-    """Carrega rascunho do operador para um condomínio."""
+    """Carrega rascunho: arquivo local primeiro, fallback no Sheets apos sleep."""
+    # 1. Arquivo local
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
         rascunho_path = pasta / "_rascunho_operador.json"
-        if not rascunho_path.exists():
-            return {}
-        with open(rascunho_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        if rascunho_path.exists():
+            with open(rascunho_path, "r", encoding="utf-8") as f:
+                return json.load(f)
     except Exception:
-        return {}
+        pass
+
+    # 2. Fallback Google Sheets
+    try:
+        sh = conectar_sheets()
+        if sh:
+            try:
+                aba_rasc = sh.worksheet("_Rascunhos")
+            except Exception:
+                return {}
+            todos = aba_rasc.get_all_values()
+            chave = nome_cond.strip().lower()
+            for row in todos[1:]:
+                if row and str(row[0]).strip().lower() == chave and len(row) >= 4 and row[3].strip():
+                    dados = json.loads(row[3])
+                    try:
+                        pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
+                        pasta.mkdir(parents=True, exist_ok=True)
+                        with open(pasta / "_rascunho_operador.json", "w", encoding="utf-8") as f:
+                            json.dump(dados, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                    return dados
+    except Exception:
+        pass
+
+    return {}
 
 
 def deletar_rascunho_operador(nome_cond: str):
-    """Remove rascunho após salvar lançamento definitivo."""
+    """Remove rascunho apos salvar lancamento definitivo (local + Sheets)."""
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
         rascunho_path = pasta / "_rascunho_operador.json"
         if rascunho_path.exists():
             rascunho_path.unlink()
+    except Exception:
+        pass
+    try:
+        sh = conectar_sheets()
+        if sh:
+            try:
+                aba_rasc = sh.worksheet("_Rascunhos")
+                todos = aba_rasc.get_all_values()
+                chave = nome_cond.strip().lower()
+                for i, row in enumerate(todos[1:], start=2):
+                    if row and str(row[0]).strip().lower() == chave:
+                        aba_rasc.update(f"A{i}:D{i}", [["","","",""]], value_input_option="RAW")
+                        break
+            except Exception:
+                pass
     except Exception:
         pass
 
