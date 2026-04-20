@@ -4615,7 +4615,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 
         story.append(P("2. NORMAS TÉCNICAS ABNT APLICÁVEIS", "AqH1"))
         story.append(P("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "AqH2"))
-        story.append(P("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados in loco com o aparelho Photometer Color Q.", "AqBody"))
+        story.append(P("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados no local com o aparelho Photometer Color Q.", "AqBody"))
         story.append(table([
             ["Parâmetro", "Mínimo", "Máximo", "Unidade", "Método"],
             ["pH", "7,2", "7,8", "—", "Photometer"],
@@ -4625,7 +4625,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["Dureza Cálcica", "150", "300", "mg/L CaCO3", "Photometer"],
             ["Ácido Cianúrico", "30", "50", "mg/L", "Photometer"],
         ], widths=[58*mm, 30*mm, 30*mm, 35*mm, 27*mm]))
-        story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas in loco. Tais determinações requerem coleta e envio a laboratório acreditado pela ANVISA/Inmetro, sob responsabilidade de contratação do cliente.", "AqWarn"))
+        story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas no local. Tais determinações requerem coleta e envio a laboratório acreditado pela ANVISA/Inmetro, sob responsabilidade de contratação do cliente.", "AqWarn"))
 
         story.append(P("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "AqH2"))
         conf = dados_relatorio.get("conformidades", {}) or {}
@@ -4724,7 +4724,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             [f"\n\n{dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)}\nCRQ 024025748 – Técnico em Química\nData: ______ / ______ / __________", "\n\nNome: _________________________________\nCPF / CNPJ: ___________________________\nData: ______ / ______ / __________"],
         ]
         story.append(table(assinatura, widths=[90*mm, 90*mm], header=True))
-        story.append(P("AVISO LEGAL: Documento de uso profissional restrito. Emitido sob responsabilidade técnica do RT acima identificado. Arquivar por no mínimo 5 anos para fins de compliance, rastreabilidade, auditoria e segurança jurídica. Análises microbiológicas in loco não integram este relatório e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.", "AqWarn"))
+        story.append(P("Documento de uso profissional. Emitido sob responsabilidade técnica do RT identificado neste relatório. Análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.", "AqWarn"))
 
         fotos = [Path(f) for f in (fotos or []) if f and Path(f).exists()]
         if fotos:
@@ -5330,7 +5330,7 @@ def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
     doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
     doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
     doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025; ABNT NBR 10339; NR-26; NR-06.")
-    doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas in loco e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
+    doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
 
     doc.add_paragraph("Observações automáticas:")
     for obs in dados_relatorio["observacoes"]:
@@ -13207,6 +13207,13 @@ def _importar_lancamentos(lancamentos):
         st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
         st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
         st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
+    # Preenche campo operador responsavel com o mais frequente dos lancamentos
+    _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
+    if _ops_import:
+        _op_mais_freq = max(set(_ops_import), key=_ops_import.count)
+        if not st.session_state.get("csr_operador_rel","").strip():
+            st.session_state["csr_operador_rel"] = _op_mais_freq
+
     # Importa dosagens da última visita com dosagem registrada
     for lc in reversed(lancamentos):
         if lc.get("dosagens"):
