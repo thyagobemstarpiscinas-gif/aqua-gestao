@@ -606,7 +606,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             lancamento.get("operador", ""),          # U
             lancamento.get("problemas", ""),         # V
             payload_json,                             # W
-            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            _agora_brasilia(),
             "Modo Campo",                             # Y
             mes_ano,                                  # Z
         ]
@@ -1106,7 +1106,7 @@ def extrair_lancamento_de_pdf_visita(pdf_bytes: bytes, nome_condominio_padrao: s
         "observacao": observacao,
         "dosagens": dosagens,
         "parecer": "Importado de PDF de visita",
-        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "salvo_em": _agora_brasilia(),
         "fonte": "PDF de Relatório de Visita",
     }
     if not lancamento.get("data") and not piscinas and not dosagens:
@@ -1859,9 +1859,15 @@ def logo_para_base64(path) -> str:
         return ""
 
 
+
+def _agora_brasilia() -> str:
+    """Retorna horario atual no fuso de Brasilia (UTC-3)."""
+    from datetime import timezone, timedelta
+    return datetime.now(tz=timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M:%S")
+
 def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
     """Salva rascunho em arquivo local + Google Sheets (persiste apos sleep do servidor)."""
-    dados["_rascunho_salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    dados["_rascunho_salvo_em"] = _agora_brasilia()
     dados["_rascunho_cond"] = nome_cond.strip()
 
     # 1. Arquivo local (rapido)
@@ -2670,7 +2676,7 @@ def salvar_snapshot_formulario() -> dict:
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
         "parametros_ultimos": obter_parametros_ultimos_relatorio(),
         "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
-        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "salvo_em": _agora_brasilia(),
     }
 
 
@@ -2771,7 +2777,7 @@ def obter_snapshot_relatorio_independente() -> dict:
         "ultima_origem_relatorio": (st.session_state.get("rel_tipo_atendimento") or "").strip(),
         "parametros_ultimos": obter_parametros_ultimos_relatorio(),
         "dosagens_ultimas": obter_dosagens_ultimas_relatorio(),
-        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "salvo_em": _agora_brasilia(),
     }
 
 
@@ -2853,7 +2859,7 @@ def registrar_documento_manifest(pasta_condominio: Path, nome_condominio: str, t
     documento = {
         "tipo": tipo,
         "nome_condominio": nome_condominio,
-        "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "gerado_em": _agora_brasilia(),
         "arquivo_docx": arquivo_docx.name if arquivo_docx and arquivo_docx.exists() else None,
         "arquivo_pdf": arquivo_pdf.name if arquivo_pdf and arquivo_pdf.exists() else None,
         "pdf_gerado": bool(pdf_gerado),
@@ -2862,7 +2868,7 @@ def registrar_documento_manifest(pasta_condominio: Path, nome_condominio: str, t
         "extras": extras or {},
     }
     manifest.setdefault("documentos", []).append(documento)
-    manifest["ultimo_update"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    manifest["ultimo_update"] = _agora_brasilia()
     salvar_manifest_condominio(pasta_condominio, manifest)
 
 
@@ -4271,7 +4277,7 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
     dados_atualizados["data_inicio"] = formatar_data_br(novo_inicio)
     dados_atualizados["data_fim"] = formatar_data_br(novo_fim)
     dados_atualizados["data_assinatura"] = hoje_br()
-    dados_atualizados["salvo_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    dados_atualizados["salvo_em"] = _agora_brasilia()
 
     placeholders = {
         "{{DATA_ASSINATURA}}": dados_atualizados.get("data_assinatura", ""),
@@ -7757,7 +7763,7 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
             }
             for i in range(5)
         ],
-        "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "salvo_em": _agora_brasilia(),
     }
     for i in range(qtd):
         rascunho["analises"].append({
@@ -9289,7 +9295,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_extras_ids": fotos_extras_ids,
                     "fotos_extras_b64": fotos_extras_b64,
                     "condominio": op_nome_cond.strip(),
-                    "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "salvo_em": _agora_brasilia(),
                 }
                 pendentes = dados_ex.get("lancamentos_campo", [])
                 pendentes.append(lancamento)
@@ -10901,7 +10907,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     "endereco": csr_endereco.strip(),
                     "contato": csr_contato.strip(),
                     "telefone": formatar_telefone(csr_telefone.strip()),
-                    "cadastrado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "cadastrado_em": _agora_brasilia(),
                 }
                 # Atualiza se já existe, senão adiciona
                 nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
@@ -10954,7 +10960,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     "empresa": "Bem Star Piscinas",
                     "servicos": {"rt": False, "limpeza": True},
                     "tipo": "sem_rt",
-                    "salvo_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "salvo_em": _agora_brasilia(),
                 })
                 salvar_dados_condominio(pasta_csr, _dados_csr_local)
                 st.rerun()
