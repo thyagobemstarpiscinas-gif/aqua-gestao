@@ -3446,6 +3446,152 @@ def gerar_documento(template_path: Path, output_docx: Path, placeholders: dict, 
     doc.save(str(output_docx))
 
 
+
+
+# =========================================
+# ADITIVO RT — PDF PREMIUM REPORTLAB
+# =========================================
+
+def salvar_aditivo_rt_pdf_premium_reportlab(placeholders: dict, pdf_path: Path) -> tuple[bool, str | None]:
+    """Gera o Termo Aditivo em PDF premium Aqua Gestão, sem depender do Word/LibreOffice."""
+    try:
+        import html
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, HRFlowable, KeepTogether
+
+        pdf_path = Path(pdf_path)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        azul_escuro = colors.HexColor("#0B2E59")
+        azul_claro = colors.HexColor("#EAF4FF")
+        dourado = colors.HexColor("#C9A227")
+        cinza = colors.HexColor("#4B5563")
+        borda = colors.HexColor("#D7E6F5")
+
+        def ph(chave: str, padrao: str = "") -> str:
+            valor = str(placeholders.get(chave, "") or "").strip()
+            return valor if valor else padrao
+
+        nome_cond = ph("{{NOME_CONDOMINIO}}", ph("{{NOME_CONTRATANTE}}", "CONTRATANTE"))
+        cnpj_cond = ph("{{CNPJ_CONDOMINIO}}", ph("{{CPF_CNPJ_CONTRATANTE}}", ""))
+        endereco_cond = ph("{{ENDERECO_CONDOMINIO}}", ph("{{ENDERECO_CONTRATANTE}}", ""))
+        sindico = ph("{{NOME_SINDICO}}", "")
+        cpf_sindico = ph("{{CPF_SINDICO}}", "")
+        cargo_sindico = ph("{{CARGO_SINDICO}}", "Síndico")
+        valor_mensal = ph("{{VALOR_MENSAL}}", "R$ —")
+        valor_aditivo = ph("{{VALOR_ADITIVO}}", "R$ —")
+        data_inicio = ph("{{DATA_INICIO_CONTRATO}}", ph("{{DATA_INICIO}}", ""))
+        data_fim = ph("{{DATA_FIM_CONTRATO}}", ph("{{DATA_FIM}}", ""))
+        data_ass = ph("{{DATA_ASSINATURA}}", "")
+        local_data = ph("{{LOCAL_DATA_ASSINATURA}}", f"Uberlândia/MG, {data_ass}" if data_ass else "Uberlândia/MG")
+
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(name="AquaTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=15, leading=19, alignment=TA_CENTER, textColor=azul_escuro, spaceAfter=6))
+        styles.add(ParagraphStyle(name="AquaH", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=14, textColor=azul_escuro, spaceBefore=8, spaceAfter=4))
+        styles.add(ParagraphStyle(name="AquaBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.2, leading=13.2, alignment=TA_JUSTIFY, textColor=colors.HexColor("#1F2937"), spaceAfter=5))
+        styles.add(ParagraphStyle(name="AquaSmall", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10, textColor=cinza))
+        styles.add(ParagraphStyle(name="AquaCenter", parent=styles["Normal"], fontName="Helvetica", fontSize=8.5, leading=11, alignment=TA_CENTER, textColor=colors.HexColor("#1F2937")))
+
+        def esc(txt: str) -> str:
+            return html.escape(str(txt or "")).replace("\n", "<br/>")
+
+        try:
+            logo_path = encontrar_logo()
+        except Exception:
+            logo_path = None
+
+        def header_footer(canvas, doc):
+            canvas.saveState()
+            w, h = A4
+            canvas.setFillColor(azul_escuro)
+            canvas.rect(0, h - 1.15*cm, w, 1.15*cm, stroke=0, fill=1)
+            canvas.setFillColor(dourado)
+            canvas.rect(0, h - 1.20*cm, w, 0.05*cm, stroke=0, fill=1)
+            canvas.setFont("Helvetica-Bold", 8.5)
+            canvas.setFillColor(colors.white)
+            canvas.drawString(1.55*cm, h - 0.72*cm, "AQUA GESTÃO – CONTROLE TÉCNICO DE PISCINAS")
+            canvas.setFont("Helvetica", 7.5)
+            canvas.drawRightString(w - 1.55*cm, h - 0.72*cm, f"Termo Aditivo RT • Página {doc.page}")
+            canvas.setStrokeColor(borda)
+            canvas.line(1.55*cm, 1.3*cm, w - 1.55*cm, 1.3*cm)
+            canvas.setFont("Helvetica", 7.2)
+            canvas.setFillColor(cinza)
+            canvas.drawString(1.55*cm, 0.92*cm, "Thyago Fernando da Silveira | CRQ-MG 2ª Região | CRQ 024025748 | Técnico em Química")
+            canvas.drawRightString(w - 1.55*cm, 0.92*cm, "Documento técnico-comercial vinculado ao contrato base")
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=2.05*cm, bottomMargin=1.75*cm, leftMargin=1.65*cm, rightMargin=1.65*cm, title=f"Aditivo RT - {nome_cond}", author="Aqua Gestão – Controle Técnico de Piscinas")
+        story = []
+
+        cabecalho = []
+        if logo_path and Path(logo_path).exists():
+            try:
+                img = RLImage(str(logo_path), width=2.55*cm, height=2.55*cm, kind="proportional")
+                cabecalho.append(img)
+            except Exception:
+                cabecalho.append(Paragraph("<b>AQUA<br/>GESTÃO</b>", styles["AquaCenter"]))
+        else:
+            cabecalho.append(Paragraph("<b>AQUA<br/>GESTÃO</b>", styles["AquaCenter"]))
+
+        cabecalho.append(Paragraph("<b>1º TERMO ADITIVO AO CONTRATO DE PRESTAÇÃO DE SERVIÇOS</b><br/>RESPONSABILIDADE TÉCNICA – CONTROLE TÉCNICO DE PISCINAS<br/><font color='#4B5563'>Aditivo comercial para concessão de desconto, sem alteração do escopo técnico contratado.</font>", styles["AquaTitle"]))
+        tabela_cab = Table([cabecalho], colWidths=[3.0*cm, 14.0*cm])
+        tabela_cab.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), azul_claro), ("BOX", (0, 0), (-1, -1), 0.8, borda), ("LINEBELOW", (0, 0), (-1, 0), 1.2, dourado), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10), ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
+        story.append(tabela_cab)
+        story.append(Spacer(1, 0.35*cm))
+
+        qual = [
+            [Paragraph("<b>CONTRATADA</b>", styles["AquaSmall"]), Paragraph("AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>CNPJ 66.008.795/0001-92", styles["AquaSmall"])],
+            [Paragraph("<b>CONTRATANTE</b>", styles["AquaSmall"]), Paragraph(f"{esc(nome_cond)}<br/>CNPJ/CPF: {esc(cnpj_cond)}<br/>{esc(endereco_cond)}", styles["AquaSmall"])],
+            [Paragraph("<b>CONTRATO BASE</b>", styles["AquaSmall"]), Paragraph(f"Contrato de Prestação de Serviços de Responsabilidade Técnica firmado em {esc(data_inicio)}" + (f", com vigência até {esc(data_fim)}." if data_fim else "."), styles["AquaSmall"])],
+        ]
+        tq = Table(qual, colWidths=[3.15*cm, 13.85*cm])
+        tq.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, borda), ("INNERGRID", (0, 0), (-1, -1), 0.4, borda), ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3F8FF")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+        story.append(tq)
+        story.append(Spacer(1, 0.32*cm))
+
+        def clausula(titulo, paragrafos):
+            story.append(Paragraph(titulo, styles["AquaH"]))
+            story.append(HRFlowable(width="100%", thickness=0.7, color=dourado, spaceBefore=1, spaceAfter=5))
+            for par in paragrafos:
+                story.append(Paragraph(par, styles["AquaBody"]))
+
+        clausula("CLÁUSULA PRIMEIRA — DO DESCONTO COMERCIAL", [
+            "A CONTRATADA concede à CONTRATANTE, por mera liberalidade e em caráter comercial específico, desconto especial sobre os honorários mensais previstos no contrato base.",
+            f"Em razão do desconto ora concedido, o valor mensal contratual passa de <b>{esc(valor_mensal)}</b> para <b>{esc(valor_aditivo)}</b>.",
+            "O desconto previsto neste aditivo possui natureza excepcional, discricionária, revogável e não vinculante, não constituindo direito adquirido, permanência obrigatória, política geral de preços, cláusula de exclusividade ou condição compulsória de contratação de quaisquer outros produtos ou serviços.",
+            "O desconto decorre exclusivamente de avaliação comercial global realizada pela CONTRATADA no contexto da contratação, podendo ser revisto, reduzido ou suprimido, total ou parcialmente, mediante notificação prévia por escrito de 30 (trinta) dias, caso deixem de existir as premissas negociais que motivaram sua concessão.",
+            "A supressão do desconto não implicará alteração do escopo técnico contratado, passando a vigorar, após o prazo de notificação, o valor contratual ordinário então vigente, já considerado eventual reajuste aplicável.",
+        ])
+        clausula("CLÁUSULA SEGUNDA — DO REAJUSTE", [
+            "O valor com desconto será reajustado anualmente pelo mesmo critério previsto no contrato base.",
+            "Na hipótese de cessação do desconto, o valor ordinário restabelecido também observará o mesmo critério de reajuste contratual.",
+        ])
+        clausula("CLÁUSULA TERCEIRA — DA VIGÊNCIA", [
+            "O presente Termo Aditivo entra em vigor na data de sua assinatura e produzirá efeitos financeiros a partir do próximo vencimento contratual.",
+            "Permanecem inalteradas e ratificadas todas as demais cláusulas do contrato base não expressamente modificadas por este aditivo.",
+        ])
+
+        story.append(Spacer(1, 0.45*cm))
+        story.append(Paragraph(esc(local_data), styles["AquaCenter"]))
+        story.append(Spacer(1, 0.65*cm))
+
+        assinaturas = [[
+            Paragraph("_________________________________________<br/><b>CONTRATADA</b><br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ 024025748 | Técnico em Química", styles["AquaCenter"]),
+            Paragraph(f"_________________________________________<br/><b>CONTRATANTE</b><br/>{esc(nome_cond)}<br/>{esc(sindico)}" + (f" — {esc(cargo_sindico)}" if cargo_sindico else "") + (f"<br/>CPF: {esc(cpf_sindico)}" if cpf_sindico else ""), styles["AquaCenter"]),
+        ]]
+        ta = Table(assinaturas, colWidths=[8.2*cm, 8.2*cm])
+        ta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5)]))
+        story.append(KeepTogether(ta))
+
+        doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+        return True, None if pdf_path.exists() else "PDF não foi criado."
+    except Exception as e:
+        return False, str(e)
+
 # =========================================
 # EXPORTAÇÃO DE CADASTRO
 # =========================================
@@ -12072,7 +12218,7 @@ if _adt_dados_encontrados:
                         placeholders=_adt_placeholders,
                         incluir_assinaturas=False,
                     )
-                    _adt_ok_pdf, _adt_err_pdf = converter_docx_para_pdf(_adt_docx, _adt_pdf)
+                    _adt_ok_pdf, _adt_err_pdf = salvar_aditivo_rt_pdf_premium_reportlab(_adt_placeholders, _adt_pdf)
 
                     _adt_dados_encontrados["valor_mensal"] = _adt_val_atual_fmt
                     _adt_dados_encontrados["valor_aditivo"] = _adt_val_fmt
