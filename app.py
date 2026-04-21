@@ -11867,6 +11867,146 @@ st.markdown('</div>', unsafe_allow_html=True)
 # AÇÕES DE CADASTRO / RENOVAÇÃO
 # =========================================
 
+# _SECAO_ADITIVO_CNPJ_ADICIONADA_
+# =========================================
+# GERAR ADITIVO PARA CONTRATO EXISTENTE
+# =========================================
+st.markdown('<div class="section-card aq-only" id="sec-aditivo-cnpj">', unsafe_allow_html=True)
+st.subheader("📄 Gerar aditivo para contrato existente")
+st.caption("Localize um contrato já gerado pelo CNPJ e gere o 1º Termo Aditivo de desconto comercial.")
+
+_adt_col1, _adt_col2 = st.columns([1.5, 2])
+with _adt_col1:
+    _adt_cnpj_input = st.text_input(
+        "CNPJ do condomínio",
+        key="adt_cnpj_busca",
+        placeholder="00.000.000/0000-00",
+        help="Digite o CNPJ do condomínio para localizar o contrato gerado.",
+    )
+    _adt_cnpj_digits = re.sub(r"\D", "", _adt_cnpj_input or "")
+
+# Busca o condominio pelo CNPJ nas pastas generated/
+_adt_dados_encontrados = None
+_adt_pasta_encontrada = None
+if len(_adt_cnpj_digits) == 14:
+    for _adt_pasta in (GENERATED_DIR.iterdir() if GENERATED_DIR.exists() else []):
+        if not _adt_pasta.is_dir():
+            continue
+        _adt_json = carregar_dados_condominio(_adt_pasta)
+        if not _adt_json:
+            continue
+        _adt_cnpj_salvo = re.sub(r"\D", "", _adt_json.get("cnpj_condominio", ""))
+        if _adt_cnpj_salvo == _adt_cnpj_digits:
+            _adt_dados_encontrados = _adt_json
+            _adt_pasta_encontrada = _adt_pasta
+            break
+
+if len(_adt_cnpj_digits) == 14 and _adt_dados_encontrados is None:
+    st.warning("Nenhum contrato encontrado para este CNPJ. Verifique se o contrato já foi gerado.")
+
+if _adt_dados_encontrados:
+    _adt_nome = _adt_dados_encontrados.get("nome_condominio", _adt_pasta_encontrada.name)
+    _adt_val_atual = _adt_dados_encontrados.get("valor_mensal", "Não informado")
+    _adt_inicio = _adt_dados_encontrados.get("data_inicio", "")
+    _adt_fim = _adt_dados_encontrados.get("data_fim", "")
+    _adt_sindico = _adt_dados_encontrados.get("nome_sindico", "")
+    _adt_cargo = _adt_dados_encontrados.get("cargo_sindico", "Síndico")
+
+    with _adt_col2:
+        st.success(f"✅ Contrato encontrado: **{_adt_nome}**")
+        st.caption(f"Valor atual: {_adt_val_atual} | Vigência: {_adt_inicio} → {_adt_fim}")
+
+    st.markdown("")
+    _adt_c1, _adt_c2, _adt_c3 = st.columns([1.2, 1.2, 2])
+    with _adt_c1:
+        _adt_valor_desconto = st.text_input(
+            "Valor com desconto *",
+            key="adt_valor_desconto",
+            placeholder="R$ 1.200,00",
+            help="Valor mensal após o desconto comercial. Será inserido no aditivo.",
+        )
+    with _adt_c2:
+        _adt_data_ass = st.text_input(
+            "Data de assinatura",
+            key="adt_data_assinatura",
+            value=hoje_br(),
+            placeholder="dd/mm/aaaa",
+        )
+    with _adt_c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _adt_gerar = st.button(
+            "📄 Gerar aditivo",
+            key="btn_gerar_aditivo_cnpj",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if _adt_gerar:
+        _adt_val_limpo = (st.session_state.get("adt_valor_desconto") or "").strip()
+        _adt_data_limpa = (st.session_state.get("adt_data_assinatura") or "").strip()
+        if not _adt_val_limpo:
+            st.error("Informe o valor com desconto antes de gerar o aditivo.")
+        else:
+            _adt_val_fmt = moeda_br(_adt_val_limpo) if not _adt_val_limpo.startswith("R$") else _adt_val_limpo
+            _adt_placeholders = {
+                "{{NOME_CONDOMINIO}}": _adt_nome,
+                "{{CNPJ_CONDOMINIO}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
+                "{{ENDERECO_CONDOMINIO}}": _adt_dados_encontrados.get("endereco_condominio", ""),
+                "{{NOME_SINDICO}}": _adt_sindico,
+                "{{CPF_SINDICO}}": _adt_dados_encontrados.get("cpf_sindico", ""),
+                "{{CARGO_SINDICO}}": _adt_cargo,
+                "{{VALOR_MENSAL}}": valor_para_template(_adt_val_atual),
+                "{{VALOR_ADITIVO}}": valor_para_template(_adt_val_fmt),
+                "{{DATA_INICIO}}": _adt_inicio,
+                "{{DATA_FIM}}": _adt_fim,
+                "{{DATA_INICIO_CONTRATO}}": _adt_inicio,
+                "{{DATA_FIM_CONTRATO}}": _adt_fim,
+                "{{DATA_ASSINATURA}}": _adt_data_limpa,
+                "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {_adt_data_limpa}",
+                "{{NOME_CONTRATANTE}}": _adt_nome,
+                "{{CPF_CNPJ_CONTRATANTE}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
+                "{{ENDERECO_CONTRATANTE}}": _adt_dados_encontrados.get("endereco_condominio", ""),
+            }
+            _adt_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _adt_base = limpar_nome_arquivo(f"Aditivo_RT_{_adt_nome}_{_adt_ts}")
+            _adt_docx = _adt_pasta_encontrada / f"{_adt_base}.docx"
+            _adt_pdf  = _adt_pasta_encontrada / f"{_adt_base}.pdf"
+            with st.spinner("Gerando aditivo..."):
+                try:
+                    gerar_documento(
+                        template_path=TEMPLATE_ADITIVO,
+                        output_docx=_adt_docx,
+                        placeholders=_adt_placeholders,
+                        incluir_assinaturas=False,
+                    )
+                    _adt_ok_pdf, _adt_err_pdf = converter_docx_para_pdf(_adt_docx, _adt_pdf)
+                    # Salva valor_aditivo no JSON do condominio
+                    _adt_dados_encontrados["valor_aditivo"] = _adt_val_fmt
+                    _adt_dados_encontrados["data_assinatura"] = _adt_data_limpa
+                    salvar_dados_condominio(_adt_pasta_encontrada, _adt_dados_encontrados)
+                    registrar_documento_manifest(
+                        pasta_condominio=_adt_pasta_encontrada,
+                        nome_condominio=_adt_nome,
+                        tipo="Aditivo",
+                        arquivo_docx=_adt_docx,
+                        arquivo_pdf=_adt_pdf,
+                        pdf_gerado=_adt_ok_pdf,
+                        erro_pdf=_adt_err_pdf,
+                        dados_utilizados=_adt_dados_encontrados,
+                    )
+                    if _adt_ok_pdf:
+                        st.success(f"✅ Aditivo gerado para {_adt_nome}. DOCX e PDF disponíveis na pasta do condomínio.")
+                    else:
+                        st.warning(f"⚠️ DOCX gerado. PDF falhou: {_adt_err_pdf}. O DOCX está disponível.")
+                    if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
+                        abrir_pasta_windows(_adt_pasta_encontrada)
+                except FileNotFoundError:
+                    st.error("Template aditivo.docx não encontrado. Verifique o diagnóstico de saúde do sistema.")
+                except Exception as _adt_ex:
+                    st.error(f"Erro ao gerar aditivo: {_adt_ex}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
 st.markdown('<div class="section-card aq-only" id="sec-cadastro-renovacao">', unsafe_allow_html=True)
 st.subheader("Cadastro e renovação")
 
