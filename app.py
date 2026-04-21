@@ -12076,6 +12076,33 @@ if len(_adt_cnpj_digits) == 14:
             }
             _adt_pasta_encontrada = _adt_pasta_candidata
 
+    # Segundo passe: enriquece campos contratuais ausentes a partir do JSON local,
+    # mesmo quando o primeiro passe (baseado no slug principal) não encontrou o arquivo.
+    # Cobre sessões novas no Cloud onde generated/ foi reiniciado mas o JSON ainda existe,
+    # ou onde o slug gravado difere levemente do calculado agora.
+    if _adt_dados_encontrados and not _adt_tem_json_local:
+        _slugs_candidatos = list(dict.fromkeys(filter(None, [
+            slugify_nome(_adt_dados_encontrados.get("nome_condominio", "")),
+            slugify_nome(_adt_cliente_sheets.get("nome", "")) if _adt_cliente_sheets else None,
+        ])))
+        for _slug_cand in _slugs_candidatos:
+            _pasta_cand2 = GENERATED_DIR / _slug_cand
+            _json_cand2 = carregar_dados_condominio(_pasta_cand2) if _pasta_cand2.exists() else None
+            if _json_cand2:
+                _adt_tem_json_local = True
+                # Preenche apenas campos em branco — não sobrescreve o que veio do Sheets
+                for _campo in [
+                    "valor_mensal", "data_inicio", "data_fim", "cpf_sindico",
+                    "cargo_sindico", "nome_sindico", "endereco_condominio",
+                    "cnpj_condominio", "dia_pagamento", "forma_pagamento",
+                    "prazo_contrato", "valor_mensal_extenso",
+                ]:
+                    _v = _json_cand2.get(_campo, "")
+                    if _v and not _adt_dados_encontrados.get(_campo):
+                        _adt_dados_encontrados[_campo] = _v
+                _adt_pasta_encontrada = _pasta_cand2
+                break
+
 if len(_adt_cnpj_digits) == 14 and _adt_dados_encontrados is None:
     st.warning(
         "Nenhum cliente encontrado com este CNPJ. "
@@ -15305,7 +15332,8 @@ def gerar_somente_aditivo_rapido():
                 incluir_assinaturas=False,
             )
 
-        ok_aditivo, erro_aditivo = converter_docx_para_pdf(aditivo_docx, aditivo_pdf)
+        # PDF Premium ReportLab — padrão visual Aqua Gestão (sem LibreOffice)
+        ok_aditivo, erro_aditivo = salvar_aditivo_rt_pdf_premium_reportlab(placeholders, aditivo_pdf)
 
         registrar_documento_manifest(
             pasta_condominio=pasta_condominio,
@@ -15347,7 +15375,7 @@ def gerar_somente_aditivo_rapido():
             if ok_aditivo and aditivo_pdf.exists():
                 with open(aditivo_pdf, "rb") as f:
                     st.download_button(
-                        "Baixar PDF do aditivo",
+                        "📄 Baixar PDF Premium Aqua Gestão",
                         data=f,
                         file_name=aditivo_pdf.name,
                         mime="application/pdf",
