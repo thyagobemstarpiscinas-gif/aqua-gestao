@@ -12126,13 +12126,22 @@ if _adt_dados_encontrados:
     _adt_inicio_base = str(_adt_dados_encontrados.get("data_inicio", "") or "").strip()
     _adt_fim_base = str(_adt_dados_encontrados.get("data_fim", "") or "").strip()
 
+    # Injeta no session_state ANTES dos widgets — Streamlit só popula o session_state
+    # com o parâmetro value= após interação do usuário; sem isso a validação
+    # sempre falha na primeira renderização mesmo com os dados visíveis na tela.
+    if _adt_val_atual_base and not st.session_state.get("adt_valor_mensal_atual"):
+        st.session_state["adt_valor_mensal_atual"] = _adt_val_atual_base
+    if _adt_inicio_base and not st.session_state.get("adt_data_inicio_atual"):
+        st.session_state["adt_data_inicio_atual"] = _adt_inicio_base
+    if _adt_fim_base and not st.session_state.get("adt_data_fim_atual"):
+        st.session_state["adt_data_fim_atual"] = _adt_fim_base
+
     st.markdown("#### Dados do contrato atual")
     _adt_m1, _adt_m2, _adt_m3 = st.columns(3)
     with _adt_m1:
         _adt_valor_mensal_atual = st.text_input(
             "Valor mensal atual do contrato *",
             key="adt_valor_mensal_atual",
-            value=_adt_val_atual_base,
             placeholder="R$ 1.621,00",
             help="Valor original/atual do contrato antes do desconto.",
         )
@@ -12140,20 +12149,20 @@ if _adt_dados_encontrados:
         _adt_data_inicio_atual = st.text_input(
             "Data de início do contrato *",
             key="adt_data_inicio_atual",
-            value=_adt_inicio_base,
             placeholder="01/04/2026",
         )
     with _adt_m3:
         _adt_data_fim_atual = st.text_input(
             "Data de fim do contrato *",
             key="adt_data_fim_atual",
-            value=_adt_fim_base,
             placeholder="31/03/2027",
         )
 
-    _adt_val_atual = (st.session_state.get("adt_valor_mensal_atual") or "").strip()
-    _adt_inicio = (st.session_state.get("adt_data_inicio_atual") or "").strip()
-    _adt_fim = (st.session_state.get("adt_data_fim_atual") or "").strip()
+    # Lê do session_state (já injetado acima ou digitado pelo usuário)
+    # com fallback para o valor base — garante que a validação sempre encontre o dado
+    _adt_val_atual = (st.session_state.get("adt_valor_mensal_atual") or _adt_val_atual_base).strip()
+    _adt_inicio = (st.session_state.get("adt_data_inicio_atual") or _adt_inicio_base).strip()
+    _adt_fim = (st.session_state.get("adt_data_fim_atual") or _adt_fim_base).strip()
 
     # Atualiza o dict antes da geração e antes do manifest.
     _adt_dados_encontrados["valor_mensal"] = _adt_val_atual
