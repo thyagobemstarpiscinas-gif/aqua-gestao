@@ -12092,13 +12092,46 @@ if _adt_dados_encontrados:
                         dados_utilizados=_adt_dados_encontrados,
                     )
 
+                    # _DOWNLOAD_ADITIVO_CNPJ_V2_
                     if _adt_ok_pdf:
-                        st.success(f"✅ Aditivo gerado para {_adt_nome}. DOCX e PDF disponíveis na pasta do condomínio.")
+                        st.success(f"✅ Aditivo gerado para {_adt_nome}. DOCX e PDF disponíveis para download.")
                     else:
-                        st.warning(f"⚠️ DOCX gerado. PDF falhou: {_adt_err_pdf}. O DOCX está disponível.")
+                        st.warning(f"⚠️ DOCX gerado. PDF falhou: {_adt_err_pdf}. O DOCX está disponível para download.")
 
-                    if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
-                        abrir_pasta_windows(_adt_pasta_encontrada)
+                    st.markdown("### Arquivos do aditivo")
+                    _adt_col_docx, _adt_col_pdf, _adt_col_pasta = st.columns(3)
+
+                    with _adt_col_docx:
+                        if _adt_docx.exists():
+                            with open(_adt_docx, "rb") as _adt_f_docx:
+                                st.download_button(
+                                    "⬇️ Baixar aditivo DOCX",
+                                    data=_adt_f_docx.read(),
+                                    file_name=_adt_docx.name,
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    key=f"download_aditivo_docx_cnpj_{_adt_ts}",
+                                    use_container_width=True,
+                                )
+                        else:
+                            st.error("DOCX do aditivo não encontrado.")
+
+                    with _adt_col_pdf:
+                        if _adt_pdf.exists():
+                            with open(_adt_pdf, "rb") as _adt_f_pdf:
+                                st.download_button(
+                                    "⬇️ Baixar aditivo PDF",
+                                    data=_adt_f_pdf.read(),
+                                    file_name=_adt_pdf.name,
+                                    mime="application/pdf",
+                                    key=f"download_aditivo_pdf_cnpj_{_adt_ts}",
+                                    use_container_width=True,
+                                )
+                        elif not _adt_ok_pdf:
+                            st.warning("PDF não disponível. Baixe o DOCX.")
+
+                    with _adt_col_pasta:
+                        if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
+                            abrir_pasta_windows(_adt_pasta_encontrada)
 
                 except FileNotFoundError:
                     st.error("Template aditivo.docx não encontrado. Verifique o diagnóstico de saúde do sistema.")
