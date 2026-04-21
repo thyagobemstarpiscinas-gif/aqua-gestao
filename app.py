@@ -11888,66 +11888,112 @@ with _adt_col1:
     _adt_cnpj_digits = re.sub(r"\D", "", _adt_cnpj_input or "")
 
 # _BUSCA_CNPJ_VIA_SHEETS_
-# Busca pelo Sheets (persiste no Cloud) e enriquece com JSON local se disponivel
+# Busca pelo Sheets (persiste no Cloud) e enriquece com JSON local se disponivel.
+# _ADITIVO_CLOUD_CAMPOS_MANUAIS_
 _adt_dados_encontrados = None
 _adt_pasta_encontrada = None
 _adt_cliente_sheets = None
+_adt_tem_json_local = False
+
 if len(_adt_cnpj_digits) == 14:
-    # 1. Busca no Sheets pelo CNPJ
+    # 1. Busca no Sheets pelo CNPJ.
     for _cl in (_todos_clientes_painel or []):
         _cl_cnpj = re.sub(r"\D", "", str(_cl.get("cnpj", "") or ""))
         if _cl_cnpj == _adt_cnpj_digits:
             _adt_cliente_sheets = _cl
             break
-    # 2. Tenta enriquecer com JSON local (funciona localmente e no Cloud com dados salvos na sessao)
+
+    # 2. Tenta enriquecer com JSON local.
+    # No Streamlit Cloud a pasta generated/ não é persistente, então o Sheets é a fonte principal.
     if _adt_cliente_sheets:
         _adt_nome_slug = slugify_nome(_adt_cliente_sheets.get("nome", ""))
         _adt_pasta_candidata = GENERATED_DIR / _adt_nome_slug
         _adt_json_local = carregar_dados_condominio(_adt_pasta_candidata) if _adt_pasta_candidata.exists() else None
+
         if _adt_json_local:
+            _adt_tem_json_local = True
             _adt_dados_encontrados = _adt_json_local
             _adt_pasta_encontrada = _adt_pasta_candidata
         else:
-            # Monta dados minimos a partir do Sheets para permitir gerar o aditivo
+            # Dados mínimos vindos do Sheets.
+            # Os campos contratuais que não existem no Sheets serão preenchidos manualmente na tela.
             _adt_dados_encontrados = {
-                "nome_condominio":    _adt_cliente_sheets.get("nome", ""),
-                "cnpj_condominio":    _adt_cliente_sheets.get("cnpj", ""),
+                "nome_condominio":     _adt_cliente_sheets.get("nome", ""),
+                "cnpj_condominio":     _adt_cliente_sheets.get("cnpj", ""),
                 "endereco_condominio": _adt_cliente_sheets.get("endereco", ""),
-                "nome_sindico":       _adt_cliente_sheets.get("contato", ""),
-                "cpf_sindico":        "",
-                "cargo_sindico":      "Síndico",
-                "valor_mensal":       "",
-                "data_inicio":        "",
-                "data_fim":           "",
+                "nome_sindico":        _adt_cliente_sheets.get("contato", ""),
+                "cpf_sindico":         "",
+                "cargo_sindico":       "Síndico",
+                "valor_mensal":        "",
+                "data_inicio":         "",
+                "data_fim":            "",
             }
-            # Usa pasta gerada se existir, senao cria na hora da geracao
             _adt_pasta_encontrada = _adt_pasta_candidata
 
 if len(_adt_cnpj_digits) == 14 and _adt_dados_encontrados is None:
     st.warning(
         "Nenhum cliente encontrado com este CNPJ. "
-        "Certifique-se de que o cliente está cadastrado na aba Clientes do Sheets com o CNPJ preenchido."
+        "Certifique-se de que o cliente está cadastrado na aba Clientes do Sheets com o CNPJ preenchido na coluna N."
     )
 
 if _adt_dados_encontrados:
-    _adt_nome = _adt_dados_encontrados.get("nome_condominio", _adt_pasta_encontrada.name)
-    _adt_val_atual = _adt_dados_encontrados.get("valor_mensal", "Não informado")
-    _adt_inicio = _adt_dados_encontrados.get("data_inicio", "")
-    _adt_fim = _adt_dados_encontrados.get("data_fim", "")
+    _adt_nome = _adt_dados_encontrados.get("nome_condominio") or (_adt_pasta_encontrada.name if _adt_pasta_encontrada else "Condomínio")
     _adt_sindico = _adt_dados_encontrados.get("nome_sindico", "")
     _adt_cargo = _adt_dados_encontrados.get("cargo_sindico", "Síndico")
 
     with _adt_col2:
-        st.success(f"✅ Contrato encontrado: **{_adt_nome}**")
-        st.caption(f"Valor atual: {_adt_val_atual} | Vigência: {_adt_inicio} → {_adt_fim}")
+        st.success(f"✅ Cliente encontrado no Sheets: **{_adt_nome}**")
+        if _adt_tem_json_local:
+            st.caption("Cadastro enriquecido com dados locais do contrato.")
+        else:
+            st.caption("Sem JSON local no Cloud. Preencha os dados contratuais abaixo antes de gerar o aditivo.")
 
-    st.markdown("")
+    # Se não houver JSON local, esses campos são obrigatórios para não gerar aditivo em branco.
+    _adt_val_atual_base = str(_adt_dados_encontrados.get("valor_mensal", "") or "").strip()
+    _adt_inicio_base = str(_adt_dados_encontrados.get("data_inicio", "") or "").strip()
+    _adt_fim_base = str(_adt_dados_encontrados.get("data_fim", "") or "").strip()
+
+    st.markdown("#### Dados do contrato atual")
+    _adt_m1, _adt_m2, _adt_m3 = st.columns(3)
+    with _adt_m1:
+        _adt_valor_mensal_atual = st.text_input(
+            "Valor mensal atual do contrato *",
+            key="adt_valor_mensal_atual",
+            value=_adt_val_atual_base,
+            placeholder="R$ 1.621,00",
+            help="Valor original/atual do contrato antes do desconto.",
+        )
+    with _adt_m2:
+        _adt_data_inicio_atual = st.text_input(
+            "Data de início do contrato *",
+            key="adt_data_inicio_atual",
+            value=_adt_inicio_base,
+            placeholder="01/04/2026",
+        )
+    with _adt_m3:
+        _adt_data_fim_atual = st.text_input(
+            "Data de fim do contrato *",
+            key="adt_data_fim_atual",
+            value=_adt_fim_base,
+            placeholder="31/03/2027",
+        )
+
+    _adt_val_atual = (st.session_state.get("adt_valor_mensal_atual") or "").strip()
+    _adt_inicio = (st.session_state.get("adt_data_inicio_atual") or "").strip()
+    _adt_fim = (st.session_state.get("adt_data_fim_atual") or "").strip()
+
+    # Atualiza o dict antes da geração e antes do manifest.
+    _adt_dados_encontrados["valor_mensal"] = _adt_val_atual
+    _adt_dados_encontrados["data_inicio"] = _adt_inicio
+    _adt_dados_encontrados["data_fim"] = _adt_fim
+
+    st.markdown("#### Dados do aditivo")
     _adt_c1, _adt_c2, _adt_c3 = st.columns([1.2, 1.2, 2])
     with _adt_c1:
         _adt_valor_desconto = st.text_input(
             "Valor com desconto *",
             key="adt_valor_desconto",
-            placeholder="R$ 1.200,00",
+            placeholder="R$ 810,50",
             help="Valor mensal após o desconto comercial. Será inserido no aditivo.",
         )
     with _adt_c2:
@@ -11969,10 +12015,24 @@ if _adt_dados_encontrados:
     if _adt_gerar:
         _adt_val_limpo = (st.session_state.get("adt_valor_desconto") or "").strip()
         _adt_data_limpa = (st.session_state.get("adt_data_assinatura") or "").strip()
+        _adt_erros = []
+
+        if not _adt_val_atual:
+            _adt_erros.append("Informe o valor mensal atual do contrato.")
+        if not _adt_inicio:
+            _adt_erros.append("Informe a data de início do contrato.")
+        if not _adt_fim:
+            _adt_erros.append("Informe a data de fim do contrato.")
         if not _adt_val_limpo:
-            st.error("Informe o valor com desconto antes de gerar o aditivo.")
+            _adt_erros.append("Informe o valor com desconto.")
+
+        if _adt_erros:
+            for _erro in _adt_erros:
+                st.error(_erro)
         else:
+            _adt_val_atual_fmt = moeda_br(_adt_val_atual) if not _adt_val_atual.startswith("R$") else _adt_val_atual
             _adt_val_fmt = moeda_br(_adt_val_limpo) if not _adt_val_limpo.startswith("R$") else _adt_val_limpo
+
             _adt_placeholders = {
                 "{{NOME_CONDOMINIO}}": _adt_nome,
                 "{{CNPJ_CONDOMINIO}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
@@ -11980,7 +12040,7 @@ if _adt_dados_encontrados:
                 "{{NOME_SINDICO}}": _adt_sindico,
                 "{{CPF_SINDICO}}": _adt_dados_encontrados.get("cpf_sindico", ""),
                 "{{CARGO_SINDICO}}": _adt_cargo,
-                "{{VALOR_MENSAL}}": valor_para_template(_adt_val_atual),
+                "{{VALOR_MENSAL}}": valor_para_template(_adt_val_atual_fmt),
                 "{{VALOR_ADITIVO}}": valor_para_template(_adt_val_fmt),
                 "{{DATA_INICIO}}": _adt_inicio,
                 "{{DATA_FIM}}": _adt_fim,
@@ -11992,10 +12052,18 @@ if _adt_dados_encontrados:
                 "{{CPF_CNPJ_CONTRATANTE}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
                 "{{ENDERECO_CONTRATANTE}}": _adt_dados_encontrados.get("endereco_condominio", ""),
             }
+
             _adt_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             _adt_base = limpar_nome_arquivo(f"Aditivo_RT_{_adt_nome}_{_adt_ts}")
+
+            try:
+                _adt_pasta_encontrada.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
             _adt_docx = _adt_pasta_encontrada / f"{_adt_base}.docx"
             _adt_pdf  = _adt_pasta_encontrada / f"{_adt_base}.pdf"
+
             with st.spinner("Gerando aditivo..."):
                 try:
                     gerar_documento(
@@ -12005,10 +12073,14 @@ if _adt_dados_encontrados:
                         incluir_assinaturas=False,
                     )
                     _adt_ok_pdf, _adt_err_pdf = converter_docx_para_pdf(_adt_docx, _adt_pdf)
-                    # Salva valor_aditivo no JSON do condominio
+
+                    _adt_dados_encontrados["valor_mensal"] = _adt_val_atual_fmt
                     _adt_dados_encontrados["valor_aditivo"] = _adt_val_fmt
+                    _adt_dados_encontrados["data_inicio"] = _adt_inicio
+                    _adt_dados_encontrados["data_fim"] = _adt_fim
                     _adt_dados_encontrados["data_assinatura"] = _adt_data_limpa
                     salvar_dados_condominio(_adt_pasta_encontrada, _adt_dados_encontrados)
+
                     registrar_documento_manifest(
                         pasta_condominio=_adt_pasta_encontrada,
                         nome_condominio=_adt_nome,
@@ -12019,12 +12091,15 @@ if _adt_dados_encontrados:
                         erro_pdf=_adt_err_pdf,
                         dados_utilizados=_adt_dados_encontrados,
                     )
+
                     if _adt_ok_pdf:
                         st.success(f"✅ Aditivo gerado para {_adt_nome}. DOCX e PDF disponíveis na pasta do condomínio.")
                     else:
                         st.warning(f"⚠️ DOCX gerado. PDF falhou: {_adt_err_pdf}. O DOCX está disponível.")
+
                     if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
                         abrir_pasta_windows(_adt_pasta_encontrada)
+
                 except FileNotFoundError:
                     st.error("Template aditivo.docx não encontrado. Verifique o diagnóstico de saúde do sistema.")
                 except Exception as _adt_ex:
