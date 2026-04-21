@@ -135,7 +135,6 @@ def drive_baixar_foto(file_id: str) -> bytes | None:
         return None
 
 
-
 # =========================================
 # GESTÃO DE OPERADORES
 # =========================================
@@ -144,8 +143,6 @@ def _normalizar_chave_acesso(texto: str) -> str:
     """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
     texto = re.sub(r"\s+", " ", str(texto or "").strip())
     return texto.casefold()
-
-
 
 
 def normalizar_texto_busca(valor: str) -> str:
@@ -458,7 +455,6 @@ def conectar_sheets():
     except Exception as e:
         _log_sheets_erro("conectar_sheets", e)
         return None
-
 
 
 def limpar_payload_para_sheets(dados: dict) -> dict:
@@ -782,7 +778,6 @@ def sheets_listar_clientes_completo() -> list[dict]:
         return []
 
 
-
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
@@ -836,8 +831,6 @@ def sheets_carregar_cliente_por_nome(nome: str) -> dict:
         if nome_lower in c["nome"].lower():
             return c
     return {}
-
-
 
 
 # =========================================
@@ -1120,14 +1113,6 @@ def extrair_lancamento_de_pdf_visita(pdf_bytes: bytes, nome_condominio_padrao: s
 # =========================================
 
 
-
-
-
-
-
-
-
-
 def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: list[str]) -> list[str]:
     """Retorna lista de condomínios que o operador tem permissão de ver."""
     if not nome_operador.strip():
@@ -1141,7 +1126,6 @@ def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: li
             return _resolver_condominios_permitidos_exatos(conds, todos_condomínios)
     # Operador não cadastrado → mostra todos (retrocompatibilidade)
     return todos_condomínios
-
 
 
 # =========================================
@@ -1859,7 +1843,6 @@ def logo_para_base64(path) -> str:
         return ""
 
 
-
 def _agora_brasilia() -> str:
     """Retorna horario atual no fuso de Brasilia (UTC-3)."""
     from datetime import timezone, timedelta
@@ -2085,7 +2068,6 @@ def restaurar_rascunho_operador(rascunho: dict):
         st.session_state[f"op_dos_fin_{i}"]  = d.get("finalidade", "")
 
 
-
 def aplicar_restauracao_pendente_operador():
     """Aplica restauração pendente antes de instanciar os widgets do formulário."""
     rasc = st.session_state.pop("_rascunho_operador_pendente", None)
@@ -2152,6 +2134,7 @@ def _empresa_ativa_codigo() -> str:
 
 def _empresa_ativa_nome() -> str:
     return "Bem Star Piscinas" if _empresa_ativa_codigo() == "bem_star" else "Aqua Gestão"
+
 
 
 def _servicos_padrao_empresa_ativa() -> dict:
@@ -2275,7 +2258,6 @@ def limpar_nome_arquivo(texto: str) -> str:
     texto = re.sub(r'[<>:"/\\\\|?*]+', "", texto)
     texto = re.sub(r"\s+", "_", texto.strip())
     return texto[:150]
-
 
 
 def carregar_imagem_corrigida_orientacao(origem):
@@ -4347,7 +4329,6 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
     return True, f"Aditivo DOCX de renovação gerado para '{nome_condominio}', mas o PDF falhou: {erro_pdf}"
 
 
-
 # =========================================
 # RELATÓRIO MENSAL DE RT
 # =========================================
@@ -4963,7 +4944,6 @@ def preencher_tabela_identificacao(doc: Document, dados_relatorio: dict):
     return True
 
 
-
 def _texto_sim_nao_marcado(valor) -> str:
     """Converte bool/texto em marcação visual para o relatório."""
     v = str(valor or "").strip().lower()
@@ -5164,8 +5144,6 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
     except Exception as e:
         _log_sheets_erro("buscar_fotos_drive_para_relatorio", e)
         return []
-
-
 
 
 def garantir_campos_analises(qtd: int):
@@ -5624,14 +5602,12 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
     doc.save(str(output_docx))
 
 
-
 def _normalizar_lista_fotos_b64(valor) -> list[str]:
     if not valor:
         return []
     if isinstance(valor, str):
         valor = [valor]
     return [str(v).strip() for v in valor if str(v).strip()]
-
 
 
 def _imagem_bytes_para_b64_relatorio(img_bytes: bytes) -> str | None:
@@ -5650,7 +5626,6 @@ def _imagem_bytes_para_b64_relatorio(img_bytes: bytes) -> str | None:
         return _b64.b64encode(_buf.getvalue()).decode("utf-8")
     except Exception:
         return None
-
 
 
 def _normalizar_assinatura_b64(valor: str) -> str:
@@ -5925,7 +5900,6 @@ def _resolver_fotos_visita_para_relatorio(lancamento: dict) -> dict[str, list[st
                             pass
 
     return {cat: categorias[cat]["b64"] for cat in categorias}
-
 
 
 def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
@@ -7060,8 +7034,6 @@ def gerar_relatorio_visita_docx(
         return False, str(e)
 
 
-
-
 def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
     """Retorna AAAA-MM para buscar fotos do relatório no Drive/local.
 
@@ -7159,7 +7131,6 @@ def _resolver_fotos_relatorio_rt(pasta_condominio: Path, nome_condominio: str, m
     return [], "nenhuma foto encontrada"
 
 
-
 def _carregar_clientes_bem_star_relatorio() -> dict:
     clientes = {c.get("nome", ""): c for c in (sheets_listar_clientes_completo() or []) if c.get("nome")}
     try:
@@ -7172,7 +7143,6 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
     except Exception:
         pass
     return clientes
-
 
 
 def _coletar_contexto_relatorio_bem_star() -> dict:
@@ -7251,7 +7221,6 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "fotos": fotos_paths,
         "origem_fotos": "fotos_campo das visitas" if fotos_paths else "nenhuma foto encontrada",
     }
-
 
 
 def _renderizar_relatorio_rt(preview: bool = False) -> dict:
@@ -7347,7 +7316,6 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     }
 
 
-
 def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     ctx = _coletar_contexto_relatorio_bem_star()
     if not ctx.get("ok"):
@@ -7417,13 +7385,11 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     }
 
 
-
 def renderizar_relatorio_oficial(empresa: str = "Aqua Gestão", preview: bool = False) -> dict:
     empresa = str(empresa or "Aqua Gestão").strip()
     if empresa == "Bem Star Piscinas":
         return _renderizar_relatorio_bem_star(preview=preview)
     return _renderizar_relatorio_rt(preview=preview)
-
 
 
 def gerar_relatorio_mensal() -> tuple[bool, str]:
@@ -7464,10 +7430,8 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
     return True, resultado["mensagem"]
 
 
-
 def gerar_previa_exata_relatorio(empresa: str = "Aqua Gestão") -> dict:
     return renderizar_relatorio_oficial(empresa, preview=True)
-
 
 
 def exibir_pdf_previa_exata(pdf_path: Path, height: int = 1200):
@@ -9859,6 +9823,42 @@ def _filtrar_clientes_admin_por_empresa(clientes: list[dict], empresa_filtro: st
     return _condominios_organizar(nomes)
 
 
+_empresa_admin_nome = _empresa_ativa_nome()
+
+def _operador_tem_vinculo_no_painel(op: dict, clientes: list[dict], empresa_nome: str | None = None) -> bool:
+    """Confere se o operador tem ao menos um condomínio pertencente ao painel ativo.
+
+    Uso administrativo: no painel Bem Star, aparecem operadores com vínculos Bem Star;
+    no painel Aqua Gestão, aparecem operadores com vínculos Aqua. O Modo Campo continua
+    independente: operador entra por PIN e vê os condomínios liberados para ele.
+    """
+    try:
+        empresa = str(empresa_nome or _empresa_ativa_nome() or '').strip()
+        if empresa not in ('Aqua Gestão', 'Bem Star Piscinas'):
+            return True
+
+        nomes_painel = _filtrar_clientes_admin_por_empresa(clientes, empresa)
+        nomes_painel_norm = {_normalizar_chave_acesso(n) for n in nomes_painel if str(n or '').strip()}
+
+        if not nomes_painel_norm:
+            return False
+
+        # Operador com acesso total deve aparecer nos dois painéis, pois atende toda a carteira.
+        if _op_tem_acesso_total(op):
+            return True
+
+        conds = _condominios_organizar(op.get('condomínios', []))
+        for cond in conds:
+            chave = _normalizar_chave_acesso(cond)
+            if chave in nomes_painel_norm:
+                return True
+        return False
+    except Exception:
+        # Em caso de inconsistência, não quebra a tela administrativa.
+        return True
+
+
+
 _total_ops = len(ops_cadastrados)
 _total_ativos = sum(1 for op in ops_cadastrados if op.get("ativo"))
 _total_inativos = _total_ops - _total_ativos
@@ -9913,6 +9913,12 @@ with _tab_ops1:
             )
 
         _ops_visiveis = _filtrar_ops_admin(ops_cadastrados, _busca_ops, _status_ops)
+        _empresa_admin_nome = _empresa_ativa_nome()
+        _ops_visiveis = [
+            op for op in _ops_visiveis
+            if _operador_tem_vinculo_no_painel(op, _todos_clientes_painel, _empresa_admin_nome)
+        ]
+        st.caption(f"Painel ativo: {_empresa_admin_nome}. Exibindo apenas operadores com vínculo neste painel.")
 
         if not _ops_visiveis:
             st.warning("Nenhum operador encontrado com os filtros atuais.")
@@ -10007,10 +10013,13 @@ with _tab_ops1:
 
             _fe1, _fe2 = st.columns([1.1, 1.9])
             with _fe1:
-                _empresa_conds_edit = st.selectbox(
-                    "Filtrar permissões por empresa",
-                    ["Todas", "Aqua Gestão", "Bem Star Piscinas", "Ambas"],
-                    key=f"empresa_conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                _empresa_conds_edit = _empresa_ativa_nome()
+                st.text_input(
+                    "Permissões deste painel",
+                    value=_empresa_conds_edit,
+                    disabled=True,
+                    key=f"empresa_conds_edit_visivel_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    help="Para evitar mistura jurídica/visual, este formulário mostra apenas condomínios do painel administrativo ativo.",
                 )
             with _fe2:
                 _busca_conds_edit = st.text_input(
@@ -10020,6 +10029,8 @@ with _tab_ops1:
                 )
             _nomes_empresa_edit = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_conds_edit)
             _opcoes_conds_edit = _filtrar_condominios_por_busca(_nomes_empresa_edit, _busca_conds_edit, _op_exatos_sel)
+            _set_painel_edit = {_normalizar_chave_acesso(n) for n in _nomes_empresa_edit}
+            _op_default_edit = [c for c in _op_exatos_sel if _normalizar_chave_acesso(c) in _set_painel_edit]
             if not _op_total_sel:
                 st.caption(f"Exibindo {len(_opcoes_conds_edit)} de {len(_nomes_empresa_edit)} condomínio(s) para o filtro de empresa atual.")
 
@@ -10059,11 +10070,11 @@ with _tab_ops1:
                     _conds_edit = st.multiselect(
                         "Condomínios permitidos para este PIN",
                         options=_opcoes_conds_edit,
-                        default=_op_exatos_sel,
+                        default=_op_default_edit,
                         key=_key_conds_edit,
                         help="Seleção exata dos condomínios liberados para este operador.",
                     )
-                    _selecionados_edit = _condominios_organizar(st.session_state.get(_key_conds_edit, _op_exatos_sel))
+                    _selecionados_edit = _condominios_organizar(st.session_state.get(_key_conds_edit, _op_default_edit))
                     _ced1, _ced2 = st.columns([1.1, 1.4])
                     with _ced1:
                         st.caption(f"Selecionados agora: {len(_selecionados_edit)} condomínio(s).")
@@ -10090,7 +10101,17 @@ with _tab_ops1:
 
             if _salvar_edit:
                 _pin_final_edit = _novo_pin_edit.strip() if _editar_pin else _op_pin_sel
-                _conds_final_edit = ["TODOS"] if _acesso_total_edit else _condominios_organizar(_conds_edit)
+                if _acesso_total_edit:
+                    _conds_final_edit = ["TODOS"]
+                else:
+                    # Edita somente as permissões do painel ativo e preserva vínculos de outro painel.
+                    _set_painel_salvar = {_normalizar_chave_acesso(n) for n in _nomes_empresa_edit}
+                    _conds_outros_paineis = [
+                        c for c in _op_conds_sel
+                        if _normalizar_chave_acesso(c) not in _set_painel_salvar
+                        and _normalizar_chave_acesso(c) != "todos"
+                    ]
+                    _conds_final_edit = _condominios_organizar(_conds_outros_paineis + _condominios_organizar(_conds_edit))
 
                 if not _pin_final_edit or len(_pin_final_edit) < 4:
                     st.error("PIN deve ter pelo menos 4 caracteres.")
@@ -10144,10 +10165,13 @@ with _tab_ops1:
 with _tab_ops2:
     _fn1, _fn2 = st.columns([1.1, 1.9])
     with _fn1:
-        _empresa_conds_novo = st.selectbox(
-            "Filtrar permissões por empresa",
-            ["Todas", "Aqua Gestão", "Bem Star Piscinas", "Ambas"],
-            key="empresa_conds_novo",
+        _empresa_conds_novo = _empresa_ativa_nome()
+        st.text_input(
+            "Permissões deste painel",
+            value=_empresa_conds_novo,
+            disabled=True,
+            key="empresa_conds_novo_visivel",
+            help="Novo operador será vinculado somente a condomínios do painel administrativo ativo.",
         )
     with _fn2:
         _busca_conds_novo = st.text_input(
@@ -13898,7 +13922,6 @@ def gerar_contrato_bem_star_docx(
     return output_docx
 
 
-
 # =========================================
 # CONTRATO RT — PDF PREMIUM REPORTLAB V12
 # =========================================
@@ -14568,7 +14591,6 @@ def salvar_contrato_rt_pdf_premium_reportlab(dados: dict, output_pdf: Path) -> t
         return False, str(e)
 
 
-
 # =========================================
 # TERMOS DE CIÊNCIA — RT / EPIs
 # =========================================
@@ -14733,7 +14755,6 @@ def gerar_contrato_e_aditivo():
 
     except Exception as e:
         st.error(f"Erro na geração do contrato: {e}")
-
 
 
 def gerar_somente_aditivo_rapido():
