@@ -10170,7 +10170,7 @@ with _tab_ops2:
             "Permissões deste painel",
             value=_empresa_conds_novo,
             disabled=True,
-            key="empresa_conds_novo_visivel",
+            key=f"empresa_conds_novo_visivel_{_empresa_conds_novo}",
             help="Novo operador será vinculado somente a condomínios do painel administrativo ativo.",
         )
     with _fn2:
@@ -10269,6 +10269,10 @@ with _tab_ops2:
                 st.rerun()
             else:
                 st.error(st.session_state.get("_operadores_erro") or "❌ Erro ao salvar operador. Verifique a conexão com o Sheets.")
+                with st.expander("🔍 Ver detalhe técnico do erro", expanded=False):
+                    _det = st.session_state.get("_sheets_ultimo_erro", "Sem detalhes.")
+                    st.code(_det, language="text")
+                # _EXPANDER_ERRO_SHEETS_OK_
 
 st.markdown("</div>", unsafe_allow_html=True)
 
