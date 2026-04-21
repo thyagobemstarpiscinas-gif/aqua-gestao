@@ -678,6 +678,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
             str(vol_family) if vol_family else "", # L - Vol Family m3
             empresa,                               # M - Empresa
+            cnpj,                                  # N - CNPJ # _CNPJ_COLUNA_N_
         ]
 
         # Determina posicao alfabetica dentro do bloco de clientes
@@ -763,10 +764,11 @@ def sheets_listar_clientes_completo() -> list[dict]:
             _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
             if not _empresa_cl:
                 _empresa_cl = "Aqua Gestão"
+            _cnpj_cl = str(row[13]).strip() if len(row) > 13 else ""  # _CNPJ_LER_COLUNA_N_
             cliente_base = {
                 "id":           id_val,
                 "nome":         nome,
-                "cnpj":         "",
+                "cnpj":         _cnpj_cl,
                 "telefone":     telefone,
                 "contato":      contato,
                 "email":        email,
@@ -11885,24 +11887,47 @@ with _adt_col1:
     )
     _adt_cnpj_digits = re.sub(r"\D", "", _adt_cnpj_input or "")
 
-# Busca o condominio pelo CNPJ nas pastas generated/
+# _BUSCA_CNPJ_VIA_SHEETS_
+# Busca pelo Sheets (persiste no Cloud) e enriquece com JSON local se disponivel
 _adt_dados_encontrados = None
 _adt_pasta_encontrada = None
+_adt_cliente_sheets = None
 if len(_adt_cnpj_digits) == 14:
-    for _adt_pasta in (GENERATED_DIR.iterdir() if GENERATED_DIR.exists() else []):
-        if not _adt_pasta.is_dir():
-            continue
-        _adt_json = carregar_dados_condominio(_adt_pasta)
-        if not _adt_json:
-            continue
-        _adt_cnpj_salvo = re.sub(r"\D", "", _adt_json.get("cnpj_condominio", ""))
-        if _adt_cnpj_salvo == _adt_cnpj_digits:
-            _adt_dados_encontrados = _adt_json
-            _adt_pasta_encontrada = _adt_pasta
+    # 1. Busca no Sheets pelo CNPJ
+    for _cl in (_todos_clientes_painel or []):
+        _cl_cnpj = re.sub(r"\D", "", str(_cl.get("cnpj", "") or ""))
+        if _cl_cnpj == _adt_cnpj_digits:
+            _adt_cliente_sheets = _cl
             break
+    # 2. Tenta enriquecer com JSON local (funciona localmente e no Cloud com dados salvos na sessao)
+    if _adt_cliente_sheets:
+        _adt_nome_slug = slugify_nome(_adt_cliente_sheets.get("nome", ""))
+        _adt_pasta_candidata = GENERATED_DIR / _adt_nome_slug
+        _adt_json_local = carregar_dados_condominio(_adt_pasta_candidata) if _adt_pasta_candidata.exists() else None
+        if _adt_json_local:
+            _adt_dados_encontrados = _adt_json_local
+            _adt_pasta_encontrada = _adt_pasta_candidata
+        else:
+            # Monta dados minimos a partir do Sheets para permitir gerar o aditivo
+            _adt_dados_encontrados = {
+                "nome_condominio":    _adt_cliente_sheets.get("nome", ""),
+                "cnpj_condominio":    _adt_cliente_sheets.get("cnpj", ""),
+                "endereco_condominio": _adt_cliente_sheets.get("endereco", ""),
+                "nome_sindico":       _adt_cliente_sheets.get("contato", ""),
+                "cpf_sindico":        "",
+                "cargo_sindico":      "Síndico",
+                "valor_mensal":       "",
+                "data_inicio":        "",
+                "data_fim":           "",
+            }
+            # Usa pasta gerada se existir, senao cria na hora da geracao
+            _adt_pasta_encontrada = _adt_pasta_candidata
 
 if len(_adt_cnpj_digits) == 14 and _adt_dados_encontrados is None:
-    st.warning("Nenhum contrato encontrado para este CNPJ. Verifique se o contrato já foi gerado.")
+    st.warning(
+        "Nenhum cliente encontrado com este CNPJ. "
+        "Certifique-se de que o cliente está cadastrado na aba Clientes do Sheets com o CNPJ preenchido."
+    )
 
 if _adt_dados_encontrados:
     _adt_nome = _adt_dados_encontrados.get("nome_condominio", _adt_pasta_encontrada.name)
