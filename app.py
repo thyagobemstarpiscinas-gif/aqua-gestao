@@ -4443,6 +4443,262 @@ def componente_copiar(texto: str):
     )
 
 
+
+# =========================================
+# ENVIO DE E-MAIL — AQUA GESTÃO PREMIUM
+# =========================================
+# _EMAIL_AQUA_TODOS_DOCUMENTOS_V1_
+
+def _email_aqua_configurado() -> tuple[bool, str]:
+    try:
+        cfg = st.secrets.get("email", {})
+    except Exception:
+        return False, "Bloco [email] não encontrado em st.secrets."
+
+    obrigatorios = ["smtp_host", "smtp_port", "smtp_user", "smtp_password"]
+    faltando = [c for c in obrigatorios if not str(cfg.get(c, "")).strip()]
+    if faltando:
+        return False, "Configuração de e-mail incompleta em st.secrets: " + ", ".join(faltando)
+    return True, ""
+
+
+def assinatura_email_aqua_gestao() -> str:
+    try:
+        cfg = st.secrets.get("email", {})
+    except Exception:
+        cfg = {}
+
+    logo_url = str(cfg.get("logo_url", "") or "").strip()
+    email_resp = str(cfg.get("reply_to", "") or cfg.get("smtp_user", "") or "").strip()
+    logo_html = ""
+    if logo_url:
+        logo_html = (
+            '<td style="width:118px;vertical-align:top;padding-right:18px;">'
+            f'<img src="{logo_url}" alt="Aqua Gestão" style="width:105px;height:auto;display:block;border:0;">'
+            '</td>'
+        )
+
+    return f"""
+    <br><br>
+    <table role="presentation" style="width:100%;max-width:760px;border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+      <tr>
+        <td style="border-top:4px solid #0B2E59;padding-top:16px;">
+          <table role="presentation" style="width:100%;border-collapse:collapse;">
+            <tr>
+              {logo_html}
+              <td style="vertical-align:top;">
+                <div style="font-size:18px;font-weight:700;color:#0B2E59;line-height:1.25;">Thyago Fernando da Silveira</div>
+                <div style="font-size:14px;color:#374151;margin-top:3px;">Técnico em Química | Responsável Técnico</div>
+                <div style="font-size:13px;color:#374151;margin-top:3px;">CRQ-MG 2ª Região | CRQ 024025748</div>
+                <div style="height:1px;background:#D8E2EF;margin:10px 0;"></div>
+                <div style="font-size:15px;font-weight:700;color:#145DA0;">Aqua Gestão - Controle Técnico de Piscinas</div>
+                <div style="font-size:13px;color:#4b5563;margin-top:4px;line-height:1.5;">
+                  Responsabilidade Técnica • ART • Relatórios Técnicos • POPs • Controle de Piscinas Coletivas
+                </div>
+                <div style="font-size:13px;color:#4b5563;margin-top:8px;line-height:1.5;">
+                  Uberlândia/MG<br>
+                  E-mail: {email_resp}
+                </div>
+                <div style="font-size:11px;color:#6b7280;margin-top:12px;line-height:1.45;">
+                  Esta mensagem e seus anexos podem conter informações técnicas, contratuais e/ou confidenciais destinadas exclusivamente ao(s) destinatário(s).
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """
+
+
+def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexos: list[Path], cc: str = "", bcc: str = "") -> tuple[bool, str]:
+    try:
+        import smtplib
+        import mimetypes
+        from email.message import EmailMessage
+        from html import escape
+
+        ok_cfg, erro_cfg = _email_aqua_configurado()
+        if not ok_cfg:
+            return False, erro_cfg
+
+        cfg = st.secrets.get("email", {})
+        smtp_host = str(cfg.get("smtp_host", "smtp.gmail.com"))
+        smtp_port = int(cfg.get("smtp_port", 587))
+        smtp_user = str(cfg.get("smtp_user", "")).strip()
+        smtp_password = str(cfg.get("smtp_password", "")).strip()
+        remetente_nome = str(cfg.get("remetente_nome", "Aqua Gestao - Controle Tecnico de Piscinas")).strip()
+        reply_to = str(cfg.get("reply_to", smtp_user)).strip()
+
+        destinatario = (destinatario or "").strip()
+        if not destinatario:
+            return False, "Informe o e-mail do destinatário."
+        if not anexos:
+            return False, "Selecione pelo menos um anexo."
+
+        anexos_validos = []
+        for item in anexos:
+            p = Path(item)
+            if p.exists() and p.is_file():
+                anexos_validos.append(p)
+        if not anexos_validos:
+            return False, "Nenhum arquivo selecionado foi encontrado no sistema."
+
+        msg = EmailMessage()
+        msg["From"] = f"{remetente_nome} <{smtp_user}>"
+        msg["To"] = destinatario
+        if cc.strip():
+            msg["Cc"] = cc.strip()
+        if bcc.strip():
+            msg["Bcc"] = bcc.strip()
+        if reply_to:
+            msg["Reply-To"] = reply_to
+        msg["Subject"] = assunto or "Documentação técnica Aqua Gestão"
+
+        texto_puro = mensagem or "Segue documentação técnica em anexo."
+        msg.set_content(texto_puro + "\n\nAqua Gestão - Controle Técnico de Piscinas")
+
+        corpo_html = "<div style='font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.55;'>"
+        corpo_html += escape(texto_puro).replace("\n", "<br>")
+        corpo_html += assinatura_email_aqua_gestao()
+        corpo_html += "</div>"
+        msg.add_alternative(corpo_html, subtype="html")
+
+        for p in anexos_validos:
+            ctype, encoding = mimetypes.guess_type(str(p))
+            if ctype is None:
+                ctype = "application/octet-stream"
+            maintype, subtype = ctype.split("/", 1)
+            msg.add_attachment(p.read_bytes(), maintype=maintype, subtype=subtype, filename=p.name)
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=45) as smtp:
+            smtp.starttls()
+            smtp.login(smtp_user, smtp_password)
+            smtp.send_message(msg)
+
+        return True, f"E-mail enviado com sucesso para {destinatario}. Anexos: {len(anexos_validos)}."
+    except Exception as e:
+        return False, f"Erro ao enviar e-mail: {type(e).__name__}: {e}"
+
+
+def _coletar_documentos_email_aqua(pasta: Path | None = None, documentos_sugeridos: list | None = None) -> list[Path]:
+    docs = []
+
+    def _add(caminho):
+        try:
+            if not caminho:
+                return
+            p = Path(caminho)
+            if p.exists() and p.is_file() and p.suffix.lower() in (".pdf", ".docx"):
+                if p.name not in {DADOS_JSON_NAME, MANIFEST_JSON_NAME}:
+                    docs.append(p)
+        except Exception:
+            pass
+
+    for d in documentos_sugeridos or []:
+        _add(d)
+
+    try:
+        ultimos = st.session_state.get("ultimos_docs_gerados") or {}
+        for v in ultimos.values():
+            if isinstance(v, (list, tuple)):
+                for item in v:
+                    _add(item)
+            else:
+                _add(v)
+    except Exception:
+        pass
+
+    try:
+        if pasta and Path(pasta).exists():
+            for p in sorted(Path(pasta).iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+                _add(p)
+    except Exception:
+        pass
+
+    final = []
+    vistos = set()
+    for p in docs:
+        chave = str(p.resolve())
+        if chave not in vistos:
+            vistos.add(chave)
+            final.append(p)
+    return final
+
+
+def exibir_envio_email_documentos_aqua(
+    nome_condominio: str,
+    pasta_condominio: Path | None = None,
+    email_cliente: str = "",
+    mensagem_padrao: str = "",
+    documentos_sugeridos: list | None = None,
+    key_prefix: str = "docs_aqua",
+):
+    docs = _coletar_documentos_email_aqua(pasta_condominio, documentos_sugeridos)
+    if not docs:
+        return
+
+    nome_condominio = (nome_condominio or "cliente").strip()
+    email_padrao = (email_cliente or st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
+    if not mensagem_padrao:
+        mensagem_padrao = (
+            f"Prezados,\n\n"
+            f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {nome_condominio}.\n\n"
+            "Seguem os documentos para conferência, registro e arquivo interno.\n\n"
+            "Permaneço à disposição para qualquer esclarecimento."
+        )
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("📧 Enviar documentos por e-mail")
+    st.caption("Selecione contrato, aditivo, termos de ciência, POPs, relatórios ou qualquer PDF/DOCX gerado na pasta do condomínio.")
+
+    status_cfg, erro_cfg = _email_aqua_configurado()
+    if not status_cfg:
+        st.warning("E-mail SMTP ainda não configurado: " + erro_cfg)
+
+    _c1, _c2 = st.columns([1.15, 1.15])
+    with _c1:
+        destinatario = st.text_input("Destinatário", value=email_padrao, key=f"email_destinatario_{key_prefix}")
+    with _c2:
+        assunto = st.text_input(
+            "Assunto",
+            value=f"Documentação técnica Aqua Gestão - {nome_condominio}",
+            key=f"email_assunto_{key_prefix}",
+        )
+
+    with st.expander("CC / CCO", expanded=False):
+        cc = st.text_input("CC", value="", key=f"email_cc_{key_prefix}")
+        bcc = st.text_input("CCO", value="", key=f"email_bcc_{key_prefix}")
+
+    mensagem = st.text_area("Mensagem", value=mensagem_padrao, height=180, key=f"email_msg_{key_prefix}")
+
+    opcoes = [p.name for p in docs]
+    mapa = {p.name: p for p in docs}
+    selecionados = st.multiselect(
+        "Anexos",
+        options=opcoes,
+        default=opcoes,
+        key=f"email_anexos_{key_prefix}",
+        help="Por padrão, todos os documentos encontrados ficam selecionados. Desmarque o que não quiser enviar.",
+    )
+
+    st.caption(f"{len(selecionados)} anexo(s) selecionado(s).")
+    _b1, _b2 = st.columns([1.2, 1])
+    with _b1:
+        if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"btn_enviar_email_{key_prefix}"):
+            anexos = [mapa[n] for n in selecionados if n in mapa]
+            ok, msg = enviar_email_aqua_smtp(destinatario, assunto, mensagem, anexos, cc=cc, bcc=bcc)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    with _b2:
+        if pasta_condominio and Path(pasta_condominio).exists():
+            if st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
+                abrir_pasta_windows(Path(pasta_condominio))
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
 # =========================================
 # AÇÕES DO PAINEL
 # =========================================
@@ -12315,6 +12571,22 @@ if _adt_dados_encontrados:
                         if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
                             abrir_pasta_windows(_adt_pasta_encontrada)
 
+                    # _EMAIL_ADITIVO_CNPJ_AQUA_V1_
+                    _adt_email_msg = (
+                        f"Prezados,\n\n"
+                        f"Encaminho em anexo o termo aditivo referente ao {_adt_nome}, gerado pela Aqua Gestão - Controle Técnico de Piscinas.\n\n"
+                        "O documento segue para conferência, registro e arquivo interno do condomínio.\n\n"
+                        "Permaneço à disposição para qualquer ajuste ou esclarecimento."
+                    )
+                    exibir_envio_email_documentos_aqua(
+                        nome_condominio=_adt_nome,
+                        pasta_condominio=_adt_pasta_encontrada,
+                        email_cliente=_adt_dados_encontrados.get("email_cliente", ""),
+                        mensagem_padrao=_adt_email_msg,
+                        documentos_sugeridos=[_adt_docx, _adt_pdf],
+                        key_prefix=f"aditivo_cnpj_{_adt_ts}",
+                    )
+
                 except FileNotFoundError:
                     st.error("Template aditivo.docx não encontrado. Verifique o diagnóstico de saúde do sistema.")
                 except Exception as _adt_ex:
@@ -13601,6 +13873,47 @@ if _ultimos:
                 with open(_p_rel_pdf, "rb") as _f:
                     st.download_button("Baixar PDF do relatório", data=_f, file_name=Path(_p_rel_pdf).name,
                         mime="application/pdf", use_container_width=True, key="dl_relatorio_pdf_top")
+
+    # _EMAIL_ULTIMOS_DOCUMENTOS_AQUA_V1_
+    _email_docs_pasta = None
+    try:
+        _pasta_tmp = st.session_state.get("ultima_pasta_gerada") or ""
+        if _pasta_tmp:
+            _email_docs_pasta = Path(_pasta_tmp)
+    except Exception:
+        _email_docs_pasta = None
+
+    try:
+        _dados_email_docs = _dados_termos_rt_do_formulario()
+    except Exception:
+        _dados_email_docs = {}
+
+    _nome_email_docs = (
+        _dados_email_docs.get("nome_condominio")
+        or st.session_state.get("nome_condominio")
+        or "Condomínio"
+    )
+    _email_cliente_docs = (
+        st.session_state.get("termo_email_cliente")
+        or st.session_state.get("email_cliente")
+        or ""
+    )
+    _msg_email_docs = (
+        f"Prezados,\n\n"
+        f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_email_docs}.\n\n"
+        "Incluí os documentos selecionados no sistema, podendo contemplar contrato, aditivo, termos de ciência, POPs e relatórios técnicos.\n\n"
+        "Os arquivos seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+        "Permaneço à disposição para qualquer esclarecimento."
+    )
+    exibir_envio_email_documentos_aqua(
+        nome_condominio=_nome_email_docs,
+        pasta_condominio=_email_docs_pasta,
+        email_cliente=_email_cliente_docs,
+        mensagem_padrao=_msg_email_docs,
+        documentos_sugeridos=[v for v in (_ultimos or {}).values() if isinstance(v, str)],
+        key_prefix="ultimos_docs_aqua",
+    )
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
