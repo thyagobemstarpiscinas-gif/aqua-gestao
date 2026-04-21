@@ -8299,6 +8299,132 @@ if pasta_formulario_atual and pasta_formulario_atual.exists():
         if not dosagens_preenchidas:
             aplicar_dosagens_ultimas_no_relatorio(dados_auto)
 
+
+# _EMERGENCIA_RELATORIO_RT_FUNCOES_V1_
+# =========================================
+# EMERGÊNCIA — PROTEÇÃO DO RELATÓRIO RT
+# =========================================
+def _relatorio_rt_rascunho_path() -> Path:
+    try:
+        GENERATED_DIR.mkdir(exist_ok=True)
+    except Exception:
+        pass
+    return GENERATED_DIR / "_rascunho_relatorio_rt_em_andamento.json"
+
+
+def _relatorio_rt_tem_dados_em_tela() -> bool:
+    chaves_prefixos = ("rel_analise_", "rel_dos_", "rel_obs_")
+    chaves_diretas = (
+        "rel_nome_condominio", "nome_condominio", "rel_mes_referencia", "rel_ano_referencia",
+        "rel_diagnostico", "rel_observacoes_gerais", "csr_obs_rel",
+        "rel_status_agua", "rel_verificacoes_semanais",
+    )
+    for k in chaves_diretas:
+        if str(st.session_state.get(k, "") or "").strip():
+            return True
+    for k, v in st.session_state.items():
+        if str(k).startswith(chaves_prefixos) and str(v or "").strip():
+            return True
+    return False
+
+
+def _relatorio_rt_coletar_rascunho() -> dict:
+    total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    dados = {
+        "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
+        "empresa_ativa": "aqua_gestao",
+        "rel_analises_total": max(total, ANALISES_PADRAO),
+        "campos": {},
+    }
+    for k, v in st.session_state.items():
+        if str(k).startswith(("rel_", "csr_")) or str(k) in ("nome_condominio", "cnpj_condominio", "endereco_condominio"):
+            try:
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    dados["campos"][k] = v
+                else:
+                    dados["campos"][k] = str(v)
+            except Exception:
+                pass
+    return dados
+
+
+def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
+    try:
+        if not _relatorio_rt_tem_dados_em_tela():
+            return False
+        dados = _relatorio_rt_coletar_rascunho()
+        dados["motivo"] = motivo
+        _relatorio_rt_rascunho_path().write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+        st.session_state["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        return True
+    except Exception as e:
+        st.session_state["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
+        return False
+
+
+def _relatorio_rt_carregar_rascunho() -> dict:
+    try:
+        path = _relatorio_rt_rascunho_path()
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
+    try:
+        campos = dados.get("campos", {}) if isinstance(dados, dict) else {}
+        if not campos:
+            return False
+        total = int(dados.get("rel_analises_total", campos.get("rel_analises_total", ANALISES_PADRAO)) or ANALISES_PADRAO)
+        st.session_state["rel_analises_total"] = max(total, ANALISES_PADRAO)
+        for k, v in campos.items():
+            if str(k).startswith("_"):
+                continue
+            st.session_state[k] = v
+        st.session_state["empresa_ativa"] = "aqua_gestao"
+        st.session_state["empresa_seletor_admin_sidebar_definitivo"] = "🔵 Aqua Gestão"
+        st.session_state["_relatorio_rt_rascunho_restaurado"] = True
+        return True
+    except Exception as e:
+        st.session_state["_relatorio_rt_restore_erro"] = f"{type(e).__name__}: {e}"
+        return False
+
+
+def _relatorio_rt_renderizar_painel_rascunho():
+    try:
+        rasc = _relatorio_rt_carregar_rascunho()
+        if rasc:
+            salvo_em = rasc.get("salvo_em", "horário não informado")
+            motivo = rasc.get("motivo", "autosave")
+            st.warning(f"🛡️ Rascunho de Relatório RT encontrado ({salvo_em} | {motivo}).")
+            c_r1, c_r2, c_r3 = st.columns([1, 1, 2])
+            with c_r1:
+                if st.button("♻️ Restaurar rascunho RT", key="btn_restaurar_rascunho_relatorio_rt", use_container_width=True):
+                    if _relatorio_rt_aplicar_rascunho(rasc):
+                        st.success("Rascunho restaurado. Recarregando tela...")
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível restaurar o rascunho.")
+            with c_r2:
+                if st.button("🗑️ Descartar rascunho", key="btn_descartar_rascunho_relatorio_rt", use_container_width=True):
+                    try:
+                        _relatorio_rt_rascunho_path().unlink(missing_ok=True)
+                        st.success("Rascunho descartado.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao descartar rascunho: {e}")
+        if st.session_state.get("_relatorio_rt_rascunho_restaurado"):
+            st.success("✅ Rascunho do relatório RT restaurado nesta sessão.")
+            st.session_state["_relatorio_rt_rascunho_restaurado"] = False
+        ultimo = st.session_state.get("_relatorio_rt_ultimo_autosave", "")
+        if ultimo:
+            st.caption(f"🛡️ Autosave do relatório RT ativo. Último salvamento: {ultimo}")
+    except Exception as e:
+        st.caption(f"Painel de rascunho RT indisponível: {e}")
+
+
 # =========================================
 # TOPO
 # =========================================
@@ -8385,14 +8511,39 @@ with st.sidebar:
 
         _novo_codigo_admin = "bem_star" if "Bem Star" in _empresa_escolhida_admin else "aqua_gestao"
 
+        # _TRAVA_TROCA_EMPRESA_RELATORIO_RT_V1_
         if st.session_state.get("empresa_ativa") != _novo_codigo_admin:
-            st.session_state["empresa_ativa"] = _novo_codigo_admin
-            st.session_state["empresa_selecionada_admin"] = _empresa_escolhida_admin
+            _tem_relatorio_rt_aberto = False
             try:
-                st.cache_data.clear()
+                _tem_relatorio_rt_aberto = _relatorio_rt_tem_dados_em_tela()
             except Exception:
-                pass
-            st.rerun()
+                _tem_relatorio_rt_aberto = False
+
+            if _tem_relatorio_rt_aberto and _novo_codigo_admin == "bem_star":
+                try:
+                    _relatorio_rt_salvar_rascunho("tentativa_troca_para_bem_star")
+                except Exception:
+                    pass
+                st.warning(
+                    "🛡️ Troca para Bem Star bloqueada: existe Relatório RT em andamento. "
+                    "Salvei um rascunho de emergência e mantive o painel em Aqua Gestão."
+                )
+                st.session_state["empresa_ativa"] = "aqua_gestao"
+                st.session_state["empresa_selecionada_admin"] = "🔵 Aqua Gestão"
+                st.session_state["empresa_seletor_admin_sidebar_definitivo"] = "🔵 Aqua Gestão"
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
+            else:
+                st.session_state["empresa_ativa"] = _novo_codigo_admin
+                st.session_state["empresa_selecionada_admin"] = _empresa_escolhida_admin
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
 
         _nome_painel_admin = "Bem Star Piscinas" if _novo_codigo_admin == "bem_star" else "Aqua Gestão"
         st.caption(f"Painel ativo: {_nome_painel_admin}")
@@ -13925,7 +14076,10 @@ st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allo
 st.subheader("👁️ Pré-visualizar relatório final")
 st.caption("A prévia usa a empresa ativa no acesso administrativo, mantendo Aqua Gestão e Bem Star separadas dentro do sistema.")
 
-_prev_empresa_val = "Bem Star Piscinas" if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star" else "Aqua Gestão"
+# _PREVIEW_RELATORIO_SEMPRE_AQUA_V1_
+_prev_empresa_val = "Aqua Gestão"
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
+    st.warning("🛡️ Prévia de Relatório RT protegida: usando Aqua Gestão, mesmo que o painel lateral esteja em Bem Star.")
 st.info(f"Empresa ativa para esta prévia: {_prev_empresa_val}")
 _prev_usar_form = st.checkbox(
     "Usar dados reais do formulário e fotos anexadas (prévia exata)",
@@ -14443,6 +14597,9 @@ with c_auto2:
 st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeholder="Será preenchido automaticamente conforme os parâmetros, mas permanece editável.")
 
 st.markdown("**Análises físico-químicas**")
+
+# _PAINEL_RASCUNHO_RELATORIO_RT_V1_
+_relatorio_rt_renderizar_painel_rascunho()
 _linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
 garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
@@ -14480,6 +14637,12 @@ for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) o
     cols[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="Dureza")
     cols[6].text_input(f"Ácido cianúrico {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="Ácido cianúrico")
     cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
+
+# _AUTOSAVE_RELATORIO_RT_APOS_LINHAS_V1_
+try:
+    _relatorio_rt_salvar_rascunho("autosave_apos_renderizar_linhas")
+except Exception as _e_autosave_rel:
+    st.caption(f"Autosave RT indisponível: {_e_autosave_rel}")
 
 st.markdown("**Dosagens de produtos químicos**")
 ctrl_d1, ctrl_d2 = st.columns([1.1, 2.4])
