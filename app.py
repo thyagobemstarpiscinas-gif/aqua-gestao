@@ -11830,6 +11830,49 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.markdown("</div>", unsafe_allow_html=True)
     
     
+
+    # =========================================
+    # PROPOSTA COMERCIAL — BEM STAR
+    # =========================================
+
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("📄 Proposta Comercial — Bem Star Piscinas")
+    st.caption("Gera proposta personalizada em PDF premium para o cliente.")
+
+    with st.expander("✏️ Preencher e gerar proposta", expanded=False):
+        _pb_col1, _pb_col2 = st.columns(2)
+        with _pb_col1:
+            _pb_cliente  = st.text_input("Cliente / Estabelecimento", key="pb_cliente")
+            _pb_cnpj     = st.text_input("CNPJ", key="pb_cnpj", placeholder="00.000.000/0001-00")
+            _pb_sindico  = st.text_input("Responsavel / Sindico", key="pb_sindico")
+            _pb_freq     = st.text_input("Frequencia de visitas", key="pb_freq", placeholder="ex: 2x por semana")
+        with _pb_col2:
+            _pb_endereco = st.text_input("Endereco", key="pb_endereco")
+            _pb_piscinas = st.text_input("Piscina(s) / Volume hidrico", key="pb_piscinas", placeholder="ex: Adulto 150m3, Infantil 40m3")
+            _pb_valor    = st.text_input("Valor mensal (R$)", key="pb_valor", placeholder="ex: 850,00")
+            _pb_venc     = st.text_input("Dia de vencimento", key="pb_venc", placeholder="ex: 10")
+        _pb_pgto  = st.selectbox("Forma de pagamento", ["PIX / Transferencia bancaria", "Boleto", "PIX", "Transferencia bancaria", "Cheque"], key="pb_pgto")
+        _pb_prods = st.radio("Produtos quimicos", ["Nao inclusos — por conta do contratante", "Inclusos no valor mensal"], key="pb_prods", horizontal=True)
+
+        if st.button("📄 Gerar Proposta Bem Star", type="primary", use_container_width=True, key="btn_gerar_prop_bs"):
+            with st.spinner("Gerando proposta..."):
+                _pb_dados = {
+                    "cliente": _pb_cliente, "cnpj": _pb_cnpj, "endereco": _pb_endereco,
+                    "sindico": _pb_sindico, "piscinas": _pb_piscinas, "frequencia": _pb_freq,
+                    "valor": _pb_valor, "vencimento": _pb_venc, "pagamento": _pb_pgto,
+                    "produtos_inclusos": _pb_prods,
+                }
+                try:
+                    _pb_bytes = gerar_proposta_pdf(_pb_dados, "Bem Star Piscinas")
+                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    st.success("✅ Proposta gerada com sucesso!")
+                    st.download_button("⬇️ Baixar Proposta PDF", data=_pb_bytes,
+                        file_name=_pb_nome, mime="application/pdf", use_container_width=True, key="dl_prop_bs")
+                except Exception as _e:
+                    st.error(f"Erro ao gerar proposta: {_e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # =========================================
     # CONTRATO BEM STAR PISCINAS
     # =========================================
@@ -12245,6 +12288,47 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     
     st.markdown("</div>", unsafe_allow_html=True)
     
+
+    # =========================================
+    # PROPOSTA COMERCIAL — AQUA GESTAO
+    # =========================================
+
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    st.subheader("📄 Proposta Comercial — Aqua Gestao RT")
+    st.caption("Gera proposta personalizada em PDF premium para o cliente.")
+
+    with st.expander("✏️ Preencher e gerar proposta", expanded=False):
+        _pa_col1, _pa_col2 = st.columns(2)
+        with _pa_col1:
+            _pa_cliente  = st.text_input("Cliente / Estabelecimento", key="pa_cliente")
+            _pa_cnpj     = st.text_input("CNPJ", key="pa_cnpj", placeholder="00.000.000/0001-00")
+            _pa_sindico  = st.text_input("Responsavel / Sindico", key="pa_sindico")
+            _pa_freq     = st.text_input("Frequencia de visitas", key="pa_freq", placeholder="ex: 2x por semana")
+        with _pa_col2:
+            _pa_endereco = st.text_input("Endereco", key="pa_endereco")
+            _pa_piscinas = st.text_input("Piscina(s) / Volume hidrico", key="pa_piscinas", placeholder="ex: Adulto 150m3, Infantil 40m3")
+            _pa_valor    = st.text_input("Valor mensal (R$)", key="pa_valor", placeholder="ex: 450,00")
+            _pa_venc     = st.text_input("Dia de vencimento", key="pa_venc", placeholder="ex: 10")
+        _pa_pgto = st.selectbox("Forma de pagamento", ["PIX / Transferencia bancaria", "Boleto", "PIX", "Transferencia bancaria"], key="pa_pgto")
+
+        if st.button("📄 Gerar Proposta Aqua Gestao", type="primary", use_container_width=True, key="btn_gerar_prop_aq"):
+            with st.spinner("Gerando proposta..."):
+                _pa_dados = {
+                    "cliente": _pa_cliente, "cnpj": _pa_cnpj, "endereco": _pa_endereco,
+                    "sindico": _pa_sindico, "piscinas": _pa_piscinas, "frequencia": _pa_freq,
+                    "valor": _pa_valor, "vencimento": _pa_venc, "pagamento": _pa_pgto,
+                }
+                try:
+                    _pa_bytes = gerar_proposta_pdf(_pa_dados, "Aqua Gestao – Controle Tecnico de Piscinas")
+                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    st.success("✅ Proposta gerada com sucesso!")
+                    st.download_button("⬇️ Baixar Proposta PDF", data=_pa_bytes,
+                        file_name=_pa_nome, mime="application/pdf", use_container_width=True, key="dl_prop_aq")
+                except Exception as _e:
+                    st.error(f"Erro ao gerar proposta: {_e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # =========================================
     # FORMULÁRIO
     # =========================================
