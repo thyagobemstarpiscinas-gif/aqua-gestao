@@ -680,9 +680,17 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             empresa,                               # M - Empresa
         ]
 
-        # Insere logo após o último cliente real (linha do Sheets = índice + 2)
-        # Isso mantém o bloco de clientes agrupado antes do TOTAL
-        linha_insercao = ultima_linha_cliente + 2  # +1 índice→sheets, +1 para inserir abaixo
+        # Determina posicao alfabetica dentro do bloco de clientes
+        nome_novo_lower = nome.lower().strip()
+        linha_insercao = ultima_linha_cliente + 2  # fallback: final do bloco
+        for i, row in enumerate(todos):
+            if len(row) > 2:
+                id_val2 = str(row[1]).strip()
+                nome_val2 = str(row[2]).strip()
+                if _re.match(r"^C[0-9]+$", id_val2) and nome_val2:
+                    if nome_val2.lower().strip() > nome_novo_lower:
+                        linha_insercao = i + 1
+                        break
         aba.insert_row(nova_linha, linha_insercao, value_input_option="USER_ENTERED")
         return True
     except Exception as e:
@@ -2515,8 +2523,43 @@ def on_change_cpf():
     st.session_state.cpf_sindico = formatar_cpf(st.session_state.get("cpf_sindico", ""))
 
 
+def _buscar_dados_cnpj(cnpj_digits: str) -> dict | None:
+    """Consulta BrasilAPI e retorna dados da empresa, ou None se falhar."""
+    try:
+        import urllib.request, json as _json
+        url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_digits}"
+        req = urllib.request.Request(url, headers={"User-Agent": "AquaGestaoRT/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            return _json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
 def on_change_cnpj():
-    st.session_state.cnpj_condominio = formatar_cnpj(st.session_state.get("cnpj_condominio", ""))
+    cnpj_raw = st.session_state.get("cnpj_condominio", "")
+    cnpj_fmt = formatar_cnpj(cnpj_raw)
+    st.session_state.cnpj_condominio = cnpj_fmt
+    digits = re.sub(r"\D", "", cnpj_fmt)
+    if len(digits) == 14:
+        dados = _buscar_dados_cnpj(digits)
+        if dados:
+            razao = dados.get("razao_social") or dados.get("nome") or ""
+            if razao and not (st.session_state.get("nome_condominio") or "").strip():
+                st.session_state.nome_condominio = razao.title()
+            logr   = dados.get("logradouro", "")
+            num    = dados.get("numero", "")
+            compl  = dados.get("complemento", "")
+            bairro = dados.get("bairro", "")
+            cidade = dados.get("municipio", "")
+            uf     = dados.get("uf", "")
+            cep_r  = dados.get("cep", "")
+            partes = [p for p in [logr, num, compl, bairro, f"{cidade}/{uf}", cep_r] if p and p.strip()]
+            end_montado = ", ".join(partes)
+            if end_montado and not (st.session_state.get("endereco_condominio") or "").strip():
+                st.session_state.endereco_condominio = end_montado
+            st.session_state["_cnpj_busca_ok"] = f"Dados encontrados: {razao.title()}"
+        else:
+            st.session_state["_cnpj_busca_ok"] = ""
 
 
 def on_change_whatsapp():
@@ -2902,6 +2945,11 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.whatsapp_cliente = dados_salvos.get("whatsapp_cliente", "")
     st.session_state.email_cliente = dados_salvos.get("email_cliente", "")
     st.session_state.observacoes_internas = dados_salvos.get("observacoes_internas", "")
+    st.session_state.cargo_sindico = dados_salvos.get("cargo_sindico", "Síndico")
+    st.session_state.frequencia_visitas = dados_salvos.get("frequencia_visitas", "1 (uma)")
+    st.session_state.dia_pagamento = dados_salvos.get("dia_pagamento", "")
+    st.session_state.forma_pagamento = dados_salvos.get("forma_pagamento", "Pix")
+    st.session_state.valor_mensal_extenso = dados_salvos.get("valor_mensal_extenso", "")
     st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Emitida")
     st.session_state.rel_art_status_widget = st.session_state.rel_art_status
     st.session_state.rel_art_numero = dados_salvos.get("rel_art_numero", "")
@@ -11859,7 +11907,8 @@ st.info(
     "com as exigências documentais do CRQ-MG."
 )
 
-col_btn1, col_btn2, col_btn3 = st.columns([1.6, 1, 1])
+# _BOTAO_ADITIVO_LINHA_CORRETA_
+col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.6, 1.4, 1, 1])
 
 with col_btn1:
     gerar = st.button(
@@ -11868,16 +11917,22 @@ with col_btn1:
         use_container_width=True,
     )
 
-# Mantido como variável para não quebrar o processamento no final do arquivo.
-gerar_aditivo_rapido = False
-
 with col_btn2:
-    if st.button("🗑️ Limpar formulário", use_container_width=True):
+    gerar_aditivo_rapido = st.button(
+        "📄 Gerar aditivo (desconto)",
+        use_container_width=True,
+        help="Gera o 1º Termo Aditivo de desconto comercial. "
+             "Documento privado — NÃO é registrado no CRQ. "
+             "Preencha o campo 'Valor aditivo' antes de gerar.",
+    )
+
+with col_btn3:
+    if st.button("🗑️ Limpar", use_container_width=True):
         limpar_formulario()
         st.rerun()
 
-with col_btn3:
-    if st.button("📁 Abrir pasta gerada", use_container_width=True):
+with col_btn4:
+    if st.button("📁 Abrir pasta", use_container_width=True):
         abrir_pasta_windows(GENERATED_DIR)
 
 st.markdown("</div>", unsafe_allow_html=True)
