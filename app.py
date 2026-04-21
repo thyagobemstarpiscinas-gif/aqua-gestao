@@ -14295,6 +14295,199 @@ st.markdown('</div>', unsafe_allow_html=True)
 # FUNÇÕES DE PROCESSAMENTO DE DOCUMENTOS
 # =========================================
 
+
+# =========================================
+# E-MAIL SMTP — AQUA GESTÃO
+# =========================================
+
+def _email_secrets_aqua() -> dict:
+    """Lê configurações de e-mail do st.secrets sem expor senha no app."""
+    try:
+        cfg = dict(st.secrets.get("email", {}))
+    except Exception:
+        cfg = {}
+    return {
+        "smtp_host": str(cfg.get("smtp_host", "")).strip(),
+        "smtp_port": int(cfg.get("smtp_port", 587) or 587),
+        "smtp_user": str(cfg.get("smtp_user", "")).strip(),
+        "smtp_password": str(cfg.get("smtp_password", "")).strip(),
+        "remetente_nome": str(cfg.get("remetente_nome", "Aqua Gestão – Controle Técnico de Piscinas")).strip(),
+        "logo_url": str(cfg.get("logo_url", "")).strip(),
+        "reply_to": str(cfg.get("reply_to", cfg.get("smtp_user", ""))).strip(),
+    }
+
+
+def email_smtp_configurado() -> bool:
+    cfg = _email_secrets_aqua()
+    return bool(cfg["smtp_host"] and cfg["smtp_user"] and cfg["smtp_password"])
+
+
+def assinatura_email_aqua_gestao() -> str:
+    """Assinatura premium em HTML para todos os e-mails enviados pelo sistema."""
+    import html as _html
+
+    cfg = _email_secrets_aqua()
+    logo_url = cfg.get("logo_url", "")
+    if logo_url:
+        logo_html = f"""
+            <img src="{_html.escape(logo_url)}"
+                 alt="Aqua Gestão"
+                 style="width:112px; height:auto; display:block; border:0; outline:none; text-decoration:none;">
+        """
+    else:
+        logo_html = """
+            <div style="width:112px; height:86px; border-radius:18px; background:#EAF3FF; border:1px solid #D8E2EF;
+                        display:flex; align-items:center; justify-content:center; text-align:center; color:#0B2E59;
+                        font-size:15px; font-weight:800; line-height:1.15;">
+                Aqua<br>Gestão
+            </div>
+        """
+
+    return f"""
+    <br><br>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+           style="width:100%; max-width:760px; border-collapse:collapse; font-family:Arial, Helvetica, sans-serif; color:#1f2937;">
+      <tr>
+        <td style="border-top:4px solid #0B2E59; padding-top:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                 style="width:100%; border-collapse:collapse; background:#ffffff;">
+            <tr>
+              <td style="width:132px; vertical-align:top; padding-right:18px;">
+                {logo_html}
+              </td>
+              <td style="vertical-align:top; border-left:3px solid #C9A227; padding-left:16px;">
+                <div style="font-size:18px; font-weight:800; color:#0B2E59; line-height:1.25;">
+                  Thyago Fernando da Silveira
+                </div>
+                <div style="font-size:14px; color:#374151; margin-top:3px;">
+                  Técnico em Química | Responsável Técnico
+                </div>
+                <div style="font-size:13px; color:#374151; margin-top:3px;">
+                  CRQ-MG 2ª Região | CRQ 024025748
+                </div>
+                <div style="height:1px; background:#D8E2EF; margin:10px 0;"></div>
+                <div style="font-size:15px; font-weight:800; color:#145DA0;">
+                  Aqua Gestão – Controle Técnico de Piscinas
+                </div>
+                <div style="font-size:13px; color:#4b5563; margin-top:4px; line-height:1.5;">
+                  Responsabilidade Técnica • ART • Relatórios Técnicos • Controle de Piscinas Coletivas
+                </div>
+                <div style="font-size:13px; color:#4b5563; margin-top:8px; line-height:1.5;">
+                  Uberlândia/MG<br>
+                  WhatsApp: (34) 99291-3171<br>
+                  E-mail: thyagosilveira@bemstarpiscinas.com.br
+                </div>
+                <div style="font-size:11px; color:#6b7280; margin-top:12px; line-height:1.4;">
+                  Esta mensagem e seus anexos podem conter informações técnicas, contratuais e/ou confidenciais
+                  destinadas exclusivamente ao(s) destinatário(s).
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """
+
+
+def montar_email_html_aqua(mensagem_texto: str) -> str:
+    """Converte texto digitado em HTML e acrescenta assinatura premium."""
+    import html as _html
+    corpo = _html.escape(mensagem_texto or "").replace("\n", "<br>")
+    return f"""
+    <html>
+      <body style="margin:0; padding:0; background:#ffffff;">
+        <div style="font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:1.6; color:#1f2937;">
+          {corpo}
+          {assinatura_email_aqua_gestao()}
+        </div>
+      </body>
+    </html>
+    """
+
+
+def listar_anexos_pasta_condominio(pasta_condominio: Path) -> list[Path]:
+    """Lista anexos PDF/DOCX gerados para o condomínio, priorizando os mais recentes."""
+    try:
+        pasta = Path(pasta_condominio)
+        if not pasta.exists():
+            return []
+        permitidos = {".pdf", ".docx"}
+        arquivos = [p for p in pasta.iterdir() if p.is_file() and p.suffix.lower() in permitidos]
+        arquivos.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        return arquivos[:30]
+    except Exception:
+        return []
+
+
+def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str, anexos: list[Path] | None = None, cc: str = "", bcc: str = "") -> tuple[bool, str]:
+    """Envia e-mail HTML com anexos usando SMTP configurado no Streamlit Secrets."""
+    try:
+        import smtplib
+        import mimetypes
+        from email.message import EmailMessage
+        from email.utils import formataddr
+
+        destinatario = (destinatario or "").strip()
+        assunto = (assunto or "").strip()
+        cc = (cc or "").strip()
+        bcc = (bcc or "").strip()
+        anexos = anexos or []
+
+        if not destinatario:
+            return False, "Informe o e-mail do destinatário."
+        if not validar_email(destinatario):
+            return False, "E-mail do destinatário inválido."
+        if not assunto:
+            return False, "Informe o assunto do e-mail."
+
+        cfg = _email_secrets_aqua()
+        if not email_smtp_configurado():
+            return False, "SMTP não configurado. Configure [email] no Streamlit Secrets."
+
+        msg = EmailMessage()
+        msg["Subject"] = assunto
+        msg["From"] = formataddr((cfg["remetente_nome"], cfg["smtp_user"]))
+        msg["To"] = destinatario
+        if cc:
+            msg["Cc"] = cc
+        if cfg.get("reply_to"):
+            msg["Reply-To"] = cfg["reply_to"]
+
+        texto_plano = (mensagem_texto or "").strip()
+        texto_plano += "\n\n--\nThyago Fernando da Silveira\nTécnico em Química | CRQ-MG 2ª Região | CRQ 024025748\nAqua Gestão – Controle Técnico de Piscinas"
+        msg.set_content(texto_plano)
+        msg.add_alternative(montar_email_html_aqua(mensagem_texto), subtype="html")
+
+        for anexo in anexos:
+            caminho = Path(anexo)
+            if not caminho.exists() or not caminho.is_file():
+                continue
+            ctype, encoding = mimetypes.guess_type(str(caminho))
+            if ctype is None or encoding is not None:
+                ctype = "application/octet-stream"
+            maintype, subtype = ctype.split("/", 1)
+            with open(caminho, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=caminho.name,
+                )
+
+        destinatarios_reais = [e.strip() for e in ([destinatario] + cc.split(",") + bcc.split(",")) if e.strip()]
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(cfg["smtp_user"], cfg["smtp_password"])
+            smtp.send_message(msg, from_addr=cfg["smtp_user"], to_addrs=destinatarios_reais)
+
+        return True, "E-mail enviado com sucesso."
+    except Exception as e:
+        return False, f"Erro ao enviar e-mail: {type(e).__name__}: {e}"
+
+
 def exibir_bloco_envio(
     nome_condominio: str,
     pasta_condominio: Path,
@@ -14302,16 +14495,17 @@ def exibir_bloco_envio(
     email_cliente: str,
     mensagem: str,
 ):
-    """Bloco de envio unificado para Aqua Gestão (WhatsApp + email + copiar)."""
+    """Bloco de envio unificado para Aqua Gestão: WhatsApp, mailto e envio direto SMTP com assinatura premium."""
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("📤 Enviar para o cliente")
 
-    # Editor da mensagem
+    _slug_envio = slugify_nome(nome_condominio)
+
     msg_editada = st.text_area(
         "Mensagem",
         value=mensagem,
         height=220,
-        key=f"aq_msg_envio_{slugify_nome(nome_condominio)}",
+        key=f"aq_msg_envio_{_slug_envio}",
         label_visibility="collapsed",
     )
     componente_copiar(msg_editada)
@@ -14324,27 +14518,80 @@ def exibir_bloco_envio(
             url_wa = link_whatsapp(_tel, msg_editada)
             st.link_button("💬 Abrir WhatsApp", url_wa, use_container_width=True)
         else:
-            st.text_input("WhatsApp", placeholder="(34) 99999-9999", key=f"aq_tel_envio_{slugify_nome(nome_condominio)}")
-            _tel2 = st.session_state.get(f"aq_tel_envio_{slugify_nome(nome_condominio)}", "").strip()
+            st.text_input("WhatsApp", placeholder="(34) 99999-9999", key=f"aq_tel_envio_{_slug_envio}")
+            _tel2 = st.session_state.get(f"aq_tel_envio_{_slug_envio}", "").strip()
             if _tel2:
                 st.link_button("💬 Abrir WhatsApp", link_whatsapp(_tel2, msg_editada), use_container_width=True)
 
     with col_env2:
         _eml = (email_cliente or "").strip()
         if _eml:
-            assunto = f"Documentação Aqua Gestão – {nome_condominio}"
-            url_mail = link_email(_eml, assunto, msg_editada)
+            assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
+            url_mail = link_email(_eml, assunto_mailto, msg_editada)
             st.link_button("✉️ Abrir e-mail", url_mail, use_container_width=True)
         else:
-            st.text_input("E-mail", placeholder="email@cliente.com.br", key=f"aq_email_envio_{slugify_nome(nome_condominio)}")
-            _eml2 = st.session_state.get(f"aq_email_envio_{slugify_nome(nome_condominio)}", "").strip()
+            st.text_input("E-mail", placeholder="email@cliente.com.br", key=f"aq_email_envio_{_slug_envio}")
+            _eml2 = st.session_state.get(f"aq_email_envio_{_slug_envio}", "").strip()
             if _eml2:
-                assunto = f"Documentação Aqua Gestão – {nome_condominio}"
-                st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto, msg_editada), use_container_width=True)
+                assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
+                st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto_mailto, msg_editada), use_container_width=True)
 
     with col_env3:
-        if st.button("📂 Abrir pasta", use_container_width=True):
+        if st.button("📂 Abrir pasta", use_container_width=True, key=f"aq_abrir_pasta_{_slug_envio}"):
             abrir_pasta_windows(pasta_condominio)
+
+    with st.expander("📧 Enviar direto pelo sistema com assinatura premium Aqua Gestão", expanded=False):
+        cfg_ok = email_smtp_configurado()
+        if not cfg_ok:
+            st.warning("SMTP ainda não está configurado. Configure o bloco [email] no Streamlit Secrets antes de enviar direto pelo sistema.")
+            st.code(
+                '[email]\n'
+                'smtp_host = "smtp.gmail.com"\n'
+                'smtp_port = 587\n'
+                'smtp_user = "seuemail@gmail.com"\n'
+                'smtp_password = "SENHA_DE_APP_DO_GMAIL"\n'
+                'remetente_nome = "Aqua Gestão – Controle Técnico de Piscinas"\n'
+                'logo_url = "https://link-publico-da-logo.png"\n'
+                'reply_to = "seuemail@gmail.com"',
+                language="toml",
+            )
+        else:
+            st.success("SMTP configurado. Os e-mails sairão com assinatura premium Aqua Gestão.")
+
+        email_padrao = (email_cliente or st.session_state.get(f"aq_email_envio_{_slug_envio}", "") or "").strip()
+        dest = st.text_input("Destinatário", value=email_padrao, placeholder="email@condominio.com.br", key=f"aq_smtp_dest_{_slug_envio}")
+        cc = st.text_input("CC opcional", value="", placeholder="administradora@exemplo.com.br", key=f"aq_smtp_cc_{_slug_envio}")
+        bcc = st.text_input("BCC opcional", value="", placeholder="", key=f"aq_smtp_bcc_{_slug_envio}")
+        assunto = st.text_input(
+            "Assunto",
+            value=f"Documentação Aqua Gestão – {nome_condominio}",
+            key=f"aq_smtp_assunto_{_slug_envio}",
+        )
+
+        anexos_disponiveis = listar_anexos_pasta_condominio(pasta_condominio)
+        if anexos_disponiveis:
+            opcoes = [a.name for a in anexos_disponiveis]
+            padrao = [a.name for a in anexos_disponiveis if a.suffix.lower() == ".pdf"][:8]
+            selecionados = st.multiselect(
+                "Anexos",
+                options=opcoes,
+                default=padrao,
+                key=f"aq_smtp_anexos_{_slug_envio}",
+                help="Por padrão o sistema seleciona PDFs. DOCX também pode ser anexado se necessário.",
+            )
+            anexos_final = [a for a in anexos_disponiveis if a.name in selecionados]
+        else:
+            st.info("Nenhum PDF/DOCX encontrado na pasta deste condomínio.")
+            anexos_final = []
+
+        st.caption("A assinatura premium será adicionada automaticamente no final do e-mail. A senha SMTP não fica no app.py; fica somente no Streamlit Secrets.")
+
+        if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"aq_smtp_enviar_{_slug_envio}", disabled=not cfg_ok):
+            ok, retorno = enviar_email_smtp_aqua(dest, assunto, msg_editada, anexos_final, cc=cc, bcc=bcc)
+            if ok:
+                st.success(f"✅ {retorno}")
+            else:
+                st.error(retorno)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
