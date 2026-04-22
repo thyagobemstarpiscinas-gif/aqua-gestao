@@ -4635,8 +4635,8 @@ def exibir_envio_email_documentos_aqua(
     key_prefix: str = "docs_aqua",
 ):
     docs = _coletar_documentos_email_aqua(pasta_condominio, documentos_sugeridos)
-    if not docs:
-        return
+    # Nao retorna se nao ha docs locais — permite upload direto na tela
+    # if not docs: return  # <-- removido para sempre mostrar o modulo
 
     nome_condominio = (nome_condominio or "cliente").strip()
     email_padrao = (email_cliente or st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
@@ -4650,11 +4650,20 @@ def exibir_envio_email_documentos_aqua(
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("📧 Enviar documentos por e-mail")
-    st.caption("Selecione contrato, aditivo, termos de ciência, POPs, relatórios ou qualquer PDF/DOCX gerado na pasta do condomínio.")
+    st.caption("Selecione documentos já gerados ou faça upload de PDFs para enviar ao cliente.")
 
     status_cfg, erro_cfg = _email_aqua_configurado()
     if not status_cfg:
         st.warning("E-mail SMTP ainda não configurado: " + erro_cfg)
+
+    # Upload direto de arquivos (nao depende de arquivos locais)
+    _uploads_email = st.file_uploader(
+        "📎 Adicionar PDFs/DOCX para envio",
+        type=["pdf", "docx"],
+        accept_multiple_files=True,
+        key=f"email_upload_{key_prefix}",
+        help="Faça upload dos documentos que deseja enviar. Eles serão anexados ao e-mail."
+    )
 
     _c1, _c2 = st.columns([1.15, 1.15])
     with _c1:
@@ -4675,18 +4684,32 @@ def exibir_envio_email_documentos_aqua(
     opcoes = [p.name for p in docs]
     mapa = {p.name: p for p in docs}
     selecionados = st.multiselect(
-        "Anexos",
+        "Anexos (documentos locais)",
         options=opcoes,
         default=opcoes,
         key=f"email_anexos_{key_prefix}",
-        help="Por padrão, todos os documentos encontrados ficam selecionados. Desmarque o que não quiser enviar.",
-    )
+        help="Documentos gerados na sessão atual. Desmarque o que não quiser enviar.",
+    ) if opcoes else []
 
-    st.caption(f"{len(selecionados)} anexo(s) selecionado(s).")
+    _n_uploads = len(st.session_state.get(f"email_upload_{key_prefix}") or [])
+    _n_local = len(selecionados)
+    st.caption(f"{_n_local} arquivo(s) local(is) + {_n_uploads} upload(s) = {_n_local + _n_uploads} anexo(s) total.")
+
+    if not opcoes and _n_uploads == 0:
+        st.info("ℹ️ Nenhum documento encontrado. Faça upload dos PDFs acima para enviar.")
+
     _b1, _b2 = st.columns([1.2, 1])
     with _b1:
         if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"btn_enviar_email_{key_prefix}"):
+            # Anexos locais selecionados
             anexos = [mapa[n] for n in selecionados if n in mapa]
+            # Anexos por upload — salva temp e adiciona
+            import tempfile as _tmp
+            _tmp_dir = Path(_tmp.mkdtemp())
+            for _uf in (st.session_state.get(f"email_upload_{key_prefix}") or []):
+                _tmp_path = _tmp_dir / _uf.name
+                _tmp_path.write_bytes(_uf.getbuffer())
+                anexos.append(_tmp_path)
             ok, msg = enviar_email_aqua_smtp(destinatario, assunto, mensagem, anexos, cc=cc, bcc=bcc)
             if ok:
                 st.success(msg)
@@ -11277,6 +11300,107 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             if erro_detalhado:
                 with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
                     st.code(erro_detalhado, language="text")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# ENVIO DE E-MAIL — SECAO DEDICADA
+# =========================================
+
+st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+st.subheader("📧 Enviar documentos por e-mail")
+st.caption("Envie contratos, relatórios, termos, POPs e qualquer documento ao cliente diretamente pelo sistema.")
+
+with st.expander("📤 Compor e enviar e-mail", expanded=False):
+    _eml_c1, _eml_c2 = st.columns(2)
+    with _eml_c1:
+        _eml_dest = st.text_input("Para (destinatário) *", key="eml_dest_direto",
+            placeholder="email@condominio.com.br")
+        _eml_assunto = st.text_input("Assunto *", key="eml_assunto_direto",
+            value="Documentação Técnica — Aqua Gestão")
+        _eml_cond = st.text_input("Condomínio / cliente (para personalizar mensagem)",
+            key="eml_cond_direto", placeholder="ex: Condomínio Terra Nova 1")
+    with _eml_c2:
+        _eml_cc  = st.text_input("CC (opcional)", key="eml_cc_direto", placeholder="cc@email.com")
+        _eml_bcc = st.text_input("CCO (opcional)", key="eml_bcc_direto", placeholder="cco@email.com")
+
+    _eml_msg_default = (
+        f"Prezados,\n\n"
+        "Encaminho em anexo a documentação técnica gerada pela Aqua Gestão.\n\n"
+        "Os arquivos seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+        "Permaneço à disposição para qualquer esclarecimento."
+    )
+    _eml_msg = st.text_area("Mensagem", value=_eml_msg_default, height=160, key="eml_msg_direto")
+
+    _eml_uploads = st.file_uploader(
+        "📎 Anexar documentos (PDF ou DOCX)",
+        type=["pdf", "docx"],
+        accept_multiple_files=True,
+        key="eml_uploads_direto",
+        help="Selecione um ou mais arquivos para anexar ao e-mail."
+    )
+
+    # Tambem lista ultimos docs gerados na sessao
+    _eml_ultimos = st.session_state.get("ultimos_docs_gerados") or {}
+    _eml_docs_sessao = []
+    for v in _eml_ultimos.values():
+        try:
+            p = Path(str(v))
+            if p.exists() and p.suffix.lower() in (".pdf", ".docx"):
+                _eml_docs_sessao.append(p)
+        except Exception:
+            pass
+
+    _eml_sel_sessao = []
+    if _eml_docs_sessao:
+        _eml_opcoes = [p.name for p in _eml_docs_sessao]
+        _eml_sel_nomes = st.multiselect(
+            "Ou selecione documentos gerados nesta sessão",
+            options=_eml_opcoes,
+            default=[],
+            key="eml_sel_sessao_direto"
+        )
+        _eml_mapa = {p.name: p for p in _eml_docs_sessao}
+        _eml_sel_sessao = [_eml_mapa[n] for n in _eml_sel_nomes if n in _eml_mapa]
+
+    _n_anexos = len(_eml_uploads or []) + len(_eml_sel_sessao)
+    st.caption(f"{_n_anexos} anexo(s) selecionado(s).")
+
+    _status_email_cfg, _erro_email_cfg = _email_aqua_configurado()
+    if not _status_email_cfg:
+        st.warning(f"⚠️ E-mail SMTP não configurado: {_erro_email_cfg}")
+
+    if st.button("📨 Enviar e-mail agora", type="primary",
+            use_container_width=True, key="btn_enviar_email_direto",
+            disabled=not _status_email_cfg):
+        if not _eml_dest.strip():
+            st.error("Informe o e-mail do destinatário.")
+        elif not _eml_assunto.strip():
+            st.error("Informe o assunto do e-mail.")
+        elif _n_anexos == 0:
+            st.error("Anexe pelo menos um documento para enviar.")
+        else:
+            with st.spinner("Enviando e-mail..."):
+                import tempfile as _tmp2
+                _tmp2_dir = Path(_tmp2.mkdtemp())
+                _anexos_final = list(_eml_sel_sessao)
+                for _uf2 in (_eml_uploads or []):
+                    _p2 = _tmp2_dir / _uf2.name
+                    _p2.write_bytes(_uf2.getbuffer())
+                    _anexos_final.append(_p2)
+                _ok2, _msg2 = enviar_email_aqua_smtp(
+                    destinatario=_eml_dest.strip(),
+                    assunto=_eml_assunto.strip(),
+                    mensagem=_eml_msg,
+                    anexos=_anexos_final,
+                    cc=_eml_cc.strip(),
+                    bcc=_eml_bcc.strip(),
+                )
+            if _ok2:
+                st.success(f"✅ {_msg2}")
+            else:
+                st.error(f"❌ {_msg2}")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
