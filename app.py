@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import json
 import shutil
@@ -412,6 +412,7 @@ def _log_sheets_erro(contexto: str, erro: Exception):
     st.session_state["_sheets_ultimo_erro"] = msg
 
 
+@st.cache_resource(ttl=3600, show_spinner=False)
 def conectar_sheets():
     """Conecta ao Google Sheets usando as credenciais do st.secrets ou arquivo local."""
     try:
@@ -8498,6 +8499,148 @@ def _relatorio_rt_renderizar_painel_rascunho():
         st.caption(f"Painel de rascunho RT indisponível: {e}")
 
 
+
+# =========================================
+# ADMIN — LOGIN FIXO POR EMPRESA E SESSÃO ESTÁVEL
+# =========================================
+ADMIN_SESSION_TIMEOUT_MIN = 12 * 60  # 12 horas. O admin também pode sair manualmente.
+
+
+def _admin_pin_configurado() -> str:
+    """Lê PIN administrativo do Streamlit Secrets, com fallback para o PIN atual."""
+    try:
+        cfg_admin = st.secrets.get("admin", {})
+        pin = str(cfg_admin.get("pin", "") or "").strip()
+        if pin:
+            return pin
+    except Exception:
+        pass
+    return "@Anajullya10"
+
+
+def _admin_pin_valido(pin_digitado: str) -> bool:
+    return str(pin_digitado or "").strip() == _admin_pin_configurado()
+
+
+def _admin_nome_empresa(codigo: str) -> str:
+    return "Bem Star Piscinas" if codigo == "bem_star" else "Aqua Gestão"
+
+
+def _admin_icone_empresa(codigo: str) -> str:
+    return "⭐" if codigo == "bem_star" else "🔵"
+
+
+def _admin_entrar_empresa(codigo_empresa: str):
+    """Centraliza login administrativo para evitar troca acidental de empresa por widgets antigos."""
+    codigo_empresa = "bem_star" if codigo_empresa == "bem_star" else "aqua_gestao"
+    agora = datetime.now().isoformat(timespec="seconds")
+    st.session_state["modo_atual"] = "escritorio"
+    st.session_state["admin_logado"] = True
+    st.session_state["admin_empresa_fixa"] = codigo_empresa
+    st.session_state["empresa_ativa"] = codigo_empresa
+    st.session_state["empresa_login_admin_atual"] = _admin_nome_empresa(codigo_empresa)
+    st.session_state["empresa_selecionada_admin"] = f"{_admin_icone_empresa(codigo_empresa)} {_admin_nome_empresa(codigo_empresa)}"
+    st.session_state["mostrar_pin_admin"] = False
+    st.session_state["admin_login_em"] = agora
+    st.session_state["admin_ultimo_ping"] = agora
+    st.session_state.pop("pin_admin_input", None)
+    st.session_state.pop("empresa_login_admin_escolha", None)
+
+
+def _admin_sessao_valida() -> bool:
+    """Mantém o admin logado durante a sessão e só expira após limite alto de segurança."""
+    if st.session_state.get("modo_atual") != "escritorio":
+        return True
+    if not st.session_state.get("admin_logado"):
+        # Compatibilidade: se app antigo entrou em escritório, reconstrói o estado admin.
+        st.session_state["admin_logado"] = True
+        st.session_state["admin_empresa_fixa"] = st.session_state.get("empresa_ativa", "aqua_gestao")
+        st.session_state["admin_login_em"] = datetime.now().isoformat(timespec="seconds")
+    empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
+    if empresa not in ("aqua_gestao", "bem_star"):
+        empresa = "aqua_gestao"
+    # trava empresa ativa pela empresa escolhida no login, impedindo widgets antigos de alternarem painel
+    st.session_state["empresa_ativa"] = empresa
+    st.session_state["admin_empresa_fixa"] = empresa
+    st.session_state["admin_ultimo_ping"] = datetime.now().isoformat(timespec="seconds")
+    return True
+
+
+def _admin_sair_para_entrada(abrir_login: bool = True):
+    """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
+    try:
+        if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
+            _relatorio_rt_salvar_rascunho("logout_admin")
+    except Exception:
+        pass
+    for chave in [
+        "admin_logado", "admin_empresa_fixa", "admin_login_em", "admin_ultimo_ping",
+        "empresa_login_admin_atual", "empresa_login_admin_escolha", "pin_admin_input",
+    ]:
+        st.session_state.pop(chave, None)
+    st.session_state["modo_atual"] = "entrada"
+    st.session_state["mostrar_pin_admin"] = bool(abrir_login)
+
+
+def _admin_keepalive_browser():
+    """Pequeno ping no navegador para reduzir perda de sessão por inatividade no Streamlit Cloud."""
+    if st.session_state.get("modo_atual") != "escritorio":
+        return
+    try:
+        components.html(
+            """
+            <script>
+            (function(){
+              if (window.__aqua_admin_keepalive_installed) return;
+              window.__aqua_admin_keepalive_installed = true;
+              setInterval(function(){
+                try {
+                  fetch(window.parent.location.href, {method:'GET', cache:'no-store', credentials:'same-origin'}).catch(function(){});
+                } catch(e) {}
+              }, 240000);
+            })();
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+    except Exception:
+        pass
+
+
+def _admin_render_login_empresa():
+    """Renderiza login administrativo: primeiro escolhe empresa, depois informa PIN."""
+    st.markdown("**Escolha a empresa do acesso administrativo:**")
+    c_emp1, c_emp2 = st.columns(2)
+    with c_emp1:
+        if st.button("🔵 Aqua Gestão", key="btn_admin_login_aqua", use_container_width=True):
+            st.session_state["admin_empresa_pendente"] = "aqua_gestao"
+    with c_emp2:
+        if st.button("⭐ Bem Star Piscinas", key="btn_admin_login_bemstar", use_container_width=True):
+            st.session_state["admin_empresa_pendente"] = "bem_star"
+
+    empresa_pendente = st.session_state.get("admin_empresa_pendente", "aqua_gestao")
+    st.info(f"Empresa selecionada para login: **{_admin_icone_empresa(empresa_pendente)} {_admin_nome_empresa(empresa_pendente)}**")
+
+    pin_admin = st.text_input(
+        "PIN administrativo",
+        type="password",
+        key="pin_admin_input",
+        placeholder="Digite o PIN administrativo",
+        label_visibility="collapsed",
+    )
+    if st.button("Entrar no escritório", key="btn_pin_admin_ok", use_container_width=True):
+        if _admin_pin_valido(pin_admin):
+            _admin_entrar_empresa(empresa_pendente)
+            st.rerun()
+        else:
+            st.error("PIN incorreto.")
+
+
+# Garante que a empresa ativa fique travada pela empresa escolhida no login administrativo.
+_admin_sessao_valida()
+_admin_keepalive_browser()
+
 # =========================================
 # TOPO
 # =========================================
@@ -8577,15 +8720,8 @@ with st.sidebar:
 
         st.info(f"{_icone_painel_admin} Empresa logada: **{_nome_painel_admin}**")
 
-        if st.button("↩️ Trocar empresa / sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
-            st.session_state["modo_atual"] = "entrada"
-            st.session_state["mostrar_pin_admin"] = True
-            st.session_state.pop("pin_admin_input", None)
-            st.session_state.pop("empresa_login_admin_atual", None)
-            try:
-                st.cache_data.clear()
-            except Exception:
-                pass
+        if st.button("🚪 Sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
+            _admin_sair_para_entrada(abrir_login=True)
             st.rerun()
 
         st.caption(f"Painel ativo: {_nome_painel_admin}")
@@ -8844,40 +8980,9 @@ if _modo_interno == "entrada":
         st.markdown('<div class="entrada-admin-note">Uso interno do escritório</div>', unsafe_allow_html=True)
 
         if st.session_state.get("mostrar_pin_admin"):
-
-            # _LOGIN_ADMIN_ESCOLHE_EMPRESA_V1_
-            st.markdown("**Escolha a empresa para acessar:**")
-            empresa_login_admin = st.radio(
-                "Empresa do acesso administrativo",
-                options=["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
-                index=0,
-                key="empresa_login_admin_escolha",
-                horizontal=False,
-                label_visibility="collapsed",
-            )
-
-            pin_admin = st.text_input(
-                "PIN administrativo",
-                type="password",
-                key="pin_admin_input",
-                placeholder="Digite o PIN administrativo",
-                label_visibility="collapsed"
-            )
-            if st.button("Entrar no escritório", key="btn_pin_admin_ok", use_container_width=True):
-                if pin_admin == "@Anajullya10":
-                    _codigo_login_admin = "bem_star" if "Bem Star" in empresa_login_admin else "aqua_gestao"
-                    st.session_state["modo_atual"] = "escritorio"
-                    st.session_state["empresa_ativa"] = _codigo_login_admin
-                    st.session_state["empresa_selecionada_admin"] = empresa_login_admin
-                    st.session_state["empresa_login_admin_atual"] = empresa_login_admin
-                    st.session_state["mostrar_pin_admin"] = False
-                    try:
-                        st.cache_data.clear()
-                    except Exception:
-                        pass
-                    st.rerun()
-                else:
-                    st.error("PIN incorreto.")
+            # _LOGIN_ADMIN_EMPRESA_DEFINITIVO_V3_
+            # Empresa é definida apenas no login administrativo. A sidebar não alterna mais empresa.
+            _admin_render_login_empresa()
 
 
     st.stop()
@@ -8904,14 +9009,18 @@ modo = "Modo Escritório" if _modo_interno == "escritorio" else (
     "📱 Modo Operador (Campo / Celular)" if _modo_interno == "operador" else "Modo Escritório"
 )
 
-# Botão de voltar à tela inicial (aparece em todos os modos)
+# Botão de saída controlada. No admin, só sai quando clicar explicitamente em sair.
 if _modo_interno in ("escritorio", "operador"):
-    if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
-        st.session_state["modo_atual"] = "entrada"
-        if _modo_interno == "operador":
+    if _modo_interno == "escritorio":
+        if st.button("🚪 Sair do admin", key="btn_voltar_inicio"):
+            _admin_sair_para_entrada(abrir_login=True)
+            st.rerun()
+    else:
+        if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+            st.session_state["modo_atual"] = "entrada"
             st.session_state["op_pin_ok"] = False
             st.session_state.pop("op_dados_atual", None)
-        st.rerun()
+            st.rerun()
 
 # =========================================
 # MODO OPERADOR — LANÇAMENTO DE CAMPO
@@ -11294,102 +11403,136 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =========================================
-# ENVIO DE E-MAIL — SECAO DEDICADA
+# CENTRAL DE ENVIO DE DOCUMENTOS — AQUA GESTÃO
 # =========================================
-
+# _CENTRAL_EMAIL_DOCUMENTOS_DEFINITIVA_V3_
 st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
-st.subheader("📧 Enviar documentos por e-mail")
-st.caption("Envie contratos, relatórios, termos, POPs e qualquer documento ao cliente diretamente pelo sistema.")
+st.subheader("📧 Central de Envio de Documentos")
+st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
 
-with st.expander("📤 Compor e enviar e-mail", expanded=False):
-    _eml_c1, _eml_c2 = st.columns(2)
-    with _eml_c1:
-        _eml_dest = st.text_input("Para (destinatário) *", key="eml_dest_direto",
-            placeholder="email@condominio.com.br")
-        _eml_assunto = st.text_input("Assunto *", key="eml_assunto_direto",
-            value="Documentação Técnica — Aqua Gestão")
-        _eml_cond = st.text_input("Condomínio / cliente (para personalizar mensagem)",
-            key="eml_cond_direto", placeholder="ex: Condomínio Terra Nova 1")
-    with _eml_c2:
-        _eml_cc  = st.text_input("CC (opcional)", key="eml_cc_direto", placeholder="cc@email.com")
-        _eml_bcc = st.text_input("CCO (opcional)", key="eml_bcc_direto", placeholder="cco@email.com")
+_pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
+_nomes_pastas_envio = [humanizar_nome_pasta(p.name) for p in _pastas_envio]
+_mapa_pastas_envio = dict(zip(_nomes_pastas_envio, _pastas_envio))
 
-    _eml_msg_default = (
+_nome_envio_padrao = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+_idx_envio = 0
+if _nome_envio_padrao and _nomes_pastas_envio:
+    for _i, _n in enumerate(_nomes_pastas_envio):
+        if nomes_condominio_equivalentes(_nome_envio_padrao, _n):
+            _idx_envio = _i
+            break
+
+if _nomes_pastas_envio:
+    _nome_cond_envio = st.selectbox(
+        "Condomínio / cliente para buscar documentos",
+        options=_nomes_pastas_envio,
+        index=_idx_envio,
+        key="central_email_condominio",
+    )
+    _pasta_cond_envio = _mapa_pastas_envio.get(_nome_cond_envio)
+else:
+    _nome_cond_envio = _nome_envio_padrao or "Condomínio"
+    _pasta_cond_envio = None
+    st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
+
+_email_envio_padrao = (st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
+try:
+    _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
+    _email_envio_padrao = _email_envio_padrao or str(_dados_cond_envio.get("email_cliente", "") or _dados_cond_envio.get("email", "") or "").strip()
+except Exception:
+    _dados_cond_envio = {}
+
+_docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio, st.session_state.get("ultimos_docs_gerados") or [])
+_docs_por_tipo = {"Contrato": [], "Aditivo": [], "Termo de ciência": [], "POP": [], "Relatório": [], "Outros": []}
+for _doc in _docs_envio:
+    _nm = _doc.name.lower()
+    if "contrato" in _nm:
+        _docs_por_tipo["Contrato"].append(_doc)
+    elif "aditivo" in _nm:
+        _docs_por_tipo["Aditivo"].append(_doc)
+    elif "termo" in _nm or "ciencia" in _nm or "ciência" in _nm:
+        _docs_por_tipo["Termo de ciência"].append(_doc)
+    elif "pop" in _nm:
+        _docs_por_tipo["POP"].append(_doc)
+    elif "relatorio" in _nm or "relatório" in _nm:
+        _docs_por_tipo["Relatório"].append(_doc)
+    else:
+        _docs_por_tipo["Outros"].append(_doc)
+
+with st.expander("📤 Compor e enviar documentação", expanded=False):
+    _env_c1, _env_c2 = st.columns(2)
+    with _env_c1:
+        _dest_env = st.text_input("Destinatário *", value=_email_envio_padrao, key="central_email_destinatario", placeholder="email@condominio.com.br")
+        _assunto_env = st.text_input("Assunto *", value=f"Documentação técnica Aqua Gestão - {_nome_cond_envio}", key="central_email_assunto")
+    with _env_c2:
+        _cc_env = st.text_input("CC", value="", key="central_email_cc", placeholder="administradora@exemplo.com.br")
+        _bcc_env = st.text_input("CCO", value="", key="central_email_bcc")
+
+    _msg_env_padrao = (
         f"Prezados,\n\n"
-        "Encaminho em anexo a documentação técnica gerada pela Aqua Gestão.\n\n"
-        "Os arquivos seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+        f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_cond_envio}.\n\n"
+        "Os documentos selecionados seguem para conferência, registro e arquivo interno do condomínio.\n\n"
         "Permaneço à disposição para qualquer esclarecimento."
     )
-    _eml_msg = st.text_area("Mensagem", value=_eml_msg_default, height=160, key="eml_msg_direto")
+    _msg_env = st.text_area("Mensagem", value=_msg_env_padrao, height=180, key="central_email_mensagem")
 
-    _eml_uploads = st.file_uploader(
-        "📎 Anexar documentos (PDF ou DOCX)",
+    st.markdown("**Selecionar documentos locais:**")
+    _selecionados_envio = []
+    for _tipo_doc, _lista_docs in _docs_por_tipo.items():
+        if not _lista_docs:
+            continue
+        _opcoes_tipo = [p.name for p in _lista_docs]
+        _default_tipo = _opcoes_tipo[:2] if _tipo_doc in ("Contrato", "Aditivo", "Termo de ciência", "Relatório") else []
+        _sel_tipo = st.multiselect(
+            _tipo_doc,
+            options=_opcoes_tipo,
+            default=_default_tipo,
+            key=f"central_email_tipo_{slugify_nome(_tipo_doc)}",
+        )
+        _mapa_tipo = {p.name: p for p in _lista_docs}
+        _selecionados_envio.extend([_mapa_tipo[n] for n in _sel_tipo if n in _mapa_tipo])
+
+    _uploads_env = st.file_uploader(
+        "📎 Adicionar anexos manuais (PDF/DOCX)",
         type=["pdf", "docx"],
         accept_multiple_files=True,
-        key="eml_uploads_direto",
-        help="Selecione um ou mais arquivos para anexar ao e-mail."
+        key="central_email_uploads",
     )
 
-    # Tambem lista ultimos docs gerados na sessao
-    _eml_ultimos = st.session_state.get("ultimos_docs_gerados") or {}
-    _eml_docs_sessao = []
-    for v in _eml_ultimos.values():
-        try:
-            p = Path(str(v))
-            if p.exists() and p.suffix.lower() in (".pdf", ".docx"):
-                _eml_docs_sessao.append(p)
-        except Exception:
-            pass
+    _status_cfg_env, _erro_cfg_env = _email_aqua_configurado()
+    if not _status_cfg_env:
+        st.warning(f"⚠️ SMTP não configurado: {_erro_cfg_env}")
 
-    _eml_sel_sessao = []
-    if _eml_docs_sessao:
-        _eml_opcoes = [p.name for p in _eml_docs_sessao]
-        _eml_sel_nomes = st.multiselect(
-            "Ou selecione documentos gerados nesta sessão",
-            options=_eml_opcoes,
-            default=[],
-            key="eml_sel_sessao_direto"
-        )
-        _eml_mapa = {p.name: p for p in _eml_docs_sessao}
-        _eml_sel_sessao = [_eml_mapa[n] for n in _eml_sel_nomes if n in _eml_mapa]
+    _qtd_upload_env = len(_uploads_env or [])
+    st.caption(f"{len(_selecionados_envio)} documento(s) local(is) + {_qtd_upload_env} upload(s) selecionado(s).")
 
-    _n_anexos = len(_eml_uploads or []) + len(_eml_sel_sessao)
-    st.caption(f"{_n_anexos} anexo(s) selecionado(s).")
-
-    _status_email_cfg, _erro_email_cfg = _email_aqua_configurado()
-    if not _status_email_cfg:
-        st.warning(f"⚠️ E-mail SMTP não configurado: {_erro_email_cfg}")
-
-    if st.button("📨 Enviar e-mail agora", type="primary",
-            use_container_width=True, key="btn_enviar_email_direto",
-            disabled=not _status_email_cfg):
-        if not _eml_dest.strip():
-            st.error("Informe o e-mail do destinatário.")
-        elif not _eml_assunto.strip():
-            st.error("Informe o assunto do e-mail.")
-        elif _n_anexos == 0:
-            st.error("Anexe pelo menos um documento para enviar.")
+    if st.button("📨 Enviar documentos selecionados", type="primary", use_container_width=True, key="central_email_btn_enviar", disabled=not _status_cfg_env):
+        if not _dest_env.strip():
+            st.error("Informe o destinatário.")
+        elif not _assunto_env.strip():
+            st.error("Informe o assunto.")
+        elif not _selecionados_envio and not _uploads_env:
+            st.error("Selecione ou envie pelo menos um anexo.")
         else:
-            with st.spinner("Enviando e-mail..."):
-                import tempfile as _tmp2
-                _tmp2_dir = Path(_tmp2.mkdtemp())
-                _anexos_final = list(_eml_sel_sessao)
-                for _uf2 in (_eml_uploads or []):
-                    _p2 = _tmp2_dir / _uf2.name
-                    _p2.write_bytes(_uf2.getbuffer())
-                    _anexos_final.append(_p2)
-                _ok2, _msg2 = enviar_email_aqua_smtp(
-                    destinatario=_eml_dest.strip(),
-                    assunto=_eml_assunto.strip(),
-                    mensagem=_eml_msg,
-                    anexos=_anexos_final,
-                    cc=_eml_cc.strip(),
-                    bcc=_eml_bcc.strip(),
-                )
-            if _ok2:
-                st.success(f"✅ {_msg2}")
+            import tempfile as _tmp_env
+            _tmp_dir_env = Path(_tmp_env.mkdtemp())
+            _anexos_env = list(_selecionados_envio)
+            for _uf_env in (_uploads_env or []):
+                _p_env = _tmp_dir_env / _uf_env.name
+                _p_env.write_bytes(_uf_env.getbuffer())
+                _anexos_env.append(_p_env)
+            _ok_env, _msg_retorno_env = enviar_email_aqua_smtp(
+                destinatario=_dest_env.strip(),
+                assunto=_assunto_env.strip(),
+                mensagem=_msg_env,
+                anexos=_anexos_env,
+                cc=_cc_env.strip(),
+                bcc=_bcc_env.strip(),
+            )
+            if _ok_env:
+                st.success(f"✅ {_msg_retorno_env}")
             else:
-                st.error(f"❌ {_msg2}")
+                st.error(f"❌ {_msg_retorno_env}")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -16415,3 +16558,4 @@ st.markdown("---")
 st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
+
