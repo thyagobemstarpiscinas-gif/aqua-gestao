@@ -12189,21 +12189,69 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     with st.expander("📋 Preencher e gerar contrato", expanded=False):
     
         # ── Seletor de cliente ────────────────────────────────────────────────────
-        @st.cache_data(ttl=30)
+        # Correção definitiva:
+        # - evita que a lista suma em reruns;
+        # - mantém último carregamento válido em session_state;
+        # - permite atualizar manualmente a lista;
+        # - filtra clientes da Bem Star sem depender de rádio lateral.
+        @st.cache_data(ttl=300, show_spinner=False)
         def _clientes_bs_contrato():
-            _todos = sheets_listar_clientes_completo()
+            _todos = sheets_listar_clientes_completo() or []
             _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
-            _nomes_sheets = [c["nome"] for c in _todos]
+
+            # Junta clientes locais não encontrados no Sheets
+            _nomes_sheets = [str(c.get("nome", "")).strip() for c in _todos]
             for _cl in _locais:
-                if _cl["nome"] not in _nomes_sheets:
+                _nome_local = str(_cl.get("nome", "")).strip()
+                if _nome_local and _nome_local not in _nomes_sheets:
                     _todos.append(_cl)
-            return _todos
-    
-        _bs_clientes = _clientes_bs_contrato()
-        _bs_nomes = ["— selecione ou preencha manualmente —"] + [c["nome"] for c in _bs_clientes]
-    
-        _bs_sel = st.selectbox("Carregar dados de cliente cadastrado", _bs_nomes,
-            key="bs_cont_cliente_sel")
+
+            # Mantém apenas clientes Bem Star, mas preserva cadastros antigos sem empresa definida
+            _filtrados = []
+            for _c in _todos:
+                _nome = str(_c.get("nome", "")).strip()
+                if not _nome:
+                    continue
+                _empresa = str(_c.get("empresa", "")).strip().lower()
+                if ("bem star" in _empresa) or (_empresa == ""):
+                    _filtrados.append(_c)
+
+            # Deduplica por nome
+            _resultado = []
+            _vistos = set()
+            for _c in _filtrados:
+                _chave = str(_c.get("nome", "")).strip().lower()
+                if _chave and _chave not in _vistos:
+                    _vistos.add(_chave)
+                    _resultado.append(_c)
+
+            return sorted(_resultado, key=lambda x: str(x.get("nome", "")).lower())
+
+        col_atualizar_bs, col_info_bs = st.columns([1, 3])
+        with col_atualizar_bs:
+            if st.button("🔄 Atualizar clientes", key="btn_atualizar_clientes_bs_contrato"):
+                _clientes_bs_contrato.clear()
+                st.session_state.pop("_bs_clientes_contrato_ultimo_ok", None)
+                st.rerun()
+
+        _bs_clientes = _clientes_bs_contrato() or []
+
+        # Fallback: se o Sheets falhar em algum rerun, reaproveita a última lista boa da sessão
+        if _bs_clientes:
+            st.session_state["_bs_clientes_contrato_ultimo_ok"] = _bs_clientes
+        else:
+            _bs_clientes = st.session_state.get("_bs_clientes_contrato_ultimo_ok", [])
+
+        _bs_nomes = ["— selecione ou preencha manualmente —"] + [c.get("nome", "") for c in _bs_clientes if c.get("nome")]
+
+        if len(_bs_nomes) == 1:
+            st.warning("⚠️ Nenhum cliente Bem Star carregado no momento. Clique em **Atualizar clientes**. Se persistir, teste a conexão com o Google Sheets.")
+
+        _bs_sel = st.selectbox(
+            "Carregar dados de cliente cadastrado",
+            _bs_nomes,
+            key="bs_cont_cliente_sel"
+        )
     
         if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
             _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
