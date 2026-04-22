@@ -8354,8 +8354,35 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
             return False
         dados = _relatorio_rt_coletar_rascunho()
         dados["motivo"] = motivo
+        # 1. Salva localmente
         _relatorio_rt_rascunho_path().write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
         st.session_state["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        # 2. Backup no Sheets (persiste apos sleep do servidor)
+        try:
+            sh = conectar_sheets()
+            if sh:
+                try:
+                    aba_rasc_rt = sh.worksheet("_Rascunhos_RT")
+                except Exception:
+                    aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
+                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
+                payload = json.dumps(dados, ensure_ascii=False)
+                if len(payload) > 45000:
+                    payload = payload[:45000] + "..."
+                todos_rt = aba_rasc_rt.get_all_values()
+                linha_ex = None
+                for i, row in enumerate(todos_rt[1:], start=2):
+                    if row and str(row[0]).strip() == "thyago":
+                        linha_ex = i
+                        break
+                nova = ["thyago", dados.get("salvo_em", ""), payload]
+                if linha_ex:
+                    aba_rasc_rt.update(f"A{linha_ex}:C{linha_ex}", [nova], value_input_option="RAW")
+                else:
+                    prox = max(len(todos_rt) + 1, 2)
+                    aba_rasc_rt.update(f"A{prox}:C{prox}", [nova], value_input_option="RAW")
+        except Exception:
+            pass  # Sheets indisponivel — arquivo local e suficiente
         return True
     except Exception as e:
         st.session_state["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
@@ -8363,13 +8390,35 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
 
 
 def _relatorio_rt_carregar_rascunho() -> dict:
+    # 1. Tenta arquivo local
     try:
         path = _relatorio_rt_rascunho_path()
-        if not path.exists():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        pass
+    # 2. Fallback no Sheets (apos sleep do servidor)
+    try:
+        sh = conectar_sheets()
+        if sh:
+            try:
+                aba_rasc_rt = sh.worksheet("_Rascunhos_RT")
+                todos_rt = aba_rasc_rt.get_all_values()
+                for row in todos_rt[1:]:
+                    if row and str(row[0]).strip() == "thyago" and len(row) >= 3 and row[2].strip():
+                        dados = json.loads(row[2])
+                        # Reconstitui arquivo local
+                        try:
+                            _relatorio_rt_rascunho_path().write_text(
+                                json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+                        except Exception:
+                            pass
+                        return dados
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {}
 
 
 def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
@@ -14557,9 +14606,17 @@ else:
 # e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
 if st.session_state.pop("_rel_auto_importar_cliente", False):
     if lancamentos_disponiveis:
-        _importar_lancamentos(lancamentos_disponiveis)
-        st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) de visita importado(s) automaticamente para o relatório.")
-        st.rerun()
+        # Importa apenas se nao ha dados ja preenchidos na tabela — evita apagar trabalho manual
+        _tem_dados_tabela = any(
+            str(st.session_state.get(f"rel_analise_ph_{i}") or "").strip()
+            for i in range(int(st.session_state.get("rel_analises_total", 12) or 12))
+        )
+        if not _tem_dados_tabela:
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) importado(s) automaticamente.")
+            st.rerun()
+        else:
+            st.info(f"ℹ️ {len(lancamentos_disponiveis)} lançamento(s) disponível(is). Clique em Importar para carregar (irá substituir dados atuais).")
     elif nome_rel_atual:
         st.warning(f"Cliente carregado, mas nenhum lançamento de visita foi encontrado para {nome_rel_atual} no período informado.")
 
