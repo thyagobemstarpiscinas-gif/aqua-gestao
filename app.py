@@ -8456,7 +8456,8 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
                 continue
             st.session_state[k] = v
         st.session_state["empresa_ativa"] = "aqua_gestao"
-        st.session_state["empresa_seletor_admin_sidebar_definitivo"] = "🔵 Aqua Gestão"
+        # Correção: não alterar key de widget após renderização.
+        # st.session_state["empresa_seletor_admin_sidebar_definitivo"] = ...
         st.session_state["_relatorio_rt_rascunho_restaurado"] = True
         return True
     except Exception as e:
@@ -8602,7 +8603,8 @@ with st.sidebar:
                 )
                 st.session_state["empresa_ativa"] = "aqua_gestao"
                 st.session_state["empresa_selecionada_admin"] = "🔵 Aqua Gestão"
-                st.session_state["empresa_seletor_admin_sidebar_definitivo"] = "🔵 Aqua Gestão"
+                # Correção: não alterar key de widget após renderização.
+                # st.session_state["empresa_seletor_admin_sidebar_definitivo"] = ...
                 try:
                     st.cache_data.clear()
                 except Exception:
