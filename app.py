@@ -8563,7 +8563,8 @@ if st.session_state.get("modo_atual", "entrada") == "escritorio":
 
 with st.sidebar:
     if st.session_state.get("modo_atual", "entrada") == "escritorio":
-        # === SELETOR ADMINISTRATIVO DE EMPRESA — INÍCIO ===
+        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — INÍCIO ===
+        # _SIDEBAR_EMPRESA_FIXA_PELO_LOGIN_V1_
         st.markdown("### Painel administrativo")
 
         _empresa_atual_admin = st.session_state.get("empresa_ativa", "aqua_gestao")
@@ -8571,58 +8572,25 @@ with st.sidebar:
             _empresa_atual_admin = "aqua_gestao"
             st.session_state["empresa_ativa"] = _empresa_atual_admin
 
-        _opcoes_empresa_admin = ["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"]
-        _idx_empresa_admin = 1 if _empresa_atual_admin == "bem_star" else 0
+        _nome_painel_admin = "Bem Star Piscinas" if _empresa_atual_admin == "bem_star" else "Aqua Gestão"
+        _icone_painel_admin = "⭐" if _empresa_atual_admin == "bem_star" else "🔵"
 
-        _empresa_escolhida_admin = st.radio(
-            "Empresa ativa",
-            options=_opcoes_empresa_admin,
-            index=_idx_empresa_admin,
-            key="empresa_seletor_admin_sidebar_definitivo",
-            label_visibility="collapsed",
-        )
+        st.info(f"{_icone_painel_admin} Empresa logada: **{_nome_painel_admin}**")
 
-        _novo_codigo_admin = "bem_star" if "Bem Star" in _empresa_escolhida_admin else "aqua_gestao"
-
-        # _TRAVA_TROCA_EMPRESA_RELATORIO_RT_V1_
-        if st.session_state.get("empresa_ativa") != _novo_codigo_admin:
-            _tem_relatorio_rt_aberto = False
+        if st.button("↩️ Trocar empresa / sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
+            st.session_state["modo_atual"] = "entrada"
+            st.session_state["mostrar_pin_admin"] = True
+            st.session_state.pop("pin_admin_input", None)
+            st.session_state.pop("empresa_login_admin_atual", None)
             try:
-                _tem_relatorio_rt_aberto = _relatorio_rt_tem_dados_em_tela()
+                st.cache_data.clear()
             except Exception:
-                _tem_relatorio_rt_aberto = False
+                pass
+            st.rerun()
 
-            if _tem_relatorio_rt_aberto and _novo_codigo_admin == "bem_star":
-                try:
-                    _relatorio_rt_salvar_rascunho("tentativa_troca_para_bem_star")
-                except Exception:
-                    pass
-                st.warning(
-                    "🛡️ Troca para Bem Star bloqueada: existe Relatório RT em andamento. "
-                    "Salvei um rascunho de emergência e mantive o painel em Aqua Gestão."
-                )
-                st.session_state["empresa_ativa"] = "aqua_gestao"
-                st.session_state["empresa_selecionada_admin"] = "🔵 Aqua Gestão"
-                # Correção: não alterar key de widget após renderização.
-                # st.session_state["empresa_seletor_admin_sidebar_definitivo"] = ...
-                try:
-                    st.cache_data.clear()
-                except Exception:
-                    pass
-                st.rerun()
-            else:
-                st.session_state["empresa_ativa"] = _novo_codigo_admin
-                st.session_state["empresa_selecionada_admin"] = _empresa_escolhida_admin
-                try:
-                    st.cache_data.clear()
-                except Exception:
-                    pass
-                st.rerun()
-
-        _nome_painel_admin = "Bem Star Piscinas" if _novo_codigo_admin == "bem_star" else "Aqua Gestão"
         st.caption(f"Painel ativo: {_nome_painel_admin}")
         st.divider()
-        # === SELETOR ADMINISTRATIVO DE EMPRESA — FIM ===
+        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — FIM ===
 
     if st.session_state.get("modo_atual", "entrada") != "operador":
         st.header("Histórico recente")
@@ -8877,6 +8845,17 @@ if _modo_interno == "entrada":
 
         if st.session_state.get("mostrar_pin_admin"):
 
+            # _LOGIN_ADMIN_ESCOLHE_EMPRESA_V1_
+            st.markdown("**Escolha a empresa para acessar:**")
+            empresa_login_admin = st.radio(
+                "Empresa do acesso administrativo",
+                options=["🔵 Aqua Gestão", "⭐ Bem Star Piscinas"],
+                index=0,
+                key="empresa_login_admin_escolha",
+                horizontal=False,
+                label_visibility="collapsed",
+            )
+
             pin_admin = st.text_input(
                 "PIN administrativo",
                 type="password",
@@ -8886,8 +8865,16 @@ if _modo_interno == "entrada":
             )
             if st.button("Entrar no escritório", key="btn_pin_admin_ok", use_container_width=True):
                 if pin_admin == "@Anajullya10":
+                    _codigo_login_admin = "bem_star" if "Bem Star" in empresa_login_admin else "aqua_gestao"
                     st.session_state["modo_atual"] = "escritorio"
+                    st.session_state["empresa_ativa"] = _codigo_login_admin
+                    st.session_state["empresa_selecionada_admin"] = empresa_login_admin
+                    st.session_state["empresa_login_admin_atual"] = empresa_login_admin
                     st.session_state["mostrar_pin_admin"] = False
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
                     st.error("PIN incorreto.")
