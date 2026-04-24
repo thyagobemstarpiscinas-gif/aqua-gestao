@@ -9111,9 +9111,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
-    # Empresa ativa no Modo Campo — preservada desde a tela inicial.
-    # Fallback visual: operador nao escolhe empresa; acesso e por PIN/condominios.
-    _empresa_op_codigo = st.session_state.get("empresa_contexto_operador") or st.session_state.get("empresa_ativa", "aqua_gestao")
+    # Empresa do operador: inferida do radio na tela inicial (empresa_selecionada_admin)
+    # O radio ja fica visivel antes do botao Acessar como Operador
+    _radio_val = st.session_state.get("empresa_selecionada_admin", "🔵 Aqua Gestão")
+    _empresa_op_codigo = "bem_star" if "Bem Star" in str(_radio_val) else "aqua_gestao"
     if _empresa_op_codigo not in ("aqua_gestao", "bem_star"):
         _empresa_op_codigo = "aqua_gestao"
     st.session_state["empresa_ativa"] = _empresa_op_codigo
@@ -10084,6 +10085,23 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
                     "piscinas": op_piscinas_dados,
                     "problemas": op_problemas.strip(),
+                    "servicos_executados": [
+                        s for s, k in [
+                            ("Aspiração de fundo",             "op_serv_aspiracao"),
+                            ("Escovação de paredes e bordas",  "op_serv_escovacao"),
+                            ("Peneiração / retirada de resíduos", "op_serv_peneiracao"),
+                            ("Limpeza de skimmer e pré-filtro","op_serv_skimmer"),
+                            ("Limpeza de borda (azulejo/deck)","op_serv_borda"),
+                            ("Retrolavagem do filtro",         "op_serv_retrolavagem"),
+                            ("Aplicação de produtos químicos", "op_serv_dosagem"),
+                            ("Verificação de equipamentos",    "op_serv_verificacao"),
+                            ("Circulação e filtração",         "op_serv_circulacao"),
+                        ] if st.session_state.get(k)
+                    ] + (
+                        [st.session_state.get("op_serv_outro_desc","").strip()]
+                        if st.session_state.get("op_serv_outro") and st.session_state.get("op_serv_outro_desc","").strip()
+                        else []
+                    ),
                     "observacao": op_obs.strip(), "dosagens": op_dosagens,
                     "resp_local": (st.session_state.get("op_resp_local") or "").strip(),
                     "parecer": st.session_state.get("op_parecer_visita", "✅ Satisfatório"),
