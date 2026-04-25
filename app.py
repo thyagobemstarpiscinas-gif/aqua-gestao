@@ -246,24 +246,45 @@ def _condominios_organizar(condominios: list[str] | None) -> list[str]:
 
 
 def _resolver_condominios_permitidos_exatos(condominios_permitidos: list[str], todos_condominios: list[str]) -> list[str]:
-    """Resolve permissões por correspondência exata normalizada.
+    """Resolve permissões do operador contra os condomínios disponíveis.
 
-    Mantém o nome oficial disponível no sistema e evita liberações por substring.
+    Aceita correspondência exata e também equivalência normalizada, tolerando
+    acentos, abreviações e variações como "Triad" x "Tríad Vertical".
+    Mantém o nome oficial do condomínio conforme aparece no cadastro.
     """
-    mapa_disponiveis = {}
-    for nome in todos_condominios or []:
-        chave = _normalizar_chave_acesso(nome)
-        if chave and chave not in mapa_disponiveis:
-            mapa_disponiveis[chave] = nome
+    disponiveis = [str(n or "").strip() for n in (todos_condominios or []) if str(n or "").strip()]
+    permitidos = _condominios_organizar(condominios_permitidos)
 
-    permitidos_exatos = []
+    resultado = []
     vistos = set()
-    for nome in _condominios_organizar(condominios_permitidos):
-        chave = _normalizar_chave_acesso(nome)
-        if chave in mapa_disponiveis and chave not in vistos:
-            vistos.add(chave)
-            permitidos_exatos.append(mapa_disponiveis[chave])
-    return permitidos_exatos
+
+    for permitido in permitidos:
+        chave_permitido = _normalizar_chave_acesso(permitido)
+        if not chave_permitido:
+            continue
+
+        melhor = ""
+
+        # 1) Correspondência exata normalizada.
+        for nome_oficial in disponiveis:
+            if _normalizar_chave_acesso(nome_oficial) == chave_permitido:
+                melhor = nome_oficial
+                break
+
+        # 2) Correspondência tolerante: remove acento/símbolos e aceita abreviações.
+        if not melhor:
+            for nome_oficial in disponiveis:
+                if nomes_condominio_equivalentes(permitido, nome_oficial):
+                    melhor = nome_oficial
+                    break
+
+        if melhor:
+            chave_melhor = _normalizar_chave_acesso(melhor)
+            if chave_melhor not in vistos:
+                vistos.add(chave_melhor)
+                resultado.append(melhor)
+
+    return resultado
 
 
 def _pin_operador_em_uso(pin: str, nome_ignorar: str = "") -> bool:
@@ -11245,6 +11266,7 @@ with _tab_ops1:
                             ativo=_op_sel.get("ativo", True),
                         ):
                             st.session_state.pop("_operadores_erro", None)
+                            st.session_state.pop("_cache_operadores_disponiveis", None)
                             st.success(f"✅ Permissões de '{_op_origem_dup.get('nome', 'origem')}' copiadas para '{_op_nome_sel}'.")
                             st.cache_data.clear()
                             st.rerun()
@@ -11371,6 +11393,7 @@ with _tab_ops1:
                         )
                     if ok_edit:
                         st.session_state.pop("_operadores_erro", None)
+                        st.session_state.pop("_cache_operadores_disponiveis", None)
                         st.success(f"✅ Operador '{_op_nome_sel}' atualizado com sucesso.")
                         st.cache_data.clear()
                         st.rerun()
@@ -11504,6 +11527,7 @@ with _tab_ops2:
                 )
             if ok_op:
                 st.session_state.pop("_operadores_erro", None)
+                st.session_state.pop("_cache_operadores_disponiveis", None)
                 st.success(f"✅ Operador '{_nome_op_limpo}' cadastrado com sucesso.")
                 st.cache_data.clear()
                 st.rerun()
@@ -11660,11 +11684,28 @@ else:
 st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
 st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
 
+# Lista de operadores com cache/fallback.
+# O Streamlit executa a tela inteira a cada alteração de campo; se o Google Sheets falhar
+# momentaneamente em um rerun, o multiselect não pode perder as opções já carregadas.
 _operadores_disponiveis = []
-for _op in (sheets_listar_operadores() or []) + (carregar_operadores() or []):
+_ops_raw = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
+for _op in _ops_raw:
     _nome_op = re.sub(r"\s+", " ", str(_op.get("nome", "") or "").strip())
     if _nome_op and _nome_op not in _operadores_disponiveis:
         _operadores_disponiveis.append(_nome_op)
+
+if _operadores_disponiveis:
+    st.session_state["_cache_operadores_disponiveis"] = list(_operadores_disponiveis)
+else:
+    _operadores_disponiveis = list(st.session_state.get("_cache_operadores_disponiveis", []))
+
+# Se algum operador previamente selecionado não veio na leitura atual, mantém no options
+# para o Streamlit não apagar a seleção durante um rerun instável.
+_ops_selecionados_atuais = st.session_state.get("cc_operadores_vinculados", []) or []
+for _nome_sel in _ops_selecionados_atuais:
+    _nome_sel = re.sub(r"\s+", " ", str(_nome_sel or "").strip())
+    if _nome_sel and _nome_sel not in _operadores_disponiveis:
+        _operadores_disponiveis.append(_nome_sel)
 
 cc_operadores_vinculados = st.multiselect(
     "Operadores vinculados ao condomínio",
