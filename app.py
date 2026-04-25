@@ -2118,17 +2118,31 @@ def buscar_cep(cep: str) -> dict:
 
 
 def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
-    """Filtra clientes por serviço/empresa compatível.
+    """Filtra clientes por empresa compativel.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
-    Clientes legados sem serviço explícito continuam compatíveis via campo empresa.
+    Critério: servico marcado OU campo empresa do cadastro bate.
+    Clientes sem empresa/servico definido aparecem em ambos (legado).
     """
     resultado = []
     for c in clientes:
         servicos = _normalizar_servicos_cliente(c)
-        if empresa_ativa == "bem_star" and servicos.get("limpeza"):
-            resultado.append(c)
-        elif empresa_ativa == "aqua_gestao" and servicos.get("rt"):
-            resultado.append(c)
+        # Campo empresa do cadastro (col M do Sheets)
+        _emp = str(c.get("empresa", "") or "").strip().lower()
+        _tem_empresa = bool(_emp)
+        _is_bem_star = "bem star" in _emp or "bemstar" in _emp
+        _is_aqua     = "aqua" in _emp
+        _tem_servico_limpeza = servicos.get("limpeza", False)
+        _tem_servico_rt      = servicos.get("rt", False)
+        _sem_definicao = not _tem_empresa and not _tem_servico_limpeza and not _tem_servico_rt
+
+        if empresa_ativa == "bem_star":
+            # Inclui se: servico limpeza marcado, OU empresa = bem star, OU sem definicao (legado)
+            if _tem_servico_limpeza or _is_bem_star or _sem_definicao:
+                resultado.append(c)
+        elif empresa_ativa == "aqua_gestao":
+            # Inclui se: servico rt marcado, OU empresa = aqua gestao, OU sem definicao (legado)
+            if _tem_servico_rt or _is_aqua or _sem_definicao:
+                resultado.append(c)
     return resultado
 
 
@@ -9740,14 +9754,22 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.caption(f"💾 {_total_fotos_rasc} foto(s) já salvas do rascunho anterior")
 
         for _cat, _flist_up, _flist_rasc in _todas_fotos_preview:
-            _todas = list(_flist_up or []) 
-            # Mostra fotos do rascunho que não estão no upload atual
-            _nomes_up = {f.name for f in (_flist_up or [])}
-            _rasc_extras = [f for f in _flist_rasc
-                           if not any(f.name.endswith(n) for n in _nomes_up)]
-            if _todas or _rasc_extras:
-                st.caption(f"**{_cat}:** {len(_todas) + len(_rasc_extras)} foto(s)")
-                _all_show = _todas + _rasc_extras
+            # Nomes originais das fotos do upload atual (sem prefixo rasc_)
+            _nomes_up = {limpar_nome_arquivo(f.name) for f in (_flist_up or [])}
+            # Fotos do rascunho em disco que NAO foram carregadas no upload atual
+            # Evita duplicar fotos que acabaram de ser salvas
+            _rasc_extras = [
+                f for f in _flist_rasc
+                if limpar_nome_arquivo(f.name.replace(f"rasc_{_cat.split()[0].lower()}_", "")) not in _nomes_up
+                and not any(
+                    limpar_nome_arquivo(str(up.name)) in f.name
+                    for up in (_flist_up or [])
+                )
+            ]
+            # Mostra apenas uploads atuais + fotos antigas do rascunho (sem duplicar)
+            _all_show = list(_flist_up or []) + _rasc_extras
+            if _all_show:
+                st.caption(f"**{_cat}:** {len(_all_show)} foto(s)")
                 _cols = st.columns(min(len(_all_show), 3))
                 for _i, _f in enumerate(_all_show):
                     with _cols[_i % 3]:
