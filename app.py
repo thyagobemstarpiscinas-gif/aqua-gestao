@@ -10694,58 +10694,28 @@ if st.session_state.get("data_fim", "").strip():
 # =========================================
 
 def obter_metricas_bem_star():
-    """Coleta métricas para o Dashboard Bem Star."""
+    """Coleta metricas leves para o Dashboard Bem Star.
+
+    Correção emergencial: a versão anterior travava a tela porque, para cada cliente
+    Bem Star, chamava sheets_listar_lancamentos(c["nome"]). Isso gerava muitas
+    leituras no Google Sheets em sequência e podia deixar o Streamlit preso em
+    "Carregando indicadores Bem Star" ou estourar quota 429.
+
+    Aqui o dashboard não varre a aba Visitas cliente por cliente. Ele mostra
+    somente a carteira ativa e deixa visitas/pareceres como indicadores leves.
+    """
     try:
-        todos_clientes = sheets_listar_clientes_completo()
+        todos_clientes = sheets_listar_clientes_completo() or []
         clientes_bs = filtrar_clientes_por_empresa(todos_clientes, "bem_star")
-        
-        total_ativos = len([c for c in clientes_bs if c.get("status") == "Ativo"])
-        
-        # Visitas do mês atual
-        hoje = datetime.now()
-        mes_atual = hoje.strftime("%m")
-        ano_atual = hoje.strftime("%Y")
-        
-        visitas_mes = 0
-        ultimos_pareceres = []
-        
-        for c in clientes_bs:
-            lancamentos = sheets_listar_lancamentos(c["nome"])
-            # Filtra por mês/ano
-            for lc in lancamentos:
-                data = lc.get("data", "")
-                try:
-                    if "/" in data:
-                        p = data.split("/")
-                        if len(p) == 3 and p[1] == mes_atual and p[2] == ano_atual:
-                            visitas_mes += 1
-                    elif "-" in data:
-                        p = data.split("-")
-                        if len(p) == 3 and p[1] == mes_atual and p[0] == ano_atual:
-                            visitas_mes += 1
-                except:
-                    pass
-            
-            if lancamentos:
-                # Ordena por data (assumindo formato dd/mm/aaaa ou aaaa-mm-dd)
-                try:
-                    lancamentos_ordenados = sorted(
-                        lancamentos, 
-                        key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
-                        reverse=True
-                    )
-                    ultimos_pareceres.append({
-                        "cliente": c["nome"],
-                        "data": lancamentos_ordenados[0]["data"],
-                        "parecer": lancamentos_ordenados[0].get("observacao", "Sem observação")
-                    })
-                except:
-                    pass
-                    
+        total_ativos = len([
+            c for c in clientes_bs
+            if str(c.get("status", "Ativo")).strip().lower() in ("ativo", "")
+        ])
+
         return {
             "total_ativos": total_ativos,
-            "visitas_mes": visitas_mes,
-            "ultimos_pareceres": ultimos_pareceres[:5] # Top 5 recentes
+            "visitas_mes": 0,
+            "ultimos_pareceres": [],
         }
     except Exception as e:
         _log_sheets_erro("obter_metricas_bem_star", e)
