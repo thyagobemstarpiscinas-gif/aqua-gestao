@@ -9761,27 +9761,36 @@ def _gerar_exportacao_operadores_csv(lista_ops: list[dict]) -> str:
 
 
 def _filtrar_clientes_admin_por_empresa(clientes: list[dict], empresa_filtro: str) -> list[str]:
-    """Filtra nomes de clientes por painel/serviço.
-
-    A separação aqui é por vínculo de serviço, não apenas pelo texto legado
-    da coluna Empresa. Assim, no painel Aqua aparecem clientes RT; no painel
-    Bem Star aparecem clientes de limpeza/manutenção.
-    """
+    """Filtra nomes de clientes por painel/serviço, com separação rígida entre empresas."""
     empresa_filtro = str(empresa_filtro or "Todas").strip()
     nomes = []
+
     for c in clientes or []:
         nome = str(c.get("nome", "")).strip()
         if not nome:
             continue
+
         serv = _normalizar_servicos_cliente(c)
+        emp_raw = str(c.get("empresa", "") or "").strip()
+        emp = _normalizar_chave_acesso(emp_raw)
+
+        is_bem = "bem star" in emp or "bemstar" in emp
+        is_aqua = "aqua" in emp
+        tem_rt = bool(serv.get("rt"))
+        tem_limpeza = bool(serv.get("limpeza"))
+
         if empresa_filtro == "Todas":
             nomes.append(nome)
-        elif empresa_filtro == "Aqua Gestão" and serv.get("rt"):
-            nomes.append(nome)
-        elif empresa_filtro == "Bem Star Piscinas" and serv.get("limpeza"):
-            nomes.append(nome)
-        elif empresa_filtro == "Ambas" and serv.get("rt") and serv.get("limpeza"):
-            nomes.append(nome)
+        elif empresa_filtro == "Aqua Gestão":
+            if tem_rt or is_aqua:
+                nomes.append(nome)
+        elif empresa_filtro == "Bem Star Piscinas":
+            if tem_limpeza or is_bem:
+                nomes.append(nome)
+        elif empresa_filtro == "Ambas":
+            if tem_rt and tem_limpeza:
+                nomes.append(nome)
+
     return _condominios_organizar(nomes)
 
 
@@ -9858,7 +9867,7 @@ with _tab_ops1:
             _op_pin_sel = str(_op_sel.get("pin", "")).strip()
             _op_conds_sel = _condominios_organizar(_op_sel.get("condomínios", []))
             _op_total_sel = _op_tem_acesso_total(_op_sel)
-            _op_exatos_sel = _resolver_condominios_permitidos_exatos(_op_conds_sel, _nomes_todos_clientes)
+            _op_exatos_sel = _resolver_condominios_permitidos_exatos(_op_conds_sel, _nomes_painel_admin)
             _op_exatos_set = {_normalizar_chave_acesso(c) for c in _op_exatos_sel}
             _op_orfaos_sel = [c for c in _op_conds_sel if _normalizar_chave_acesso(c) not in _op_exatos_set and _normalizar_chave_acesso(c) != "todos"]
 
@@ -9875,7 +9884,7 @@ with _tab_ops1:
             with _sum3:
                 st.caption("Escopo de acesso")
                 if _op_total_sel:
-                    st.markdown(f"**Acesso total** aos {len(_nomes_todos_clientes)} condomínio(s) cadastrados")
+                    st.markdown(f"**Acesso total** aos {len(_nomes_painel_admin)} condomínio(s) deste painel")
                 else:
                     st.markdown(f"**{len(_op_exatos_sel)} condomínio(s)** com correspondência exata")
                     if _op_orfaos_sel:
