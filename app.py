@@ -246,45 +246,24 @@ def _condominios_organizar(condominios: list[str] | None) -> list[str]:
 
 
 def _resolver_condominios_permitidos_exatos(condominios_permitidos: list[str], todos_condominios: list[str]) -> list[str]:
-    """Resolve permissões do operador contra os condomínios disponíveis.
+    """Resolve permissões por correspondência exata normalizada.
 
-    Aceita correspondência exata e também equivalência normalizada, tolerando
-    acentos, abreviações e variações como "Triad" x "Tríad Vertical".
-    Mantém o nome oficial do condomínio conforme aparece no cadastro.
+    Mantém o nome oficial disponível no sistema e evita liberações por substring.
     """
-    disponiveis = [str(n or "").strip() for n in (todos_condominios or []) if str(n or "").strip()]
-    permitidos = _condominios_organizar(condominios_permitidos)
+    mapa_disponiveis = {}
+    for nome in todos_condominios or []:
+        chave = _normalizar_chave_acesso(nome)
+        if chave and chave not in mapa_disponiveis:
+            mapa_disponiveis[chave] = nome
 
-    resultado = []
+    permitidos_exatos = []
     vistos = set()
-
-    for permitido in permitidos:
-        chave_permitido = _normalizar_chave_acesso(permitido)
-        if not chave_permitido:
-            continue
-
-        melhor = ""
-
-        # 1) Correspondência exata normalizada.
-        for nome_oficial in disponiveis:
-            if _normalizar_chave_acesso(nome_oficial) == chave_permitido:
-                melhor = nome_oficial
-                break
-
-        # 2) Correspondência tolerante: remove acento/símbolos e aceita abreviações.
-        if not melhor:
-            for nome_oficial in disponiveis:
-                if nomes_condominio_equivalentes(permitido, nome_oficial):
-                    melhor = nome_oficial
-                    break
-
-        if melhor:
-            chave_melhor = _normalizar_chave_acesso(melhor)
-            if chave_melhor not in vistos:
-                vistos.add(chave_melhor)
-                resultado.append(melhor)
-
-    return resultado
+    for nome in _condominios_organizar(condominios_permitidos):
+        chave = _normalizar_chave_acesso(nome)
+        if chave in mapa_disponiveis and chave not in vistos:
+            vistos.add(chave)
+            permitidos_exatos.append(mapa_disponiveis[chave])
+    return permitidos_exatos
 
 
 def _pin_operador_em_uso(pin: str, nome_ignorar: str = "") -> bool:
@@ -306,6 +285,7 @@ def _pin_operador_em_uso(pin: str, nome_ignorar: str = "") -> bool:
     return False
 
 
+@st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_operadores() -> list[dict]:
     """Lista operadores da aba 👷 Operadores do Sheets."""
     try:
@@ -313,7 +293,7 @@ def sheets_listar_operadores() -> list[dict]:
         if sh is None:
             return []
         try:
-            aba = sh.worksheet("👷 Operadores")
+            aba = obter_aba_sheets("👷 Operadores")
         except Exception:
             return []
         todos = aba.get_all_values()
@@ -346,7 +326,7 @@ def sheets_criar_aba_operadores():
         if sh is None:
             return False
         try:
-            sh.worksheet("👷 Operadores")
+            obter_aba_sheets("👷 Operadores")
             return True  # já existe
         except Exception:
             pass
@@ -379,7 +359,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         if sh is None:
             return False
         sheets_criar_aba_operadores()
-        aba = sh.worksheet("👷 Operadores")
+        aba = obter_aba_sheets("👷 Operadores")
         todos = aba.get_all_values()
         conds_str = " | ".join(conds_limpos)
         ativo_str = "Sim" if ativo else "Não"
@@ -388,6 +368,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
                 aba.update(f"A{i+1}:F{i+1}", [nova_linha])
+                st.cache_data.clear()
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
@@ -397,6 +378,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
             [nova_linha],
             value_input_option="RAW"
         )
+        st.cache_data.clear()
         st.session_state.pop("_operadores_erro", None)
         return True
     except Exception as e:
@@ -410,11 +392,12 @@ def sheets_deletar_operador(nome: str) -> bool:
         sh = conectar_sheets()
         if sh is None:
             return False
-        aba = sh.worksheet("👷 Operadores")
+        aba = obter_aba_sheets("👷 Operadores")
         todos = aba.get_all_values()
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome):
                 aba.delete_rows(i + 1)
+                st.cache_data.clear()
                 return True
         return False
     except Exception as e:
@@ -479,6 +462,19 @@ def conectar_sheets():
         return None
 
 
+@st.cache_resource(ttl=1800, show_spinner=False)
+def obter_aba_sheets(nome_aba: str):
+    """Retorna uma worksheet do Google Sheets com cache de recurso.
+
+    Evita chamar obter_aba_sheets(...) a cada rerun do Streamlit, porque essa chamada
+    força leitura de metadados da planilha e estoura quota de Read requests.
+    """
+    sh = conectar_sheets()
+    if sh is None:
+        return None
+    return obter_aba_sheets(nome_aba)
+
+
 def limpar_payload_para_sheets(dados: dict) -> dict:
     """Remove campos pesados antes de salvar payload no Google Sheets.
 
@@ -540,7 +536,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             return False
 
         try:
-            aba = sh.worksheet("🔬 Visitas")
+            aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
             aba.update(
@@ -569,7 +565,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         # Busca ID do cliente por nome normalizado
         id_cliente = ""
         try:
-            aba_clientes = sh.worksheet("👥 Clientes")
+            aba_clientes = obter_aba_sheets("👥 Clientes")
             clientes = aba_clientes.get_all_values()
             for row in clientes:
                 if len(row) > 2 and nomes_condominio_equivalentes(nome_condominio, row[2]):
@@ -635,6 +631,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             [nova_linha],
             value_input_option="RAW"
         )
+        st.cache_data.clear()
         return True
 
     except Exception as e:
@@ -658,7 +655,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
         if sh is None:
             return False
 
-        aba = sh.worksheet("👥 Clientes")
+        aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
 
         # Identifica linhas reais de clientes: col B começa com C + dígitos
@@ -715,19 +712,21 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
                         linha_insercao = i + 1
                         break
         aba.insert_row(nova_linha, linha_insercao, value_input_option="USER_ENTERED")
+        st.cache_data.clear()
         return True
     except Exception as e:
         _log_sheets_erro("sheets_salvar_cliente", e)
         return False
 
 
+@st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_clientes() -> list[str]:
     """Retorna lista de nomes de clientes da aba Clientes."""
     try:
         sh = conectar_sheets()
         if sh is None:
             return []
-        aba = sh.worksheet("👥 Clientes")
+        aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
         nomes = []
         for row in todos:
@@ -738,6 +737,7 @@ def sheets_listar_clientes() -> list[str]:
         return []
 
 
+@st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_clientes_completo() -> list[dict]:
     """Retorna lista de dicts com dados completos de cada cliente do Sheets.
     
@@ -750,7 +750,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
         sh = conectar_sheets()
         if sh is None:
             return []
-        aba = sh.worksheet("👥 Clientes")
+        aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
         clientes = []
         for row in todos:
@@ -820,7 +820,7 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         sh = conectar_sheets()
         if sh is None:
             return False
-        aba = sh.worksheet("👥 Clientes")
+        aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
         for i, row in enumerate(todos):
@@ -922,6 +922,7 @@ def validar_pin_operador(pin: str) -> dict | None:
             return op
     return None
 
+@st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
     """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas."""
     try:
@@ -929,7 +930,7 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         if sh is None:
             return []
 
-        aba = sh.worksheet("🔬 Visitas")
+        aba = obter_aba_sheets("🔬 Visitas")
         todos = aba.get_all_values()
         lancamentos = []
 
@@ -1901,7 +1902,7 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
         sh = conectar_sheets()
         if sh:
             try:
-                aba_rasc = sh.worksheet("_Rascunhos")
+                aba_rasc = obter_aba_sheets("_Rascunhos")
             except Exception:
                 aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
                 aba_rasc.update("A1:D1", [["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
@@ -1946,7 +1947,7 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
         sh = conectar_sheets()
         if sh:
             try:
-                aba_rasc = sh.worksheet("_Rascunhos")
+                aba_rasc = obter_aba_sheets("_Rascunhos")
             except Exception:
                 return {}
             todos = aba_rasc.get_all_values()
@@ -1981,7 +1982,7 @@ def deletar_rascunho_operador(nome_cond: str):
         sh = conectar_sheets()
         if sh:
             try:
-                aba_rasc = sh.worksheet("_Rascunhos")
+                aba_rasc = obter_aba_sheets("_Rascunhos")
                 todos = aba_rasc.get_all_values()
                 chave = nome_cond.strip().lower()
                 for i, row in enumerate(todos[1:], start=2):
@@ -8789,7 +8790,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
             sh = conectar_sheets()
             if sh:
                 try:
-                    aba_rasc_rt = sh.worksheet("_Rascunhos_RT")
+                    aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
                     aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
@@ -8829,7 +8830,7 @@ def _relatorio_rt_carregar_rascunho() -> dict:
         sh = conectar_sheets()
         if sh:
             try:
-                aba_rasc_rt = sh.worksheet("_Rascunhos_RT")
+                aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 todos_rt = aba_rasc_rt.get_all_values()
                 for row in todos_rt[1:]:
                     if row and str(row[0]).strip() == "thyago" and len(row) >= 3 and row[2].strip():
@@ -9955,7 +9956,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                                 # Busca volume da planilha (col D = Volume_m3)
                                 _sh_vol = conectar_sheets()
                                 if _sh_vol:
-                                    _aba_vol = _sh_vol.worksheet("👥 Clientes")
+                                    _aba_vol = obter_aba_sheets("👥 Clientes")
                                     _rows_vol = _aba_vol.get_all_values()
                                     for _rv in _rows_vol:
                                         if len(_rv) > 3 and _cv["nome"].lower() in str(_rv[2]).lower():
@@ -11266,7 +11267,6 @@ with _tab_ops1:
                             ativo=_op_sel.get("ativo", True),
                         ):
                             st.session_state.pop("_operadores_erro", None)
-                            st.session_state.pop("_cache_operadores_disponiveis", None)
                             st.success(f"✅ Permissões de '{_op_origem_dup.get('nome', 'origem')}' copiadas para '{_op_nome_sel}'.")
                             st.cache_data.clear()
                             st.rerun()
@@ -11393,7 +11393,6 @@ with _tab_ops1:
                         )
                     if ok_edit:
                         st.session_state.pop("_operadores_erro", None)
-                        st.session_state.pop("_cache_operadores_disponiveis", None)
                         st.success(f"✅ Operador '{_op_nome_sel}' atualizado com sucesso.")
                         st.cache_data.clear()
                         st.rerun()
@@ -11527,7 +11526,6 @@ with _tab_ops2:
                 )
             if ok_op:
                 st.session_state.pop("_operadores_erro", None)
-                st.session_state.pop("_cache_operadores_disponiveis", None)
                 st.success(f"✅ Operador '{_nome_op_limpo}' cadastrado com sucesso.")
                 st.cache_data.clear()
                 st.rerun()
@@ -11684,28 +11682,11 @@ else:
 st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
 st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
 
-# Lista de operadores com cache/fallback.
-# O Streamlit executa a tela inteira a cada alteração de campo; se o Google Sheets falhar
-# momentaneamente em um rerun, o multiselect não pode perder as opções já carregadas.
 _operadores_disponiveis = []
-_ops_raw = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
-for _op in _ops_raw:
+for _op in (sheets_listar_operadores() or []) + (carregar_operadores() or []):
     _nome_op = re.sub(r"\s+", " ", str(_op.get("nome", "") or "").strip())
     if _nome_op and _nome_op not in _operadores_disponiveis:
         _operadores_disponiveis.append(_nome_op)
-
-if _operadores_disponiveis:
-    st.session_state["_cache_operadores_disponiveis"] = list(_operadores_disponiveis)
-else:
-    _operadores_disponiveis = list(st.session_state.get("_cache_operadores_disponiveis", []))
-
-# Se algum operador previamente selecionado não veio na leitura atual, mantém no options
-# para o Streamlit não apagar a seleção durante um rerun instável.
-_ops_selecionados_atuais = st.session_state.get("cc_operadores_vinculados", []) or []
-for _nome_sel in _ops_selecionados_atuais:
-    _nome_sel = re.sub(r"\s+", " ", str(_nome_sel or "").strip())
-    if _nome_sel and _nome_sel not in _operadores_disponiveis:
-        _operadores_disponiveis.append(_nome_sel)
 
 cc_operadores_vinculados = st.multiselect(
     "Operadores vinculados ao condomínio",
