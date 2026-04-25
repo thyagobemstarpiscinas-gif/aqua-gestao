@@ -6698,6 +6698,359 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     return html
 
 
+
+
+def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) -> bytes:
+    """Gera PDF premium do relatorio de visita operacional da Bem Star Piscinas."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+        TableStyle, HRFlowable, Image, PageBreak)
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    try:
+        pdfmetrics.registerFont(TTFont("BSans",      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
+        pdfmetrics.registerFont(TTFont("BSans-Bold", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"))
+        _font_reg  = "BSans"
+        _font_bold = "BSans-Bold"
+    except Exception:
+        _font_reg  = "Helvetica"
+        _font_bold = "Helvetica-Bold"
+
+    W, H = A4
+    M  = 18*mm
+    CW = W - 2*M
+
+    NAVY    = colors.HexColor("#0D2A4A")
+    TEAL    = colors.HexColor("#0E7490")
+    GOLD    = colors.HexColor("#C8A951")
+    CINZA   = colors.HexColor("#4A5568")
+    CINZA_L = colors.HexColor("#F7F8FA")
+    CINZA_M = colors.HexColor("#E2E8F0")
+    VERDE   = colors.HexColor("#1B7A1B")
+    LARANJA = colors.HexColor("#C05621")
+    BRANCO  = colors.white
+    PRETO   = colors.black
+
+    def E(n, **k): return ParagraphStyle(n, fontName=_font_reg, **k)
+    def P(t, s):   return Paragraph(str(t or ""), s)
+    def Sp(h=3):   return Spacer(1, h*mm)
+    def HR():      return HRFlowable(width="100%", thickness=0.5, color=CINZA_M, spaceAfter=3, spaceBefore=3)
+    def HR_GOLD(): return HRFlowable(width="100%", thickness=1.5, color=GOLD,    spaceAfter=5, spaceBefore=2)
+
+    E_BODY  = E("BO",  fontSize=9,  textColor=PRETO,  spaceAfter=4, leading=14, alignment=TA_JUSTIFY)
+    E_CELL  = E("CE",  fontSize=8,  textColor=CINZA,  alignment=TA_CENTER, leading=11)
+    E_CELL_L= E("CL",  fontSize=8,  textColor=CINZA,  alignment=TA_LEFT,   leading=11)
+    E_CELL_B= E("CB",  fontSize=8,  textColor=NAVY,   fontName=_font_bold, alignment=TA_LEFT, leading=11)
+    E_TH    = E("TH",  fontSize=8,  textColor=BRANCO, fontName=_font_bold, alignment=TA_CENTER, leading=11)
+    E_TH_L  = E("TL",  fontSize=8,  textColor=BRANCO, fontName=_font_bold, alignment=TA_LEFT,   leading=11)
+    E_SEC   = E("SE",  fontSize=9,  textColor=NAVY,   fontName=_font_bold, spaceBefore=8, spaceAfter=3, leading=12)
+    E_OK    = E("OK",  fontSize=8,  textColor=VERDE,  fontName=_font_bold, leading=11)
+    E_WARN  = E("WA",  fontSize=8,  textColor=LARANJA,fontName=_font_bold, leading=11)
+    E_FOTO  = E("FT",  fontSize=8,  textColor=TEAL,   fontName=_font_bold, leading=11, spaceAfter=2)
+    E_CAMPO = E("CA",  fontSize=8,  textColor=colors.HexColor("#718096"), leading=11)
+    E_AVISO = E("AV",  fontSize=8,  textColor=colors.HexColor("#7A4000"),
+                backColor=colors.HexColor("#FFFBEB"), leading=12, alignment=TA_JUSTIFY)
+    E_CAPA_TAG  = E("CT", fontSize=9,  textColor=GOLD,  alignment=TA_CENTER, spaceAfter=6, leading=12)
+    E_CAPA_MAIN = E("CM", fontSize=22, textColor=BRANCO, fontName=_font_bold, alignment=TA_CENTER, spaceAfter=4, leading=26)
+    E_CAPA_SUB  = E("CS", fontSize=10, textColor=colors.HexColor("#A8D4E0"), alignment=TA_CENTER, spaceAfter=14, leading=15)
+    E_CAPA_INFO = E("CI", fontSize=8,  textColor=colors.HexColor("#8FC8CC"), alignment=TA_CENTER, leading=13)
+    E_RODAPE    = E("RO", fontSize=7,  textColor=colors.HexColor("#A0AEC0"), alignment=TA_CENTER)
+
+    data_visita = lancamento.get("data", datetime.now().strftime("%d/%m/%Y"))
+    operador    = lancamento.get("operador", "")
+    observacao  = lancamento.get("observacao", "")
+    problemas   = lancamento.get("problemas", "")
+    piscinas    = lancamento.get("piscinas", [])
+    dosagens    = lancamento.get("dosagens", [])
+    servicos_exec = lancamento.get("servicos_executados", [])
+    sindico     = lancamento.get("sindico", "")
+    endereco    = lancamento.get("endereco", "")
+
+    def capa_fn(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, 0, W, H, fill=1, stroke=0)
+        canvas.setFillColor(GOLD)
+        canvas.rect(0, H-3*mm, W, 3*mm, fill=1, stroke=0)
+        canvas.rect(0, 0, W, 3*mm, fill=1, stroke=0)
+        canvas.setFillColor(colors.HexColor("#0A2540"))
+        canvas.roundRect(M, H*0.28, W-2*M, H*0.46, 8, fill=1, stroke=0)
+        canvas.setFillColor(TEAL)
+        canvas.rect(M, H*0.28 + H*0.46 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
+        canvas.restoreState()
+
+    def hf_fn(canvas, doc):
+        canvas.saveState()
+        if doc.page > 1:
+            canvas.setFillColor(NAVY)
+            canvas.rect(0, H-12*mm, W, 12*mm, fill=1, stroke=0)
+            canvas.setFillColor(GOLD)
+            canvas.rect(0, H-12.8*mm, W, 0.8*mm, fill=1, stroke=0)
+            canvas.setFillColor(BRANCO)
+            canvas.setFont(_font_bold, 7.5)
+            canvas.drawString(M, H-6*mm, "BEM STAR PISCINAS - RELATORIO DE VISITA OPERACIONAL")
+            canvas.setFont(_font_reg, 7)
+            canvas.drawRightString(W-M, H-6*mm, f"Pagina {doc.page}")
+            canvas.drawString(M, H-10*mm, "Documento operacional - nao substitui Relatorio de Responsabilidade Tecnica")
+            canvas.setFillColor(CINZA_L)
+            canvas.rect(0, 0, W, 10*mm, fill=1, stroke=0)
+            canvas.setFillColor(NAVY)
+            canvas.rect(0, 9.5*mm, W, 0.5*mm, fill=1, stroke=0)
+            canvas.setFillColor(colors.HexColor("#718096"))
+            canvas.setFont(_font_reg, 7)
+            canvas.drawString(M, 4*mm, "Bem Star Piscinas Ltda  |  CNPJ 26.799.958/0001-88  |  Uberlandia/MG")
+            canvas.drawRightString(W-M, 4*mm, f"Pagina {doc.page}")
+        canvas.restoreState()
+
+    def tabela(rows, cws, cor=NAVY, stripe=True):
+        t = Table(rows, colWidths=cws)
+        s = [("BACKGROUND",(0,0),(-1,0),cor),("GRID",(0,0),(-1,-1),0.4,CINZA_M),
+             ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+             ("LEFTPADDING",(0,0),(-1,-1),6),("VALIGN",(0,0),(-1,-1),"MIDDLE")]
+        if stripe:
+            for i in range(1, len(rows)):
+                if i % 2 == 0: s.append(("BACKGROUND",(0,i),(-1,i),CINZA_L))
+        t.setStyle(TableStyle(s))
+        return t
+
+    def sec_hdr(titulo):
+        t = Table([[P(titulo, E("SH", fontSize=9, textColor=BRANCO, fontName=_font_bold, leading=12))]],
+                  colWidths=[CW])
+        t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),NAVY),
+            ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
+            ("LEFTPADDING",(0,0),(-1,-1),8)]))
+        return t
+
+    def bloco(titulo, corpo, cf=colors.HexColor("#EBF8FF"), cb=colors.HexColor("#3182CE")):
+        t = Table([[
+            P(titulo, E("BT", fontSize=8, textColor=cb, fontName=_font_bold, leading=12)),
+            P(corpo,  E("BC2", fontSize=8, textColor=CINZA, leading=13, alignment=TA_JUSTIFY)),
+        ]], colWidths=[CW*0.22, CW*0.78])
+        t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),cf),("BOX",(0,0),(-1,-1),1,cb),
+            ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+            ("LEFTPADDING",(0,0),(-1,-1),8),("VALIGN",(0,0),(-1,-1),"TOP")]))
+        return t
+
+    def status_param(val, minv, maxv):
+        try:
+            v = float(str(val).replace(",","."))
+            if minv <= v <= maxv: return P("Conforme", E_OK)
+            return P("Fora da faixa", E_WARN)
+        except: return P("-", E_CELL)
+
+    story = []
+
+    # CAPA
+    story += [Sp(30),
+        P("RELATORIO DE VISITA TECNICA OPERACIONAL", E_CAPA_TAG),
+        P("BEM STAR PISCINAS", E_CAPA_MAIN),
+        P("Manutencao e Limpeza Operacional com Inteligencia Quimica Hidrica", E_CAPA_SUB),
+        Sp(3), P(f"Condominio: {nome_condominio}  |  Data: {data_visita}", E_CAPA_INFO),
+        Sp(2), P("Uberlandia/MG  |  Bem Star Piscinas Ltda", E_CAPA_INFO),
+        PageBreak()]
+
+    # APRESENTACAO
+    story += [Sp(3), sec_hdr("SOBRE ESTE DOCUMENTO"), Sp(3)]
+    story.append(bloco("O que e este relatorio",
+        "Este Relatorio de Visita Tecnica Operacional e emitido pela Bem Star Piscinas Ltda para registro "
+        "das atividades de limpeza, manutencao e controle basico de qualidade da agua realizadas em cada visita."))
+    story.append(Sp(2))
+    story.append(bloco("Importante",
+        "Este documento NAO constitui Relatorio de Responsabilidade Tecnica (RT) e NAO substitui a documentacao "
+        "exigida pela Vigilancia Sanitaria ou pelo CRQ. Para conformidade normativa, emissao de ART e Relatorio "
+        "Mensal de RT, e necessario contratar a Aqua Gestao - Controle Tecnico de Piscinas (CRQ 024025748).",
+        cf=colors.HexColor("#FFF8F0"), cb=colors.HexColor("#F6AD55")))
+    story.append(Sp(2))
+    story.append(bloco("Aqua Gestao RT",
+        "Para conformidade com ABNT NBR 10339, Resolucoes CFQ e Vigilancia Sanitaria: "
+        "Thyago Fernando da Silveira | Tecnico em Quimica | CRQ 024025748 | Uberlandia/MG.",
+        cf=colors.HexColor("#F0FFF4"), cb=colors.HexColor("#38A169")))
+    story.append(Sp(4))
+
+    # IDENTIFICACAO
+    story += [sec_hdr("IDENTIFICACAO DA VISITA"), Sp(2)]
+    story.append(tabela([
+        [P("Item", E_TH_L), P("Informacao", E_TH_L)],
+        [P("Condominio / Local",   E_CELL_B), P(nome_condominio, E_CELL_L)],
+        [P("Endereco",             E_CELL_B), P(endereco or "___________________________________", E_CAMPO)],
+        [P("Responsavel/Sindico",  E_CELL_B), P(sindico  or "___________________________________", E_CAMPO)],
+        [P("Data da Visita",       E_CELL_B), P(data_visita, E_CELL_L)],
+        [P("Operador",             E_CELL_B), P(operador, E_CELL_L)],
+        [P("Empresa",              E_CELL_B), P("Bem Star Piscinas Ltda", E_CELL_L)],
+    ], [CW*0.32, CW*0.68]))
+    story.append(Sp(4))
+
+    # PARAMETROS por piscina
+    story += [sec_hdr("ANALISE BASICA DA AGUA"), Sp(2),
+        P("Verificacao basica de parametros com Photometer Color Q. Estes resultados sao orientativos. "
+          "Para parecer normativo completo, consulte o Relatorio de RT da Aqua Gestao.", E_BODY), Sp(2)]
+
+    if piscinas:
+        for pisc in piscinas:
+            pnome = pisc.get("nome", "Piscina")
+            story.append(P(f"{pnome}",
+                E("PN", fontSize=8, textColor=TEAL, fontName=_font_bold, spaceAfter=2, spaceBefore=4, leading=11)))
+            params = [
+                [P("Parametro",E_TH),P("Valor",E_TH),P("Faixa ideal",E_TH),P("Status",E_TH)],
+                [P("pH",E_CELL_L),P(str(pisc.get("ph","") or "-"),E_CELL),P("7,2-7,8",E_CELL),status_param(pisc.get("ph"),7.2,7.8)],
+                [P("CRL (mg/L)",E_CELL_L),P(str(pisc.get("cloro_livre","") or "-"),E_CELL),P("0,5-3,0",E_CELL),status_param(pisc.get("cloro_livre"),0.5,3.0)],
+                [P("CT (mg/L)",E_CELL_L),P(str(pisc.get("cloro_total","") or "-"),E_CELL),P("0,5-5,0",E_CELL),status_param(pisc.get("cloro_total"),0.5,5.0)],
+                [P("Alcalinidade",E_CELL_L),P(str(pisc.get("alcalinidade","") or "-"),E_CELL),P("80-120",E_CELL),status_param(pisc.get("alcalinidade"),80,120)],
+                [P("CYA (mg/L)",E_CELL_L),P(str(pisc.get("cianurico","") or "-"),E_CELL),P("30-50",E_CELL),status_param(pisc.get("cianurico"),30,50)],
+            ]
+            story.append(tabela(params,[CW*0.30,CW*0.18,CW*0.22,CW*0.30]))
+            story.append(Sp(2))
+    else:
+        # Dados diretos do lancamento (visita unica sem multiplas piscinas)
+        ph  = lancamento.get("ph",""); crl = lancamento.get("cloro_livre","")
+        ct  = lancamento.get("cloro_total",""); alc = lancamento.get("alcalinidade","")
+        cya = lancamento.get("cianurico","")
+        params = [
+            [P("Parametro",E_TH),P("Valor",E_TH),P("Faixa ideal",E_TH),P("Status",E_TH)],
+            [P("pH",E_CELL_L),P(str(ph or "-"),E_CELL),P("7,2-7,8",E_CELL),status_param(ph,7.2,7.8)],
+            [P("CRL (mg/L)",E_CELL_L),P(str(crl or "-"),E_CELL),P("0,5-3,0",E_CELL),status_param(crl,0.5,3.0)],
+            [P("CT (mg/L)",E_CELL_L),P(str(ct or "-"),E_CELL),P("0,5-5,0",E_CELL),status_param(ct,0.5,5.0)],
+            [P("Alcalinidade",E_CELL_L),P(str(alc or "-"),E_CELL),P("80-120",E_CELL),status_param(alc,80,120)],
+            [P("CYA (mg/L)",E_CELL_L),P(str(cya or "-"),E_CELL),P("30-50",E_CELL),status_param(cya,30,50)],
+        ]
+        story.append(tabela(params,[CW*0.30,CW*0.18,CW*0.22,CW*0.30]))
+        story.append(Sp(2))
+
+    story.append(Sp(2))
+
+    # SERVICOS EXECUTADOS
+    story += [sec_hdr("SERVICOS EXECUTADOS"), Sp(2)]
+    if servicos_exec:
+        servs = [[P("Servico",E_TH_L),P("Status",E_TH)]]
+        for sv in servicos_exec:
+            servs.append([P(sv,E_CELL_L),P("Realizado",E_OK)])
+        story.append(tabela(servs,[CW*0.75,CW*0.25]))
+    else:
+        story.append(P("Servicos nao registrados individualmente nesta visita.", E_CAMPO))
+    story.append(Sp(3))
+
+    # DOSAGENS
+    story += [sec_hdr("DOSAGENS APLICADAS"), Sp(2)]
+    if dosagens:
+        dos_rows = [[P("Produto",E_TH_L),P("Quantidade",E_TH),P("Unidade",E_TH),P("Finalidade",E_TH_L)]]
+        for d in (dosagens if isinstance(dosagens, list) else []):
+            if isinstance(d, dict):
+                dos_rows.append([
+                    P(d.get("produto",""),E_CELL_L),
+                    P(str(d.get("quantidade","")),E_CELL),
+                    P(d.get("unidade",""),E_CELL),
+                    P(d.get("finalidade",""),E_CELL_L),
+                ])
+        if len(dos_rows) > 1:
+            story.append(tabela(dos_rows,[CW*0.30,CW*0.14,CW*0.10,CW*0.46]))
+        else:
+            story.append(P(str(dosagens), E_BODY))
+    else:
+        story.append(P("Nenhuma dosagem registrada.", E_CAMPO))
+    story.append(Sp(3))
+
+    # PARECER OPERACIONAL
+    story += [sec_hdr("PARECER OPERACIONAL"), Sp(2)]
+    t_parecer = Table([[
+        P("Condicoes operacionais gerais:",
+          E("PT", fontSize=9, textColor=NAVY, fontName=_font_bold, leading=12)),
+        P("SATISFATORIAS",
+          E("PV", fontSize=11, textColor=VERDE, fontName=_font_bold, alignment=TA_CENTER, leading=14)),
+    ]], colWidths=[CW*0.55, CW*0.45])
+    t_parecer.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#F0FFF4")),
+        ("BOX",(0,0),(-1,-1),1.5,VERDE),
+        ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
+        ("LEFTPADDING",(0,0),(-1,-1),10),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+    ]))
+    story.append(t_parecer)
+    story.append(Sp(3))
+
+    if observacao:
+        story.append(P(f"Observacoes: {observacao}", E_BODY))
+    if problemas:
+        prob = Table([[P("Ocorrencia:", E_WARN), P(problemas,
+            E("OB", fontSize=8, textColor=PRETO, leading=13, alignment=TA_JUSTIFY))]],
+            colWidths=[CW*0.20, CW*0.80])
+        prob.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#FFF8F0")),
+            ("BOX",(0,0),(-1,-1),1,colors.HexColor("#F6AD55")),
+            ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+            ("LEFTPADDING",(0,0),(-1,-1),7),("VALIGN",(0,0),(-1,-1),"TOP"),
+        ]))
+        story.append(prob)
+    story.append(Sp(3))
+
+    # ASSINATURAS
+    story += [sec_hdr("VALIDACAO E ASSINATURAS"), Sp(3)]
+    ass = Table([[
+        P(f"{operador or 'Operador'}\nBem Star Piscinas Ltda\n\n\n___________________________\nAssinatura\nData: {data_visita}",
+          E("A1", fontSize=8, textColor=CINZA, alignment=TA_CENTER, leading=14)),
+        P("", E("SP", fontSize=8)),
+        P("Nome: ___________________________\nCargo: ___________________________\n\n\n"
+          "___________________________\nRecebido por\nData: ____/____/________",
+          E("A2", fontSize=8, textColor=CINZA, alignment=TA_CENTER, leading=14)),
+    ]], colWidths=[CW*0.46, CW*0.08, CW*0.46])
+    ass.setStyle(TableStyle([
+        ("BOX",(0,0),(0,0),0.5,CINZA_M),("BOX",(2,0),(2,0),0.5,CINZA_M),
+        ("BACKGROUND",(0,0),(0,0),CINZA_L),("BACKGROUND",(2,0),(2,0),CINZA_L),
+        ("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),
+        ("LEFTPADDING",(0,0),(-1,-1),10),("VALIGN",(0,0),(-1,-1),"TOP"),
+    ]))
+    story += [ass, Sp(4),
+        P("Documento de uso operacional emitido pela Bem Star Piscinas Ltda. "
+          "Este relatorio NAO constitui Relatorio de Responsabilidade Tecnica (RT) e NAO substitui "
+          "a documentacao exigida pela Vigilancia Sanitaria ou pelo CRQ. "
+          "Para conformidade normativa, contrate a Aqua Gestao - Controle Tecnico de Piscinas.",
+          E_AVISO)]
+
+    # FOTOS
+    fotos_b64_antes  = lancamento.get("fotos_antes_b64",  [])
+    fotos_b64_depois = lancamento.get("fotos_depois_b64", [])
+    fotos_b64_cmaq   = lancamento.get("fotos_cmaq_b64",   [])
+    fotos_b64_extras = lancamento.get("fotos_extras_b64", [])
+    todas_fotos = (
+        [("Antes do tratamento", f) for f in (fotos_b64_antes  or [])] +
+        [("Apos o tratamento",   f) for f in (fotos_b64_depois or [])] +
+        [("Casa de maquinas",    f) for f in (fotos_b64_cmaq   or [])] +
+        [("Outras fotos",        f) for f in (fotos_b64_extras or [])]
+    )
+    if todas_fotos:
+        story.append(PageBreak())
+        story += [sec_hdr("REGISTRO FOTOGRAFICO"), HR_GOLD(), Sp(2),
+            P("Registros visuais realizados durante a visita operacional.", E_BODY), Sp(3)]
+        for legenda, foto_b64 in todas_fotos:
+            try:
+                import base64
+                _img_bytes = base64.b64decode(foto_b64) if isinstance(foto_b64, str) else foto_b64
+                import tempfile as _tmp
+                _tmp_f = _tmp.NamedTemporaryFile(delete=False, suffix=".jpg")
+                _tmp_f.write(_img_bytes); _tmp_f.close()
+                story.append(P(legenda, E_FOTO))
+                img = Image(_tmp_f.name, width=140*mm, height=90*mm)
+                img.hAlign = "CENTER"
+                story.append(img)
+                story.append(Sp(4))
+                import os; os.unlink(_tmp_f.name)
+            except Exception:
+                pass
+
+    story += [HR(),
+        P("Bem Star Piscinas Ltda  |  CNPJ 26.799.958/0001-88  |  Uberlandia/MG", E_RODAPE),
+        P("Documento operacional. NAO substitui o Relatorio de Responsabilidade Tecnica.", E_RODAPE)]
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        leftMargin=M, rightMargin=M, topMargin=15*mm, bottomMargin=13*mm)
+    doc.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
+    return buf.getvalue()
+
 def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF do relatório de visita usando ReportLab. Retorna bytes do PDF."""
     import io
@@ -9172,6 +9525,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita",
                     )
                     st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                # Botao PDF Bem Star Premium
+                if st.session_state.get("empresa_ativa") == "bem_star":
+                    try:
+                        pdf_bs = gerar_pdf_relatorio_visita_bem_star(_ult_lanc, _salvo["nome"])
+                        nome_bs = limpar_nome_arquivo(f"Relatorio_BemStar_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
+                        st.download_button(
+                            "⭐ Baixar PDF Bem Star (com capa premium)",
+                            data=pdf_bs,
+                            file_name=f"{nome_bs}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_relatorio_visita_bs",
+                        )
+                    except Exception as _ebs:
+                        st.warning(f"PDF Bem Star nao gerado: {_ebs}")
                 except Exception as _e:
                     import traceback
                     _erro_pdf = str(_e)
