@@ -349,7 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        # v6: worksheet.update com kwargs — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
@@ -390,8 +390,11 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
+        # v6: gspread v5 não aceita None no payload de planilha — BUG-B
+        nova_linha = ["" if v is None else str(v) for v in nova_linha]
+
         linha_destino = max(len(todos) + 1, 8)
-        # v6: worksheet.update com kwargs — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -548,30 +551,6 @@ def limpar_payload_para_sheets(dados: dict) -> dict:
     return limpo
 
 
-def sanitizar_valor_sheets(valor):
-    """Converte valores para formato aceito pelo gspread/Sheets sem None.
-
-    # v6: sanitização centralizada de payload para Google Sheets — BUG-B
-    """
-    if valor is None:
-        return ""
-    if isinstance(valor, dict):
-        return {str(k): sanitizar_valor_sheets(v) for k, v in valor.items()}
-    if isinstance(valor, list):
-        return [sanitizar_valor_sheets(v) for v in valor]
-    if isinstance(valor, tuple):
-        return [sanitizar_valor_sheets(v) for v in valor]
-    return valor
-
-
-def sanitizar_linha_sheets(valores: list) -> list:
-    """Garante linha sem None antes de enviar ao Google Sheets.
-
-    # v6: gspread v5 rejeita None em células — BUG-B
-    """
-    return ["" if v is None else str(v) for v in (valores or [])]
-
-
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
 
@@ -588,7 +567,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
-            # v6: worksheet.update com kwargs — BUG-C
+            # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
             aba.update(
                 range_name="A1:Z1",
                 values=[[
@@ -631,16 +610,14 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        # v6: payload limpo/sanitizado antes de serializar e gravar no Sheets — BUG-B
-        payload = sanitizar_valor_sheets(limpar_payload_para_sheets(dict(lancamento)))
+        payload = dict(lancamento)
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
         try:
             payload_json = json.dumps(payload, ensure_ascii=False)
-        except Exception as e:
-            _log_sheets_erro("sheets_salvar_lancamento_campo/payload_json", e)
+        except Exception:
             payload_json = ""
 
         mes_ano = ""
@@ -677,11 +654,11 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
-        # v6: remove None da linha final antes do gspread — BUG-B
-        nova_linha = sanitizar_linha_sheets(nova_linha)
+        # v6: gspread v5 não aceita None no payload de planilha — BUG-B
+        nova_linha = ["" if v is None else str(v) for v in nova_linha]
 
         linha_destino = max(len(todos) + 1, 8)
-        # v6: worksheet.update com kwargs — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -905,6 +882,38 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         return False
     except Exception as e:
         _log_sheets_erro("sheets_editar_cliente", e)
+        return False
+
+
+def sheets_definir_empresa_cliente(id_cliente: str, empresa: str) -> bool:
+    """Atualiza somente a empresa do cliente na coluna M da aba 👥 Clientes."""
+    # v6: permite excluir condomínio da empresa atual sem apagar histórico — BUG-D
+    try:
+        id_limpo = str(id_cliente or "").strip()
+        empresa_final = str(empresa or "").strip()
+        if not id_limpo or not empresa_final:
+            return False
+
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+
+        aba = obter_aba_sheets("👥 Clientes")
+        todos = aba.get_all_values()
+        for i, row in enumerate(todos):
+            if len(row) > 1 and str(row[1]).strip() == id_limpo:
+                linha_sheets = i + 1
+                # v6: usa kwargs do gspread e valor string, sem None — BUG-C/BUG-D
+                aba.update(
+                    range_name=f"M{linha_sheets}:M{linha_sheets}",
+                    values=[[empresa_final]],
+                    value_input_option="USER_ENTERED",
+                )
+                st.cache_data.clear()
+                return True
+        return False
+    except Exception as e:
+        _log_sheets_erro("sheets_definir_empresa_cliente", e)
         return False
 
 def sheets_carregar_cliente_por_nome(nome: str) -> dict:
@@ -8927,7 +8936,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    # v6: worksheet.update com kwargs — BUG-C
+                    # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
                     aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
@@ -9121,9 +9130,6 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
-    # v6: nunca derruba sessão ativa do operador por rotina administrativa — BUG-A
-    if st.session_state.get("modo_atual") == "operador":
-        return False
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -9592,10 +9598,9 @@ if _modo_interno in ("escritorio", "operador"):
             st.rerun()
     else:
         if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
-            # v6: saída explícita preserva chaves op_* sem pop destrutivo — BUG-A
             st.session_state["modo_atual"] = "entrada"
             st.session_state["op_pin_ok"] = False
-            st.session_state["op_dados_atual"] = {}
+            st.session_state.pop("op_dados_atual", None)
             st.rerun()
 
 # =========================================
@@ -9654,60 +9659,25 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         padding: 20px 0;
         text-align: center;
     }
-
-    /* v6: Barra de progresso por etapas — P4 */
-    .op-stepper {
-        display: flex; align-items: center; justify-content: space-between;
-        background: #f0f6ff; border-radius: 12px; padding: 10px 14px;
-        margin-bottom: 10px; border: 1px solid #d3e6ff;
-        overflow-x: auto; gap: 4px;
-    }
-    .op-step { display: flex; flex-direction: column; align-items: center;
-        font-size: 0.72rem; color: #8ea0b5; font-weight: 600;
-        min-width: 58px; text-align: center; }
-    .op-step.done { color: #1a6e3a; }
-    .op-step.active { color: #1565A8; }
-    .op-step-icon { width: 28px; height: 28px; border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 0.85rem; margin-bottom: 3px; background: #e0eaf8; color: #8ea0b5; }
-    .op-step.done .op-step-icon { background: #d4f1e0; color: #1a6e3a; }
-    .op-step.active .op-step-icon { background: #1565A8; color: #fff; }
-    .op-step-arrow { color: #c5d5e8; font-size: 1rem; flex-shrink: 0; }
-    /* v6: Badge status Sheets — P4 */
-    .op-sheets-badge { display: inline-flex; align-items: center; gap: 5px;
-        font-size: 0.75rem; font-weight: 600; padding: 4px 10px;
-        border-radius: 999px; margin-bottom: 6px; }
-    .op-sheets-badge.online { background: #d4f1e0; color: #1a6e3a; border: 1px solid #a3d9b8; }
-    .op-sheets-badge.offline { background: #fdecea; color: #c0392b; border: 1px solid #f5b7b1; }
     </style>
     """, unsafe_allow_html=True)
 
-    # ---- TELA DE PIN — v6: layout mais profissional — P4 ----
+    # ---- TELA DE PIN ----
     if not st.session_state.get("op_pin_ok"):
-        st.markdown("""
-        <div style="text-align:center;padding:32px 16px 8px 16px;">
-            <div style="font-size:2.4rem;margin-bottom:8px;">🔐</div>
-            <div style="font-size:1.3rem;font-weight:700;color:#0D2A4A;margin-bottom:4px;">Área do Operador</div>
-            <div style="font-size:0.9rem;color:#5d7288;margin-bottom:20px;">
-                Digite seu PIN para acessar os condomínios autorizados
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="pin-box">', unsafe_allow_html=True)
+        st.markdown("### 🔐 Área do Operador")
+        st.markdown("**Acesso simplificado por PIN**")
+        st.markdown("Digite o PIN para acessar o lançamento de campo dos condomínios autorizados.")
         pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
-            placeholder="●●●●●●", label_visibility="collapsed", max_chars=20)
-        if st.button("▶ Entrar", type="primary", use_container_width=True):
-            with st.spinner("Verificando..."):
-                op_dados = validar_pin_operador(pin_digitado.strip())
+            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
+        if st.button("Entrar", type="primary", use_container_width=True):
+            op_dados = validar_pin_operador(pin_digitado.strip())
             if op_dados:
                 st.session_state["op_pin_ok"] = True
                 st.session_state["op_dados_atual"] = op_dados
                 st.rerun()
             else:
-                st.error("❌ PIN incorreto. Verifique e tente novamente.")
-        st.markdown(
-            "<div style='text-align:center;margin-top:24px;font-size:0.72rem;color:#aab;'>Aqua Gestão | Bem Star Piscinas</div>",
-            unsafe_allow_html=True
-        )
+                st.error("PIN incorreto. Tente novamente.")
         st.stop()
 
     # Dados do operador logado
@@ -9717,23 +9687,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
 
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
-        # v6: logout explícito sem pop de op_* enquanto modo_atual == operador — BUG-A
         st.session_state["op_pin_ok"] = False
-        st.session_state["op_dados_atual"] = {}
-        st.session_state["op_sel_cond"] = ""
+        st.session_state.pop("op_dados_atual", None)
+        st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
-    # v6: diagnóstico de sessão — sempre colapsado, texto discreto — P4
-    with st.expander("🔧 Diagnóstico", expanded=False):
-        _modo = st.session_state.get("modo_atual", "—")
-        _pin = "✅" if st.session_state.get("op_pin_ok") else "❌"
-        _cond = st.session_state.get("op_sel_cond", "—")
-        _sheets_ok_diag = st.session_state.get("_sheets_ok_cache", None)
-        _sheets_st = "🟢 online" if _sheets_ok_diag else ("🔴 offline" if _sheets_ok_diag is False else "⏳ verificando")
-        st.caption(
-            f"modo: `{_modo}` | pin: {_pin} | cond: `{_cond}` | "
-            f"sheets: {_sheets_st} | rasc: {bool(st.session_state.get('_rascunho_operador_pendente'))}"
-        )
+    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
+    with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
+        st.write({
+            "modo_atual": st.session_state.get("modo_atual"),
+            "op_pin_ok": st.session_state.get("op_pin_ok"),
+            "operador": _op_nome_logado if "_op_nome_logado" in dir() else "—",
+            "condominio": st.session_state.get("op_sel_cond", "—"),
+            "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
+            "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
+        })
 
     # v4 — operador não escolhe empresa.
     # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
@@ -9742,45 +9710,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
-    # v6: Card de boas-vindas profissional com data e hora — P4
-    # v6: horário de Brasília (UTC-3) — corrigido
-    _agora_disp = _agora_brasilia()[:16].replace(" ", " • ") if len(_agora_brasilia()) >= 16 else _agora_brasilia()
-    st.markdown(f"""
-    <div class="op-card" style="background:linear-gradient(135deg,#f0f6ff 0%,#ffffff 100%);border-color:#1565A8;">
-        <div class="op-title">📱 {_empresa_op_titulo}</div>
-        <div class="op-sub">
-            👤 <strong>{_op_nome_logado}</strong> &nbsp;|&nbsp;
-            🕐 {_agora_disp}
-        </div>
-        <span class="op-chip" style="background:#e8f0fe;border-color:#1565A8;color:#1565A8;">Aqua Gestão</span>
-        <span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">Bem Star</span>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown('<div class="op-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
 
-    # v6: Indicador de conexão Sheets — P4
-    @st.cache_data(ttl=60, show_spinner=False)
-    def _testar_conexao_sheets_operador():
-        try:
-            sh = conectar_sheets()
-            return sh is not None
-        except Exception:
-            return False
-
-    _sheets_ok = _testar_conexao_sheets_operador()
-    # v6: cacheia resultado no session_state para o diagnóstico acessar antes do teste
-    st.session_state["_sheets_ok_cache"] = _sheets_ok
-    _badge_class = "online" if _sheets_ok else "offline"
-    _badge_icon = "🟢" if _sheets_ok else "🔴"
-    _badge_txt = "Sheets conectado" if _sheets_ok else "Sheets offline — salvando localmente"
-    st.markdown(
-        f'<span class="op-sheets-badge {_badge_class}">{_badge_icon} {_badge_txt}</span>',
-        unsafe_allow_html=True
-    )
-
-    # v6: não remove chave op_* durante modo operador; preserva estabilidade em reruns — BUG-A
-    _salvo = st.session_state.get("op_salvo_sucesso")
+    _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
-        st.session_state["op_salvo_sucesso"] = None
         st.markdown(f"""
         <div class="op-salvo">
             ✅ <strong>Lançamento salvo!</strong><br>
@@ -9926,41 +9862,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         else:
             opcoes_cond = []
             st.warning("Seu PIN ainda não possui condomínios vinculados. Contate o administrador.")
-
-    # v6: Barra de progresso por etapas — P4
-    _step_cond   = bool(st.session_state.get("op_sel_cond") or st.session_state.get("op_nome_livre"))
-    _step_params = _step_cond and bool(st.session_state.get("op_data_visita"))
-    _step_fotos  = _step_params
-    _step_salvo  = bool(st.session_state.get("_op_ultimo_lancamento"))
-
-    def _step_cls(done, active):
-        if done: return "done"
-        if active: return "active"
-        return ""
-
-    st.markdown(f"""
-    <div class="op-stepper">
-        <div class="op-step {_step_cls(_step_cond, True)}">
-            <div class="op-step-icon">{"✅" if _step_cond else "1"}</div>
-            <span>Condomínio</span>
-        </div>
-        <div class="op-step-arrow">›</div>
-        <div class="op-step {_step_cls(_step_params, _step_cond)}">
-            <div class="op-step-icon">{"✅" if _step_params else "2"}</div>
-            <span>Parâmetros</span>
-        </div>
-        <div class="op-step-arrow">›</div>
-        <div class="op-step {_step_cls(_step_fotos, _step_params)}">
-            <div class="op-step-icon">{"✅" if _step_fotos else "3"}</div>
-            <span>Fotos</span>
-        </div>
-        <div class="op-step-arrow">›</div>
-        <div class="op-step {_step_cls(_step_salvo, _step_fotos)}">
-            <div class="op-step-icon">{"✅" if _step_salvo else "4"}</div>
-            <span>Salvar</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
     op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -10140,9 +10041,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.rerun()
 
         # Limpa campos SE houver limpeza pendente
-        # v6: não usar pop em op_* durante digitação/limpeza no modo operador — BUG-A
-        if st.session_state.get("op_limpar_campos", False):
-            st.session_state["op_limpar_campos"] = False
+        if st.session_state.pop("op_limpar_campos", False):
             for pisc in ["adulto","infantil","family","outra"]:
                 for k in ["ph","crl","ct","alc","dc","cya"]:
                     st.session_state[f"op_{pisc}_{k}"] = ""
@@ -10631,9 +10530,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             elif not data_vis:
                 st.error("Informe a data da visita.")
             else:
-                # v6: spinner durante processamento — P4
-                _spinner_placeholder = st.empty()
-                _spinner_placeholder.info("⏳ Processando visita... aguarde.")
                 pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
                 pasta_op.mkdir(parents=True, exist_ok=True)
                 pasta_fotos_op = pasta_op / "fotos_campo"
@@ -10855,11 +10751,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 }
                 # Guarda último lançamento para gerar relatório
                 st.session_state["_op_ultimo_lancamento"] = lancamento
-                # v6: limpa spinner e sinaliza limpeza — P4
-                try:
-                    _spinner_placeholder.empty()
-                except Exception:
-                    pass
                 # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
                 st.session_state["op_limpar_campos"] = True
                 # Remove rascunho após salvar lançamento definitivo
@@ -11827,6 +11718,67 @@ if clientes_cadastrados:
         st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
 else:
     st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
+
+# v6: campo seguro para excluir condomínio da empresa atual sem apagar histórico — BUG-D
+if clientes_cadastrados:
+    _empresa_destino_exclusao = "Bem Star Piscinas" if _empresa_ativa_codigo() == "aqua_gestao" else "Aqua Gestão"
+    _acao_exclusao_label = (
+        "Remover da Aqua Gestão e enviar para Bem Star Piscinas"
+        if _empresa_ativa_codigo() == "aqua_gestao"
+        else "Remover da Bem Star Piscinas e enviar para Aqua Gestão"
+    )
+    with st.expander("🗂️ Excluir condomínio desta empresa", expanded=False):
+        st.caption(
+            "Use quando o condomínio apareceu no painel errado. "
+            "A linha permanece no Google Sheets e o histórico fica preservado; o sistema só troca a empresa do cadastro."
+        )
+        _nomes_excluir_empresa = [c.get("nome", "") for c in clientes_cadastrados if c.get("id") and c.get("nome")]
+        _sel_excluir_empresa = st.selectbox(
+            "Condomínio / local",
+            options=_nomes_excluir_empresa,
+            key=f"cc_excluir_empresa_sel_{_empresa_ativa_codigo()}",
+        )
+        _cliente_excluir_empresa = next((c for c in clientes_cadastrados if c.get("nome") == _sel_excluir_empresa), {})
+        _confirmar_excluir_empresa = st.checkbox(
+            f"Confirmo: {_acao_exclusao_label}",
+            key=f"cc_excluir_empresa_confirma_{_empresa_ativa_codigo()}",
+        )
+        if st.button("🗂️ Excluir da empresa atual", use_container_width=True, key=f"cc_excluir_empresa_btn_{_empresa_ativa_codigo()}"):
+            if not _cliente_excluir_empresa.get("id"):
+                st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
+            elif not _confirmar_excluir_empresa:
+                st.warning("Marque a confirmação antes de excluir da empresa atual.")
+            else:
+                with st.spinner("Atualizando empresa do condomínio..."):
+                    ok_excluir_empresa = sheets_definir_empresa_cliente(
+                        id_cliente=_cliente_excluir_empresa["id"],
+                        empresa=_empresa_destino_exclusao,
+                    )
+                    # v6: atualiza cache local para o filtro por empresa não reverter no próximo rerun — BUG-D
+                    try:
+                        _pasta_excluir_empresa = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
+                        _pasta_excluir_empresa.mkdir(parents=True, exist_ok=True)
+                        _dados_excluir_empresa = carregar_dados_condominio(_pasta_excluir_empresa) or {}
+                        _servicos_excluir_empresa = _empresa_para_servicos(_empresa_destino_exclusao)
+                        _dados_excluir_empresa.update({
+                            "nome_condominio": _cliente_excluir_empresa.get("nome", ""),
+                            "empresa": _empresa_destino_exclusao,
+                            "servicos": _servicos_excluir_empresa,
+                            "salvo_em": _agora_brasilia(),
+                        })
+                        salvar_dados_condominio(_pasta_excluir_empresa, _dados_excluir_empresa)
+                    except Exception as e:
+                        _log_sheets_erro("excluir_empresa_cliente/local", e)
+                if ok_excluir_empresa:
+                    st.success(f"✅ '{_sel_excluir_empresa}' saiu de {_empresa_cadastro_nome} e agora está em {_empresa_destino_exclusao}.")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("❌ Não foi possível atualizar a empresa no Google Sheets.")
+                    _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
+                    if _det_excluir:
+                        with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
+                            st.code(_det_excluir, language="text")
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
