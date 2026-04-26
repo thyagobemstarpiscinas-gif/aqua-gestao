@@ -349,7 +349,8 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        aba.update("A1:F1", [["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
+        # v6: worksheet.update com kwargs — BUG-C
+        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -390,9 +391,10 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 return True
         # Insere novo
         linha_destino = max(len(todos) + 1, 8)
+        # v6: worksheet.update com kwargs — BUG-C
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
         )
         st.cache_data.clear()
@@ -546,6 +548,30 @@ def limpar_payload_para_sheets(dados: dict) -> dict:
     return limpo
 
 
+def sanitizar_valor_sheets(valor):
+    """Converte valores para formato aceito pelo gspread/Sheets sem None.
+
+    # v6: sanitização centralizada de payload para Google Sheets — BUG-B
+    """
+    if valor is None:
+        return ""
+    if isinstance(valor, dict):
+        return {str(k): sanitizar_valor_sheets(v) for k, v in valor.items()}
+    if isinstance(valor, list):
+        return [sanitizar_valor_sheets(v) for v in valor]
+    if isinstance(valor, tuple):
+        return [sanitizar_valor_sheets(v) for v in valor]
+    return valor
+
+
+def sanitizar_linha_sheets(valores: list) -> list:
+    """Garante linha sem None antes de enviar ao Google Sheets.
+
+    # v6: gspread v5 rejeita None em células — BUG-B
+    """
+    return ["" if v is None else str(v) for v in (valores or [])]
+
+
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
 
@@ -562,9 +588,10 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
+            # v6: worksheet.update com kwargs — BUG-C
             aba.update(
-                "A1:Z1",
-                [[
+                range_name="A1:Z1",
+                values=[[
                     "", "ID Visita", "Data", "ID Cliente", "Condomínio",
                     "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA",
                     "Foto Antes", "Foto Depois", "Foto Casa Máquinas", "Observação",
@@ -604,14 +631,16 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        payload = dict(lancamento)
+        # v6: payload limpo/sanitizado antes de serializar e gravar no Sheets — BUG-B
+        payload = sanitizar_valor_sheets(limpar_payload_para_sheets(dict(lancamento)))
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
         try:
             payload_json = json.dumps(payload, ensure_ascii=False)
-        except Exception:
+        except Exception as e:
+            _log_sheets_erro("sheets_salvar_lancamento_campo/payload_json", e)
             payload_json = ""
 
         mes_ano = ""
@@ -648,10 +677,14 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
+        # v6: remove None da linha final antes do gspread — BUG-B
+        nova_linha = sanitizar_linha_sheets(nova_linha)
+
         linha_destino = max(len(todos) + 1, 8)
+        # v6: worksheet.update com kwargs — BUG-C
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
         )
         st.cache_data.clear()
@@ -8894,7 +8927,8 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
+                    # v6: worksheet.update com kwargs — BUG-C
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -9087,6 +9121,9 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
+    # v6: nunca derruba sessão ativa do operador por rotina administrativa — BUG-A
+    if st.session_state.get("modo_atual") == "operador":
+        return False
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -9555,9 +9592,10 @@ if _modo_interno in ("escritorio", "operador"):
             st.rerun()
     else:
         if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+            # v6: saída explícita preserva chaves op_* sem pop destrutivo — BUG-A
             st.session_state["modo_atual"] = "entrada"
             st.session_state["op_pin_ok"] = False
-            st.session_state.pop("op_dados_atual", None)
+            st.session_state["op_dados_atual"] = {}
             st.rerun()
 
 # =========================================
@@ -9644,9 +9682,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
 
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
+        # v6: logout explícito sem pop de op_* enquanto modo_atual == operador — BUG-A
         st.session_state["op_pin_ok"] = False
-        st.session_state.pop("op_dados_atual", None)
-        st.session_state.pop("op_sel_cond", None)
+        st.session_state["op_dados_atual"] = {}
+        st.session_state["op_sel_cond"] = ""
         st.rerun()
 
     # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
@@ -9672,8 +9711,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
     st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
 
-    _salvo = st.session_state.pop("op_salvo_sucesso", None)
+    # v6: não remove chave op_* durante modo operador; preserva estabilidade em reruns — BUG-A
+    _salvo = st.session_state.get("op_salvo_sucesso")
     if _salvo:
+        st.session_state["op_salvo_sucesso"] = None
         st.markdown(f"""
         <div class="op-salvo">
             ✅ <strong>Lançamento salvo!</strong><br>
@@ -9998,7 +10039,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.rerun()
 
         # Limpa campos SE houver limpeza pendente
-        if st.session_state.pop("op_limpar_campos", False):
+        # v6: não usar pop em op_* durante digitação/limpeza no modo operador — BUG-A
+        if st.session_state.get("op_limpar_campos", False):
+            st.session_state["op_limpar_campos"] = False
             for pisc in ["adulto","infantil","family","outra"]:
                 for k in ["ph","crl","ct","alc","dc","cya"]:
                     st.session_state[f"op_{pisc}_{k}"] = ""
