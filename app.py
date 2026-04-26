@@ -9138,29 +9138,11 @@ def _admin_sair_para_entrada(abrir_login: bool = True):
 
 
 def _admin_keepalive_browser():
-    """Pequeno ping no navegador para reduzir perda de sessão por inatividade no Streamlit Cloud."""
-    if st.session_state.get("modo_atual") != "escritorio":
-        return
-    try:
-        components.html(
-            """
-            <script>
-            (function(){
-              if (window.__aqua_admin_keepalive_installed) return;
-              window.__aqua_admin_keepalive_installed = true;
-              setInterval(function(){
-                try {
-                  fetch(window.parent.location.href, {method:'GET', cache:'no-store', credentials:'same-origin'}).catch(function(){});
-                } catch(e) {}
-              }, 240000);
-            })();
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
-    except Exception:
-        pass
+    """Keepalive desativado — causava loop infinito de rerenders no Streamlit 1.56.
+    O components.v1.html com fetch() dispara rerun a cada chamada, impedindo o painel
+    de estabilizar. Sessão é mantida pelo próprio Streamlit Cloud sem necessidade de ping.
+    """
+    pass
 
 
 def _admin_render_login_empresa():
