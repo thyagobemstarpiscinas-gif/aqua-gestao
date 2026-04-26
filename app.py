@@ -9728,7 +9728,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _modo = st.session_state.get("modo_atual", "—")
         _pin = "✅" if st.session_state.get("op_pin_ok") else "❌"
         _cond = st.session_state.get("op_sel_cond", "—")
-        _sheets_st = "🟢 online" if _sheets_ok else "🔴 offline"
+        _sheets_ok_diag = st.session_state.get("_sheets_ok_cache", None)
+        _sheets_st = "🟢 online" if _sheets_ok_diag else ("🔴 offline" if _sheets_ok_diag is False else "⏳ verificando")
         st.caption(
             f"modo: `{_modo}` | pin: {_pin} | cond: `{_cond}` | "
             f"sheets: {_sheets_st} | rasc: {bool(st.session_state.get('_rascunho_operador_pendente'))}"
@@ -9766,6 +9767,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             return False
 
     _sheets_ok = _testar_conexao_sheets_operador()
+    # v6: cacheia resultado no session_state para o diagnóstico acessar antes do teste
+    st.session_state["_sheets_ok_cache"] = _sheets_ok
     _badge_class = "online" if _sheets_ok else "offline"
     _badge_icon = "🟢" if _sheets_ok else "🔴"
     _badge_txt = "Sheets conectado" if _sheets_ok else "Sheets offline — salvando localmente"
