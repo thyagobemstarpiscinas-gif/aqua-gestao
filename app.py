@@ -483,13 +483,19 @@ def conectar_sheets():
 def obter_aba_sheets(nome_aba: str):
     """Retorna uma worksheet do Google Sheets com cache de recurso.
 
-    Evita chamar obter_aba_sheets(...) a cada rerun do Streamlit, porque essa chamada
-    força leitura de metadados da planilha e estoura quota de Read requests.
+    Correção v4: a versão anterior chamava obter_aba_sheets(nome_aba)
+    dentro dela mesma, gerando recursão e falhas silenciosas nas leituras
+    do Google Sheets. Aqui a função passa a buscar a aba real no objeto
+    da planilha retornado por conectar_sheets().
     """
-    sh = conectar_sheets()
-    if sh is None:
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return None
+        return sh.worksheet(nome_aba)
+    except Exception as e:
+        _log_sheets_erro(f"obter_aba_sheets/{nome_aba}", e)
         return None
-    return obter_aba_sheets(nome_aba)
 
 
 def limpar_payload_para_sheets(dados: dict) -> dict:
@@ -1012,6 +1018,7 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         return []
 
 
+@st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_todas_visitas() -> list[dict]:
     """Lê a aba 🔬 Visitas uma única vez e retorna todas as visitas.
 
@@ -9229,14 +9236,25 @@ with st.sidebar:
         placeholder="Digite parte do nome...",
     )
 
-    historico = listar_historico()
+    # v4 — no painel Bem Star, o histórico local completo fica sob demanda.
+    # Evita varredura pesada de GENERATED_DIR antes dos módulos Bem Star aparecerem.
+    _carregar_historico_sidebar = True
+    if st.session_state.get("empresa_ativa") == "bem_star":
+        _carregar_historico_sidebar = st.checkbox(
+            "Carregar histórico local",
+            value=False,
+            key="sidebar_carregar_historico_bemstar",
+            help="Carrega pastas/arquivos locais somente quando necessário.",
+        )
+
+    historico = listar_historico() if _carregar_historico_sidebar else []
     filtro = st.session_state.filtro_historico.strip().lower()
 
     if filtro:
         historico = [h for h in historico if filtro in h["nome"].lower()]
 
     if not historico:
-        st.caption("Nenhum histórico encontrado.")
+        st.caption("Histórico local não carregado." if not _carregar_historico_sidebar else "Nenhum histórico encontrado.")
     else:
         for item in historico:
             nome_cond = item["nome"]
@@ -9606,20 +9624,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
-    # Empresa do operador: inferida do radio na tela inicial (empresa_selecionada_admin)
-    # O radio ja fica visivel antes do botao Acessar como Operador
-    _radio_val = st.session_state.get("empresa_selecionada_admin", "🔵 Aqua Gestão")
-    _empresa_op_codigo = "bem_star" if "Bem Star" in str(_radio_val) else "aqua_gestao"
-    if _empresa_op_codigo not in ("aqua_gestao", "bem_star"):
-        _empresa_op_codigo = "aqua_gestao"
-    st.session_state["empresa_ativa"] = _empresa_op_codigo
-
-    _empresa_op_nome = "Bem Star Piscinas" if _empresa_op_codigo == "bem_star" else "Aqua Gestão"
-    _empresa_op_titulo = (
-        "⭐ Bem Star Piscinas — Modo Campo Operacional"
-        if _empresa_op_codigo == "bem_star"
-        else "🔵 Aqua Gestão — Modo Campo RT"
-    )
+    # v4 — operador não escolhe empresa.
+    # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
+    # condomínios vinculados ao operador, sejam Aqua Gestão, Bem Star ou ambos.
+    _empresa_op_codigo = "operador_multibase"
+    _empresa_op_nome = "Aqua Gestão / Bem Star"
+    _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
@@ -9699,10 +9709,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     _clientes_todos_op_raw = _buscar_clientes_sheets_completo()
 
-    # Filtra PRIMEIRO por empresa/servico ativo.
-    # Depois aplica as permissoes do PIN. Assim Bem Star mostra somente limpeza/manutencao
-    # e Aqua Gestão mostra somente RT/controle tecnico.
-    _clientes_todos_op = filtrar_clientes_por_empresa(_clientes_todos_op_raw, _empresa_op_codigo)
+    # v4 — modo operador multibase: não filtra por empresa administrativa.
+    # O acesso é determinado pelo PIN e pelos vínculos do cliente.
+    if _empresa_op_codigo == "operador_multibase":
+        _clientes_todos_op = list(_clientes_todos_op_raw or [])
+    else:
+        _clientes_todos_op = filtrar_clientes_por_empresa(_clientes_todos_op_raw, _empresa_op_codigo)
     clientes_mapa_op = {c["nome"]: c for c in _clientes_todos_op if c.get("nome")}
 
     # Combina clientes do Sheets com os locais, respeitando a empresa ativa
@@ -9726,6 +9738,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             continue
         if _empresa_op_codigo == "aqua_gestao" and not _serv_local.get("rt"):
             continue
+        # operador_multibase mantém Aqua, Bem Star e clientes com ambos.
         clientes_mapa_op.setdefault(nome_ex, cliente_local)
 
     opcoes_cond_todas = list(clientes_mapa_op.keys())
@@ -10747,18 +10760,15 @@ def obter_metricas_bem_star():
         return {"total_ativos": 0, "visitas_mes": 0, "ultimos_pareceres": []}
 
 
-# Evita varredura pesada de todas as pastas/arquivos no painel Bem Star.
-# Esse cálculo é útil para o painel Aqua Gestão (vigências RT), mas no Bem Star
-# ele só atrasava a estabilização inicial da página após o login administrativo.
+# v4 — carregamento cirúrgico por empresa:
+# O painel de vencimentos é exclusivo da Aqua Gestão/RT e faz varredura de pastas.
+# No login Bem Star ele atrasava ou interrompia a primeira pintura antes dos módulos
+# operacionais da Bem Star. Para Bem Star, inicializamos listas vazias e deixamos
+# os módulos próprios carregarem direto.
 if st.session_state.get("empresa_ativa") == "bem_star":
     painel_vencimentos = []
     painel_filtrado = []
-    total_monitorado = 0
-    total_vencidos = 0
-    total_vencendo = 0
-    total_vigentes = 0
-    total_indefinidos = 0
-    total_com_json = 0
+    total_monitorado = total_vencidos = total_vencendo = total_vigentes = total_indefinidos = total_com_json = 0
     itens_vencidos = []
     itens_vencendo = []
     itens_indefinidos = []
@@ -11909,416 +11919,418 @@ if st.button(_btn_label, type="primary", use_container_width=True):
 st.markdown("</div>", unsafe_allow_html=True)
 
 
-# =========================================
-# CENTRAL DE ENVIO DE DOCUMENTOS — AQUA GESTÃO
-# =========================================
-# _CENTRAL_EMAIL_DOCUMENTOS_DEFINITIVA_V3_
-st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
-st.subheader("📧 Central de Envio de Documentos")
-st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
+if _empresa_ativa_codigo() != "bem_star":
+    # =========================================
+    # CENTRAL DE ENVIO DE DOCUMENTOS — AQUA GESTÃO
+    # =========================================
+    # _CENTRAL_EMAIL_DOCUMENTOS_DEFINITIVA_V3_
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    st.subheader("📧 Central de Envio de Documentos")
+    st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
 
-_pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
-_nomes_pastas_envio = [humanizar_nome_pasta(p.name) for p in _pastas_envio]
-_mapa_pastas_envio = dict(zip(_nomes_pastas_envio, _pastas_envio))
+    _pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
+    _nomes_pastas_envio = [humanizar_nome_pasta(p.name) for p in _pastas_envio]
+    _mapa_pastas_envio = dict(zip(_nomes_pastas_envio, _pastas_envio))
 
-_nome_envio_padrao = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
-_idx_envio = 0
-if _nome_envio_padrao and _nomes_pastas_envio:
-    for _i, _n in enumerate(_nomes_pastas_envio):
-        if nomes_condominio_equivalentes(_nome_envio_padrao, _n):
-            _idx_envio = _i
-            break
+    _nome_envio_padrao = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+    _idx_envio = 0
+    if _nome_envio_padrao and _nomes_pastas_envio:
+        for _i, _n in enumerate(_nomes_pastas_envio):
+            if nomes_condominio_equivalentes(_nome_envio_padrao, _n):
+                _idx_envio = _i
+                break
 
-if _nomes_pastas_envio:
-    _nome_cond_envio = st.selectbox(
-        "Condomínio / cliente para buscar documentos",
-        options=_nomes_pastas_envio,
-        index=_idx_envio,
-        key="central_email_condominio",
-    )
-    _pasta_cond_envio = _mapa_pastas_envio.get(_nome_cond_envio)
-else:
-    _nome_cond_envio = _nome_envio_padrao or "Condomínio"
-    _pasta_cond_envio = None
-    st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
-
-_email_envio_padrao = (st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
-try:
-    _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
-    _email_envio_padrao = _email_envio_padrao or str(_dados_cond_envio.get("email_cliente", "") or _dados_cond_envio.get("email", "") or "").strip()
-except Exception:
-    _dados_cond_envio = {}
-
-_docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio, st.session_state.get("ultimos_docs_gerados") or [])
-_docs_por_tipo = {"Contrato": [], "Aditivo": [], "Termo de ciência": [], "POP": [], "Relatório": [], "Outros": []}
-for _doc in _docs_envio:
-    _nm = _doc.name.lower()
-    if "contrato" in _nm:
-        _docs_por_tipo["Contrato"].append(_doc)
-    elif "aditivo" in _nm:
-        _docs_por_tipo["Aditivo"].append(_doc)
-    elif "termo" in _nm or "ciencia" in _nm or "ciência" in _nm:
-        _docs_por_tipo["Termo de ciência"].append(_doc)
-    elif "pop" in _nm:
-        _docs_por_tipo["POP"].append(_doc)
-    elif "relatorio" in _nm or "relatório" in _nm:
-        _docs_por_tipo["Relatório"].append(_doc)
-    else:
-        _docs_por_tipo["Outros"].append(_doc)
-
-with st.expander("📤 Compor e enviar documentação", expanded=False):
-    _env_c1, _env_c2 = st.columns(2)
-    with _env_c1:
-        _dest_env = st.text_input("Destinatário *", value=_email_envio_padrao, key="central_email_destinatario", placeholder="email@condominio.com.br")
-        _assunto_env = st.text_input("Assunto *", value=f"Documentação técnica Aqua Gestão - {_nome_cond_envio}", key="central_email_assunto")
-    with _env_c2:
-        _cc_env = st.text_input("CC", value="", key="central_email_cc", placeholder="administradora@exemplo.com.br")
-        _bcc_env = st.text_input("CCO", value="", key="central_email_bcc")
-
-    _msg_env_padrao = (
-        f"Prezados,\n\n"
-        f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_cond_envio}.\n\n"
-        "Os documentos selecionados seguem para conferência, registro e arquivo interno do condomínio.\n\n"
-        "Permaneço à disposição para qualquer esclarecimento."
-    )
-    _msg_env = st.text_area("Mensagem", value=_msg_env_padrao, height=180, key="central_email_mensagem")
-
-    st.markdown("**Selecionar documentos locais:**")
-    _selecionados_envio = []
-    for _tipo_doc, _lista_docs in _docs_por_tipo.items():
-        if not _lista_docs:
-            continue
-        _opcoes_tipo = [p.name for p in _lista_docs]
-        _default_tipo = _opcoes_tipo[:2] if _tipo_doc in ("Contrato", "Aditivo", "Termo de ciência", "Relatório") else []
-        _sel_tipo = st.multiselect(
-            _tipo_doc,
-            options=_opcoes_tipo,
-            default=_default_tipo,
-            key=f"central_email_tipo_{slugify_nome(_tipo_doc)}",
+    if _nomes_pastas_envio:
+        _nome_cond_envio = st.selectbox(
+            "Condomínio / cliente para buscar documentos",
+            options=_nomes_pastas_envio,
+            index=_idx_envio,
+            key="central_email_condominio",
         )
-        _mapa_tipo = {p.name: p for p in _lista_docs}
-        _selecionados_envio.extend([_mapa_tipo[n] for n in _sel_tipo if n in _mapa_tipo])
+        _pasta_cond_envio = _mapa_pastas_envio.get(_nome_cond_envio)
+    else:
+        _nome_cond_envio = _nome_envio_padrao or "Condomínio"
+        _pasta_cond_envio = None
+        st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
 
-    _uploads_env = st.file_uploader(
-        "📎 Adicionar anexos manuais (PDF/DOCX)",
-        type=["pdf", "docx"],
-        accept_multiple_files=True,
-        key="central_email_uploads",
-    )
+    _email_envio_padrao = (st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
+    try:
+        _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
+        _email_envio_padrao = _email_envio_padrao or str(_dados_cond_envio.get("email_cliente", "") or _dados_cond_envio.get("email", "") or "").strip()
+    except Exception:
+        _dados_cond_envio = {}
 
-    _status_cfg_env, _erro_cfg_env = _email_aqua_configurado()
-    if not _status_cfg_env:
-        st.warning(f"⚠️ SMTP não configurado: {_erro_cfg_env}")
-
-    _qtd_upload_env = len(_uploads_env or [])
-    st.caption(f"{len(_selecionados_envio)} documento(s) local(is) + {_qtd_upload_env} upload(s) selecionado(s).")
-
-    if st.button("📨 Enviar documentos selecionados", type="primary", use_container_width=True, key="central_email_btn_enviar", disabled=not _status_cfg_env):
-        if not _dest_env.strip():
-            st.error("Informe o destinatário.")
-        elif not _assunto_env.strip():
-            st.error("Informe o assunto.")
-        elif not _selecionados_envio and not _uploads_env:
-            st.error("Selecione ou envie pelo menos um anexo.")
+    _docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio, st.session_state.get("ultimos_docs_gerados") or [])
+    _docs_por_tipo = {"Contrato": [], "Aditivo": [], "Termo de ciência": [], "POP": [], "Relatório": [], "Outros": []}
+    for _doc in _docs_envio:
+        _nm = _doc.name.lower()
+        if "contrato" in _nm:
+            _docs_por_tipo["Contrato"].append(_doc)
+        elif "aditivo" in _nm:
+            _docs_por_tipo["Aditivo"].append(_doc)
+        elif "termo" in _nm or "ciencia" in _nm or "ciência" in _nm:
+            _docs_por_tipo["Termo de ciência"].append(_doc)
+        elif "pop" in _nm:
+            _docs_por_tipo["POP"].append(_doc)
+        elif "relatorio" in _nm or "relatório" in _nm:
+            _docs_por_tipo["Relatório"].append(_doc)
         else:
-            import tempfile as _tmp_env
-            _tmp_dir_env = Path(_tmp_env.mkdtemp())
-            _anexos_env = list(_selecionados_envio)
-            for _uf_env in (_uploads_env or []):
-                _p_env = _tmp_dir_env / _uf_env.name
-                _p_env.write_bytes(_uf_env.getbuffer())
-                _anexos_env.append(_p_env)
-            _ok_env, _msg_retorno_env = enviar_email_aqua_smtp(
-                destinatario=_dest_env.strip(),
-                assunto=_assunto_env.strip(),
-                mensagem=_msg_env,
-                anexos=_anexos_env,
-                cc=_cc_env.strip(),
-                bcc=_bcc_env.strip(),
+            _docs_por_tipo["Outros"].append(_doc)
+
+    with st.expander("📤 Compor e enviar documentação", expanded=False):
+        _env_c1, _env_c2 = st.columns(2)
+        with _env_c1:
+            _dest_env = st.text_input("Destinatário *", value=_email_envio_padrao, key="central_email_destinatario", placeholder="email@condominio.com.br")
+            _assunto_env = st.text_input("Assunto *", value=f"Documentação técnica Aqua Gestão - {_nome_cond_envio}", key="central_email_assunto")
+        with _env_c2:
+            _cc_env = st.text_input("CC", value="", key="central_email_cc", placeholder="administradora@exemplo.com.br")
+            _bcc_env = st.text_input("CCO", value="", key="central_email_bcc")
+
+        _msg_env_padrao = (
+            f"Prezados,\n\n"
+            f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_cond_envio}.\n\n"
+            "Os documentos selecionados seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+            "Permaneço à disposição para qualquer esclarecimento."
+        )
+        _msg_env = st.text_area("Mensagem", value=_msg_env_padrao, height=180, key="central_email_mensagem")
+
+        st.markdown("**Selecionar documentos locais:**")
+        _selecionados_envio = []
+        for _tipo_doc, _lista_docs in _docs_por_tipo.items():
+            if not _lista_docs:
+                continue
+            _opcoes_tipo = [p.name for p in _lista_docs]
+            _default_tipo = _opcoes_tipo[:2] if _tipo_doc in ("Contrato", "Aditivo", "Termo de ciência", "Relatório") else []
+            _sel_tipo = st.multiselect(
+                _tipo_doc,
+                options=_opcoes_tipo,
+                default=_default_tipo,
+                key=f"central_email_tipo_{slugify_nome(_tipo_doc)}",
             )
-            if _ok_env:
-                st.success(f"✅ {_msg_retorno_env}")
+            _mapa_tipo = {p.name: p for p in _lista_docs}
+            _selecionados_envio.extend([_mapa_tipo[n] for n in _sel_tipo if n in _mapa_tipo])
+
+        _uploads_env = st.file_uploader(
+            "📎 Adicionar anexos manuais (PDF/DOCX)",
+            type=["pdf", "docx"],
+            accept_multiple_files=True,
+            key="central_email_uploads",
+        )
+
+        _status_cfg_env, _erro_cfg_env = _email_aqua_configurado()
+        if not _status_cfg_env:
+            st.warning(f"⚠️ SMTP não configurado: {_erro_cfg_env}")
+
+        _qtd_upload_env = len(_uploads_env or [])
+        st.caption(f"{len(_selecionados_envio)} documento(s) local(is) + {_qtd_upload_env} upload(s) selecionado(s).")
+
+        if st.button("📨 Enviar documentos selecionados", type="primary", use_container_width=True, key="central_email_btn_enviar", disabled=not _status_cfg_env):
+            if not _dest_env.strip():
+                st.error("Informe o destinatário.")
+            elif not _assunto_env.strip():
+                st.error("Informe o assunto.")
+            elif not _selecionados_envio and not _uploads_env:
+                st.error("Selecione ou envie pelo menos um anexo.")
             else:
-                st.error(f"❌ {_msg_retorno_env}")
+                import tempfile as _tmp_env
+                _tmp_dir_env = Path(_tmp_env.mkdtemp())
+                _anexos_env = list(_selecionados_envio)
+                for _uf_env in (_uploads_env or []):
+                    _p_env = _tmp_dir_env / _uf_env.name
+                    _p_env.write_bytes(_uf_env.getbuffer())
+                    _anexos_env.append(_p_env)
+                _ok_env, _msg_retorno_env = enviar_email_aqua_smtp(
+                    destinatario=_dest_env.strip(),
+                    assunto=_assunto_env.strip(),
+                    mensagem=_msg_env,
+                    anexos=_anexos_env,
+                    cc=_cc_env.strip(),
+                    bcc=_bcc_env.strip(),
+                )
+                if _ok_env:
+                    st.success(f"✅ {_msg_retorno_env}")
+                else:
+                    st.error(f"❌ {_msg_retorno_env}")
 
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================================
-# PAINEL DE VENCIMENTOS
-# =========================================
+    # =========================================
+    # PAINEL DE VENCIMENTOS
+    # =========================================
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Painel de vencimentos")
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Painel de vencimentos")
 
-m1, m2, m3, m4, m5 = st.columns(5)
-with m1:
-    st.metric("Total monitorado", len(painel_filtrado))
-with m2:
-    st.metric("Vencidos", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]))
-with m3:
-    st.metric("Vencem em breve", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]))
-with m4:
-    st.metric("Vigentes", len([i for i in painel_filtrado if i["status"]["codigo"] == "vigente"]))
-with m5:
-    st.metric("Sem vigência", len([i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]))
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.metric("Total monitorado", len(painel_filtrado))
+    with m2:
+        st.metric("Vencidos", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]))
+    with m3:
+        st.metric("Vencem em breve", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]))
+    with m4:
+        st.metric("Vigentes", len([i for i in painel_filtrado if i["status"]["codigo"] == "vigente"]))
+    with m5:
+        st.metric("Sem vigência", len([i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]))
 
-st.caption(
-    "Painel operacional separado do histórico comum, com filtro central, exportação de cadastro e visualização dos últimos documentos."
-)
+    st.caption(
+        "Painel operacional separado do histórico comum, com filtro central, exportação de cadastro e visualização dos últimos documentos."
+    )
 
-aba1, aba2, aba3 = st.tabs(
-    ["Condomínios vencidos", "Condomínios que vencem em breve", "Sem vigência válida"]
-)
+    aba1, aba2, aba3 = st.tabs(
+        ["Condomínios vencidos", "Condomínios que vencem em breve", "Sem vigência válida"]
+    )
 
-def render_exportacao_e_docs(item: dict, item_key: str):
-    dados = item["dados"]
-    ultimo_contrato = item["ultimo_contrato"]
-    ultimo_aditivo = item["ultimo_aditivo"]
-    ultimo_relatorio = item.get("ultimo_relatorio")
+    def render_exportacao_e_docs(item: dict, item_key: str):
+        dados = item["dados"]
+        ultimo_contrato = item["ultimo_contrato"]
+        ultimo_aditivo = item["ultimo_aditivo"]
+        ultimo_relatorio = item.get("ultimo_relatorio")
 
-    st.markdown("<div class='docs-note'><strong>Documentos mais recentes</strong></div>", unsafe_allow_html=True)
+        st.markdown("<div class='docs-note'><strong>Documentos mais recentes</strong></div>", unsafe_allow_html=True)
 
-    dc1, dc2, dc3, dc4, dc5 = st.columns(5)
-    with dc1:
-        if ultimo_contrato:
-            if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
-                abrir_arquivo_windows(ultimo_contrato["path"])
-        else:
-            st.button("Sem contrato", key=f"sem_contrato_{item_key}", disabled=True, use_container_width=True)
+        dc1, dc2, dc3, dc4, dc5 = st.columns(5)
+        with dc1:
+            if ultimo_contrato:
+                if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_contrato["path"])
+            else:
+                st.button("Sem contrato", key=f"sem_contrato_{item_key}", disabled=True, use_container_width=True)
 
-    with dc2:
-        if ultimo_aditivo:
-            if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
-                abrir_arquivo_windows(ultimo_aditivo["path"])
-        else:
-            st.button("Sem aditivo", key=f"sem_aditivo_{item_key}", disabled=True, use_container_width=True)
+        with dc2:
+            if ultimo_aditivo:
+                if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_aditivo["path"])
+            else:
+                st.button("Sem aditivo", key=f"sem_aditivo_{item_key}", disabled=True, use_container_width=True)
 
-    with dc3:
-        if ultimo_relatorio:
-            if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
-                abrir_arquivo_windows(ultimo_relatorio["path"])
-        else:
-            st.button("Sem relatório", key=f"sem_relatorio_{item_key}", disabled=True, use_container_width=True)
+        with dc3:
+            if ultimo_relatorio:
+                if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_relatorio["path"])
+            else:
+                st.button("Sem relatório", key=f"sem_relatorio_{item_key}", disabled=True, use_container_width=True)
 
-    with dc4:
-        if dados:
-            json_bytes = json.dumps(dados, ensure_ascii=False, indent=2).encode("utf-8")
-            st.download_button(
-                "Exportar JSON backup",
-                data=json_bytes,
-                file_name=f"{item['slug']}_cadastro.json",
-                mime="application/json",
-                key=f"download_json_{item_key}",
-                use_container_width=True,
-            )
-        else:
-            st.button("Sem JSON", key=f"sem_json_{item_key}", disabled=True, use_container_width=True)
+        with dc4:
+            if dados:
+                json_bytes = json.dumps(dados, ensure_ascii=False, indent=2).encode("utf-8")
+                st.download_button(
+                    "Exportar JSON backup",
+                    data=json_bytes,
+                    file_name=f"{item['slug']}_cadastro.json",
+                    mime="application/json",
+                    key=f"download_json_{item_key}",
+                    use_container_width=True,
+                )
+            else:
+                st.button("Sem JSON", key=f"sem_json_{item_key}", disabled=True, use_container_width=True)
 
-    with dc5:
-        if dados:
-            html = gerar_html_resumo_cadastro(item).encode("utf-8")
-            st.download_button(
-                "Exportar resumo HTML",
-                data=html,
-                file_name=f"{item['slug']}_resumo_cadastro.html",
-                mime="text/html",
-                key=f"download_html_{item_key}",
-                use_container_width=True,
-            )
-        else:
-            st.button("Sem resumo", key=f"sem_resumo_{item_key}", disabled=True, use_container_width=True)
+        with dc5:
+            if dados:
+                html = gerar_html_resumo_cadastro(item).encode("utf-8")
+                st.download_button(
+                    "Exportar resumo HTML",
+                    data=html,
+                    file_name=f"{item['slug']}_resumo_cadastro.html",
+                    mime="text/html",
+                    key=f"download_html_{item_key}",
+                    use_container_width=True,
+                )
+            else:
+                st.button("Sem resumo", key=f"sem_resumo_{item_key}", disabled=True, use_container_width=True)
 
 
-with aba1:
-    if not itens_vencidos:
-        st.markdown(
-            "<div class='venc-empty'>Nenhum condomínio vencido no momento.</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        for item in itens_vencidos:
-            nome_exibicao = item["nome_exibicao"]
-            pasta = item["pasta"]
-            dados_salvos = item["dados"]
-            status = item["status"]
-            data_fim = item["data_fim"] or "Não informada"
-            item_key = chave_segura(f"painel_vencido_{pasta}")
-
+    with aba1:
+        if not itens_vencidos:
             st.markdown(
-                f"""
-                <div class="venc-row">
-                    <div class="venc-nome">{nome_exibicao}</div>
-                    <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
-                    <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
-                    <span class="status-badge {status['css']}">{status['rotulo']}</span>
-                </div>
-                """,
+                "<div class='venc-empty'>Nenhum condomínio vencido no momento.</div>",
                 unsafe_allow_html=True,
             )
+        else:
+            for item in itens_vencidos:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                data_fim = item["data_fim"] or "Não informada"
+                item_key = chave_segura(f"painel_vencido_{pasta}")
 
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                if st.button("Editar cadastro", key=f"editar_vencido_{item_key}", use_container_width=True):
-                    aplicar_dados_no_formulario(dados_salvos)
-                    st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
-                    st.rerun()
-
-            with c2:
-                if st.button("Abrir pasta", key=f"abrir_vencido_{item_key}", use_container_width=True):
-                    abrir_pasta_windows(pasta)
-
-            with c3:
-                if st.button("Renovar no formulário", key=f"renovar_vencido_{item_key}", use_container_width=True):
-                    ok, msg = preparar_renovacao_no_formulario(dados_salvos)
-                    if ok:
-                        st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-            with c4:
-                if st.button("Gerar aditivo renovação", key=f"aditivo_vencido_{item_key}", use_container_width=True):
-                    ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
-                    if ok:
-                        st.session_state.painel_acao_msg = msg
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-            render_exportacao_e_docs(item, item_key)
-
-with aba2:
-    if not itens_vencendo:
-        st.markdown(
-            "<div class='venc-empty'>Nenhum condomínio dentro da faixa de alerta no momento.</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        for item in itens_vencendo:
-            nome_exibicao = item["nome_exibicao"]
-            pasta = item["pasta"]
-            dados_salvos = item["dados"]
-            status = item["status"]
-            data_fim = item["data_fim"] or "Não informada"
-            item_key = chave_segura(f"painel_vencendo_{pasta}")
-
-            st.markdown(
-                f"""
-                <div class="venc-row">
-                    <div class="venc-nome">{nome_exibicao}</div>
-                    <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
-                    <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
-                    <span class="status-badge {status['css']}">{status['rotulo']}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                if st.button("Editar cadastro", key=f"editar_vencendo_{item_key}", use_container_width=True):
-                    aplicar_dados_no_formulario(dados_salvos)
-                    st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
-                    st.rerun()
-
-            with c2:
-                if st.button("Abrir pasta", key=f"abrir_vencendo_{item_key}", use_container_width=True):
-                    abrir_pasta_windows(pasta)
-
-            with c3:
-                if st.button("Renovar no formulário", key=f"renovar_vencendo_{item_key}", use_container_width=True):
-                    ok, msg = preparar_renovacao_no_formulario(dados_salvos)
-                    if ok:
-                        st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-            with c4:
-                if st.button("Gerar aditivo renovação", key=f"aditivo_vencendo_{item_key}", use_container_width=True):
-                    ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
-                    if ok:
-                        st.session_state.painel_acao_msg = msg
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-            render_exportacao_e_docs(item, item_key)
-
-with aba3:
-    if not itens_indefinidos:
-        st.markdown(
-            "<div class='venc-empty'>Nenhum condomínio sem vigência válida encontrado.</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        for item in itens_indefinidos:
-            nome_exibicao = item["nome_exibicao"]
-            pasta = item["pasta"]
-            dados_salvos = item["dados"]
-            status = item["status"]
-            origem = item["origem"]
-            total_arquivos = len(item["arquivos"])
-            item_key = chave_segura(f"painel_indefinido_{pasta}")
-
-            st.markdown(
-                f"""
-                <div class="venc-row">
-                    <div class="venc-nome">{nome_exibicao}</div>
-                    <div class="venc-meta"><strong>Status:</strong> {status['rotulo']}</div>
-                    <div class="venc-meta"><strong>Arquivos encontrados:</strong> {total_arquivos}</div>
-                    <span class="status-badge {status['css']}">{status['rotulo']}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if origem == "legado_sem_json":
                 st.markdown(
-                    "<div class='legacy-note'>Histórico antigo sem <strong>dados_condominio.json</strong>. "
-                    "Agora você pode criar um cadastro inicial diretamente a partir desta pasta.</div>",
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
+                        <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 with c1:
-                    if st.button("Criar cadastro desta pasta", key=f"legado_{item_key}", use_container_width=True):
-                        preparar_cadastro_legado(pasta.name)
-                        st.session_state.painel_acao_msg = f"Cadastro inicial preparado a partir da pasta '{pasta.name}'."
-                        st.rerun()
-
-                with c2:
-                    if st.button("Abrir pasta", key=f"abrir_legado_{item_key}", use_container_width=True):
-                        abrir_pasta_windows(pasta)
-
-                with c3:
-                    st.button("Gerar aditivo renovação", key=f"aditivo_legado_{item_key}", disabled=True, use_container_width=True)
-            else:
-                st.markdown(
-                    "<div class='legacy-note'>Existe cadastro salvo, porém sem data final válida. "
-                    "Carregue os dados no formulário e corrija a vigência.</div>",
-                    unsafe_allow_html=True,
-                )
-
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    if st.button("Editar cadastro", key=f"editar_indefinido_{item_key}", use_container_width=True):
+                    if st.button("Editar cadastro", key=f"editar_vencido_{item_key}", use_container_width=True):
                         aplicar_dados_no_formulario(dados_salvos)
                         st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
                         st.rerun()
+
                 with c2:
-                    if st.button("Abrir pasta", key=f"abrir_indefinido_{item_key}", use_container_width=True):
+                    if st.button("Abrir pasta", key=f"abrir_vencido_{item_key}", use_container_width=True):
                         abrir_pasta_windows(pasta)
+
                 with c3:
-                    st.button("Gerar aditivo renovação", key=f"aditivo_indefinido_{item_key}", disabled=True, use_container_width=True)
+                    if st.button("Renovar no formulário", key=f"renovar_vencido_{item_key}", use_container_width=True):
+                        ok, msg = preparar_renovacao_no_formulario(dados_salvos)
+                        if ok:
+                            st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
-            render_exportacao_e_docs(item, item_key)
+                with c4:
+                    if st.button("Gerar aditivo renovação", key=f"aditivo_vencido_{item_key}", use_container_width=True):
+                        ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
+                        if ok:
+                            st.session_state.painel_acao_msg = msg
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
-st.markdown("</div>", unsafe_allow_html=True)
+                render_exportacao_e_docs(item, item_key)
 
-# =========================================
-# CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
-# =========================================
+    with aba2:
+        if not itens_vencendo:
+            st.markdown(
+                "<div class='venc-empty'>Nenhum condomínio dentro da faixa de alerta no momento.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            for item in itens_vencendo:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                data_fim = item["data_fim"] or "Não informada"
+                item_key = chave_segura(f"painel_vencendo_{pasta}")
+
+                st.markdown(
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
+                        <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    if st.button("Editar cadastro", key=f"editar_vencendo_{item_key}", use_container_width=True):
+                        aplicar_dados_no_formulario(dados_salvos)
+                        st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
+                        st.rerun()
+
+                with c2:
+                    if st.button("Abrir pasta", key=f"abrir_vencendo_{item_key}", use_container_width=True):
+                        abrir_pasta_windows(pasta)
+
+                with c3:
+                    if st.button("Renovar no formulário", key=f"renovar_vencendo_{item_key}", use_container_width=True):
+                        ok, msg = preparar_renovacao_no_formulario(dados_salvos)
+                        if ok:
+                            st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                with c4:
+                    if st.button("Gerar aditivo renovação", key=f"aditivo_vencendo_{item_key}", use_container_width=True):
+                        ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
+                        if ok:
+                            st.session_state.painel_acao_msg = msg
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                render_exportacao_e_docs(item, item_key)
+
+    with aba3:
+        if not itens_indefinidos:
+            st.markdown(
+                "<div class='venc-empty'>Nenhum condomínio sem vigência válida encontrado.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            for item in itens_indefinidos:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                origem = item["origem"]
+                total_arquivos = len(item["arquivos"])
+                item_key = chave_segura(f"painel_indefinido_{pasta}")
+
+                st.markdown(
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Status:</strong> {status['rotulo']}</div>
+                        <div class="venc-meta"><strong>Arquivos encontrados:</strong> {total_arquivos}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if origem == "legado_sem_json":
+                    st.markdown(
+                        "<div class='legacy-note'>Histórico antigo sem <strong>dados_condominio.json</strong>. "
+                        "Agora você pode criar um cadastro inicial diretamente a partir desta pasta.</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("Criar cadastro desta pasta", key=f"legado_{item_key}", use_container_width=True):
+                            preparar_cadastro_legado(pasta.name)
+                            st.session_state.painel_acao_msg = f"Cadastro inicial preparado a partir da pasta '{pasta.name}'."
+                            st.rerun()
+
+                    with c2:
+                        if st.button("Abrir pasta", key=f"abrir_legado_{item_key}", use_container_width=True):
+                            abrir_pasta_windows(pasta)
+
+                    with c3:
+                        st.button("Gerar aditivo renovação", key=f"aditivo_legado_{item_key}", disabled=True, use_container_width=True)
+                else:
+                    st.markdown(
+                        "<div class='legacy-note'>Existe cadastro salvo, porém sem data final válida. "
+                        "Carregue os dados no formulário e corrija a vigência.</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("Editar cadastro", key=f"editar_indefinido_{item_key}", use_container_width=True):
+                            aplicar_dados_no_formulario(dados_salvos)
+                            st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
+                            st.rerun()
+                    with c2:
+                        if st.button("Abrir pasta", key=f"abrir_indefinido_{item_key}", use_container_width=True):
+                            abrir_pasta_windows(pasta)
+                    with c3:
+                        st.button("Gerar aditivo renovação", key=f"aditivo_indefinido_{item_key}", disabled=True, use_container_width=True)
+
+                render_exportacao_e_docs(item, item_key)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================
+    # CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
+    # =========================================
+
 
 # =========================================
 # MÓDULOS EXCLUSIVOS BEM STAR — só renderizam no painel Bem Star
