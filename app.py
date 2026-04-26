@@ -1945,12 +1945,17 @@ def _agora_brasilia() -> str:
     from datetime import timezone, timedelta
     return datetime.now(tz=timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M:%S")
 
-def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
-    """Salva rascunho em arquivo local + Google Sheets (persiste apos sleep do servidor)."""
+def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = False) -> bool:
+    """Salva rascunho. Por padrão salva APENAS localmente (evita reruns pesados durante digitação).
+    
+    v5: o parâmetro salvar_sheets=True deve ser usado APENAS quando o operador
+    clicar explicitamente em "Salvar rascunho". Nunca chamar com sheets=True
+    a partir de on_change ou de autosave automático.
+    """
     dados["_rascunho_salvo_em"] = _agora_brasilia()
     dados["_rascunho_cond"] = nome_cond.strip()
 
-    # 1. Arquivo local (rapido)
+    # 1. Arquivo local (rápido — sempre executado)
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
         pasta.mkdir(parents=True, exist_ok=True)
@@ -1961,35 +1966,37 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict) -> bool:
     except Exception:
         pass
 
-    # 2. Google Sheets aba _Rascunhos (backup persistente)
-    try:
-        sh = conectar_sheets()
-        if sh:
-            try:
-                aba_rasc = obter_aba_sheets("_Rascunhos")
-            except Exception:
-                aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
-                aba_rasc.update("A1:D1", [["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
-            dados_sh = {k: v for k, v in dados.items()
-                        if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
-            payload = json.dumps(dados_sh, ensure_ascii=False)
-            if len(payload) > 45000:
-                payload = payload[:45000] + "..."
-            todos = aba_rasc.get_all_values()
-            chave = nome_cond.strip().lower()
-            linha_existente = None
-            for i, row in enumerate(todos[1:], start=2):
-                if row and str(row[0]).strip().lower() == chave:
-                    linha_existente = i
-                    break
-            nova = [nome_cond.strip(), dados.get("operador",""), dados["_rascunho_salvo_em"], payload]
-            if linha_existente:
-                aba_rasc.update(f"A{linha_existente}:D{linha_existente}", [nova], value_input_option="RAW")
-            else:
-                proxima = max(len(todos) + 1, 2)
-                aba_rasc.update(f"A{proxima}:D{proxima}", [nova], value_input_option="RAW")
-    except Exception:
-        pass
+    # 2. Google Sheets aba _Rascunhos — SOMENTE quando solicitado explicitamente
+    # v5: não chamar durante digitação/on_change para evitar reruns e instabilidade
+    if salvar_sheets:
+        try:
+            sh = conectar_sheets()
+            if sh:
+                try:
+                    aba_rasc = obter_aba_sheets("_Rascunhos")
+                except Exception:
+                    aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
+                    aba_rasc.update(range_name="A1:D1", values=[["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
+                dados_sh = {k: v for k, v in dados.items()
+                            if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
+                payload = json.dumps(dados_sh, ensure_ascii=False)
+                if len(payload) > 45000:
+                    payload = payload[:45000] + "..."
+                todos = aba_rasc.get_all_values()
+                chave = nome_cond.strip().lower()
+                linha_existente = None
+                for i, row in enumerate(todos[1:], start=2):
+                    if row and str(row[0]).strip().lower() == chave:
+                        linha_existente = i
+                        break
+                nova = [nome_cond.strip(), dados.get("operador",""), dados["_rascunho_salvo_em"], payload]
+                if linha_existente:
+                    aba_rasc.update(range_name=f"A{linha_existente}:D{linha_existente}", values=[nova], value_input_option="RAW")
+                else:
+                    proxima = max(len(todos) + 1, 2)
+                    aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[nova], value_input_option="RAW")
+        except Exception:
+            pass
 
     return True
 
@@ -2051,7 +2058,7 @@ def deletar_rascunho_operador(nome_cond: str):
                 chave = nome_cond.strip().lower()
                 for i, row in enumerate(todos[1:], start=2):
                     if row and str(row[0]).strip().lower() == chave:
-                        aba_rasc.update(f"A{i}:D{i}", [["","","",""]], value_input_option="RAW")
+                        aba_rasc.update(range_name=f"A{i}:D{i}", values=[["","","",""]], value_input_option="RAW")
                         break
             except Exception:
                 pass
@@ -9055,7 +9062,10 @@ def _admin_sessao_valida() -> bool:
     # Recuperação: admin marcado como logado mas modo_atual não está em escritorio.
     # Isso ocorre quando a sessão é parcialmente restaurada pelo browser após
     # hibernação ou reconexão no Streamlit Cloud.
-    if st.session_state.get("admin_logado") and st.session_state.get("modo_atual") != "escritorio":
+    # v5: guard da sidebar também protege o operador
+    if (st.session_state.get("admin_logado")
+            and st.session_state.get("modo_atual") != "escritorio"
+            and st.session_state.get("modo_atual") != "operador"):
         st.session_state["modo_atual"] = "escritorio"
 
     if st.session_state.get("modo_atual") != "escritorio":
@@ -9417,14 +9427,29 @@ with st.sidebar:
 # PIN padrão — altere aqui para trocar o PIN do operador
 PIN_OPERADOR = "2940"
 
-# Inicializa o modo se não estiver definido
+# =========================================
+# v5 — BLINDAGEM DO SESSION STATE DO OPERADOR
+# Estas chaves são inicializadas uma única vez e NUNCA apagadas em reruns normais.
+# Isso impede que o operador perca sessão durante digitação de parâmetros.
+# =========================================
+st.session_state.setdefault("modo_atual", "entrada")
+st.session_state.setdefault("op_pin_ok", False)
+st.session_state.setdefault("op_dados_atual", {})
+st.session_state.setdefault("op_limpar_campos", False)
+st.session_state.setdefault("op_salvo_sucesso", None)
+st.session_state.setdefault("_op_ultimo_lancamento", None)
+
+# Inicializa o modo se não estiver definido (mantido para compatibilidade)
 if "modo_atual" not in st.session_state:
     st.session_state["modo_atual"] = "entrada"
 
-# GUARD DUPLO: se admin_logado=True mas modo_atual não está em escritorio,
-# restaura o modo. Isso corrige o bug onde o painel fica preso na tela de login
-# após reconexão no Streamlit Cloud ou perda parcial de session_state.
-if st.session_state.get("admin_logado") and st.session_state.get("modo_atual") != "escritorio":
+# GUARD DUPLO v5: protege o modo operador.
+# O guard só redireciona para escritório se o operador NÃO estiver logado.
+# Antes, esse guard derrubava o operador durante preenchimento caso admin_logado
+# estivesse definido em memória de sessão anterior.
+if (st.session_state.get("admin_logado")
+        and st.session_state.get("modo_atual") != "escritorio"
+        and st.session_state.get("modo_atual") != "operador"):
     st.session_state["modo_atual"] = "escritorio"
     _empresa_fix = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if _empresa_fix not in ("aqua_gestao", "bem_star"):
@@ -9624,6 +9649,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
+    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
+    with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
+        st.write({
+            "modo_atual": st.session_state.get("modo_atual"),
+            "op_pin_ok": st.session_state.get("op_pin_ok"),
+            "operador": _op_nome_logado if "_op_nome_logado" in dir() else "—",
+            "condominio": st.session_state.get("op_sel_cond", "—"),
+            "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
+            "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
+        })
+
     # v4 — operador não escolhe empresa.
     # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
     # condomínios vinculados ao operador, sejam Aqua Gestão, Bem Star ou ambos.
@@ -9700,9 +9736,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
 
-    # Aplica restauração pendente ANTES de criar widgets com key no session_state
-    if aplicar_restauracao_pendente_operador():
-        st.rerun()
+    # v5: restauração protegida — falha não derruba o app
+    try:
+        if aplicar_restauracao_pendente_operador():
+            st.rerun()
+    except Exception as _e_rest:
+        st.warning(f"Aviso ao restaurar rascunho: {_e_rest}")
 
     if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
         st.success("✅ Rascunho restaurado! Continue de onde parou.")
@@ -9857,11 +9896,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:]}"
         else:
             st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:4]}/{v[4:]}"
-        # Autosave na mudança de data
+        # v5: autosave na mudança de data — apenas local, nunca Sheets durante digitação
         if op_nome_cond.strip():
             try:
                 _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas if "piscinas_ativas" in dir() else ["Piscina Adulto"])
-                salvar_rascunho_operador(op_nome_cond, _d)
+                salvar_rascunho_operador(op_nome_cond, _d, salvar_sheets=False)
             except Exception:
                 pass
 
@@ -9976,10 +10015,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
         # ── Autosave: função chamada a cada mudança de campo ─────────────────
         def _autosave_rascunho():
-            """Salva rascunho automaticamente quando qualquer campo muda."""
+            """v5: salva rascunho APENAS localmente quando campo muda (on_change).
+            Nunca vai ao Google Sheets durante digitação — isso causava reruns pesados
+            e era a principal causa de instabilidade do modo operador.
+            """
             if op_nome_cond.strip():
-                _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
-                salvar_rascunho_operador(op_nome_cond, _d)
+                try:
+                    _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
+                    salvar_rascunho_operador(op_nome_cond, _d, salvar_sheets=False)
+                except Exception:
+                    pass  # autosave nunca pode derrubar o app
 
         def _num_op(chave, label, placeholder, quinzenal=False):
             lbl = f"{label} ⏱ 15d" if quinzenal else label
@@ -10222,18 +10267,24 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _pasta_fotos_rasc = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "fotos_rascunho") if op_nome_cond.strip() else None
 
         def _salvar_foto_imediato(lista_uploads, categoria):
-            """Salva fotos na pasta de rascunho assim que são carregadas."""
+            """v5: Salva fotos na pasta de rascunho. Falha não derruba o app."""
             if not _pasta_fotos_rasc or not lista_uploads:
                 return []
-            _pasta_fotos_rasc.mkdir(parents=True, exist_ok=True)
             salvos = []
-            for foto in lista_uploads:
-                _nome_f = f"rasc_{categoria}_{limpar_nome_arquivo(foto.name)}"
-                _path_f = _pasta_fotos_rasc / _nome_f
-                if not _path_f.exists():  # Não re-salva se já existe
-                    with open(_path_f, "wb") as _ff:
-                        _ff.write(foto.getbuffer())
-                salvos.append(_nome_f)
+            try:
+                _pasta_fotos_rasc.mkdir(parents=True, exist_ok=True)
+                for foto in lista_uploads:
+                    try:
+                        _nome_f = f"rasc_{categoria}_{limpar_nome_arquivo(foto.name)}"
+                        _path_f = _pasta_fotos_rasc / _nome_f
+                        if not _path_f.exists():
+                            with open(_path_f, "wb") as _ff:
+                                _ff.write(foto.getbuffer())
+                        salvos.append(_nome_f)
+                    except Exception:
+                        pass  # foto individual falhou — continua as demais
+            except Exception:
+                pass  # pasta inacessível — retorna lista vazia
             return salvos
 
         # Salva imediatamente ao fazer upload
@@ -10416,7 +10467,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     help="Salva o progresso atual. Você pode continuar depois."):
                 if op_nome_cond.strip():
                     _dados_rasc = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
-                    if salvar_rascunho_operador(op_nome_cond, _dados_rasc):
+                    # v5: salvar_sheets=True apenas no botão explícito (nunca em on_change)
+                    if salvar_rascunho_operador(op_nome_cond, _dados_rasc, salvar_sheets=True):
                         st.success(f"✅ Rascunho salvo! Pode fechar e retomar depois.")
                     else:
                         st.error("Erro ao salvar rascunho.")
@@ -10631,24 +10683,24 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
 
-                # Salva também no Google Sheets. Sem esta linha, o relatório mensal não consegue importar a visita.
-                ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                # v5: Sheets com proteção total — falha não derruba o app nem limpa sessão
+                try:
+                    ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                except Exception as _e_sh:
+                    ok_sheets = False
+                    st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
+
                 if ok_sheets:
                     st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
                 else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
+                    st.warning(
+                        "⚠️ A visita foi salva localmente e o PDF pode ser gerado normalmente. "
+                        "Houve falha ao gravar no Google Sheets — o relatório mensal pode não importar automaticamente."
+                    )
                     if erro_sh:
-                        st.warning(
-                            "⚠️ A visita foi salva localmente e o PDF pode ser gerado, "
-                            "mas falhou ao gravar no Google Sheets. Sem essa gravação, "
-                            "o relatório mensal não conseguirá importar automaticamente."
-                        )
-                        st.code(erro_sh[:1500])
-                    else:
-                        st.warning(
-                            "⚠️ A visita foi salva localmente, mas não foi enviada ao Google Sheets. "
-                            "Verifique a conexão e as permissões da conta de serviço."
-                        )
+                        with st.expander("Detalhes do erro Sheets", expanded=False):
+                            st.code(erro_sh[:1500])
                 st.session_state["op_salvo_sucesso"] = {
                     "nome": op_nome_cond, "data": data_vis,
                     "operador": op_operador.strip() or "Não informado",
@@ -11805,13 +11857,15 @@ try:
 except Exception:
     _cc_freq_atual = 3
 _cc_freq_atual = max(1, min(7, _cc_freq_atual))
-st.session_state["cc_verificacoes_semanais"] = _cc_freq_atual
+# v5: não atribui value= quando key já está em session_state (evita conflito Streamlit)
+if "cc_verificacoes_semanais" not in st.session_state:
+    st.session_state["cc_verificacoes_semanais"] = _cc_freq_atual
 
 _cc_freq_col1, _cc_freq_col2 = st.columns([1, 2.2])
 with _cc_freq_col1:
     cc_verificacoes_semanais = st.number_input(
         "Verificações por semana",
-        min_value=1, max_value=7, value=_cc_freq_atual,
+        min_value=1, max_value=7,
         step=1, key="cc_verificacoes_semanais",
         help="Ex.: 3 verificações semanais geram 12 linhas padrão no relatório mensal."
     )
