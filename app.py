@@ -10747,23 +10747,39 @@ def obter_metricas_bem_star():
         return {"total_ativos": 0, "visitas_mes": 0, "ultimos_pareceres": []}
 
 
-painel_vencimentos = listar_painel_vencimentos(st.session_state.alerta_vencimento_dias)
-painel_filtrado = filtrar_itens_painel(
-    painel_vencimentos,
-    st.session_state.busca_rapida,
-    st.session_state.filtro_status_central,
-)
+# Evita varredura pesada de todas as pastas/arquivos no painel Bem Star.
+# Esse cálculo é útil para o painel Aqua Gestão (vigências RT), mas no Bem Star
+# ele só atrasava a estabilização inicial da página após o login administrativo.
+if st.session_state.get("empresa_ativa") == "bem_star":
+    painel_vencimentos = []
+    painel_filtrado = []
+    total_monitorado = 0
+    total_vencidos = 0
+    total_vencendo = 0
+    total_vigentes = 0
+    total_indefinidos = 0
+    total_com_json = 0
+    itens_vencidos = []
+    itens_vencendo = []
+    itens_indefinidos = []
+else:
+    painel_vencimentos = listar_painel_vencimentos(st.session_state.alerta_vencimento_dias)
+    painel_filtrado = filtrar_itens_painel(
+        painel_vencimentos,
+        st.session_state.busca_rapida,
+        st.session_state.filtro_status_central,
+    )
 
-total_monitorado = len(painel_vencimentos)
-total_vencidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencido"])
-total_vencendo = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencendo"])
-total_vigentes = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vigente"])
-total_indefinidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "indefinido"])
-total_com_json = len([i for i in painel_vencimentos if i["tem_json"]])
+    total_monitorado = len(painel_vencimentos)
+    total_vencidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencido"])
+    total_vencendo = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencendo"])
+    total_vigentes = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vigente"])
+    total_indefinidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "indefinido"])
+    total_com_json = len([i for i in painel_vencimentos if i["tem_json"]])
 
-itens_vencidos = [i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]
-itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]
-itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
+    itens_vencidos = [i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]
+    itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]
+    itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
 
 # =========================================
 # DASHBOARD EXECUTIVO / BEM STAR
