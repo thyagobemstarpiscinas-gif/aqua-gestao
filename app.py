@@ -9654,25 +9654,60 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         padding: 20px 0;
         text-align: center;
     }
+
+    /* v6: Barra de progresso por etapas — P4 */
+    .op-stepper {
+        display: flex; align-items: center; justify-content: space-between;
+        background: #f0f6ff; border-radius: 12px; padding: 10px 14px;
+        margin-bottom: 10px; border: 1px solid #d3e6ff;
+        overflow-x: auto; gap: 4px;
+    }
+    .op-step { display: flex; flex-direction: column; align-items: center;
+        font-size: 0.72rem; color: #8ea0b5; font-weight: 600;
+        min-width: 58px; text-align: center; }
+    .op-step.done { color: #1a6e3a; }
+    .op-step.active { color: #1565A8; }
+    .op-step-icon { width: 28px; height: 28px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.85rem; margin-bottom: 3px; background: #e0eaf8; color: #8ea0b5; }
+    .op-step.done .op-step-icon { background: #d4f1e0; color: #1a6e3a; }
+    .op-step.active .op-step-icon { background: #1565A8; color: #fff; }
+    .op-step-arrow { color: #c5d5e8; font-size: 1rem; flex-shrink: 0; }
+    /* v6: Badge status Sheets — P4 */
+    .op-sheets-badge { display: inline-flex; align-items: center; gap: 5px;
+        font-size: 0.75rem; font-weight: 600; padding: 4px 10px;
+        border-radius: 999px; margin-bottom: 6px; }
+    .op-sheets-badge.online { background: #d4f1e0; color: #1a6e3a; border: 1px solid #a3d9b8; }
+    .op-sheets-badge.offline { background: #fdecea; color: #c0392b; border: 1px solid #f5b7b1; }
     </style>
     """, unsafe_allow_html=True)
 
-    # ---- TELA DE PIN ----
+    # ---- TELA DE PIN — v6: layout mais profissional — P4 ----
     if not st.session_state.get("op_pin_ok"):
-        st.markdown('<div class="pin-box">', unsafe_allow_html=True)
-        st.markdown("### 🔐 Área do Operador")
-        st.markdown("**Acesso simplificado por PIN**")
-        st.markdown("Digite o PIN para acessar o lançamento de campo dos condomínios autorizados.")
+        st.markdown("""
+        <div style="text-align:center;padding:32px 16px 8px 16px;">
+            <div style="font-size:2.4rem;margin-bottom:8px;">🔐</div>
+            <div style="font-size:1.3rem;font-weight:700;color:#0D2A4A;margin-bottom:4px;">Área do Operador</div>
+            <div style="font-size:0.9rem;color:#5d7288;margin-bottom:20px;">
+                Digite seu PIN para acessar os condomínios autorizados
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
-            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
-        if st.button("Entrar", type="primary", use_container_width=True):
-            op_dados = validar_pin_operador(pin_digitado.strip())
+            placeholder="●●●●●●", label_visibility="collapsed", max_chars=20)
+        if st.button("▶ Entrar", type="primary", use_container_width=True):
+            with st.spinner("Verificando..."):
+                op_dados = validar_pin_operador(pin_digitado.strip())
             if op_dados:
                 st.session_state["op_pin_ok"] = True
                 st.session_state["op_dados_atual"] = op_dados
                 st.rerun()
             else:
-                st.error("PIN incorreto. Tente novamente.")
+                st.error("❌ PIN incorreto. Verifique e tente novamente.")
+        st.markdown(
+            "<div style='text-align:center;margin-top:24px;font-size:0.72rem;color:#aab;'>Aqua Gestão | Bem Star Piscinas</div>",
+            unsafe_allow_html=True
+        )
         st.stop()
 
     # Dados do operador logado
@@ -9688,16 +9723,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state["op_sel_cond"] = ""
         st.rerun()
 
-    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
-    with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
-        st.write({
-            "modo_atual": st.session_state.get("modo_atual"),
-            "op_pin_ok": st.session_state.get("op_pin_ok"),
-            "operador": _op_nome_logado if "_op_nome_logado" in dir() else "—",
-            "condominio": st.session_state.get("op_sel_cond", "—"),
-            "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
-            "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
-        })
+    # v6: diagnóstico de sessão — sempre colapsado, texto discreto — P4
+    with st.expander("🔧 Diagnóstico", expanded=False):
+        _modo = st.session_state.get("modo_atual", "—")
+        _pin = "✅" if st.session_state.get("op_pin_ok") else "❌"
+        _cond = st.session_state.get("op_sel_cond", "—")
+        _sheets_st = "🟢 online" if _sheets_ok else "🔴 offline"
+        st.caption(
+            f"modo: `{_modo}` | pin: {_pin} | cond: `{_cond}` | "
+            f"sheets: {_sheets_st} | rasc: {bool(st.session_state.get('_rascunho_operador_pendente'))}"
+        )
 
     # v4 — operador não escolhe empresa.
     # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
@@ -9706,10 +9741,37 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
-    st.markdown('<div class="op-card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
-    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
+    # v6: Card de boas-vindas profissional com data e hora — P4
+    _agora_disp = datetime.now().strftime("%d/%m/%Y • %H:%M")
+    st.markdown(f"""
+    <div class="op-card" style="background:linear-gradient(135deg,#f0f6ff 0%,#ffffff 100%);border-color:#1565A8;">
+        <div class="op-title">📱 {_empresa_op_titulo}</div>
+        <div class="op-sub">
+            👤 <strong>{_op_nome_logado}</strong> &nbsp;|&nbsp;
+            🕐 {_agora_disp}
+        </div>
+        <span class="op-chip" style="background:#e8f0fe;border-color:#1565A8;color:#1565A8;">Aqua Gestão</span>
+        <span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">Bem Star</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # v6: Indicador de conexão Sheets — P4
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _testar_conexao_sheets_operador():
+        try:
+            sh = conectar_sheets()
+            return sh is not None
+        except Exception:
+            return False
+
+    _sheets_ok = _testar_conexao_sheets_operador()
+    _badge_class = "online" if _sheets_ok else "offline"
+    _badge_icon = "🟢" if _sheets_ok else "🔴"
+    _badge_txt = "Sheets conectado" if _sheets_ok else "Sheets offline — salvando localmente"
+    st.markdown(
+        f'<span class="op-sheets-badge {_badge_class}">{_badge_icon} {_badge_txt}</span>',
+        unsafe_allow_html=True
+    )
 
     # v6: não remove chave op_* durante modo operador; preserva estabilidade em reruns — BUG-A
     _salvo = st.session_state.get("op_salvo_sucesso")
@@ -9860,6 +9922,41 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         else:
             opcoes_cond = []
             st.warning("Seu PIN ainda não possui condomínios vinculados. Contate o administrador.")
+
+    # v6: Barra de progresso por etapas — P4
+    _step_cond   = bool(st.session_state.get("op_sel_cond") or st.session_state.get("op_nome_livre"))
+    _step_params = _step_cond and bool(st.session_state.get("op_data_visita"))
+    _step_fotos  = _step_params
+    _step_salvo  = bool(st.session_state.get("_op_ultimo_lancamento"))
+
+    def _step_cls(done, active):
+        if done: return "done"
+        if active: return "active"
+        return ""
+
+    st.markdown(f"""
+    <div class="op-stepper">
+        <div class="op-step {_step_cls(_step_cond, True)}">
+            <div class="op-step-icon">{"✅" if _step_cond else "1"}</div>
+            <span>Condomínio</span>
+        </div>
+        <div class="op-step-arrow">›</div>
+        <div class="op-step {_step_cls(_step_params, _step_cond)}">
+            <div class="op-step-icon">{"✅" if _step_params else "2"}</div>
+            <span>Parâmetros</span>
+        </div>
+        <div class="op-step-arrow">›</div>
+        <div class="op-step {_step_cls(_step_fotos, _step_params)}">
+            <div class="op-step-icon">{"✅" if _step_fotos else "3"}</div>
+            <span>Fotos</span>
+        </div>
+        <div class="op-step-arrow">›</div>
+        <div class="op-step {_step_cls(_step_salvo, _step_fotos)}">
+            <div class="op-step-icon">{"✅" if _step_salvo else "4"}</div>
+            <span>Salvar</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
@@ -10530,6 +10627,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             elif not data_vis:
                 st.error("Informe a data da visita.")
             else:
+                # v6: spinner durante processamento — P4
+                _spinner_placeholder = st.empty()
+                _spinner_placeholder.info("⏳ Processando visita... aguarde.")
                 pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
                 pasta_op.mkdir(parents=True, exist_ok=True)
                 pasta_fotos_op = pasta_op / "fotos_campo"
@@ -10751,6 +10851,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 }
                 # Guarda último lançamento para gerar relatório
                 st.session_state["_op_ultimo_lancamento"] = lancamento
+                # v6: limpa spinner e sinaliza limpeza — P4
+                try:
+                    _spinner_placeholder.empty()
+                except Exception:
+                    pass
                 # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
                 st.session_state["op_limpar_campos"] = True
                 # Remove rascunho após salvar lançamento definitivo
