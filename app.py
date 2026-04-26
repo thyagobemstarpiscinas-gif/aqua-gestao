@@ -15449,23 +15449,49 @@ if _clientes_rel:
             key="sel_cliente_rel",
             help="Selecione um cliente para preencher automaticamente os campos do relatório."
         )
+
+    def _carregar_cliente_relatorio_e_agendar_visitas(_nome_cliente: str, _forcar: bool = False) -> bool:
+        """Carrega cadastro e agenda importação automática dos lançamentos do operador. # v6: autoalimenta relatório sem botão manual — BUG-REL-AUTO"""
+        _nome_cliente = str(_nome_cliente or "").strip()
+        if not _nome_cliente or _nome_cliente == "— Selecionar cliente cadastrado —":
+            return False
+        if not _forcar and st.session_state.get("_rel_cliente_auto_carregado") == _nome_cliente:
+            return False
+
+        _dados_rel = next((c for c in _clientes_rel if c.get("nome") == _nome_cliente), {})
+        if not _dados_rel:
+            return False
+
+        st.session_state["rel_nome_condominio"] = _dados_rel.get("nome", "")
+        st.session_state["rel_cnpj_condominio"] = formatar_cnpj(_dados_rel.get("cnpj", ""))
+        st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
+        st.session_state["rel_representante"] = _dados_rel.get("contato", "")
+        st.session_state["rel_cpf_cnpj_representante"] = ""
+        _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
+        st.session_state["rel_verificacoes_semanais"] = _freq_rel
+        st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(
+            _freq_rel,
+            st.session_state.get("rel_mes_referencia"),
+            st.session_state.get("rel_ano_referencia"),
+        )
+        st.session_state["_rel_auto_importar_cliente"] = True
+        st.session_state["_rel_cliente_auto_carregado"] = _nome_cliente
+        st.session_state["_rel_autoimport_assinatura"] = ""
+        st.session_state["_rel_autoimport_msg"] = (
+            f"✅ Dados de '{_nome_cliente}' carregados. As visitas lançadas pelo operador serão puxadas automaticamente."
+        )
+        return True
+
+    if _carregar_cliente_relatorio_e_agendar_visitas(_sel_rel):
+        st.rerun()
+
     with _rel_col2:
         st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
-        if st.button("⬇️ Carregar", key="btn_carregar_cliente_rel", use_container_width=True):
-            if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
-                _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
-                if _dados_rel:
-                    st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
-                    st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
-                    st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
-                    st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
-                    st.session_state["rel_cpf_cnpj_representante"] = ""
-                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
-                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
-                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
-                    st.session_state["_rel_auto_importar_cliente"] = True
-                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
-                    st.rerun()
+        if st.button("🔄 Recarregar visitas", key="btn_carregar_cliente_rel", use_container_width=True):
+            if _carregar_cliente_relatorio_e_agendar_visitas(_sel_rel, _forcar=True):
+                st.rerun()
+            else:
+                st.warning("Selecione um cliente cadastrado para recarregar.")
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
