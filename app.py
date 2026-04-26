@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import json
 import shutil
@@ -1598,41 +1598,21 @@ st.set_page_config(
 # erros de front-end como: NotFoundError: Failed to execute 'removeChild' on 'Node'.
 # Também distorce siglas técnicas (CT -> TC, ALC -> Álcool, CYA -> Tchau).
 def bloquear_traducao_navegador():
-    """Marca a página como não traduzível para evitar quebra do front-end do Streamlit."""
+    """Compatibilidade com Streamlit 1.56.
+
+    Nesta versão, components.html no fluxo principal dispara rerun completo.
+    Mantemos apenas um marcador leve via st.markdown para reduzir riscos sem
+    criar iframes/componentes customizados.
+    """
     try:
-        components.html(
+        st.markdown(
             """
-            <script>
-            (function() {
-                try {
-                    const doc = window.parent.document;
-                    doc.documentElement.setAttribute('translate', 'no');
-                    doc.documentElement.setAttribute('lang', 'pt-BR');
-                    doc.documentElement.classList.add('notranslate');
-                    doc.body.setAttribute('translate', 'no');
-                    doc.body.classList.add('notranslate');
-
-                    let meta = doc.querySelector('meta[name="google"]');
-                    if (!meta) {
-                        meta = doc.createElement('meta');
-                        meta.setAttribute('name', 'google');
-                        doc.head.appendChild(meta);
-                    }
-                    meta.setAttribute('content', 'notranslate');
-
-                    let style = doc.getElementById('aqua-notranslate-style');
-                    if (!style) {
-                        style = doc.createElement('style');
-                        style.id = 'aqua-notranslate-style';
-                        style.innerHTML = '* { -webkit-locale: "pt-BR"; } .notranslate { translate: no; }';
-                        doc.head.appendChild(style);
-                    }
-                } catch (e) {}
-            })();
-            </script>
+            <div class="notranslate" translate="no" lang="pt-BR"></div>
+            <style>
+                .notranslate { translate: no; }
+            </style>
             """,
-            height=0,
-            width=0,
+            unsafe_allow_html=True,
         )
     except Exception:
         pass
@@ -4576,34 +4556,16 @@ def link_email(email: str, assunto: str, corpo: str) -> str:
 
 
 def componente_copiar(texto: str):
-    escaped = (
-        texto.replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
+    """Fallback nativo sem components.html para Streamlit 1.56."""
+    _texto = str(texto or "")
+    _linhas = max(4, min(14, _texto.count("\n") + 2))
+    st.text_area(
+        "Mensagem pronta para copiar",
+        value=_texto,
+        height=32 + (_linhas * 24),
+        key=f"copiar_msg_{chave_segura(_texto[:80] or 'vazio')}",
     )
-
-    st.components.v1.html(
-        f"""
-        <div style="margin-top:6px;">
-            <button
-                onclick="navigator.clipboard.writeText(`{escaped}`); this.innerText='Mensagem copiada';"
-                style="
-                    background:#0d5db8;
-                    color:white;
-                    border:none;
-                    padding:10px 14px;
-                    border-radius:10px;
-                    cursor:pointer;
-                    font-weight:600;
-                "
-            >
-                Copiar mensagem
-            </button>
-        </div>
-        """,
-        height=55,
-    )
-
+    st.caption("Copie pelo próprio campo acima (Ctrl+C/Cmd+C).")
 
 
 # =========================================
@@ -8520,26 +8482,11 @@ def exibir_pdf_previa_exata(pdf_path: Path, height: int = 1200):
             "Para exibir dentro do sistema, inclua `PyMuPDF` no requirements.txt."
         )
         st.caption(f"Detalhe técnico: {type(e).__name__}: {e}")
-
-    # Fallback: tentativa por object/base64. Pode ficar branco em alguns navegadores.
-    try:
-        import base64 as _b64
-        pdf_b64 = _b64.b64encode(pdf_path.read_bytes()).decode("utf-8")
-        components.html(
-            f"""
-            <div style="background:#eef3fb;border:1px solid #d0d8e4;border-radius:14px;padding:10px;">
-              <object data="data:application/pdf;base64,{pdf_b64}" type="application/pdf"
-                      width="100%" height="{height}"
-                      style="border:none;border-radius:10px;background:#fff;">
-                <p>Seu navegador não exibiu o PDF embutido. Baixe o arquivo pelo botão acima.</p>
-              </object>
-            </div>
-            """,
-            height=height + 28,
-            scrolling=True,
-        )
-    except Exception:
-        pass
+    # Fallback seguro: evitar components.html no Streamlit 1.56.
+    st.info(
+        "A visualização embutida do PDF foi desativada nesta versão para evitar rerun infinito. "
+        "Use o botão de download acima para abrir o arquivo localmente."
+    )
 
 
 # =========================================
@@ -10371,136 +10318,54 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             horizontal=True,
             on_change=_autosave_rascunho,
         )
-
         # ── Assinatura do responsável ─────────────────────────────────────────
-        # Implementação com canvas HTML nativo — sem dependência de streamlit-drawable-canvas
-        # Funciona em qualquer browser mobile (Android/iOS) e no Streamlit Cloud
+        # Compatibilidade Streamlit 1.56: removido canvas HTML/iframe, que causava
+        # rerun infinito. Mantemos o módulo com captura nativa por upload/câmera.
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
         st.markdown('<div class="op-title">✍️ Assinatura do responsável</div>', unsafe_allow_html=True)
-        st.caption("Peça para o zelador, síndico ou responsável assinar com o dedo na tela. A assinatura será anexada automaticamente ao PDF da visita.")
+        st.caption(
+            "Para evitar travamentos nesta versão do Streamlit, a assinatura é anexada por imagem "
+            "(foto ou arquivo PNG/JPG) em vez do canvas desenhado na tela."
+        )
 
         _canvas_nonce = st.session_state.get("_op_ass_canvas_nonce", 0)
         _ass_exist_b64 = _normalizar_assinatura_b64(st.session_state.get("op_assinatura_responsavel_b64", ""))
 
-        # Campo oculto que recebe o base64 vindo do iframe via query param
-        _ass_input_key = f"_ass_b64_input_{_canvas_nonce}"
-        st.markdown('<div style="position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;" aria-hidden="true">', unsafe_allow_html=True)
-        _ass_from_input = st.text_input(
-            "assinatura_b64_hidden",
-            key=_ass_input_key,
-            label_visibility="collapsed",
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-        if _ass_from_input and _ass_from_input.startswith("data:image"):
-            _ass_novo_b64 = _normalizar_assinatura_b64(_ass_from_input)
-            if _ass_novo_b64 and _ass_novo_b64 != _ass_exist_b64:
-                st.session_state["op_assinatura_responsavel_b64"] = _ass_novo_b64
-                st.session_state["op_assinatura_responsavel_data"] = (
-                    st.session_state.get("op_data_visita", "") or hoje_br()
-                )
-                _ass_exist_b64 = _ass_novo_b64
-                _autosave_rascunho()
+        _ass_col1, _ass_col2 = st.columns(2)
+        with _ass_col1:
+            _ass_upload = st.file_uploader(
+                "Enviar imagem da assinatura",
+                type=["png", "jpg", "jpeg"],
+                key=f"upload_assinatura_resp_{_canvas_nonce}",
+                help="Aceita foto tirada no celular ou imagem escaneada da assinatura.",
+            )
+        with _ass_col2:
+            _ass_camera = st.camera_input(
+                "Fotografar assinatura",
+                key=f"camera_assinatura_resp_{_canvas_nonce}",
+                help="Opcional: fotografe uma assinatura feita em papel.",
+            )
 
-        # Canvas HTML nativo — touch e mouse, sem pacote externo
-        _canvas_html = f"""
-<div id="sig-wrap" style="
-    background:#f8faff;
-    border:2px dashed #1565A8;
-    border-radius:10px;
-    padding:8px;
-    margin-bottom:8px;
-    touch-action:none;
-    user-select:none;
-">
-  <canvas id="sigCanvas"
-    width="640" height="200"
-    style="display:block;width:100%;height:auto;cursor:crosshair;border-radius:6px;background:#fff;">
-  </canvas>
-</div>
-<div style="display:flex;gap:8px;margin-bottom:4px;">
-  <button id="btnConfirm" onclick="confirmarAssinatura()" style="
-    flex:1;padding:10px;background:#1565A8;color:#fff;
-    border:none;border-radius:8px;font-size:15px;cursor:pointer;">
-    ✅ Confirmar assinatura
-  </button>
-  <button onclick="limparCanvas()" style="
-    flex:0 0 auto;padding:10px 16px;background:#e0e0e0;color:#333;
-    border:none;border-radius:8px;font-size:15px;cursor:pointer;">
-    🧹
-  </button>
-</div>
-<div id="sigStatus" style="font-size:13px;color:#666;min-height:20px;"></div>
-
-<script>
-(function(){{
-  var canvas = document.getElementById('sigCanvas');
-  var ctx = canvas.getContext('2d');
-  var drawing = false;
-  var hasStrokes = false;
-
-  function getPos(e) {{
-    var rect = canvas.getBoundingClientRect();
-    var scaleX = canvas.width  / rect.width;
-    var scaleY = canvas.height / rect.height;
-    var src = e.touches ? e.touches[0] : e;
-    return {{
-      x: (src.clientX - rect.left) * scaleX,
-      y: (src.clientY - rect.top)  * scaleY
-    }};
-  }}
-
-  ctx.strokeStyle = '#0d3d75';
-  ctx.lineWidth   = 2.5;
-  ctx.lineCap     = 'round';
-  ctx.lineJoin    = 'round';
-
-  canvas.addEventListener('mousedown',  function(e){{ drawing=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); }});
-  canvas.addEventListener('mousemove',  function(e){{ if(!drawing) return; e.preventDefault(); var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); hasStrokes=true; }});
-  canvas.addEventListener('mouseup',    function(){{ drawing=false; }});
-  canvas.addEventListener('mouseleave', function(){{ drawing=false; }});
-
-  canvas.addEventListener('touchstart', function(e){{ e.preventDefault(); drawing=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); }}, {{passive:false}});
-  canvas.addEventListener('touchmove',  function(e){{ e.preventDefault(); if(!drawing) return; var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); hasStrokes=true; }}, {{passive:false}});
-  canvas.addEventListener('touchend',   function(e){{ e.preventDefault(); drawing=false; }}, {{passive:false}});
-
-  window.limparCanvas = function() {{
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    hasStrokes = false;
-    document.getElementById('sigStatus').textContent = '';
-  }};
-
-  window.confirmarAssinatura = function() {{
-    if (!hasStrokes) {{
-      document.getElementById('sigStatus').textContent = '⚠️ Desenhe a assinatura antes de confirmar.';
-      return;
-    }}
-    var dataUrl = canvas.toDataURL('image/png');
-    // Localiza o campo oculto pelo aria-label injetado pelo Streamlit
-    var target = window.parent.document.querySelector('input[aria-label="assinatura_b64_hidden"]');
-    if (!target) {{
-      // Fallback: qualquer input vazio ou com data:image
-      var inputs = window.parent.document.querySelectorAll('input[type="text"]');
-      for (var i=0; i<inputs.length; i++) {{
-        if (inputs[i].value === '' || inputs[i].value.startsWith('data:image')) {{
-          target = inputs[i];
-          break;
-        }}
-      }}
-    }}
-    if (target) {{
-      var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-      nativeInputValueSetter.call(target, dataUrl);
-      target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-      document.getElementById('sigStatus').textContent = '✅ Assinatura confirmada! Clique em Salvar lançamento.';
-      document.getElementById('btnConfirm').style.background = '#2e7d32';
-    }} else {{
-      document.getElementById('sigStatus').textContent = '⚠️ Erro ao capturar. Tente novamente ou atualize a página.';
-    }}
-  }};
-}})();
-</script>
-"""
-        components.html(_canvas_html, height=290, scrolling=False)
+        _ass_arquivo = _ass_upload or _ass_camera
+        if _ass_arquivo is not None:
+            try:
+                import base64 as _b64_ass
+                import io as _io_ass
+                _img_ass = Image.open(_io_ass.BytesIO(_ass_arquivo.getvalue()))
+                _img_ass = ImageOps.exif_transpose(_img_ass).convert("RGBA")
+                _buf_ass = _io_ass.BytesIO()
+                _img_ass.save(_buf_ass, format="PNG")
+                _ass_novo_b64 = _normalizar_assinatura_b64(_b64_ass.b64encode(_buf_ass.getvalue()).decode("utf-8"))
+                if _ass_novo_b64 and _ass_novo_b64 != _ass_exist_b64:
+                    st.session_state["op_assinatura_responsavel_b64"] = _ass_novo_b64
+                    st.session_state["op_assinatura_responsavel_data"] = (
+                        st.session_state.get("op_data_visita", "") or hoje_br()
+                    )
+                    _ass_exist_b64 = _ass_novo_b64
+                    _autosave_rascunho()
+                    st.success("✅ Assinatura anexada com sucesso.")
+            except Exception as e:
+                st.error(f"Não foi possível processar a assinatura enviada: {e}")
 
         _acol1, _acol2 = st.columns([1, 1])
         with _acol1:
@@ -15207,7 +15072,10 @@ with _prev_tab2:
     _prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print", dados=_prev_dados)
     _sub_tab1, _sub_tab2 = st.tabs(["🌐 Referência tela / HTML", "🖨️ Referência impressão / PDF"])
     with _sub_tab1:
-        components.html(_prev_html, height=1180 if _prev_empresa_val == "Aqua Gestão" else 1280, scrolling=True)
+        st.warning("Visualização HTML embutida desativada para evitar rerun infinito no Streamlit 1.56.")
+        st.code(_prev_html[:12000], language="html")
+        if len(_prev_html) > 12000:
+            st.caption("Prévia textual truncada no app. Use o download abaixo para abrir o HTML completo.")
         st.download_button(
             "⬇️ Baixar HTML de referência (tela)",
             data=_prev_html.encode("utf-8"),
@@ -15217,7 +15085,10 @@ with _prev_tab2:
             key="btn_dl_mockup_rel_tela",
         )
     with _sub_tab2:
-        components.html(_prev_print, height=1580, scrolling=True)
+        st.warning("Visualização de impressão embutida desativada para evitar rerun infinito no Streamlit 1.56.")
+        st.code(_prev_print[:12000], language="html")
+        if len(_prev_print) > 12000:
+            st.caption("Prévia textual truncada no app. Use o download abaixo para abrir o HTML completo.")
         st.download_button(
             "⬇️ Baixar HTML de referência (impressão)",
             data=_prev_print.encode("utf-8"),
