@@ -916,6 +916,70 @@ def sheets_definir_empresa_cliente(id_cliente: str, empresa: str) -> bool:
         _log_sheets_erro("sheets_definir_empresa_cliente", e)
         return False
 
+
+
+def sheets_excluir_cliente_sistema(id_cliente: str, nome_cliente: str = "") -> bool:
+    """Exclui definitivamente o condomínio da aba 👥 Clientes e remove vínculos de operadores."""
+    # v6: exclusão definitiva do condomínio no sistema, sem transferir empresa — BUG-D2
+    try:
+        id_limpo = str(id_cliente or "").strip()
+        nome_limpo = re.sub(r"\s+", " ", str(nome_cliente or "").strip())
+        if not id_limpo and not nome_limpo:
+            st.session_state["_sheets_ultimo_erro"] = "Informe ID ou nome do condomínio para excluir."
+            return False
+
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+
+        aba_clientes = obter_aba_sheets("👥 Clientes")
+        todos_clientes = aba_clientes.get_all_values()
+        linha_excluir = None
+        nome_encontrado = nome_limpo
+
+        for i, row in enumerate(todos_clientes):
+            id_row = str(row[1]).strip() if len(row) > 1 else ""
+            nome_row = str(row[2]).strip() if len(row) > 2 else ""
+            if (id_limpo and id_row == id_limpo) or (nome_limpo and _normalizar_chave_acesso(nome_row) == _normalizar_chave_acesso(nome_limpo)):
+                linha_excluir = i + 1
+                nome_encontrado = nome_row or nome_limpo
+                break
+
+        if linha_excluir is None:
+            st.session_state["_sheets_ultimo_erro"] = f"Condomínio não encontrado na aba Clientes: {nome_limpo or id_limpo}"
+            return False
+
+        # v6: remove permissões diretas dos operadores para o condomínio excluído — BUG-D2
+        try:
+            aba_operadores = obter_aba_sheets("👷 Operadores")
+            if aba_operadores is not None and nome_encontrado:
+                todos_ops = aba_operadores.get_all_values()
+                nome_norm = _normalizar_chave_acesso(nome_encontrado)
+                for idx_op, row_op in enumerate(todos_ops):
+                    if idx_op == 0 or len(row_op) < 3:
+                        continue
+                    conds_raw = str(row_op[2] or "").strip()
+                    if not conds_raw:
+                        continue
+                    conds = _condominios_organizar(conds_raw.split("|"))
+                    novos_conds = [c for c in conds if _normalizar_chave_acesso(c) != nome_norm]
+                    if novos_conds != conds:
+                        aba_operadores.update(
+                            range_name=f"C{idx_op + 1}:C{idx_op + 1}",
+                            values=[[" | ".join(novos_conds)]],
+                            value_input_option="USER_ENTERED",
+                        )
+        except Exception as e_ops:
+            _log_sheets_erro("sheets_excluir_cliente_sistema/operadores", e_ops)
+
+        aba_clientes.delete_rows(linha_excluir)
+        st.cache_data.clear()
+        return True
+
+    except Exception as e:
+        _log_sheets_erro("sheets_excluir_cliente_sistema", e)
+        return False
+
 def sheets_carregar_cliente_por_nome(nome: str) -> dict:
     """Retorna dict com dados do cliente pelo nome (busca parcial)."""
     clientes = sheets_listar_clientes_completo()
@@ -11724,7 +11788,7 @@ if clientes_cadastrados:
 else:
     st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
 
-# v6: campo seguro para excluir condomínio da empresa atual sem apagar histórico — BUG-D
+# v6: gestão segura do condomínio com duas opções: transferir empresa ou excluir do sistema — BUG-D2
 if clientes_cadastrados:
     _empresa_destino_exclusao = "Bem Star Piscinas" if _empresa_ativa_codigo() == "aqua_gestao" else "Aqua Gestão"
     _acao_exclusao_label = (
@@ -11732,10 +11796,10 @@ if clientes_cadastrados:
         if _empresa_ativa_codigo() == "aqua_gestao"
         else "Remover da Bem Star Piscinas e enviar para Aqua Gestão"
     )
-    with st.expander("🗂️ Excluir condomínio desta empresa", expanded=False):
+    with st.expander("🗂️ Transferir ou excluir condomínio", expanded=False):
         st.caption(
-            "Use quando o condomínio apareceu no painel errado. "
-            "A linha permanece no Google Sheets e o histórico fica preservado; o sistema só troca a empresa do cadastro."
+            "Escolha a ação correta. Transferir mantém o condomínio no sistema e troca a empresa. "
+            "Excluir definitivamente remove o cadastro da aba Clientes e tira o condomínio das permissões dos operadores."
         )
         _nomes_excluir_empresa = [c.get("nome", "") for c in clientes_cadastrados if c.get("id") and c.get("nome")]
         _sel_excluir_empresa = st.selectbox(
@@ -11744,46 +11808,105 @@ if clientes_cadastrados:
             key=f"cc_excluir_empresa_sel_{_empresa_ativa_codigo()}",
         )
         _cliente_excluir_empresa = next((c for c in clientes_cadastrados if c.get("nome") == _sel_excluir_empresa), {})
-        _confirmar_excluir_empresa = st.checkbox(
-            f"Confirmo: {_acao_exclusao_label}",
-            key=f"cc_excluir_empresa_confirma_{_empresa_ativa_codigo()}",
+
+        _acao_condominio = st.radio(
+            "O que deseja fazer?",
+            [
+                f"Transferir para {_empresa_destino_exclusao}",
+                "Excluir definitivamente do sistema",
+            ],
+            key=f"cc_acao_condominio_{_empresa_ativa_codigo()}",
+            horizontal=False,
         )
-        if st.button("🗂️ Excluir da empresa atual", use_container_width=True, key=f"cc_excluir_empresa_btn_{_empresa_ativa_codigo()}"):
-            if not _cliente_excluir_empresa.get("id"):
-                st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
-            elif not _confirmar_excluir_empresa:
-                st.warning("Marque a confirmação antes de excluir da empresa atual.")
-            else:
-                with st.spinner("Atualizando empresa do condomínio..."):
-                    ok_excluir_empresa = sheets_definir_empresa_cliente(
-                        id_cliente=_cliente_excluir_empresa["id"],
-                        empresa=_empresa_destino_exclusao,
-                    )
-                    # v6: atualiza cache local para o filtro por empresa não reverter no próximo rerun — BUG-D
-                    try:
-                        _pasta_excluir_empresa = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
-                        _pasta_excluir_empresa.mkdir(parents=True, exist_ok=True)
-                        _dados_excluir_empresa = carregar_dados_condominio(_pasta_excluir_empresa) or {}
-                        _servicos_excluir_empresa = _empresa_para_servicos(_empresa_destino_exclusao)
-                        _dados_excluir_empresa.update({
-                            "nome_condominio": _cliente_excluir_empresa.get("nome", ""),
-                            "empresa": _empresa_destino_exclusao,
-                            "servicos": _servicos_excluir_empresa,
-                            "salvo_em": _agora_brasilia(),
-                        })
-                        salvar_dados_condominio(_pasta_excluir_empresa, _dados_excluir_empresa)
-                    except Exception as e:
-                        _log_sheets_erro("excluir_empresa_cliente/local", e)
-                if ok_excluir_empresa:
-                    st.success(f"✅ '{_sel_excluir_empresa}' saiu de {_empresa_cadastro_nome} e agora está em {_empresa_destino_exclusao}.")
-                    st.cache_data.clear()
-                    st.rerun()
+
+        if _acao_condominio.startswith("Transferir"):
+            st.info(
+                "Esta opção é indicada quando o condomínio apareceu na empresa errada. "
+                "O histórico e o cadastro permanecem no Google Sheets."
+            )
+            _confirmar_excluir_empresa = st.checkbox(
+                f"Confirmo: {_acao_exclusao_label}",
+                key=f"cc_excluir_empresa_confirma_{_empresa_ativa_codigo()}",
+            )
+            if st.button("🗂️ Transferir para outra empresa", use_container_width=True, key=f"cc_excluir_empresa_btn_{_empresa_ativa_codigo()}"):
+                if not _cliente_excluir_empresa.get("id"):
+                    st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
+                elif not _confirmar_excluir_empresa:
+                    st.warning("Marque a confirmação antes de transferir.")
                 else:
-                    st.error("❌ Não foi possível atualizar a empresa no Google Sheets.")
-                    _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
-                    if _det_excluir:
-                        with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
-                            st.code(_det_excluir, language="text")
+                    with st.spinner("Atualizando empresa do condomínio..."):
+                        ok_excluir_empresa = sheets_definir_empresa_cliente(
+                            id_cliente=_cliente_excluir_empresa["id"],
+                            empresa=_empresa_destino_exclusao,
+                        )
+                        # v6: atualiza cache local para o filtro por empresa não reverter no próximo rerun — BUG-D2
+                        try:
+                            _pasta_excluir_empresa = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
+                            _pasta_excluir_empresa.mkdir(parents=True, exist_ok=True)
+                            _dados_excluir_empresa = carregar_dados_condominio(_pasta_excluir_empresa) or {}
+                            _servicos_excluir_empresa = _empresa_para_servicos(_empresa_destino_exclusao)
+                            _dados_excluir_empresa.update({
+                                "nome_condominio": _cliente_excluir_empresa.get("nome", ""),
+                                "empresa": _empresa_destino_exclusao,
+                                "servicos": _servicos_excluir_empresa,
+                                "salvo_em": _agora_brasilia(),
+                            })
+                            salvar_dados_condominio(_pasta_excluir_empresa, _dados_excluir_empresa)
+                        except Exception as e:
+                            _log_sheets_erro("transferir_empresa_cliente/local", e)
+                    if ok_excluir_empresa:
+                        st.success(f"✅ '{_sel_excluir_empresa}' saiu de {_empresa_cadastro_nome} e agora está em {_empresa_destino_exclusao}.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("❌ Não foi possível atualizar a empresa no Google Sheets.")
+                        _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
+                        if _det_excluir:
+                            with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
+                                st.code(_det_excluir, language="text")
+
+        else:
+            st.warning(
+                "Exclusão definitiva: o condomínio sairá do cadastro principal, dos filtros do sistema "
+                "e das permissões diretas dos operadores. Use somente quando o cadastro não deve existir mais."
+            )
+            _confirmar_excluir_sistema = st.checkbox(
+                f"Confirmo que desejo excluir definitivamente: {_sel_excluir_empresa}",
+                key=f"cc_excluir_sistema_confirma_{_empresa_ativa_codigo()}",
+            )
+            _confirmar_nome_excluir = st.text_input(
+                "Digite EXCLUIR para liberar o botão",
+                key=f"cc_excluir_sistema_texto_{_empresa_ativa_codigo()}",
+                placeholder="EXCLUIR",
+            )
+            if st.button("🗑️ Excluir definitivamente do sistema", use_container_width=True, key=f"cc_excluir_sistema_btn_{_empresa_ativa_codigo()}"):
+                if not _cliente_excluir_empresa.get("id"):
+                    st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
+                elif not _confirmar_excluir_sistema or _confirmar_nome_excluir.strip().upper() != "EXCLUIR":
+                    st.warning("Marque a confirmação e digite EXCLUIR para continuar.")
+                else:
+                    with st.spinner("Excluindo condomínio do sistema..."):
+                        ok_excluir_sistema = sheets_excluir_cliente_sistema(
+                            id_cliente=_cliente_excluir_empresa["id"],
+                            nome_cliente=_cliente_excluir_empresa.get("nome", ""),
+                        )
+                        # v6: remove cadastro local para não reaparecer pelo fallback de pastas — BUG-D2
+                        try:
+                            _pasta_excluir_sistema = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
+                            if _pasta_excluir_sistema.exists() and _pasta_excluir_sistema.is_dir():
+                                shutil.rmtree(_pasta_excluir_sistema)
+                        except Exception as e:
+                            _log_sheets_erro("excluir_cliente_sistema/local", e)
+                    if ok_excluir_sistema:
+                        st.success(f"✅ '{_sel_excluir_empresa}' foi excluído do sistema.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("❌ Não foi possível excluir o condomínio no Google Sheets.")
+                        _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
+                        if _det_excluir:
+                            with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
+                                st.code(_det_excluir, language="text")
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
