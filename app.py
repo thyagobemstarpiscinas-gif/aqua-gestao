@@ -98,7 +98,7 @@ def drive_upload_foto(arquivo_bytes: bytes, nome_arquivo: str, nome_condominio: 
             return None
 
         if not mes_ano:
-            mes_ano = datetime.now().strftime("%Y-%m")
+            mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
 
         # Estrutura: Aqua Gestão – Fotos / Condomínio / Ano-Mês
         pasta_cond = drive_criar_pasta(nome_condominio, DRIVE_FOTOS_FOLDER_ID)
@@ -381,7 +381,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         todos = aba.get_all_values()
         conds_str = " | ".join(conds_limpos)
         ativo_str = "Sim" if ativo else "Não"
-        nova_linha = [nome_limpo, pin_limpo, conds_str, ativo_str, datetime.now().strftime("%Y-%m-%d"), ""]
+        nova_linha = [nome_limpo, pin_limpo, conds_str, ativo_str, _agora_brasilia_dt().strftime("%Y-%m-%d"), ""]
         # Verifica se já existe (pelo nome)
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
@@ -724,7 +724,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             formatar_telefone(telefone),           # E - Telefone
             contato,                               # F - Contato síndico
             endereco,                              # G - Endereço
-            datetime.now().strftime("%Y-%m-%d"),   # H - Data cadastro
+            _agora_brasilia_dt().strftime("%Y-%m-%d"),   # H - Data cadastro
             "Ativo",                               # I - Status
             str(vol_adulto) if vol_adulto else "", # J - Vol Adulto m3
             str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
@@ -870,7 +870,7 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     formatar_telefone(telefone),
                     contato,
                     endereco,
-                    str(row[7]).strip() if len(row) > 7 else datetime.now().strftime("%Y-%m-%d"),
+                    str(row[7]).strip() if len(row) > 7 else _agora_brasilia_dt().strftime("%Y-%m-%d"),
                     str(row[8]).strip() if len(row) > 8 else "Ativo",
                     str(vol_adulto) if vol_adulto else "",
                     str(vol_infantil) if vol_infantil else "",
@@ -1982,10 +1982,15 @@ def logo_para_base64(path) -> str:
         return ""
 
 
-def _agora_brasilia() -> str:
-    """Retorna horario atual no fuso de Brasilia (UTC-3)."""
+def _agora_brasilia_dt() -> datetime:
+    """Retorna datetime atual no fuso de Brasilia. # v6: padroniza horario UTC-3 — BUG-HORA"""
     from datetime import timezone, timedelta
-    return datetime.now(tz=timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M:%S")
+    return datetime.now(tz=timezone(timedelta(hours=-3)))
+
+
+def _agora_brasilia() -> str:
+    """Retorna horario atual no fuso de Brasilia (UTC-3). # v6: evita horario UTC do servidor — BUG-HORA"""
+    return _agora_brasilia_dt().strftime("%d/%m/%Y %H:%M:%S")
 
 def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = False) -> bool:
     """Salva rascunho. Por padrão salva APENAS localmente (evita reruns pesados durante digitação).
@@ -4950,7 +4955,7 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
 
     nome_condominio = dados_atualizados.get("nome_condominio", pasta.name)
     nome_sindico = dados_atualizados.get("nome_sindico", "")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
     base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
     aditivo_docx = pasta / f"{base_nome_aditivo}.docx"
     aditivo_pdf = pasta / f"{base_nome_aditivo}.pdf"
@@ -5731,9 +5736,9 @@ def salvar_uploads_relatorio(pasta_condominio: Path):
     nome_cond = (st.session_state.get("rel_nome_condominio") or
                  st.session_state.get("nome_condominio") or
                  pasta_condominio.name)
-    mes_ano = datetime.now().strftime("%Y-%m")
+    mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
     for idx, arquivo in enumerate(arquivos, start=1):
-        nome = limpar_nome_arquivo(f"foto_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
+        nome = limpar_nome_arquivo(f"foto_relatorio_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
         destino = pasta_fotos / nome
         foto_bytes = arquivo.getbuffer()
         with open(destino, "wb") as f:
@@ -5756,7 +5761,7 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
     """Baixa fotos do Drive para pasta temporária e retorna caminhos locais para inserir no DOCX."""
     import tempfile
     if not mes_ano:
-        mes_ano = datetime.now().strftime("%Y-%m")
+        mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
     try:
         service = conectar_drive()
         if not service:
@@ -6955,7 +6960,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     E_CAPA_INFO = E("CI", fontSize=8,  textColor=colors.HexColor("#8FC8CC"), alignment=TA_CENTER, leading=13)
     E_RODAPE    = E("RO", fontSize=7,  textColor=colors.HexColor("#A0AEC0"), alignment=TA_CENTER)
 
-    data_visita = lancamento.get("data", datetime.now().strftime("%d/%m/%Y"))
+    data_visita = lancamento.get("data", _agora_brasilia_dt().strftime("%d/%m/%Y"))
     operador    = lancamento.get("operador", "")
     observacao  = lancamento.get("observacao", "")
     problemas   = lancamento.get("problemas", "")
@@ -8104,7 +8109,7 @@ def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
         if m_ano:
             ano_num = int(m_ano.group(0))
 
-        hoje = datetime.now()
+        hoje = _agora_brasilia_dt()
         if not mes_num or mes_num < 1 or mes_num > 12:
             mes_num = hoje.month
         if not ano_num:
@@ -8112,7 +8117,7 @@ def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
 
         return f"{ano_num:04d}-{mes_num:02d}"
     except Exception:
-        return datetime.now().strftime("%Y-%m")
+        return _agora_brasilia_dt().strftime("%Y-%m")
 
 
 def _salvar_uploads_relatorio_preview(pasta_preview: Path):
@@ -8129,7 +8134,7 @@ def _salvar_uploads_relatorio_preview(pasta_preview: Path):
         try:
             nome_original = getattr(arquivo, "name", f"foto_{idx}.jpg")
             nome = limpar_nome_arquivo(
-                f"foto_previa_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{nome_original}"
+                f"foto_previa_relatorio_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M%S')}_{idx}_{nome_original}"
             )
             destino = pasta_preview / nome
             foto_bytes = arquivo.getbuffer()
@@ -8186,7 +8191,7 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
-    csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(datetime.now().year)).strip()
+    csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(_agora_brasilia_dt().year)).strip()
     csr_operador_nome = str(st.session_state.get("csr_operador_rel", "") or "").strip()
     csr_obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
 
@@ -8294,7 +8299,7 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
 
     pasta_saida = pasta_condominio / "_previa_exata_relatorio" if preview else pasta_condominio
     pasta_saida.mkdir(parents=True, exist_ok=True)
-    data_nome = datetime.now().strftime("%Y%m%d_%H%M%S" if preview else "%Y%m%d")
+    data_nome = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S" if preview else "%Y%m%d")
     sufixo = "PREVIA_EXATA_RELATORIO_RT" if preview else "RELATORIO_RT"
     base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_{sufixo}")
     relatorio_docx = pasta_saida / f"{base_nome}.docx"
@@ -8367,7 +8372,7 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
 
     pasta_saida = ctx["pasta"] / "_previa_exata_relatorio" if preview else ctx["pasta"]
     pasta_saida.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
     sufixo = "PREVIA_EXATA_RELATORIO_BS" if preview else "RELATORIO_BS"
     base_nome = limpar_nome_arquivo(f"{ts}_{ctx['cliente']}_{sufixo}")
     docx_path = pasta_saida / f"{base_nome}.docx"
@@ -8586,7 +8591,7 @@ def inicializar_campos():
         "painel_acao_msg": "",
         "busca_rapida": "",
         "filtro_status_central": "Todos",
-        "rel_mes_referencia": datetime.now().strftime("%m"),
+        "rel_mes_referencia": _agora_brasilia_dt().strftime("%m"),
         "rel_tipo_atendimento": "Contrato ativo",
         "rel_nome_condominio": "",
         "rel_cnpj_condominio": "",
@@ -8594,7 +8599,7 @@ def inicializar_campos():
         "rel_representante": "",
         "rel_cpf_cnpj_representante": "",
         "rel_salvar_alteracoes_cadastro": False,
-        "rel_ano_referencia": str(datetime.now().year),
+        "rel_ano_referencia": str(_agora_brasilia_dt().year),
         "rel_art_status": "Emitida",
         "rel_art_status_widget": "Emitida",
         "rel_art_numero": "",
@@ -8661,8 +8666,8 @@ def limpar_formulario():
     st.session_state.rel_representante = ""
     st.session_state.rel_cpf_cnpj_representante = ""
     st.session_state.rel_salvar_alteracoes_cadastro = False
-    st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
-    st.session_state.rel_ano_referencia = str(datetime.now().year)
+    st.session_state.rel_mes_referencia = _agora_brasilia_dt().strftime("%m")
+    st.session_state.rel_ano_referencia = str(_agora_brasilia_dt().year)
     st.session_state.rel_art_status = "Emitida"
     st.session_state.rel_art_status_widget = "Emitida"
     st.session_state.rel_art_numero = ""
@@ -8902,7 +8907,7 @@ def _relatorio_rt_tem_dados_em_tela() -> bool:
 def _relatorio_rt_coletar_rascunho() -> dict:
     total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     dados = {
-        "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
+        "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else _agora_brasilia_dt().isoformat(),
         "empresa_ativa": "aqua_gestao",
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
@@ -9081,7 +9086,7 @@ def _admin_icone_empresa(codigo: str) -> str:
 def _admin_entrar_empresa(codigo_empresa: str):
     """Centraliza login administrativo para evitar troca acidental de empresa por widgets antigos."""
     codigo_empresa = "bem_star" if codigo_empresa == "bem_star" else "aqua_gestao"
-    agora = datetime.now().isoformat(timespec="seconds")
+    agora = _agora_brasilia_dt().isoformat(timespec="seconds")
     st.session_state["modo_atual"] = "escritorio"
     st.session_state["admin_logado"] = True
     st.session_state["admin_empresa_fixa"] = codigo_empresa
@@ -9117,14 +9122,14 @@ def _admin_sessao_valida() -> bool:
         # Compatibilidade: se app antigo entrou em escritório, reconstrói o estado admin.
         st.session_state["admin_logado"] = True
         st.session_state["admin_empresa_fixa"] = st.session_state.get("empresa_ativa", "aqua_gestao")
-        st.session_state["admin_login_em"] = datetime.now().isoformat(timespec="seconds")
+        st.session_state["admin_login_em"] = _agora_brasilia_dt().isoformat(timespec="seconds")
     empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if empresa not in ("aqua_gestao", "bem_star"):
         empresa = "aqua_gestao"
     # trava empresa ativa pela empresa escolhida no login, impedindo widgets antigos de alternarem painel
     st.session_state["empresa_ativa"] = empresa
     st.session_state["admin_empresa_fixa"] = empresa
-    st.session_state["admin_ultimo_ping"] = datetime.now().isoformat(timespec="seconds")
+    st.session_state["admin_ultimo_ping"] = _agora_brasilia_dt().isoformat(timespec="seconds")
     return True
 
 
@@ -10534,8 +10539,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 pasta_op.mkdir(parents=True, exist_ok=True)
                 pasta_fotos_op = pasta_op / "fotos_campo"
                 pasta_fotos_op.mkdir(exist_ok=True)
-                ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
-                mes_ano = datetime.now().strftime("%Y-%m")
+                ts_f = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+                mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
 
                 import base64 as _b64
 
@@ -10827,7 +10832,7 @@ def obter_metricas_bem_star():
         nomes_bs = {str(c.get("nome", "")).strip().lower() for c in clientes_bs if c.get("nome")}
 
         # Conta visitas do mês atual com leitura única da aba
-        mes_atual = datetime.now().strftime("%m/%Y")
+        mes_atual = _agora_brasilia_dt().strftime("%m/%Y")
         visitas_mes = 0
         try:
             todas_visitas = sheets_listar_todas_visitas()
@@ -10905,7 +10910,7 @@ if st.session_state.get("empresa_ativa") == "bem_star":
         )
     with db2:
         st.markdown(
-            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {datetime.now().strftime('%m/%Y')}</div></div>",
+            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {_agora_brasilia_dt().strftime('%m/%Y')}</div></div>",
             unsafe_allow_html=True,
         )
     with db3:
@@ -11253,7 +11258,7 @@ if ops_cadastrados:
         st.download_button(
             "📤 Exportar operadores e permissões",
             data=_csv_operadores.encode("utf-8-sig"),
-            file_name=f"operadores_permissoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            file_name=f"operadores_permissoes_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
             use_container_width=True,
             key="btn_exportar_operadores_csv",
@@ -12684,9 +12689,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         with rts1:
             csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
         with rts2:
-            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
+            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=_agora_brasilia_dt().strftime("%m"))
         with rts3:
-            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
+            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(_agora_brasilia_dt().year))
     
         csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
     
@@ -12721,7 +12726,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
     
         _mes_csr  = (csr_mes or "").strip()
-        _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
+        _ano_csr  = (csr_ano or str(_agora_brasilia_dt().year)).strip()
         lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
     
         # ── Painel de lançamentos disponíveis ────────────────────────────────
@@ -12846,7 +12851,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 }
                 try:
                     _pb_bytes = gerar_proposta_pdf(_pb_dados, "Bem Star Piscinas")
-                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{_agora_brasilia_dt().strftime('%Y%m')}.pdf")
                     st.success("✅ Proposta gerada com sucesso!")
                     st.download_button("⬇️ Baixar Proposta PDF", data=_pb_bytes,
                         file_name=_pb_nome, mime="application/pdf", use_container_width=True, key="dl_prop_bs")
@@ -13268,7 +13273,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         # ── Gera PDF ───────────────────────────────────────────────
                         pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
                         pasta_bs_cont.mkdir(parents=True, exist_ok=True)
-                        _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _ts_bs = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
                         pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
     
                         _buf = _io.BytesIO()
@@ -13350,7 +13355,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 }
                 try:
                     _pa_bytes = gerar_proposta_pdf(_pa_dados, "Aqua Gestao – Controle Tecnico de Piscinas")
-                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{_agora_brasilia_dt().strftime('%Y%m')}.pdf")
                     st.success("✅ Proposta gerada com sucesso!")
                     st.download_button("⬇️ Baixar Proposta PDF", data=_pa_bytes,
                         file_name=_pa_nome, mime="application/pdf", use_container_width=True, key="dl_prop_aq")
@@ -13756,7 +13761,7 @@ if _adt_dados_encontrados:
                 "{{ENDERECO_CONTRATANTE}}": _adt_dados_encontrados.get("endereco_condominio", ""),
             }
 
-            _adt_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _adt_ts = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
             _adt_base = limpar_nome_arquivo(f"Aditivo_RT_{_adt_nome}_{_adt_ts}")
 
             try:
@@ -14463,7 +14468,7 @@ def gerar_caderno_pops_pdf() -> tuple[bool, str | None, Path | None]:
 
         pasta = GENERATED_DIR / slugify_nome(nome_cond)
         pasta.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
         saida = pasta / f"{limpar_nome_arquivo('Caderno_POPs_' + nome_cond + '_' + timestamp)}.pdf"
         pdf_bytes = _gerar_pdf_caderno_pops(dados)
         saida.write_bytes(pdf_bytes)
@@ -14790,7 +14795,7 @@ def gerar_termo_ciencia_pdf(tipo: str) -> tuple[bool, str | None, Path | None]:
 
         pasta = GENERATED_DIR / slugify_nome(nome_cond)
         pasta.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
         nome_tipo = "Termo_Ciencia_Sindico" if tipo == "sindico" else "Termo_Ciencia_Operador_EPI"
         saida = pasta / f"{limpar_nome_arquivo(nome_tipo + '_' + nome_cond + '_' + timestamp)}.pdf"
         pdf_bytes = _gerar_pdf_termo_ciencia_base(dados, tipo)
@@ -15366,7 +15371,7 @@ if nome_rel_atual:
 
 # Filtra pelo mês de referência
 mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
-ano_ref = (st.session_state.get("rel_ano_referencia") or str(datetime.now().year)).strip()
+ano_ref = (st.session_state.get("rel_ano_referencia") or str(_agora_brasilia_dt().year)).strip()
 
 # Diagnóstico de importação de visitas — ajuda a separar problema de filtro vs. problema de gravação no Sheets.
 with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
@@ -16242,7 +16247,7 @@ def gerar_contrato_bem_star_docx(
         "{{PRODUTOS_INCLUIDOS}}": produtos_incluidos or "Conforme proposta comercial",
     }
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
     nome_pasta = slugify_nome(nome_contratante)
     pasta = GENERATED_DIR / nome_pasta
     pasta.mkdir(parents=True, exist_ok=True)
@@ -16997,7 +17002,7 @@ def gerar_contrato_e_aditivo():
 
         salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
         base_nome_contrato = limpar_nome_arquivo(f"Contrato_RT_{nome_condominio}_{timestamp}")
 
         contrato_docx = pasta_condominio / f"{base_nome_contrato}.docx"
@@ -17155,7 +17160,7 @@ def gerar_somente_aditivo_rapido():
 
         salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
         base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
 
         aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
