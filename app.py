@@ -9742,7 +9742,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
     # v6: Card de boas-vindas profissional com data e hora — P4
-    _agora_disp = datetime.now().strftime("%d/%m/%Y • %H:%M")
+    # v6: horário de Brasília (UTC-3) — corrigido
+    _agora_disp = _agora_brasilia()[:16].replace(" ", " • ") if len(_agora_brasilia()) >= 16 else _agora_brasilia()
     st.markdown(f"""
     <div class="op-card" style="background:linear-gradient(135deg,#f0f6ff 0%,#ffffff 100%);border-color:#1565A8;">
         <div class="op-title">📱 {_empresa_op_titulo}</div>
