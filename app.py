@@ -384,7 +384,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         # Verifica se já existe (pelo nome)
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
-                aba.update(f"A{i+1}:F{i+1}", [nova_linha])
+                aba.update(range_name=f"A{i+1}:F{i+1}", values=[nova_linha])
                 st.cache_data.clear()
                 st.session_state.pop("_operadores_erro", None)
                 return True
