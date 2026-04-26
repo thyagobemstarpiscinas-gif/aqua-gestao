@@ -1012,6 +1012,66 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         return []
 
 
+def sheets_listar_todas_visitas() -> list[dict]:
+    """Lê a aba 🔬 Visitas uma única vez e retorna todas as visitas.
+
+    Use esta função no dashboard e em relatórios que precisam de totais,
+    em vez de chamar sheets_listar_lancamentos() em loop por cliente.
+    Evita erro 429 (Quota exceeded) do Google Sheets.
+    """
+    try:
+        aba = obter_aba_sheets("🔬 Visitas")
+        todos = aba.get_all_values()
+        visitas = []
+
+        for row in todos:
+            if len(row) < 5:
+                continue
+            id_visita = str(row[1]).strip() if len(row) > 1 else ""
+            if not id_visita.startswith("V"):
+                continue
+
+            def _r(i):
+                return row[i] if len(row) > i else ""
+
+            payload_raw = _r(22)
+            payload = {}
+            if payload_raw:
+                try:
+                    payload = json.loads(payload_raw)
+                except Exception:
+                    payload = {}
+
+            visitas.append({
+                "id_visita": id_visita,
+                "data": normalizar_data_visita(_r(2)),
+                "id_cliente": _r(3),
+                "condominio": _r(4),
+                "ph": _r(5),
+                "crl": _r(6),
+                "ct": _r(7),
+                "alcalinidade": _r(8),
+                "dureza": _r(9),
+                "cya": _r(10),
+                "observacao": _r(14),
+                "dosagem": _r(15),
+                "status": _r(19),
+                "operador": _r(20),
+                "problemas": _r(21),
+                "payload_json": payload_raw,
+                "salvo_em": _r(23),
+                "fonte": _r(24),
+                "mes_ano": _r(25),
+                "_payload": payload,
+            })
+
+        return visitas
+
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_todas_visitas", e)
+        return []
+
+
 def extrair_lancamento_de_pdf_visita(pdf_bytes: bytes, nome_condominio_padrao: str = "") -> dict:
     """Extrai dados básicos de um PDF de Relatório de Visita Aqua Gestão.
 
@@ -2189,8 +2249,12 @@ def _empresa_ativa_codigo() -> str:
     """Retorna o painel administrativo ativo.
 
     O operador não usa esta escolha; operador é filtrado por PIN/condomínios.
+    Fallback: lê admin_empresa_fixa se empresa_ativa não estiver definida corretamente.
     """
-    valor = st.session_state.get("empresa_ativa", "aqua_gestao")
+    valor = st.session_state.get("empresa_ativa", "")
+    if valor not in ("aqua_gestao", "bem_star"):
+        # Fallback para empresa fixada no login admin
+        valor = st.session_state.get("admin_empresa_fixa", "")
     if valor not in ("aqua_gestao", "bem_star"):
         valor = "aqua_gestao"
     st.session_state["empresa_ativa"] = valor
@@ -2344,6 +2408,50 @@ def carregar_imagem_corrigida_orientacao(origem):
         return img
     except Exception:
         return origem
+
+
+def deduplicar_fotos(lista):
+    """Remove fotos duplicadas de uma lista de uploads ou paths.
+
+    Deduplica por hash de conteúdo (uploads) ou por path/string truncada.
+    Evita que rascunho + upload atual resultem em foto repetida no PDF.
+    """
+    resultado = []
+    vistos = set()
+    import hashlib as _hashlib
+
+    for item in lista or []:
+        try:
+            if isinstance(item, (str, Path)):
+                chave = str(item)[:200]
+            elif hasattr(item, "getvalue"):
+                pos = item.tell() if hasattr(item, "tell") else None
+                dados = item.getvalue()
+                if pos is not None:
+                    try:
+                        item.seek(pos)
+                    except Exception:
+                        pass
+                chave = _hashlib.md5(dados).hexdigest()
+            elif hasattr(item, "read"):
+                pos = item.tell() if hasattr(item, "tell") else None
+                dados = item.read()
+                if pos is not None:
+                    try:
+                        item.seek(pos)
+                    except Exception:
+                        pass
+                chave = _hashlib.md5(dados).hexdigest()
+            else:
+                chave = str(item)
+        except Exception:
+            chave = str(item)
+
+        if chave not in vistos:
+            vistos.add(chave)
+            resultado.append(item)
+
+    return resultado
 
 
 def hoje_br() -> str:
@@ -8984,7 +9092,18 @@ def _admin_entrar_empresa(codigo_empresa: str):
 
 
 def _admin_sessao_valida() -> bool:
-    """Mantém o admin logado durante a sessão e só expira após limite alto de segurança."""
+    """Mantém o admin logado durante a sessão e só expira após limite alto de segurança.
+
+    Recuperação robusta: se admin_logado=True mas modo_atual foi corrompido ou
+    perdido (ex.: reconexão no Streamlit Cloud), força modo_atual='escritorio'
+    para evitar que o painel fique preso na tela de login.
+    """
+    # Recuperação: admin marcado como logado mas modo_atual não está em escritorio.
+    # Isso ocorre quando a sessão é parcialmente restaurada pelo browser após
+    # hibernação ou reconexão no Streamlit Cloud.
+    if st.session_state.get("admin_logado") and st.session_state.get("modo_atual") != "escritorio":
+        st.session_state["modo_atual"] = "escritorio"
+
     if st.session_state.get("modo_atual") != "escritorio":
         return True
     if not st.session_state.get("admin_logado"):
@@ -9354,6 +9473,17 @@ PIN_OPERADOR = "2940"
 # Inicializa o modo se não estiver definido
 if "modo_atual" not in st.session_state:
     st.session_state["modo_atual"] = "entrada"
+
+# GUARD DUPLO: se admin_logado=True mas modo_atual não está em escritorio,
+# restaura o modo. Isso corrige o bug onde o painel fica preso na tela de login
+# após reconexão no Streamlit Cloud ou perda parcial de session_state.
+if st.session_state.get("admin_logado") and st.session_state.get("modo_atual") != "escritorio":
+    st.session_state["modo_atual"] = "escritorio"
+    _empresa_fix = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
+    if _empresa_fix not in ("aqua_gestao", "bem_star"):
+        _empresa_fix = "aqua_gestao"
+    st.session_state["empresa_ativa"] = _empresa_fix
+    st.session_state["admin_empresa_fixa"] = _empresa_fix
 
 # Inicializa e preserva a empresa ativa entre reruns.
 # Isso evita o Modo Campo voltar para Aqua Gestão quando o operador escolheu Bem Star.
@@ -10208,7 +10338,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 f for f in (_flist_rasc or [])
                 if _nome_original_rascunho(f) not in _nomes_up
             ]
-            _all_show = list(_flist_up or []) + _rasc_extras
+            _all_show = deduplicar_fotos(list(_flist_up or []) + _rasc_extras)
             if _all_show:
                 st.caption(f"**{_cat_label}:** {len(_all_show)} foto(s)")
                 _cols = st.columns(min(len(_all_show), 3))
@@ -10492,11 +10622,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                             pass
                     return nomes, ids, b64s
 
-                fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(op_fotos_antes,  "antes")
-                fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(op_fotos_depois, "depois")
-                fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(op_fotos_cmaq,   "cmaq")
+                fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(deduplicar_fotos(op_fotos_antes),  "antes")
+                fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_depois), "depois")
+                fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(deduplicar_fotos(op_fotos_cmaq),   "cmaq")
                 op_fotos_extras_final = st.session_state.get("op_fotos_extras") or []
-                fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(op_fotos_extras_final, "extras")
+                fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_extras_final), "extras")
 
                 # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
                 # Corrigido: quando a foto estava no upload atual e também no rascunho,
@@ -10730,19 +10860,39 @@ if st.session_state.get("data_fim", "").strip():
 # =========================================
 
 def obter_metricas_bem_star():
-    """Coleta métricas leves para o Dashboard Bem Star.
+    """Coleta métricas para o Dashboard Bem Star.
 
-    Versão segura: não varre a aba de visitas cliente por cliente, evitando
-    travamento e erro 429 de quota do Google Sheets. O relatório/visitas
-    continuam funcionando nos módulos próprios.
+    Usa leitura única da aba de visitas (sheets_listar_todas_visitas) para
+    evitar loop por cliente que causava travamento e erro 429 de quota.
     """
     try:
         todos_clientes = sheets_listar_clientes_completo()
         clientes_bs = filtrar_clientes_por_empresa(todos_clientes, "bem_star")
         total_ativos = len([c for c in clientes_bs if str(c.get("status", "Ativo")).strip().lower() != "inativo"])
+        nomes_bs = {str(c.get("nome", "")).strip().lower() for c in clientes_bs if c.get("nome")}
+
+        # Conta visitas do mês atual com leitura única da aba
+        mes_atual = datetime.now().strftime("%m/%Y")
+        visitas_mes = 0
+        try:
+            todas_visitas = sheets_listar_todas_visitas()
+            for v in todas_visitas:
+                cond = str(v.get("condominio", "")).strip().lower()
+                mes_v = str(v.get("mes_ano", "") or "").strip()
+                # Aceita tanto "MM/YYYY" no campo mes_ano quanto extrai da data
+                if not mes_v:
+                    data_v = str(v.get("data", ""))
+                    if len(data_v) >= 7:
+                        partes = data_v.split("/")
+                        mes_v = f"{partes[1]}/{partes[2]}" if len(partes) == 3 else ""
+                if mes_v == mes_atual and cond in nomes_bs:
+                    visitas_mes += 1
+        except Exception:
+            visitas_mes = 0
+
         return {
             "total_ativos": total_ativos,
-            "visitas_mes": 0,
+            "visitas_mes": visitas_mes,
             "ultimos_pareceres": [],
         }
     except Exception as e:
@@ -10774,8 +10924,7 @@ itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "ind
 
 if st.session_state.get("empresa_ativa") == "bem_star":
     # --- DASHBOARD BEM STAR ---
-    with st.spinner("Carregando indicadores Bem Star..."):
-        metricas_bs = obter_metricas_bem_star()
+    metricas_bs = obter_metricas_bem_star()
     
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("⭐ Painel Bem Star Piscinas")
