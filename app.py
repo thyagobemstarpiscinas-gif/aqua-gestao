@@ -867,7 +867,7 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
                 ]
-                aba.update(f"A{linha_sheets}:M{linha_sheets}", [nova], value_input_option="USER_ENTERED")
+                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -8906,10 +8906,10 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                         break
                 nova = ["thyago", dados.get("salvo_em", ""), payload]
                 if linha_ex:
-                    aba_rasc_rt.update(f"A{linha_ex}:C{linha_ex}", [nova], value_input_option="RAW")
+                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[nova], value_input_option="RAW")
                 else:
                     prox = max(len(todos_rt) + 1, 2)
-                    aba_rasc_rt.update(f"A{prox}:C{prox}", [nova], value_input_option="RAW")
+                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[nova], value_input_option="RAW")
         except Exception:
             pass  # Sheets indisponivel — arquivo local e suficiente
         return True
