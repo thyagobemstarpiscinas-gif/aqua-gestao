@@ -8783,8 +8783,8 @@ def limpar_formulario():
 RASCUNHO_JSON_NAME = "rascunho_relatorio.json"
 
 
-def salvar_rascunho_relatorio(pasta_condominio: Path):
-    """Salva o estado atual do formulário de relatório como rascunho no JSON."""
+def salvar_rascunho_relatorio(pasta_condominio: Path, salvar_sheets: bool = False):
+    """Salva o estado atual do formulário de relatório como rascunho no JSON. # v6: permite salvar dados do mês sem gerar relatório — BUG-RT-SAVE"""
     qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     rascunho = {
         "rel_nome_condominio": (st.session_state.get("rel_nome_condominio") or "").strip(),
@@ -8840,6 +8840,15 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         })
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     caminho.write_text(json.dumps(rascunho, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if salvar_sheets:
+        sheets_salvar_rascunho_relatorio_rt(
+            rascunho.get("rel_nome_condominio", ""),
+            rascunho.get("rel_mes_referencia", ""),
+            rascunho.get("rel_ano_referencia", ""),
+            rascunho,
+        )
+
     return rascunho
 
 
@@ -8851,6 +8860,78 @@ def carregar_rascunho_relatorio(pasta_condominio: Path) -> dict | None:
         return json.loads(caminho.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def sheets_salvar_rascunho_relatorio_rt(nome_condominio: str, mes: str, ano: str, rascunho: dict) -> bool:
+    """Salva rascunho do relatório técnico mensal na aba _RascunhosRT. # v6: persistência sem gerar relatório — BUG-RT-SAVE"""
+    try:
+        nome_limpo = re.sub(r"\s+", " ", str(nome_condominio or "").strip())
+        mes_limpo = str(mes or "").strip().zfill(2)
+        ano_limpo = str(ano or "").strip()
+        if not nome_limpo:
+            return False
+
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+
+        try:
+            aba = obter_aba_sheets("_RascunhosRT")
+            if aba is None:
+                raise RuntimeError("Aba _RascunhosRT indisponível")
+        except Exception:
+            aba = sh.add_worksheet(title="_RascunhosRT", rows=500, cols=7)
+            aba.update(
+                range_name="A1:G1",
+                values=[["Condomínio", "Mês", "Ano", "Salvo em", "Operador", "Chave", "Dados JSON"]],
+            )
+
+        dados_limpos = limpar_payload_para_sheets(rascunho if isinstance(rascunho, dict) else {})
+        payload = json.dumps(dados_limpos, ensure_ascii=False)
+        if len(payload) > 45000:
+            payload = payload[:45000] + "..."
+
+        operador_principal = ""
+        try:
+            ops = [
+                str(a.get("operador", "")).strip()
+                for a in dados_limpos.get("analises", [])
+                if isinstance(a, dict) and str(a.get("operador", "")).strip()
+            ]
+            operador_principal = max(set(ops), key=ops.count) if ops else ""
+        except Exception:
+            operador_principal = ""
+
+        chave = normalizar_texto_busca(f"{nome_limpo}|{mes_limpo}|{ano_limpo}")
+        nova = [
+            nome_limpo,
+            mes_limpo,
+            ano_limpo,
+            _agora_brasilia(),
+            operador_principal,
+            chave,
+            payload,
+        ]
+        nova = ["" if v is None else str(v) for v in nova]  # v6: remove None antes do Sheets — BUG-RT-SAVE
+
+        todos = aba.get_all_values()
+        linha_existente = None
+        for i, row in enumerate(todos[1:], start=2):
+            if len(row) > 5 and normalizar_texto_busca(row[5]) == chave:
+                linha_existente = i
+                break
+
+        if linha_existente:
+            aba.update(range_name=f"A{linha_existente}:G{linha_existente}", values=[nova], value_input_option="RAW")
+        else:
+            proxima = max(len(todos) + 1, 2)
+            aba.update(range_name=f"A{proxima}:G{proxima}", values=[nova], value_input_option="RAW")
+
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_salvar_rascunho_relatorio_rt", e)
+        return False
 
 
 def aplicar_rascunho_no_formulario(rascunho: dict):
@@ -15603,29 +15684,65 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
                 st.error("Erro ao importar o PDF de visita.")
                 st.code(st.session_state.get("_sheets_ultimo_erro", "")[:2000])
 
+def _data_lancamento_para_ordenacao(lancamento: dict) -> datetime:
+    """Converte a data da visita para ordenar as linhas automaticamente. # v6: linhas seguem data do operador — BUG-RT-AUTO"""
+    try:
+        return datetime.strptime(normalizar_data_visita(lancamento.get("data", "")), "%d/%m/%Y")
+    except Exception:
+        return datetime.max
+
+
+def _operador_do_lancamento(lancamento: dict, dados_piscina: dict | None = None) -> str:
+    """Resolve o operador do lançamento mesmo quando vem de payload antigo. # v6: operador automático por visita — BUG-RT-AUTO"""
+    dados_piscina = dados_piscina or {}
+    for fonte in (lancamento, dados_piscina):
+        for chave in ("operador", "nome_operador", "responsavel_operador", "tecnico", "responsavel"):
+            valor = str((fonte or {}).get(chave, "") or "").strip()
+            if valor:
+                return valor
+    return ""
+
+
 def _filtrar_mes(lancamentos, mes, ano):
     """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
     if not mes or not ano:
         return lancamentos
     return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
 
-# Une local + Sheets sem duplicar (por data+operador)
+# Une local + Sheets sem duplicar (por ID quando existir; fallback por data+operador+pH)
 _vistos = set()
 lancamentos_disponiveis = []
 for lc in lancamentos_local + lancamentos_sheets:
-    _chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','')}"
+    _id_lc = str(lc.get("id_visita", "") or "").strip()
+    _op_lc = _operador_do_lancamento(lc)
+    _chave = _id_lc or f"{normalizar_data_visita(lc.get('data',''))}-{_op_lc}-{lc.get('ph','')}-{lc.get('cloro_livre','')}"
     if _chave not in _vistos:
         _vistos.add(_chave)
         lancamentos_disponiveis.append(lc)
 
-# Filtra por mês se informado
+# Filtra por mês se informado e ordena por data para bater linha x visita.
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+lancamentos_disponiveis = sorted(lancamentos_disponiveis, key=_data_lancamento_para_ordenacao)
 
 def _importar_lancamentos(lancamentos):
-    """Preenche o relatório com os lançamentos de campo."""
+    """Preenche o relatório com os lançamentos de campo. # v6: operador automático e expansão de linhas — BUG-RT-AUTO"""
+    lancamentos = sorted(lancamentos or [], key=_data_lancamento_para_ordenacao)
     _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
-    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    _linhas_base = calcular_linhas_analises_por_frequencia(
+        _freq_base,
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
+    _linhas_atuais = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
+    _linhas_total = max(len(lancamentos), _linhas_base, _linhas_atuais, ANALISES_PADRAO)
+    garantir_campos_analises(_linhas_total)
+
+    # Limpa apenas o bloco de análises que será reconstruído pela importação automática.
+    # Evita sobras de condomínio/mês anterior quando a quantidade de visitas muda.
+    for i in range(int(st.session_state.get("rel_analises_total", _linhas_total) or _linhas_total)):
+        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "operador"]:
+            st.session_state[f"rel_analise_{sufixo}_{i}"] = ""
+
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -15633,20 +15750,21 @@ def _importar_lancamentos(lancamentos):
             lc_dados = piscinas[0]  # primeira piscina para o relatório principal
         else:
             lc_dados = lc
-        st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
-        st.session_state[f"rel_analise_ph_{i}"]        = lc_dados.get("ph", lc.get("ph",""))
-        st.session_state[f"rel_analise_cl_{i}"]        = lc_dados.get("cloro_livre", lc.get("cloro_livre",""))
-        st.session_state[f"rel_analise_ct_{i}"]        = lc_dados.get("cloro_total", lc.get("cloro_total",""))
-        st.session_state[f"rel_analise_alc_{i}"]       = lc_dados.get("alcalinidade", lc.get("alcalinidade",""))
-        st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
-        st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
-        st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
+        operador_linha = _operador_do_lancamento(lc, lc_dados)
+        st.session_state[f"rel_analise_data_{i}"]     = normalizar_data_visita(lc.get("data", ""))
+        st.session_state[f"rel_analise_ph_{i}"]        = str(lc_dados.get("ph", lc.get("ph","")) or "")
+        st.session_state[f"rel_analise_cl_{i}"]        = str(lc_dados.get("cloro_livre", lc.get("cloro_livre","")) or "")
+        st.session_state[f"rel_analise_ct_{i}"]        = str(lc_dados.get("cloro_total", lc.get("cloro_total","")) or "")
+        st.session_state[f"rel_analise_alc_{i}"]       = str(lc_dados.get("alcalinidade", lc.get("alcalinidade","")) or "")
+        st.session_state[f"rel_analise_dc_{i}"]        = str(lc_dados.get("dureza", lc.get("dureza","")) or "")
+        st.session_state[f"rel_analise_cya_{i}"]       = str(lc_dados.get("cianurico", lc.get("cianurico","")) or "")
+        st.session_state[f"rel_analise_operador_{i}"]  = operador_linha
+
     # Preenche campo operador responsavel com o mais frequente dos lancamentos
-    _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
+    _ops_import = [_operador_do_lancamento(lc).strip() for lc in lancamentos if _operador_do_lancamento(lc).strip()]
     if _ops_import:
         _op_mais_freq = max(set(_ops_import), key=_ops_import.count)
-        if not st.session_state.get("csr_operador_rel","").strip():
-            st.session_state["csr_operador_rel"] = _op_mais_freq
+        st.session_state["csr_operador_rel"] = _op_mais_freq
 
     # Importa dosagens da última visita com dosagem registrada
     for lc in reversed(lancamentos):
@@ -15657,9 +15775,9 @@ def _importar_lancamentos(lancamentos):
     obs_lista = []
     for lc in lancamentos:
         if lc.get("problemas","").strip():
-            obs_lista.append(f"[{lc.get('data','')}] ⚠️ {lc['problemas']}")
+            obs_lista.append(f"[{normalizar_data_visita(lc.get('data',''))}] ⚠️ {lc['problemas']}")
         if lc.get("observacao","").strip():
-            obs_lista.append(f"[{lc.get('data','')}] {lc['observacao']}")
+            obs_lista.append(f"[{normalizar_data_visita(lc.get('data',''))}] {lc['observacao']}")
     obs_txt = "\n".join(obs_lista[:10])
     if obs_txt:
         st.session_state["rel_observacoes_gerais"] = obs_txt
@@ -15669,15 +15787,22 @@ def _importar_lancamentos(lancamentos):
 # uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
 if lancamentos_disponiveis:
     try:
-        _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
-        _assinatura_auto = "|".join([
+        _assinatura_lancamentos = []
+        for _lc_sig in lancamentos_disponiveis:
+            _assinatura_lancamentos.append("|".join([
+                str(_lc_sig.get("id_visita", "")),
+                normalizar_data_visita(_lc_sig.get("data", "")),
+                _operador_do_lancamento(_lc_sig),
+                str(_lc_sig.get("ph", "")),
+                str(_lc_sig.get("cloro_livre", "")),
+                str(_lc_sig.get("cloro_total", "")),
+            ]))
+        _assinatura_auto = "||".join([
             str(nome_rel_atual),
             str(mes_ref),
             str(ano_ref),
             str(len(lancamentos_disponiveis)),
-            str(_ultimo_lc.get("id_visita", "")),
-            str(_ultimo_lc.get("data", "")),
-            str(_ultimo_lc.get("operador", "")),
+            "##".join(_assinatura_lancamentos),
         ])
 
         if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
@@ -16007,13 +16132,13 @@ _rasc_existente = carregar_rascunho_relatorio(_pasta_rasc) if _pasta_rasc and _p
 
 col_rasc1, col_rasc2, col_rasc3 = st.columns([1.2, 1.2, 1.6])
 with col_rasc1:
-    if st.button("💾 Salvar rascunho", use_container_width=True):
+    if st.button("💾 Salvar dados do mês sem gerar relatório", use_container_width=True):
         if _nome_rasc:
             _pasta_rasc.mkdir(parents=True, exist_ok=True)
-            salvar_rascunho_relatorio(_pasta_rasc)
-            st.success("Rascunho salvo! Os dados serão restaurados mesmo após reiniciar o sistema.")
+            salvar_rascunho_relatorio(_pasta_rasc, salvar_sheets=True)
+            st.success("Dados do mês salvos sem gerar relatório. Você pode continuar lançando visitas e voltar depois.")
         else:
-            st.warning("Informe o nome do condomínio antes de salvar o rascunho.")
+            st.warning("Informe o nome do condomínio antes de salvar os dados do mês.")
 
 with col_rasc2:
     if _rasc_existente:
