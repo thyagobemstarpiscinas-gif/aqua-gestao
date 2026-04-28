@@ -98,7 +98,7 @@ def drive_upload_foto(arquivo_bytes: bytes, nome_arquivo: str, nome_condominio: 
             return None
 
         if not mes_ano:
-            mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
+            mes_ano = datetime.now().strftime("%Y-%m")
 
         # Estrutura: Aqua Gestão – Fotos / Condomínio / Ano-Mês
         pasta_cond = drive_criar_pasta(nome_condominio, DRIVE_FOTOS_FOLDER_ID)
@@ -349,8 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
-        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
+        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])  # v6: kwargs gspread — BUG-C
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -381,25 +380,21 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         todos = aba.get_all_values()
         conds_str = " | ".join(conds_limpos)
         ativo_str = "Sim" if ativo else "Não"
-        nova_linha = [nome_limpo, pin_limpo, conds_str, ativo_str, _agora_brasilia_dt().strftime("%Y-%m-%d"), ""]
+        nova_linha = [nome_limpo, pin_limpo, conds_str, ativo_str, datetime.now().strftime("%Y-%m-%d"), ""]
         # Verifica se já existe (pelo nome)
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
-                aba.update(range_name=f"A{i+1}:F{i+1}", values=[nova_linha])
+                aba.update(range_name=f"A{i+1}:F{i+1}", values=[_sanitizar_linha_sheets(nova_linha)])  # v6: sem None no gspread — BUG-B
                 st.cache_data.clear()
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
-        # v6: gspread v5 não aceita None no payload de planilha — BUG-B
-        nova_linha = ["" if v is None else str(v) for v in nova_linha]
-
         linha_destino = max(len(todos) + 1, 8)
-        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[nova_linha],
+            values=[_sanitizar_linha_sheets(nova_linha)],
             value_input_option="RAW"
-        )
+        )  # v6: kwargs + sem None no gspread — BUG-B/BUG-C
         st.cache_data.clear()
         st.session_state.pop("_operadores_erro", None)
         return True
@@ -551,6 +546,36 @@ def limpar_payload_para_sheets(dados: dict) -> dict:
     return limpo
 
 
+def _sanitizar_valor_sheets(valor):
+    """v6: converte None e tipos compostos antes de enviar ao Google Sheets — BUG-B"""
+    if valor is None:
+        return ""
+    if isinstance(valor, (dict, list, tuple)):
+        try:
+            return json.dumps(_sanitizar_payload_sheets(valor), ensure_ascii=False)
+        except Exception:
+            return str(valor)
+    return str(valor)
+
+
+def _sanitizar_payload_sheets(valor):
+    """v6: remove None recursivamente de payloads persistidos no Sheets — BUG-B"""
+    if valor is None:
+        return ""
+    if isinstance(valor, dict):
+        return {str(k): _sanitizar_payload_sheets(v) for k, v in valor.items()}
+    if isinstance(valor, list):
+        return [_sanitizar_payload_sheets(v) for v in valor]
+    if isinstance(valor, tuple):
+        return [_sanitizar_payload_sheets(v) for v in valor]
+    return valor
+
+
+def _sanitizar_linha_sheets(linha: list) -> list[str]:
+    """v6: garante linha sem None para compatibilidade com gspread v5 — BUG-B"""
+    return [_sanitizar_valor_sheets(v) for v in (linha or [])]
+
+
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
 
@@ -567,7 +592,6 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
-            # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
             aba.update(
                 range_name="A1:Z1",
                 values=[[
@@ -578,7 +602,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                     "Status", "Operador", "Problemas", "Payload JSON", "Salvo em",
                     "Fonte", "Mês/Ano",
                 ]]
-            )
+            )  # v6: kwargs gspread — BUG-C
 
         todos = aba.get_all_values()
         visitas_existentes = [
@@ -610,14 +634,17 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        payload = dict(lancamento)
+        # v6: payload do Sheets sem campos pesados e sem None — BUG-B
+        payload = limpar_payload_para_sheets(dict(lancamento))
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
+        payload = _sanitizar_payload_sheets(payload)
         try:
             payload_json = json.dumps(payload, ensure_ascii=False)
-        except Exception:
+        except Exception as e:
+            _log_sheets_erro("sheets_salvar_lancamento_campo/payload_json", e)
             payload_json = ""
 
         mes_ano = ""
@@ -654,16 +681,12 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
-        # v6: gspread v5 não aceita None no payload de planilha — BUG-B
-        nova_linha = ["" if v is None else str(v) for v in nova_linha]
-
         linha_destino = max(len(todos) + 1, 8)
-        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[nova_linha],
+            values=[_sanitizar_linha_sheets(nova_linha)],
             value_input_option="RAW"
-        )
+        )  # v6: kwargs + sem None no gspread — BUG-B/BUG-C
         st.cache_data.clear()
         return True
 
@@ -724,7 +747,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             formatar_telefone(telefone),           # E - Telefone
             contato,                               # F - Contato síndico
             endereco,                              # G - Endereço
-            _agora_brasilia_dt().strftime("%Y-%m-%d"),   # H - Data cadastro
+            datetime.now().strftime("%Y-%m-%d"),   # H - Data cadastro
             "Ativo",                               # I - Status
             str(vol_adulto) if vol_adulto else "", # J - Vol Adulto m3
             str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
@@ -870,114 +893,18 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     formatar_telefone(telefone),
                     contato,
                     endereco,
-                    str(row[7]).strip() if len(row) > 7 else _agora_brasilia_dt().strftime("%Y-%m-%d"),
+                    str(row[7]).strip() if len(row) > 7 else datetime.now().strftime("%Y-%m-%d"),
                     str(row[8]).strip() if len(row) > 8 else "Ativo",
                     str(vol_adulto) if vol_adulto else "",
                     str(vol_infantil) if vol_infantil else "",
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
                 ]
-                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[_sanitizar_linha_sheets(nova)], value_input_option="USER_ENTERED")  # v6: sem None no gspread — BUG-B
                 return True
         return False
     except Exception as e:
         _log_sheets_erro("sheets_editar_cliente", e)
-        return False
-
-
-def sheets_definir_empresa_cliente(id_cliente: str, empresa: str) -> bool:
-    """Atualiza somente a empresa do cliente na coluna M da aba 👥 Clientes."""
-    # v6: permite excluir condomínio da empresa atual sem apagar histórico — BUG-D
-    try:
-        id_limpo = str(id_cliente or "").strip()
-        empresa_final = str(empresa or "").strip()
-        if not id_limpo or not empresa_final:
-            return False
-
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-
-        aba = obter_aba_sheets("👥 Clientes")
-        todos = aba.get_all_values()
-        for i, row in enumerate(todos):
-            if len(row) > 1 and str(row[1]).strip() == id_limpo:
-                linha_sheets = i + 1
-                # v6: usa kwargs do gspread e valor string, sem None — BUG-C/BUG-D
-                aba.update(
-                    range_name=f"M{linha_sheets}:M{linha_sheets}",
-                    values=[[empresa_final]],
-                    value_input_option="USER_ENTERED",
-                )
-                st.cache_data.clear()
-                return True
-        return False
-    except Exception as e:
-        _log_sheets_erro("sheets_definir_empresa_cliente", e)
-        return False
-
-
-
-def sheets_excluir_cliente_sistema(id_cliente: str, nome_cliente: str = "") -> bool:
-    """Exclui definitivamente o condomínio da aba 👥 Clientes e remove vínculos de operadores."""
-    # v6: exclusão definitiva do condomínio no sistema, sem transferir empresa — BUG-D2
-    try:
-        id_limpo = str(id_cliente or "").strip()
-        nome_limpo = re.sub(r"\s+", " ", str(nome_cliente or "").strip())
-        if not id_limpo and not nome_limpo:
-            st.session_state["_sheets_ultimo_erro"] = "Informe ID ou nome do condomínio para excluir."
-            return False
-
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-
-        aba_clientes = obter_aba_sheets("👥 Clientes")
-        todos_clientes = aba_clientes.get_all_values()
-        linha_excluir = None
-        nome_encontrado = nome_limpo
-
-        for i, row in enumerate(todos_clientes):
-            id_row = str(row[1]).strip() if len(row) > 1 else ""
-            nome_row = str(row[2]).strip() if len(row) > 2 else ""
-            if (id_limpo and id_row == id_limpo) or (nome_limpo and _normalizar_chave_acesso(nome_row) == _normalizar_chave_acesso(nome_limpo)):
-                linha_excluir = i + 1
-                nome_encontrado = nome_row or nome_limpo
-                break
-
-        if linha_excluir is None:
-            st.session_state["_sheets_ultimo_erro"] = f"Condomínio não encontrado na aba Clientes: {nome_limpo or id_limpo}"
-            return False
-
-        # v6: remove permissões diretas dos operadores para o condomínio excluído — BUG-D2
-        try:
-            aba_operadores = obter_aba_sheets("👷 Operadores")
-            if aba_operadores is not None and nome_encontrado:
-                todos_ops = aba_operadores.get_all_values()
-                nome_norm = _normalizar_chave_acesso(nome_encontrado)
-                for idx_op, row_op in enumerate(todos_ops):
-                    if idx_op == 0 or len(row_op) < 3:
-                        continue
-                    conds_raw = str(row_op[2] or "").strip()
-                    if not conds_raw:
-                        continue
-                    conds = _condominios_organizar(conds_raw.split("|"))
-                    novos_conds = [c for c in conds if _normalizar_chave_acesso(c) != nome_norm]
-                    if novos_conds != conds:
-                        aba_operadores.update(
-                            range_name=f"C{idx_op + 1}:C{idx_op + 1}",
-                            values=[[" | ".join(novos_conds)]],
-                            value_input_option="USER_ENTERED",
-                        )
-        except Exception as e_ops:
-            _log_sheets_erro("sheets_excluir_cliente_sistema/operadores", e_ops)
-
-        aba_clientes.delete_rows(linha_excluir)
-        st.cache_data.clear()
-        return True
-
-    except Exception as e:
-        _log_sheets_erro("sheets_excluir_cliente_sistema", e)
         return False
 
 def sheets_carregar_cliente_por_nome(nome: str) -> dict:
@@ -2046,15 +1973,10 @@ def logo_para_base64(path) -> str:
         return ""
 
 
-def _agora_brasilia_dt() -> datetime:
-    """Retorna datetime atual no fuso de Brasilia. # v6: padroniza horario UTC-3 — BUG-HORA"""
-    from datetime import timezone, timedelta
-    return datetime.now(tz=timezone(timedelta(hours=-3)))
-
-
 def _agora_brasilia() -> str:
-    """Retorna horario atual no fuso de Brasilia (UTC-3). # v6: evita horario UTC do servidor — BUG-HORA"""
-    return _agora_brasilia_dt().strftime("%d/%m/%Y %H:%M:%S")
+    """Retorna horario atual no fuso de Brasilia (UTC-3)."""
+    from datetime import timezone, timedelta
+    return datetime.now(tz=timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M:%S")
 
 def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = False) -> bool:
     """Salva rascunho. Por padrão salva APENAS localmente (evita reruns pesados durante digitação).
@@ -2102,10 +2024,10 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                         break
                 nova = [nome_cond.strip(), dados.get("operador",""), dados["_rascunho_salvo_em"], payload]
                 if linha_existente:
-                    aba_rasc.update(range_name=f"A{linha_existente}:D{linha_existente}", values=[nova], value_input_option="RAW")
+                    aba_rasc.update(range_name=f"A{linha_existente}:D{linha_existente}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
                 else:
                     proxima = max(len(todos) + 1, 2)
-                    aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[nova], value_input_option="RAW")
+                    aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
         except Exception:
             pass
 
@@ -2169,7 +2091,7 @@ def deletar_rascunho_operador(nome_cond: str):
                 chave = nome_cond.strip().lower()
                 for i, row in enumerate(todos[1:], start=2):
                     if row and str(row[0]).strip().lower() == chave:
-                        aba_rasc.update(range_name=f"A{i}:D{i}", values=[["","","",""]], value_input_option="RAW")
+                        aba_rasc.update(range_name=f"A{i}:D{i}", values=[["","","",""]], value_input_option="RAW")  # v6: linha já sanitizada — BUG-B
                         break
             except Exception:
                 pass
@@ -4666,7 +4588,7 @@ def exibir_bloco_envio_bem_star(
                     use_container_width=True):
                 abrir_pasta_windows(pasta)
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 
 def link_whatsapp(telefone: str, mensagem: str) -> str:
@@ -4969,7 +4891,7 @@ def exibir_envio_email_documentos_aqua(
             if st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
                 abrir_pasta_windows(Path(pasta_condominio))
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 # =========================================
 # AÇÕES DO PAINEL
@@ -5019,7 +4941,7 @@ def gerar_aditivo_renovacao_por_painel(pasta: Path, alerta_dias: int) -> tuple[b
 
     nome_condominio = dados_atualizados.get("nome_condominio", pasta.name)
     nome_sindico = dados_atualizados.get("nome_sindico", "")
-    timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
     aditivo_docx = pasta / f"{base_nome_aditivo}.docx"
     aditivo_pdf = pasta / f"{base_nome_aditivo}.pdf"
@@ -5800,9 +5722,9 @@ def salvar_uploads_relatorio(pasta_condominio: Path):
     nome_cond = (st.session_state.get("rel_nome_condominio") or
                  st.session_state.get("nome_condominio") or
                  pasta_condominio.name)
-    mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
+    mes_ano = datetime.now().strftime("%Y-%m")
     for idx, arquivo in enumerate(arquivos, start=1):
-        nome = limpar_nome_arquivo(f"foto_relatorio_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
+        nome = limpar_nome_arquivo(f"foto_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{arquivo.name}")
         destino = pasta_fotos / nome
         foto_bytes = arquivo.getbuffer()
         with open(destino, "wb") as f:
@@ -5825,7 +5747,7 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
     """Baixa fotos do Drive para pasta temporária e retorna caminhos locais para inserir no DOCX."""
     import tempfile
     if not mes_ano:
-        mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
+        mes_ano = datetime.now().strftime("%Y-%m")
     try:
         service = conectar_drive()
         if not service:
@@ -7024,7 +6946,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     E_CAPA_INFO = E("CI", fontSize=8,  textColor=colors.HexColor("#8FC8CC"), alignment=TA_CENTER, leading=13)
     E_RODAPE    = E("RO", fontSize=7,  textColor=colors.HexColor("#A0AEC0"), alignment=TA_CENTER)
 
-    data_visita = lancamento.get("data", _agora_brasilia_dt().strftime("%d/%m/%Y"))
+    data_visita = lancamento.get("data", datetime.now().strftime("%d/%m/%Y"))
     operador    = lancamento.get("operador", "")
     observacao  = lancamento.get("observacao", "")
     problemas   = lancamento.get("problemas", "")
@@ -8173,7 +8095,7 @@ def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
         if m_ano:
             ano_num = int(m_ano.group(0))
 
-        hoje = _agora_brasilia_dt()
+        hoje = datetime.now()
         if not mes_num or mes_num < 1 or mes_num > 12:
             mes_num = hoje.month
         if not ano_num:
@@ -8181,7 +8103,7 @@ def _mes_ano_preview_relatorio(mes: str = "", ano: str = "") -> str:
 
         return f"{ano_num:04d}-{mes_num:02d}"
     except Exception:
-        return _agora_brasilia_dt().strftime("%Y-%m")
+        return datetime.now().strftime("%Y-%m")
 
 
 def _salvar_uploads_relatorio_preview(pasta_preview: Path):
@@ -8198,7 +8120,7 @@ def _salvar_uploads_relatorio_preview(pasta_preview: Path):
         try:
             nome_original = getattr(arquivo, "name", f"foto_{idx}.jpg")
             nome = limpar_nome_arquivo(
-                f"foto_previa_relatorio_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M%S')}_{idx}_{nome_original}"
+                f"foto_previa_relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}_{nome_original}"
             )
             destino = pasta_preview / nome
             foto_bytes = arquivo.getbuffer()
@@ -8255,7 +8177,7 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
-    csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(_agora_brasilia_dt().year)).strip()
+    csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(datetime.now().year)).strip()
     csr_operador_nome = str(st.session_state.get("csr_operador_rel", "") or "").strip()
     csr_obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
 
@@ -8363,7 +8285,7 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
 
     pasta_saida = pasta_condominio / "_previa_exata_relatorio" if preview else pasta_condominio
     pasta_saida.mkdir(parents=True, exist_ok=True)
-    data_nome = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S" if preview else "%Y%m%d")
+    data_nome = datetime.now().strftime("%Y%m%d_%H%M%S" if preview else "%Y%m%d")
     sufixo = "PREVIA_EXATA_RELATORIO_RT" if preview else "RELATORIO_RT"
     base_nome = limpar_nome_arquivo(f"{data_nome}_{nome_condominio}_{sufixo}")
     relatorio_docx = pasta_saida / f"{base_nome}.docx"
@@ -8436,7 +8358,7 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
 
     pasta_saida = ctx["pasta"] / "_previa_exata_relatorio" if preview else ctx["pasta"]
     pasta_saida.mkdir(parents=True, exist_ok=True)
-    ts = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     sufixo = "PREVIA_EXATA_RELATORIO_BS" if preview else "RELATORIO_BS"
     base_nome = limpar_nome_arquivo(f"{ts}_{ctx['cliente']}_{sufixo}")
     docx_path = pasta_saida / f"{base_nome}.docx"
@@ -8533,7 +8455,7 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
     with c3:
         if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
     return True, resultado["mensagem"]
 
 
@@ -8655,7 +8577,7 @@ def inicializar_campos():
         "painel_acao_msg": "",
         "busca_rapida": "",
         "filtro_status_central": "Todos",
-        "rel_mes_referencia": _agora_brasilia_dt().strftime("%m"),
+        "rel_mes_referencia": datetime.now().strftime("%m"),
         "rel_tipo_atendimento": "Contrato ativo",
         "rel_nome_condominio": "",
         "rel_cnpj_condominio": "",
@@ -8663,7 +8585,7 @@ def inicializar_campos():
         "rel_representante": "",
         "rel_cpf_cnpj_representante": "",
         "rel_salvar_alteracoes_cadastro": False,
-        "rel_ano_referencia": str(_agora_brasilia_dt().year),
+        "rel_ano_referencia": str(datetime.now().year),
         "rel_art_status": "Emitida",
         "rel_art_status_widget": "Emitida",
         "rel_art_numero": "",
@@ -8730,8 +8652,8 @@ def limpar_formulario():
     st.session_state.rel_representante = ""
     st.session_state.rel_cpf_cnpj_representante = ""
     st.session_state.rel_salvar_alteracoes_cadastro = False
-    st.session_state.rel_mes_referencia = _agora_brasilia_dt().strftime("%m")
-    st.session_state.rel_ano_referencia = str(_agora_brasilia_dt().year)
+    st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
+    st.session_state.rel_ano_referencia = str(datetime.now().year)
     st.session_state.rel_art_status = "Emitida"
     st.session_state.rel_art_status_widget = "Emitida"
     st.session_state.rel_art_numero = ""
@@ -8783,8 +8705,8 @@ def limpar_formulario():
 RASCUNHO_JSON_NAME = "rascunho_relatorio.json"
 
 
-def salvar_rascunho_relatorio(pasta_condominio: Path, salvar_sheets: bool = False):
-    """Salva o estado atual do formulário de relatório como rascunho no JSON. # v6: permite salvar dados do mês sem gerar relatório — BUG-RT-SAVE"""
+def salvar_rascunho_relatorio(pasta_condominio: Path):
+    """Salva o estado atual do formulário de relatório como rascunho no JSON."""
     qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     rascunho = {
         "rel_nome_condominio": (st.session_state.get("rel_nome_condominio") or "").strip(),
@@ -8840,15 +8762,6 @@ def salvar_rascunho_relatorio(pasta_condominio: Path, salvar_sheets: bool = Fals
         })
     caminho = pasta_condominio / RASCUNHO_JSON_NAME
     caminho.write_text(json.dumps(rascunho, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    if salvar_sheets:
-        sheets_salvar_rascunho_relatorio_rt(
-            rascunho.get("rel_nome_condominio", ""),
-            rascunho.get("rel_mes_referencia", ""),
-            rascunho.get("rel_ano_referencia", ""),
-            rascunho,
-        )
-
     return rascunho
 
 
@@ -8860,78 +8773,6 @@ def carregar_rascunho_relatorio(pasta_condominio: Path) -> dict | None:
         return json.loads(caminho.read_text(encoding="utf-8"))
     except Exception:
         return None
-
-
-def sheets_salvar_rascunho_relatorio_rt(nome_condominio: str, mes: str, ano: str, rascunho: dict) -> bool:
-    """Salva rascunho do relatório técnico mensal na aba _RascunhosRT. # v6: persistência sem gerar relatório — BUG-RT-SAVE"""
-    try:
-        nome_limpo = re.sub(r"\s+", " ", str(nome_condominio or "").strip())
-        mes_limpo = str(mes or "").strip().zfill(2)
-        ano_limpo = str(ano or "").strip()
-        if not nome_limpo:
-            return False
-
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-
-        try:
-            aba = obter_aba_sheets("_RascunhosRT")
-            if aba is None:
-                raise RuntimeError("Aba _RascunhosRT indisponível")
-        except Exception:
-            aba = sh.add_worksheet(title="_RascunhosRT", rows=500, cols=7)
-            aba.update(
-                range_name="A1:G1",
-                values=[["Condomínio", "Mês", "Ano", "Salvo em", "Operador", "Chave", "Dados JSON"]],
-            )
-
-        dados_limpos = limpar_payload_para_sheets(rascunho if isinstance(rascunho, dict) else {})
-        payload = json.dumps(dados_limpos, ensure_ascii=False)
-        if len(payload) > 45000:
-            payload = payload[:45000] + "..."
-
-        operador_principal = ""
-        try:
-            ops = [
-                str(a.get("operador", "")).strip()
-                for a in dados_limpos.get("analises", [])
-                if isinstance(a, dict) and str(a.get("operador", "")).strip()
-            ]
-            operador_principal = max(set(ops), key=ops.count) if ops else ""
-        except Exception:
-            operador_principal = ""
-
-        chave = normalizar_texto_busca(f"{nome_limpo}|{mes_limpo}|{ano_limpo}")
-        nova = [
-            nome_limpo,
-            mes_limpo,
-            ano_limpo,
-            _agora_brasilia(),
-            operador_principal,
-            chave,
-            payload,
-        ]
-        nova = ["" if v is None else str(v) for v in nova]  # v6: remove None antes do Sheets — BUG-RT-SAVE
-
-        todos = aba.get_all_values()
-        linha_existente = None
-        for i, row in enumerate(todos[1:], start=2):
-            if len(row) > 5 and normalizar_texto_busca(row[5]) == chave:
-                linha_existente = i
-                break
-
-        if linha_existente:
-            aba.update(range_name=f"A{linha_existente}:G{linha_existente}", values=[nova], value_input_option="RAW")
-        else:
-            proxima = max(len(todos) + 1, 2)
-            aba.update(range_name=f"A{proxima}:G{proxima}", values=[nova], value_input_option="RAW")
-
-        st.cache_data.clear()
-        return True
-    except Exception as e:
-        _log_sheets_erro("sheets_salvar_rascunho_relatorio_rt", e)
-        return False
 
 
 def aplicar_rascunho_no_formulario(rascunho: dict):
@@ -9052,7 +8893,7 @@ def _relatorio_rt_tem_dados_em_tela() -> bool:
 def _relatorio_rt_coletar_rascunho() -> dict:
     total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     dados = {
-        "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else _agora_brasilia_dt().isoformat(),
+        "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "empresa_ativa": "aqua_gestao",
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
@@ -9086,8 +8927,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
-                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])  # v6: kwargs gspread — BUG-C
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -9099,10 +8939,10 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                         break
                 nova = ["thyago", dados.get("salvo_em", ""), payload]
                 if linha_ex:
-                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[nova], value_input_option="RAW")
+                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
                 else:
                     prox = max(len(todos_rt) + 1, 2)
-                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[nova], value_input_option="RAW")
+                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
         except Exception:
             pass  # Sheets indisponivel — arquivo local e suficiente
         return True
@@ -9231,7 +9071,7 @@ def _admin_icone_empresa(codigo: str) -> str:
 def _admin_entrar_empresa(codigo_empresa: str):
     """Centraliza login administrativo para evitar troca acidental de empresa por widgets antigos."""
     codigo_empresa = "bem_star" if codigo_empresa == "bem_star" else "aqua_gestao"
-    agora = _agora_brasilia_dt().isoformat(timespec="seconds")
+    agora = datetime.now().isoformat(timespec="seconds")
     st.session_state["modo_atual"] = "escritorio"
     st.session_state["admin_logado"] = True
     st.session_state["admin_empresa_fixa"] = codigo_empresa
@@ -9255,10 +9095,9 @@ def _admin_sessao_valida() -> bool:
     # Recuperação: admin marcado como logado mas modo_atual não está em escritorio.
     # Isso ocorre quando a sessão é parcialmente restaurada pelo browser após
     # hibernação ou reconexão no Streamlit Cloud.
-    # v5: guard da sidebar também protege o operador
+    # v6: guard administrativo nunca derruba modo operador durante digitação — BUG-A
     if (st.session_state.get("admin_logado")
-            and st.session_state.get("modo_atual") != "escritorio"
-            and st.session_state.get("modo_atual") != "operador"):
+            and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
         st.session_state["modo_atual"] = "escritorio"
 
     if st.session_state.get("modo_atual") != "escritorio":
@@ -9267,19 +9106,23 @@ def _admin_sessao_valida() -> bool:
         # Compatibilidade: se app antigo entrou em escritório, reconstrói o estado admin.
         st.session_state["admin_logado"] = True
         st.session_state["admin_empresa_fixa"] = st.session_state.get("empresa_ativa", "aqua_gestao")
-        st.session_state["admin_login_em"] = _agora_brasilia_dt().isoformat(timespec="seconds")
+        st.session_state["admin_login_em"] = datetime.now().isoformat(timespec="seconds")
     empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if empresa not in ("aqua_gestao", "bem_star"):
         empresa = "aqua_gestao"
     # trava empresa ativa pela empresa escolhida no login, impedindo widgets antigos de alternarem painel
     st.session_state["empresa_ativa"] = empresa
     st.session_state["admin_empresa_fixa"] = empresa
-    st.session_state["admin_ultimo_ping"] = _agora_brasilia_dt().isoformat(timespec="seconds")
+    st.session_state["admin_ultimo_ping"] = datetime.now().isoformat(timespec="seconds")
     return True
 
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
+    # v6: logout administrativo não pode sobrescrever sessão ativa do operador — BUG-A
+    if st.session_state.get("modo_atual") == "operador":
+        st.session_state["mostrar_pin_admin"] = False
+        return
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -9636,13 +9479,9 @@ st.session_state.setdefault("_op_ultimo_lancamento", None)
 if "modo_atual" not in st.session_state:
     st.session_state["modo_atual"] = "entrada"
 
-# GUARD DUPLO v5: protege o modo operador.
-# O guard só redireciona para escritório se o operador NÃO estiver logado.
-# Antes, esse guard derrubava o operador durante preenchimento caso admin_logado
-# estivesse definido em memória de sessão anterior.
+# v6: guard duplo protege o modo operador e só recupera admin fora dele — BUG-A
 if (st.session_state.get("admin_logado")
-        and st.session_state.get("modo_atual") != "escritorio"
-        and st.session_state.get("modo_atual") != "operador"):
+        and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
     st.session_state["modo_atual"] = "escritorio"
     _empresa_fix = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if _empresa_fix not in ("aqua_gestao", "bem_star"):
@@ -9748,6 +9587,7 @@ if _modo_interno in ("escritorio", "operador"):
             st.rerun()
     else:
         if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+            # v6: saída explícita do operador; nunca chamada por guard automático — BUG-A
             st.session_state["modo_atual"] = "entrada"
             st.session_state["op_pin_ok"] = False
             st.session_state.pop("op_dados_atual", None)
@@ -10100,7 +9940,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
     if op_nome_cond:
 
@@ -10369,7 +10209,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 else:
                     st.success("✅ Todos os parâmetros dentro da faixa ideal.")
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
         # Compatibilidade com código legado (usa dados da primeira piscina)
         op_ph  = op_piscinas_dados[0]["ph"]        if op_piscinas_dados else ""
@@ -10684,8 +10524,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 pasta_op.mkdir(parents=True, exist_ok=True)
                 pasta_fotos_op = pasta_op / "fotos_campo"
                 pasta_fotos_op.mkdir(exist_ok=True)
-                ts_f = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
-                mes_ano = _agora_brasilia_dt().strftime("%Y-%m")
+                ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mes_ano = datetime.now().strftime("%Y-%m")
 
                 import base64 as _b64
 
@@ -10977,7 +10817,7 @@ def obter_metricas_bem_star():
         nomes_bs = {str(c.get("nome", "")).strip().lower() for c in clientes_bs if c.get("nome")}
 
         # Conta visitas do mês atual com leitura única da aba
-        mes_atual = _agora_brasilia_dt().strftime("%m/%Y")
+        mes_atual = datetime.now().strftime("%m/%Y")
         visitas_mes = 0
         try:
             todas_visitas = sheets_listar_todas_visitas()
@@ -11055,7 +10895,7 @@ if st.session_state.get("empresa_ativa") == "bem_star":
         )
     with db2:
         st.markdown(
-            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {_agora_brasilia_dt().strftime('%m/%Y')}</div></div>",
+            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {datetime.now().strftime('%m/%Y')}</div></div>",
             unsafe_allow_html=True,
         )
     with db3:
@@ -11073,7 +10913,7 @@ if st.session_state.get("empresa_ativa") == "bem_star":
         for p in metricas_bs['ultimos_pareceres']:
             st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
     
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 else:
     # --- DASHBOARD AQUA GESTÃO (ORIGINAL) ---
@@ -11127,7 +10967,7 @@ else:
         st.write(f"Com ação prioritária agora: **{total_vencidos + total_vencendo}**")
         st.write(f"Faixa de lembrete atual: **{st.session_state.alerta_vencimento_dias} dias**")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 # =========================================
 # SAÚDE DO SISTEMA
@@ -11403,7 +11243,7 @@ if ops_cadastrados:
         st.download_button(
             "📤 Exportar operadores e permissões",
             data=_csv_operadores.encode("utf-8-sig"),
-            file_name=f"operadores_permissoes_{_agora_brasilia_dt().strftime('%Y%m%d_%H%M')}.csv",
+            file_name=f"operadores_permissoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
             use_container_width=True,
             key="btn_exportar_operadores_csv",
@@ -11869,126 +11709,6 @@ if clientes_cadastrados:
 else:
     st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
 
-# v6: gestão segura do condomínio com duas opções: transferir empresa ou excluir do sistema — BUG-D2
-if clientes_cadastrados:
-    _empresa_destino_exclusao = "Bem Star Piscinas" if _empresa_ativa_codigo() == "aqua_gestao" else "Aqua Gestão"
-    _acao_exclusao_label = (
-        "Remover da Aqua Gestão e enviar para Bem Star Piscinas"
-        if _empresa_ativa_codigo() == "aqua_gestao"
-        else "Remover da Bem Star Piscinas e enviar para Aqua Gestão"
-    )
-    with st.expander("🗂️ Transferir ou excluir condomínio", expanded=False):
-        st.caption(
-            "Escolha a ação correta. Transferir mantém o condomínio no sistema e troca a empresa. "
-            "Excluir definitivamente remove o cadastro da aba Clientes e tira o condomínio das permissões dos operadores."
-        )
-        _nomes_excluir_empresa = [c.get("nome", "") for c in clientes_cadastrados if c.get("id") and c.get("nome")]
-        _sel_excluir_empresa = st.selectbox(
-            "Condomínio / local",
-            options=_nomes_excluir_empresa,
-            key=f"cc_excluir_empresa_sel_{_empresa_ativa_codigo()}",
-        )
-        _cliente_excluir_empresa = next((c for c in clientes_cadastrados if c.get("nome") == _sel_excluir_empresa), {})
-
-        _acao_condominio = st.radio(
-            "O que deseja fazer?",
-            [
-                f"Transferir para {_empresa_destino_exclusao}",
-                "Excluir definitivamente do sistema",
-            ],
-            key=f"cc_acao_condominio_{_empresa_ativa_codigo()}",
-            horizontal=False,
-        )
-
-        if _acao_condominio.startswith("Transferir"):
-            st.info(
-                "Esta opção é indicada quando o condomínio apareceu na empresa errada. "
-                "O histórico e o cadastro permanecem no Google Sheets."
-            )
-            _confirmar_excluir_empresa = st.checkbox(
-                f"Confirmo: {_acao_exclusao_label}",
-                key=f"cc_excluir_empresa_confirma_{_empresa_ativa_codigo()}",
-            )
-            if st.button("🗂️ Transferir para outra empresa", use_container_width=True, key=f"cc_excluir_empresa_btn_{_empresa_ativa_codigo()}"):
-                if not _cliente_excluir_empresa.get("id"):
-                    st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
-                elif not _confirmar_excluir_empresa:
-                    st.warning("Marque a confirmação antes de transferir.")
-                else:
-                    with st.spinner("Atualizando empresa do condomínio..."):
-                        ok_excluir_empresa = sheets_definir_empresa_cliente(
-                            id_cliente=_cliente_excluir_empresa["id"],
-                            empresa=_empresa_destino_exclusao,
-                        )
-                        # v6: atualiza cache local para o filtro por empresa não reverter no próximo rerun — BUG-D2
-                        try:
-                            _pasta_excluir_empresa = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
-                            _pasta_excluir_empresa.mkdir(parents=True, exist_ok=True)
-                            _dados_excluir_empresa = carregar_dados_condominio(_pasta_excluir_empresa) or {}
-                            _servicos_excluir_empresa = _empresa_para_servicos(_empresa_destino_exclusao)
-                            _dados_excluir_empresa.update({
-                                "nome_condominio": _cliente_excluir_empresa.get("nome", ""),
-                                "empresa": _empresa_destino_exclusao,
-                                "servicos": _servicos_excluir_empresa,
-                                "salvo_em": _agora_brasilia(),
-                            })
-                            salvar_dados_condominio(_pasta_excluir_empresa, _dados_excluir_empresa)
-                        except Exception as e:
-                            _log_sheets_erro("transferir_empresa_cliente/local", e)
-                    if ok_excluir_empresa:
-                        st.success(f"✅ '{_sel_excluir_empresa}' saiu de {_empresa_cadastro_nome} e agora está em {_empresa_destino_exclusao}.")
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error("❌ Não foi possível atualizar a empresa no Google Sheets.")
-                        _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
-                        if _det_excluir:
-                            with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
-                                st.code(_det_excluir, language="text")
-
-        else:
-            st.warning(
-                "Exclusão definitiva: o condomínio sairá do cadastro principal, dos filtros do sistema "
-                "e das permissões diretas dos operadores. Use somente quando o cadastro não deve existir mais."
-            )
-            _confirmar_excluir_sistema = st.checkbox(
-                f"Confirmo que desejo excluir definitivamente: {_sel_excluir_empresa}",
-                key=f"cc_excluir_sistema_confirma_{_empresa_ativa_codigo()}",
-            )
-            _confirmar_nome_excluir = st.text_input(
-                "Digite EXCLUIR para liberar o botão",
-                key=f"cc_excluir_sistema_texto_{_empresa_ativa_codigo()}",
-                placeholder="EXCLUIR",
-            )
-            if st.button("🗑️ Excluir definitivamente do sistema", use_container_width=True, key=f"cc_excluir_sistema_btn_{_empresa_ativa_codigo()}"):
-                if not _cliente_excluir_empresa.get("id"):
-                    st.error("Não encontrei o ID do cliente selecionado no Google Sheets.")
-                elif not _confirmar_excluir_sistema or _confirmar_nome_excluir.strip().upper() != "EXCLUIR":
-                    st.warning("Marque a confirmação e digite EXCLUIR para continuar.")
-                else:
-                    with st.spinner("Excluindo condomínio do sistema..."):
-                        ok_excluir_sistema = sheets_excluir_cliente_sistema(
-                            id_cliente=_cliente_excluir_empresa["id"],
-                            nome_cliente=_cliente_excluir_empresa.get("nome", ""),
-                        )
-                        # v6: remove cadastro local para não reaparecer pelo fallback de pastas — BUG-D2
-                        try:
-                            _pasta_excluir_sistema = GENERATED_DIR / slugify_nome(_cliente_excluir_empresa.get("nome", ""))
-                            if _pasta_excluir_sistema.exists() and _pasta_excluir_sistema.is_dir():
-                                shutil.rmtree(_pasta_excluir_sistema)
-                        except Exception as e:
-                            _log_sheets_erro("excluir_cliente_sistema/local", e)
-                    if ok_excluir_sistema:
-                        st.success(f"✅ '{_sel_excluir_empresa}' foi excluído do sistema.")
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error("❌ Não foi possível excluir o condomínio no Google Sheets.")
-                        _det_excluir = st.session_state.get("_sheets_ultimo_erro", "")
-                        if _det_excluir:
-                            with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
-                                st.code(_det_excluir, language="text")
-
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
     for k in ["cc_nome","cc_cnpj","cc_cep","cc_endereco","cc_contato","cc_telefone",
@@ -12419,7 +12139,7 @@ if _empresa_ativa_codigo() != "bem_star":
                 else:
                     st.error(f"❌ {_msg_retorno_env}")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
     # =========================================
     # PAINEL DE VENCIMENTOS
@@ -12692,7 +12412,7 @@ if _empresa_ativa_codigo() != "bem_star":
 
                 render_exportacao_e_docs(item, item_key)
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
     # =========================================
     # CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
@@ -12893,9 +12613,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         with rts1:
             csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
         with rts2:
-            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=_agora_brasilia_dt().strftime("%m"))
+            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
         with rts3:
-            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(_agora_brasilia_dt().year))
+            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
     
         csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
     
@@ -12930,7 +12650,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
     
         _mes_csr  = (csr_mes or "").strip()
-        _ano_csr  = (csr_ano or str(_agora_brasilia_dt().year)).strip()
+        _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
         lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
     
         # ── Painel de lançamentos disponíveis ────────────────────────────────
@@ -13018,7 +12738,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             st.code(traceback.format_exc(), language="text")
     
     
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
     
     
 
@@ -13055,14 +12775,14 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 }
                 try:
                     _pb_bytes = gerar_proposta_pdf(_pb_dados, "Bem Star Piscinas")
-                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{_agora_brasilia_dt().strftime('%Y%m')}.pdf")
+                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
                     st.success("✅ Proposta gerada com sucesso!")
                     st.download_button("⬇️ Baixar Proposta PDF", data=_pb_bytes,
                         file_name=_pb_nome, mime="application/pdf", use_container_width=True, key="dl_prop_bs")
                 except Exception as _e:
                     st.error(f"Erro ao gerar proposta: {_e}")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
     # =========================================
     # CONTRATO BEM STAR PISCINAS
@@ -13477,7 +13197,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         # ── Gera PDF ───────────────────────────────────────────────
                         pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
                         pasta_bs_cont.mkdir(parents=True, exist_ok=True)
-                        _ts_bs = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+                        _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
                         pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
     
                         _buf = _io.BytesIO()
@@ -13525,7 +13245,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                             import traceback as _tb
                             st.code(_tb.format_exc(), language="text")
     
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
     
 
     # =========================================
@@ -13559,14 +13279,14 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 }
                 try:
                     _pa_bytes = gerar_proposta_pdf(_pa_dados, "Aqua Gestao – Controle Tecnico de Piscinas")
-                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{_agora_brasilia_dt().strftime('%Y%m')}.pdf")
+                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
                     st.success("✅ Proposta gerada com sucesso!")
                     st.download_button("⬇️ Baixar Proposta PDF", data=_pa_bytes,
                         file_name=_pa_nome, mime="application/pdf", use_container_width=True, key="dl_prop_aq")
                 except Exception as _e:
                     st.error(f"Erro ao gerar proposta: {_e}")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
     # =========================================
     # FORMULÁRIO
@@ -13965,7 +13685,7 @@ if _adt_dados_encontrados:
                 "{{ENDERECO_CONTRATANTE}}": _adt_dados_encontrados.get("endereco_condominio", ""),
             }
 
-            _adt_ts = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+            _adt_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             _adt_base = limpar_nome_arquivo(f"Aditivo_RT_{_adt_nome}_{_adt_ts}")
 
             try:
@@ -14672,7 +14392,7 @@ def gerar_caderno_pops_pdf() -> tuple[bool, str | None, Path | None]:
 
         pasta = GENERATED_DIR / slugify_nome(nome_cond)
         pasta.mkdir(parents=True, exist_ok=True)
-        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saida = pasta / f"{limpar_nome_arquivo('Caderno_POPs_' + nome_cond + '_' + timestamp)}.pdf"
         pdf_bytes = _gerar_pdf_caderno_pops(dados)
         saida.write_bytes(pdf_bytes)
@@ -14999,7 +14719,7 @@ def gerar_termo_ciencia_pdf(tipo: str) -> tuple[bool, str | None, Path | None]:
 
         pasta = GENERATED_DIR / slugify_nome(nome_cond)
         pasta.mkdir(parents=True, exist_ok=True)
-        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         nome_tipo = "Termo_Ciencia_Sindico" if tipo == "sindico" else "Termo_Ciencia_Operador_EPI"
         saida = pasta / f"{limpar_nome_arquivo(nome_tipo + '_' + nome_cond + '_' + timestamp)}.pdf"
         pdf_bytes = _gerar_pdf_termo_ciencia_base(dados, tipo)
@@ -15388,7 +15108,7 @@ if _ultimos:
         key_prefix="ultimos_docs_aqua",
     )
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 # =========================================
 # RELATÓRIO MENSAL DE RT
@@ -15530,49 +15250,23 @@ if _clientes_rel:
             key="sel_cliente_rel",
             help="Selecione um cliente para preencher automaticamente os campos do relatório."
         )
-
-    def _carregar_cliente_relatorio_e_agendar_visitas(_nome_cliente: str, _forcar: bool = False) -> bool:
-        """Carrega cadastro e agenda importação automática dos lançamentos do operador. # v6: autoalimenta relatório sem botão manual — BUG-REL-AUTO"""
-        _nome_cliente = str(_nome_cliente or "").strip()
-        if not _nome_cliente or _nome_cliente == "— Selecionar cliente cadastrado —":
-            return False
-        if not _forcar and st.session_state.get("_rel_cliente_auto_carregado") == _nome_cliente:
-            return False
-
-        _dados_rel = next((c for c in _clientes_rel if c.get("nome") == _nome_cliente), {})
-        if not _dados_rel:
-            return False
-
-        st.session_state["rel_nome_condominio"] = _dados_rel.get("nome", "")
-        st.session_state["rel_cnpj_condominio"] = formatar_cnpj(_dados_rel.get("cnpj", ""))
-        st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
-        st.session_state["rel_representante"] = _dados_rel.get("contato", "")
-        st.session_state["rel_cpf_cnpj_representante"] = ""
-        _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
-        st.session_state["rel_verificacoes_semanais"] = _freq_rel
-        st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(
-            _freq_rel,
-            st.session_state.get("rel_mes_referencia"),
-            st.session_state.get("rel_ano_referencia"),
-        )
-        st.session_state["_rel_auto_importar_cliente"] = True
-        st.session_state["_rel_cliente_auto_carregado"] = _nome_cliente
-        st.session_state["_rel_autoimport_assinatura"] = ""
-        st.session_state["_rel_autoimport_msg"] = (
-            f"✅ Dados de '{_nome_cliente}' carregados. As visitas lançadas pelo operador serão puxadas automaticamente."
-        )
-        return True
-
-    if _carregar_cliente_relatorio_e_agendar_visitas(_sel_rel):
-        st.rerun()
-
     with _rel_col2:
         st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
-        if st.button("🔄 Recarregar visitas", key="btn_carregar_cliente_rel", use_container_width=True):
-            if _carregar_cliente_relatorio_e_agendar_visitas(_sel_rel, _forcar=True):
-                st.rerun()
-            else:
-                st.warning("Selecione um cliente cadastrado para recarregar.")
+        if st.button("⬇️ Carregar", key="btn_carregar_cliente_rel", use_container_width=True):
+            if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
+                _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
+                if _dados_rel:
+                    st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
+                    st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
+                    st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
+                    st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
+                    st.session_state["rel_cpf_cnpj_representante"] = ""
+                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
+                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
+                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
+                    st.session_state["_rel_auto_importar_cliente"] = True
+                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
+                    st.rerun()
 
 rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
@@ -15601,7 +15295,7 @@ if nome_rel_atual:
 
 # Filtra pelo mês de referência
 mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
-ano_ref = (st.session_state.get("rel_ano_referencia") or str(_agora_brasilia_dt().year)).strip()
+ano_ref = (st.session_state.get("rel_ano_referencia") or str(datetime.now().year)).strip()
 
 # Diagnóstico de importação de visitas — ajuda a separar problema de filtro vs. problema de gravação no Sheets.
 with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
@@ -15684,65 +15378,29 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
                 st.error("Erro ao importar o PDF de visita.")
                 st.code(st.session_state.get("_sheets_ultimo_erro", "")[:2000])
 
-def _data_lancamento_para_ordenacao(lancamento: dict) -> datetime:
-    """Converte a data da visita para ordenar as linhas automaticamente. # v6: linhas seguem data do operador — BUG-RT-AUTO"""
-    try:
-        return datetime.strptime(normalizar_data_visita(lancamento.get("data", "")), "%d/%m/%Y")
-    except Exception:
-        return datetime.max
-
-
-def _operador_do_lancamento(lancamento: dict, dados_piscina: dict | None = None) -> str:
-    """Resolve o operador do lançamento mesmo quando vem de payload antigo. # v6: operador automático por visita — BUG-RT-AUTO"""
-    dados_piscina = dados_piscina or {}
-    for fonte in (lancamento, dados_piscina):
-        for chave in ("operador", "nome_operador", "responsavel_operador", "tecnico", "responsavel"):
-            valor = str((fonte or {}).get(chave, "") or "").strip()
-            if valor:
-                return valor
-    return ""
-
-
 def _filtrar_mes(lancamentos, mes, ano):
     """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
     if not mes or not ano:
         return lancamentos
     return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
 
-# Une local + Sheets sem duplicar (por ID quando existir; fallback por data+operador+pH)
+# Une local + Sheets sem duplicar (por data+operador)
 _vistos = set()
 lancamentos_disponiveis = []
 for lc in lancamentos_local + lancamentos_sheets:
-    _id_lc = str(lc.get("id_visita", "") or "").strip()
-    _op_lc = _operador_do_lancamento(lc)
-    _chave = _id_lc or f"{normalizar_data_visita(lc.get('data',''))}-{_op_lc}-{lc.get('ph','')}-{lc.get('cloro_livre','')}"
+    _chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','')}"
     if _chave not in _vistos:
         _vistos.add(_chave)
         lancamentos_disponiveis.append(lc)
 
-# Filtra por mês se informado e ordena por data para bater linha x visita.
+# Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
-lancamentos_disponiveis = sorted(lancamentos_disponiveis, key=_data_lancamento_para_ordenacao)
 
 def _importar_lancamentos(lancamentos):
-    """Preenche o relatório com os lançamentos de campo. # v6: operador automático e expansão de linhas — BUG-RT-AUTO"""
-    lancamentos = sorted(lancamentos or [], key=_data_lancamento_para_ordenacao)
+    """Preenche o relatório com os lançamentos de campo."""
     _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
-    _linhas_base = calcular_linhas_analises_por_frequencia(
-        _freq_base,
-        st.session_state.get("rel_mes_referencia"),
-        st.session_state.get("rel_ano_referencia"),
-    )
-    _linhas_atuais = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
-    _linhas_total = max(len(lancamentos), _linhas_base, _linhas_atuais, ANALISES_PADRAO)
-    garantir_campos_analises(_linhas_total)
-
-    # Limpa apenas o bloco de análises que será reconstruído pela importação automática.
-    # Evita sobras de condomínio/mês anterior quando a quantidade de visitas muda.
-    for i in range(int(st.session_state.get("rel_analises_total", _linhas_total) or _linhas_total)):
-        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "operador"]:
-            st.session_state[f"rel_analise_{sufixo}_{i}"] = ""
-
+    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -15750,21 +15408,20 @@ def _importar_lancamentos(lancamentos):
             lc_dados = piscinas[0]  # primeira piscina para o relatório principal
         else:
             lc_dados = lc
-        operador_linha = _operador_do_lancamento(lc, lc_dados)
-        st.session_state[f"rel_analise_data_{i}"]     = normalizar_data_visita(lc.get("data", ""))
-        st.session_state[f"rel_analise_ph_{i}"]        = str(lc_dados.get("ph", lc.get("ph","")) or "")
-        st.session_state[f"rel_analise_cl_{i}"]        = str(lc_dados.get("cloro_livre", lc.get("cloro_livre","")) or "")
-        st.session_state[f"rel_analise_ct_{i}"]        = str(lc_dados.get("cloro_total", lc.get("cloro_total","")) or "")
-        st.session_state[f"rel_analise_alc_{i}"]       = str(lc_dados.get("alcalinidade", lc.get("alcalinidade","")) or "")
-        st.session_state[f"rel_analise_dc_{i}"]        = str(lc_dados.get("dureza", lc.get("dureza","")) or "")
-        st.session_state[f"rel_analise_cya_{i}"]       = str(lc_dados.get("cianurico", lc.get("cianurico","")) or "")
-        st.session_state[f"rel_analise_operador_{i}"]  = operador_linha
-
+        st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
+        st.session_state[f"rel_analise_ph_{i}"]        = lc_dados.get("ph", lc.get("ph",""))
+        st.session_state[f"rel_analise_cl_{i}"]        = lc_dados.get("cloro_livre", lc.get("cloro_livre",""))
+        st.session_state[f"rel_analise_ct_{i}"]        = lc_dados.get("cloro_total", lc.get("cloro_total",""))
+        st.session_state[f"rel_analise_alc_{i}"]       = lc_dados.get("alcalinidade", lc.get("alcalinidade",""))
+        st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
+        st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
+        st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
     # Preenche campo operador responsavel com o mais frequente dos lancamentos
-    _ops_import = [_operador_do_lancamento(lc).strip() for lc in lancamentos if _operador_do_lancamento(lc).strip()]
+    _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
     if _ops_import:
         _op_mais_freq = max(set(_ops_import), key=_ops_import.count)
-        st.session_state["csr_operador_rel"] = _op_mais_freq
+        if not st.session_state.get("csr_operador_rel","").strip():
+            st.session_state["csr_operador_rel"] = _op_mais_freq
 
     # Importa dosagens da última visita com dosagem registrada
     for lc in reversed(lancamentos):
@@ -15775,9 +15432,9 @@ def _importar_lancamentos(lancamentos):
     obs_lista = []
     for lc in lancamentos:
         if lc.get("problemas","").strip():
-            obs_lista.append(f"[{normalizar_data_visita(lc.get('data',''))}] ⚠️ {lc['problemas']}")
+            obs_lista.append(f"[{lc.get('data','')}] ⚠️ {lc['problemas']}")
         if lc.get("observacao","").strip():
-            obs_lista.append(f"[{normalizar_data_visita(lc.get('data',''))}] {lc['observacao']}")
+            obs_lista.append(f"[{lc.get('data','')}] {lc['observacao']}")
     obs_txt = "\n".join(obs_lista[:10])
     if obs_txt:
         st.session_state["rel_observacoes_gerais"] = obs_txt
@@ -15787,22 +15444,15 @@ def _importar_lancamentos(lancamentos):
 # uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
 if lancamentos_disponiveis:
     try:
-        _assinatura_lancamentos = []
-        for _lc_sig in lancamentos_disponiveis:
-            _assinatura_lancamentos.append("|".join([
-                str(_lc_sig.get("id_visita", "")),
-                normalizar_data_visita(_lc_sig.get("data", "")),
-                _operador_do_lancamento(_lc_sig),
-                str(_lc_sig.get("ph", "")),
-                str(_lc_sig.get("cloro_livre", "")),
-                str(_lc_sig.get("cloro_total", "")),
-            ]))
-        _assinatura_auto = "||".join([
+        _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
+        _assinatura_auto = "|".join([
             str(nome_rel_atual),
             str(mes_ref),
             str(ano_ref),
             str(len(lancamentos_disponiveis)),
-            "##".join(_assinatura_lancamentos),
+            str(_ultimo_lc.get("id_visita", "")),
+            str(_ultimo_lc.get("data", "")),
+            str(_ultimo_lc.get("operador", "")),
         ])
 
         if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
@@ -16132,13 +15782,13 @@ _rasc_existente = carregar_rascunho_relatorio(_pasta_rasc) if _pasta_rasc and _p
 
 col_rasc1, col_rasc2, col_rasc3 = st.columns([1.2, 1.2, 1.6])
 with col_rasc1:
-    if st.button("💾 Salvar dados do mês sem gerar relatório", use_container_width=True):
+    if st.button("💾 Salvar rascunho", use_container_width=True):
         if _nome_rasc:
             _pasta_rasc.mkdir(parents=True, exist_ok=True)
-            salvar_rascunho_relatorio(_pasta_rasc, salvar_sheets=True)
-            st.success("Dados do mês salvos sem gerar relatório. Você pode continuar lançando visitas e voltar depois.")
+            salvar_rascunho_relatorio(_pasta_rasc)
+            st.success("Rascunho salvo! Os dados serão restaurados mesmo após reiniciar o sistema.")
         else:
-            st.warning("Informe o nome do condomínio antes de salvar os dados do mês.")
+            st.warning("Informe o nome do condomínio antes de salvar o rascunho.")
 
 with col_rasc2:
     if _rasc_existente:
@@ -16476,7 +16126,7 @@ def exibir_bloco_envio(
             else:
                 st.error(retorno)
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
 
 
 def gerar_contrato_bem_star_docx(
@@ -16521,7 +16171,7 @@ def gerar_contrato_bem_star_docx(
         "{{PRODUTOS_INCLUIDOS}}": produtos_incluidos or "Conforme proposta comercial",
     }
 
-    timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     nome_pasta = slugify_nome(nome_contratante)
     pasta = GENERATED_DIR / nome_pasta
     pasta.mkdir(parents=True, exist_ok=True)
@@ -17276,7 +16926,7 @@ def gerar_contrato_e_aditivo():
 
         salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
 
-        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_nome_contrato = limpar_nome_arquivo(f"Contrato_RT_{nome_condominio}_{timestamp}")
 
         contrato_docx = pasta_condominio / f"{base_nome_contrato}.docx"
@@ -17434,7 +17084,7 @@ def gerar_somente_aditivo_rapido():
 
         salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
 
-        timestamp = _agora_brasilia_dt().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
 
         aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
