@@ -1,0 +1,19 @@
+{
+  "name": "Aqua Gestão Codespaces",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "python -m pip install --upgrade pip && pip install -r requirements.txt && mkdir -p .streamlit && python - <<'PY'\nimport os, json\nfrom pathlib import Path\nraw = os.environ.get('GCP_SERVICE_ACCOUNT_JSON', '')\nif raw:\n    data = json.loads(raw)\n    lines = ['[gcp_service_account]']\n    for k, v in data.items():\n        v = str(v).replace('\\\\', '\\\\\\\\').replace('\\n', '\\\\n').replace('\\r', '\\\\r').replace('\"', '\\\\\"')\n        lines.append(f'{k} = \"{v}\"')\n    Path('.streamlit/secrets.toml').write_text('\\n'.join(lines) + '\\n', encoding='utf-8')\n    print('secrets.toml gerado a partir de GCP_SERVICE_ACCOUNT_JSON')\nelse:\n    print('GCP_SERVICE_ACCOUNT_JSON não encontrado; secrets.toml não gerado')\nPY",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Aqua Gestão Streamlit",
+      "onAutoForward": "notify"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}
