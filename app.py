@@ -349,7 +349,8 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])  # v6: kwargs gspread — BUG-C
+        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -384,17 +385,21 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         # Verifica se já existe (pelo nome)
         for i, row in enumerate(todos):
             if len(row) > 0 and _normalizar_chave_acesso(row[0]) == _normalizar_chave_acesso(nome_limpo):
-                aba.update(range_name=f"A{i+1}:F{i+1}", values=[_sanitizar_linha_sheets(nova_linha)])  # v6: sem None no gspread — BUG-B
+                aba.update(range_name=f"A{i+1}:F{i+1}", values=[nova_linha])
                 st.cache_data.clear()
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
+        # v6: linha final sem None antes de chamar gspread — BUG-B
+        nova_linha = sanitizar_linha_para_sheets(nova_linha)
+
         linha_destino = max(len(todos) + 1, 8)
+        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[_sanitizar_linha_sheets(nova_linha)],
+            values=[nova_linha],
             value_input_option="RAW"
-        )  # v6: kwargs + sem None no gspread — BUG-B/BUG-C
+        )
         st.cache_data.clear()
         st.session_state.pop("_operadores_erro", None)
         return True
@@ -546,34 +551,22 @@ def limpar_payload_para_sheets(dados: dict) -> dict:
     return limpo
 
 
-def _sanitizar_valor_sheets(valor):
-    """v6: converte None e tipos compostos antes de enviar ao Google Sheets — BUG-B"""
-    if valor is None:
-        return ""
-    if isinstance(valor, (dict, list, tuple)):
-        try:
-            return json.dumps(_sanitizar_payload_sheets(valor), ensure_ascii=False)
-        except Exception:
-            return str(valor)
-    return str(valor)
-
-
-def _sanitizar_payload_sheets(valor):
-    """v6: remove None recursivamente de payloads persistidos no Sheets — BUG-B"""
+# v6: sanitização recursiva impede envio de None ao Google Sheets/gspread v5+ — BUG-B
+def sanitizar_para_sheets(valor):
+    """Converte None para string vazia antes de qualquer escrita no Google Sheets."""
     if valor is None:
         return ""
     if isinstance(valor, dict):
-        return {str(k): _sanitizar_payload_sheets(v) for k, v in valor.items()}
+        return {str(k): sanitizar_para_sheets(v) for k, v in valor.items()}
     if isinstance(valor, list):
-        return [_sanitizar_payload_sheets(v) for v in valor]
-    if isinstance(valor, tuple):
-        return [_sanitizar_payload_sheets(v) for v in valor]
+        return [sanitizar_para_sheets(item) for item in valor]
     return valor
 
 
-def _sanitizar_linha_sheets(linha: list) -> list[str]:
-    """v6: garante linha sem None para compatibilidade com gspread v5 — BUG-B"""
-    return [_sanitizar_valor_sheets(v) for v in (linha or [])]
+# v6: payload final do Sheets sem None e com valores diretos serializáveis — BUG-B
+def sanitizar_linha_para_sheets(linha: list) -> list:
+    """Normaliza a linha de escrita para o gspread não receber None."""
+    return ["" if v is None else str(v) for v in (linha or [])]
 
 
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
@@ -591,7 +584,11 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         try:
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
+            aba = None
+        if aba is None:
+            # v6: se a aba não existir ou vier None, cria sem derrubar o salvamento — BUG-B
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
+            # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
             aba.update(
                 range_name="A1:Z1",
                 values=[[
@@ -602,7 +599,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                     "Status", "Operador", "Problemas", "Payload JSON", "Salvo em",
                     "Fonte", "Mês/Ano",
                 ]]
-            )  # v6: kwargs gspread — BUG-C
+            )
 
         todos = aba.get_all_values()
         visitas_existentes = [
@@ -634,13 +631,12 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        # v6: payload do Sheets sem campos pesados e sem None — BUG-B
-        payload = limpar_payload_para_sheets(dict(lancamento))
+        # v6: remove campos pesados e converte None antes de serializar/enviar ao Sheets — BUG-B
+        payload = sanitizar_para_sheets(limpar_payload_para_sheets(dict(lancamento)))
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
-        payload = _sanitizar_payload_sheets(payload)
         try:
             payload_json = json.dumps(payload, ensure_ascii=False)
         except Exception as e:
@@ -681,12 +677,16 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
+        # v6: linha final sem None antes de chamar gspread — BUG-B
+        nova_linha = sanitizar_linha_para_sheets(nova_linha)
+
         linha_destino = max(len(todos) + 1, 8)
+        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[_sanitizar_linha_sheets(nova_linha)],
+            values=[nova_linha],
             value_input_option="RAW"
-        )  # v6: kwargs + sem None no gspread — BUG-B/BUG-C
+        )
         st.cache_data.clear()
         return True
 
@@ -900,7 +900,7 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
                 ]
-                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[_sanitizar_linha_sheets(nova)], value_input_option="USER_ENTERED")  # v6: sem None no gspread — BUG-B
+                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -2024,10 +2024,10 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                         break
                 nova = [nome_cond.strip(), dados.get("operador",""), dados["_rascunho_salvo_em"], payload]
                 if linha_existente:
-                    aba_rasc.update(range_name=f"A{linha_existente}:D{linha_existente}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
+                    aba_rasc.update(range_name=f"A{linha_existente}:D{linha_existente}", values=[nova], value_input_option="RAW")
                 else:
                     proxima = max(len(todos) + 1, 2)
-                    aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
+                    aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[nova], value_input_option="RAW")
         except Exception:
             pass
 
@@ -2091,7 +2091,7 @@ def deletar_rascunho_operador(nome_cond: str):
                 chave = nome_cond.strip().lower()
                 for i, row in enumerate(todos[1:], start=2):
                     if row and str(row[0]).strip().lower() == chave:
-                        aba_rasc.update(range_name=f"A{i}:D{i}", values=[["","","",""]], value_input_option="RAW")  # v6: linha já sanitizada — BUG-B
+                        aba_rasc.update(range_name=f"A{i}:D{i}", values=[["","","",""]], value_input_option="RAW")
                         break
             except Exception:
                 pass
@@ -4588,7 +4588,7 @@ def exibir_bloco_envio_bem_star(
                     use_container_width=True):
                 abrir_pasta_windows(pasta)
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def link_whatsapp(telefone: str, mensagem: str) -> str:
@@ -4891,7 +4891,7 @@ def exibir_envio_email_documentos_aqua(
             if st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
                 abrir_pasta_windows(Path(pasta_condominio))
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # AÇÕES DO PAINEL
@@ -8455,7 +8455,7 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
     with c3:
         if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
     return True, resultado["mensagem"]
 
 
@@ -8927,7 +8927,8 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])  # v6: kwargs gspread — BUG-C
+                    # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -8939,10 +8940,10 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                         break
                 nova = ["thyago", dados.get("salvo_em", ""), payload]
                 if linha_ex:
-                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
+                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[nova], value_input_option="RAW")
                 else:
                     prox = max(len(todos_rt) + 1, 2)
-                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[_sanitizar_linha_sheets(nova)], value_input_option="RAW")  # v6: sem None no gspread — BUG-B
+                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[nova], value_input_option="RAW")
         except Exception:
             pass  # Sheets indisponivel — arquivo local e suficiente
         return True
@@ -9095,7 +9096,7 @@ def _admin_sessao_valida() -> bool:
     # Recuperação: admin marcado como logado mas modo_atual não está em escritorio.
     # Isso ocorre quando a sessão é parcialmente restaurada pelo browser após
     # hibernação ou reconexão no Streamlit Cloud.
-    # v6: guard administrativo nunca derruba modo operador durante digitação — BUG-A
+    # v6: guard administrativo preserva modo operador em reruns/reconexões — BUG-A
     if (st.session_state.get("admin_logado")
             and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
         st.session_state["modo_atual"] = "escritorio"
@@ -9119,9 +9120,8 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
-    # v6: logout administrativo não pode sobrescrever sessão ativa do operador — BUG-A
+    # v6: saída administrativa nunca pode derrubar sessão ativa do operador — BUG-A
     if st.session_state.get("modo_atual") == "operador":
-        st.session_state["mostrar_pin_admin"] = False
         return
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
@@ -9479,7 +9479,10 @@ st.session_state.setdefault("_op_ultimo_lancamento", None)
 if "modo_atual" not in st.session_state:
     st.session_state["modo_atual"] = "entrada"
 
-# v6: guard duplo protege o modo operador e só recupera admin fora dele — BUG-A
+# GUARD DUPLO v6: protege o modo operador.
+# O guard só redireciona para escritório se o modo atual não for operador.
+# Antes, esse guard podia derrubar o operador durante preenchimento caso admin_logado
+# estivesse definido em memória de sessão anterior. — BUG-A
 if (st.session_state.get("admin_logado")
         and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
     st.session_state["modo_atual"] = "escritorio"
@@ -9587,7 +9590,6 @@ if _modo_interno in ("escritorio", "operador"):
             st.rerun()
     else:
         if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
-            # v6: saída explícita do operador; nunca chamada por guard automático — BUG-A
             st.session_state["modo_atual"] = "entrada"
             st.session_state["op_pin_ok"] = False
             st.session_state.pop("op_dados_atual", None)
@@ -9940,7 +9942,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if op_nome_cond:
 
@@ -10209,7 +10211,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 else:
                     st.success("✅ Todos os parâmetros dentro da faixa ideal.")
 
-            # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # Compatibilidade com código legado (usa dados da primeira piscina)
         op_ph  = op_piscinas_dados[0]["ph"]        if op_piscinas_dados else ""
@@ -10913,7 +10915,7 @@ if st.session_state.get("empresa_ativa") == "bem_star":
         for p in metricas_bs['ultimos_pareceres']:
             st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
     
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 else:
     # --- DASHBOARD AQUA GESTÃO (ORIGINAL) ---
@@ -10967,7 +10969,7 @@ else:
         st.write(f"Com ação prioritária agora: **{total_vencidos + total_vencendo}**")
         st.write(f"Faixa de lembrete atual: **{st.session_state.alerta_vencimento_dias} dias**")
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # SAÚDE DO SISTEMA
@@ -12139,7 +12141,7 @@ if _empresa_ativa_codigo() != "bem_star":
                 else:
                     st.error(f"❌ {_msg_retorno_env}")
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================
     # PAINEL DE VENCIMENTOS
@@ -12412,7 +12414,7 @@ if _empresa_ativa_codigo() != "bem_star":
 
                 render_exportacao_e_docs(item, item_key)
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================
     # CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
@@ -12738,7 +12740,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             st.code(traceback.format_exc(), language="text")
     
     
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
     
     
 
@@ -12782,7 +12784,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 except Exception as _e:
                     st.error(f"Erro ao gerar proposta: {_e}")
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================
     # CONTRATO BEM STAR PISCINAS
@@ -13245,7 +13247,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                             import traceback as _tb
                             st.code(_tb.format_exc(), language="text")
     
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
     
 
     # =========================================
@@ -13286,7 +13288,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 except Exception as _e:
                     st.error(f"Erro ao gerar proposta: {_e}")
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================
     # FORMULÁRIO
@@ -15108,7 +15110,7 @@ if _ultimos:
         key_prefix="ultimos_docs_aqua",
     )
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # RELATÓRIO MENSAL DE RT
@@ -16126,7 +16128,7 @@ def exibir_bloco_envio(
             else:
                 st.error(retorno)
 
-    # v6: removido fechamento HTML solto; evitava NotFoundError/removeChild no frontend — BUG-A
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def gerar_contrato_bem_star_docx(
