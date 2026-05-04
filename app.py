@@ -9647,6 +9647,39 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     .op-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#edf5ff; border:1px solid #d3e6ff; color:#134b8a; font-size:0.78rem; margin: 2px 6px 6px 0; }
     .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
     
+    /* v6: UX mobile do operador com status Sheets e progresso discreto — MELHORIA-P4 */
+    .op-status-ok, .op-status-off {
+        border-radius: 12px;
+        padding: 8px 10px;
+        margin: 8px 0;
+        font-size: 0.88rem;
+        font-weight: 700;
+    }
+    .op-status-ok { background: rgba(30,140,70,0.10); border: 1px solid rgba(30,140,70,0.30); color: #1a6e3a; }
+    .op-status-off { background: rgba(190,80,20,0.10); border: 1px solid rgba(190,80,20,0.30); color: #944212; }
+    .op-progress-wrap {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 5px;
+        margin: 8px 0 10px;
+    }
+    .op-progress-step {
+        border: 1px solid rgba(20,85,160,0.18);
+        border-radius: 999px;
+        padding: 6px 5px;
+        text-align: center;
+        font-size: 0.76rem;
+        color: #4f657c;
+        background: #f7fbff;
+        white-space: nowrap;
+    }
+    .op-progress-step.done {
+        background: rgba(30,140,70,0.10);
+        border-color: rgba(30,140,70,0.35);
+        color: #1a6e3a;
+        font-weight: 700;
+    }
+
     .pin-box {
         padding: 20px 0;
         text-align: center;
@@ -9684,7 +9717,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
-    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
+    # v6: diagnóstico discreto preserva suporte sem interferir no modo operador — MELHORIA-P4
     with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
         st.write({
             "modo_atual": st.session_state.get("modo_atual"),
@@ -9693,6 +9726,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "condominio": st.session_state.get("op_sel_cond", "—"),
             "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
             "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
+            "ultimo_erro_sheets": bool(st.session_state.get("_sheets_ultimo_erro")),
         })
 
     # v4 — operador não escolhe empresa.
@@ -9702,10 +9736,29 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
+    # v6: teste leve e cacheado para mostrar conexão Sheets no topo do operador — MELHORIA-P4
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _status_sheets_operador_v6():
+        try:
+            sh = conectar_sheets()
+            if sh is None:
+                return False, st.session_state.get("_sheets_ultimo_erro", "")
+            return True, ""
+        except Exception as _e_status:
+            _log_sheets_erro("status_sheets_operador_v6", _e_status)
+            return False, str(_e_status)
+
+    _sheets_online_v6, _sheets_erro_v6 = _status_sheets_operador_v6()
+
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
     st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
+    # v6: indicador visual de conexão Sheets antes do preenchimento — MELHORIA-P4
+    if _sheets_online_v6:
+        st.markdown('<div class="op-status-ok">🟢 Sheets online — lançamento será gravado no banco ao salvar.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="op-status-off">🔴 Sheets offline — visita pode ficar local e deve ser conferida depois.</div>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -9941,6 +9994,31 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
+
+    # v6: barra de progresso simples para orientar uso no Android — MELHORIA-P4
+    _op_tem_cond = bool(str(op_nome_cond or "").strip())
+    _op_tem_data = bool(str(st.session_state.get("op_data_visita", "") or "").strip())
+    _op_tem_param = any(
+        str(v or "").strip()
+        for k, v in st.session_state.items()
+        if str(k).startswith("op_") and any(suf in str(k) for suf in ("_ph", "_crl", "_alc", "_dc", "_cya", "_ct"))
+    )
+    _op_tem_foto = any(bool(st.session_state.get(k)) for k in ("op_fotos_antes", "op_fotos_depois", "op_fotos_cmaq", "op_fotos_extras"))
+    _op_passos = [
+        ("1 Condomínio", _op_tem_cond),
+        ("2 Data", _op_tem_data),
+        ("3 Parâmetros", _op_tem_param),
+        ("4 Fotos/Salvar", _op_tem_foto),
+    ]
+    st.markdown(
+        "<div class='op-progress-wrap'>" +
+        "".join(
+            f"<div class='op-progress-step {'done' if ok else ''}'>{'✅ ' if ok else ''}{rot}</div>"
+            for rot, ok in _op_passos
+        ) +
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -10718,14 +10796,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
 
-                # v5: Sheets com proteção total — falha não derruba o app nem limpa sessão
-                try:
-                    ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
-                except Exception as _e_sh:
-                    ok_sheets = False
-                    st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
+                # v6: spinner no I/O Sheets e proteção total; falha não derruba o app nem limpa sessão — MELHORIA-P4
+                with st.spinner("Salvando lançamento no Google Sheets..."):
+                    try:
+                        ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                    except Exception as _e_sh:
+                        ok_sheets = False
+                        st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
 
                 if ok_sheets:
+                    try:
+                        st.toast("✅ Visita salva no Google Sheets.", icon="✅")
+                    except Exception:
+                        pass
                     st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
                 else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
