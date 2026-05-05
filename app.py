@@ -349,7 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
         aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
@@ -390,11 +390,11 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
-        # v6: linha final sem None antes de chamar gspread — BUG-B
-        nova_linha = sanitizar_linha_para_sheets(nova_linha)
+        # v6: gspread v5 não aceita None; sanitiza a linha antes de enviar ao Sheets — BUG-B
+        nova_linha = ["" if v is None else str(v) for v in nova_linha]
 
         linha_destino = max(len(todos) + 1, 8)
-        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -551,24 +551,6 @@ def limpar_payload_para_sheets(dados: dict) -> dict:
     return limpo
 
 
-# v6: sanitização recursiva impede envio de None ao Google Sheets/gspread v5+ — BUG-B
-def sanitizar_para_sheets(valor):
-    """Converte None para string vazia antes de qualquer escrita no Google Sheets."""
-    if valor is None:
-        return ""
-    if isinstance(valor, dict):
-        return {str(k): sanitizar_para_sheets(v) for k, v in valor.items()}
-    if isinstance(valor, list):
-        return [sanitizar_para_sheets(item) for item in valor]
-    return valor
-
-
-# v6: payload final do Sheets sem None e com valores diretos serializáveis — BUG-B
-def sanitizar_linha_para_sheets(linha: list) -> list:
-    """Normaliza a linha de escrita para o gspread não receber None."""
-    return ["" if v is None else str(v) for v in (linha or [])]
-
-
 def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
     """Salva lançamento de campo na aba 🔬 Visitas do Google Sheets.
 
@@ -584,11 +566,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         try:
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
-            aba = None
-        if aba is None:
-            # v6: se a aba não existir ou vier None, cria sem derrubar o salvamento — BUG-B
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
-            # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+            # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
             aba.update(
                 range_name="A1:Z1",
                 values=[[
@@ -631,16 +610,16 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        # v6: remove campos pesados e converte None antes de serializar/enviar ao Sheets — BUG-B
-        payload = sanitizar_para_sheets(limpar_payload_para_sheets(dict(lancamento)))
+        payload = limpar_payload_para_sheets(dict(lancamento))
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
+        # v6: gspread v5 não aceita None; sanitiza payload antes do JSON/Sheets — BUG-B
+        payload_limpo = {k: ("" if v is None else v) for k, v in payload.items()}
         try:
-            payload_json = json.dumps(payload, ensure_ascii=False)
-        except Exception as e:
-            _log_sheets_erro("sheets_salvar_lancamento_campo/payload_json", e)
+            payload_json = json.dumps(payload_limpo, ensure_ascii=False)
+        except Exception:
             payload_json = ""
 
         mes_ano = ""
@@ -677,11 +656,11 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
-        # v6: linha final sem None antes de chamar gspread — BUG-B
-        nova_linha = sanitizar_linha_para_sheets(nova_linha)
+        # v6: gspread v5 não aceita None; sanitiza a linha de visita antes de enviar ao Sheets — BUG-B
+        nova_linha = ["" if v is None else str(v) for v in nova_linha]
 
         linha_destino = max(len(todos) + 1, 8)
-        # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
+        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -8927,8 +8906,8 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    # v6: update com kwargs para compatibilidade gspread v5+ — BUG-C
-                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
+                    # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
+                aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -9096,9 +9075,10 @@ def _admin_sessao_valida() -> bool:
     # Recuperação: admin marcado como logado mas modo_atual não está em escritorio.
     # Isso ocorre quando a sessão é parcialmente restaurada pelo browser após
     # hibernação ou reconexão no Streamlit Cloud.
-    # v6: guard administrativo preserva modo operador em reruns/reconexões — BUG-A
+    # v5: guard da sidebar também protege o operador
     if (st.session_state.get("admin_logado")
-            and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
+            and st.session_state.get("modo_atual") != "escritorio"
+            and st.session_state.get("modo_atual") != "operador"):
         st.session_state["modo_atual"] = "escritorio"
 
     if st.session_state.get("modo_atual") != "escritorio":
@@ -9120,9 +9100,6 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
-    # v6: saída administrativa nunca pode derrubar sessão ativa do operador — BUG-A
-    if st.session_state.get("modo_atual") == "operador":
-        return
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -9479,12 +9456,13 @@ st.session_state.setdefault("_op_ultimo_lancamento", None)
 if "modo_atual" not in st.session_state:
     st.session_state["modo_atual"] = "entrada"
 
-# GUARD DUPLO v6: protege o modo operador.
-# O guard só redireciona para escritório se o modo atual não for operador.
-# Antes, esse guard podia derrubar o operador durante preenchimento caso admin_logado
-# estivesse definido em memória de sessão anterior. — BUG-A
+# GUARD DUPLO v5: protege o modo operador.
+# O guard só redireciona para escritório se o operador NÃO estiver logado.
+# Antes, esse guard derrubava o operador durante preenchimento caso admin_logado
+# estivesse definido em memória de sessão anterior.
 if (st.session_state.get("admin_logado")
-        and st.session_state.get("modo_atual") not in ("escritorio", "operador")):
+        and st.session_state.get("modo_atual") != "escritorio"
+        and st.session_state.get("modo_atual") != "operador"):
     st.session_state["modo_atual"] = "escritorio"
     _empresa_fix = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if _empresa_fix not in ("aqua_gestao", "bem_star"):
@@ -9647,39 +9625,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     .op-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#edf5ff; border:1px solid #d3e6ff; color:#134b8a; font-size:0.78rem; margin: 2px 6px 6px 0; }
     .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
     
-    /* v6: UX mobile do operador com status Sheets e progresso discreto — MELHORIA-P4 */
-    .op-status-ok, .op-status-off {
-        border-radius: 12px;
-        padding: 8px 10px;
-        margin: 8px 0;
-        font-size: 0.88rem;
-        font-weight: 700;
-    }
-    .op-status-ok { background: rgba(30,140,70,0.10); border: 1px solid rgba(30,140,70,0.30); color: #1a6e3a; }
-    .op-status-off { background: rgba(190,80,20,0.10); border: 1px solid rgba(190,80,20,0.30); color: #944212; }
-    .op-progress-wrap {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 5px;
-        margin: 8px 0 10px;
-    }
-    .op-progress-step {
-        border: 1px solid rgba(20,85,160,0.18);
-        border-radius: 999px;
-        padding: 6px 5px;
-        text-align: center;
-        font-size: 0.76rem;
-        color: #4f657c;
-        background: #f7fbff;
-        white-space: nowrap;
-    }
-    .op-progress-step.done {
-        background: rgba(30,140,70,0.10);
-        border-color: rgba(30,140,70,0.35);
-        color: #1a6e3a;
-        font-weight: 700;
-    }
-
     .pin-box {
         padding: 20px 0;
         text-align: center;
@@ -9717,7 +9662,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.session_state.pop("op_sel_cond", None)
         st.rerun()
 
-    # v6: diagnóstico discreto preserva suporte sem interferir no modo operador — MELHORIA-P4
+    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
     with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
         st.write({
             "modo_atual": st.session_state.get("modo_atual"),
@@ -9726,7 +9671,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "condominio": st.session_state.get("op_sel_cond", "—"),
             "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
             "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
-            "ultimo_erro_sheets": bool(st.session_state.get("_sheets_ultimo_erro")),
         })
 
     # v4 — operador não escolhe empresa.
@@ -9736,29 +9680,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
-    # v6: teste leve e cacheado para mostrar conexão Sheets no topo do operador — MELHORIA-P4
-    @st.cache_data(ttl=60, show_spinner=False)
-    def _status_sheets_operador_v6():
-        try:
-            sh = conectar_sheets()
-            if sh is None:
-                return False, st.session_state.get("_sheets_ultimo_erro", "")
-            return True, ""
-        except Exception as _e_status:
-            _log_sheets_erro("status_sheets_operador_v6", _e_status)
-            return False, str(_e_status)
-
-    _sheets_online_v6, _sheets_erro_v6 = _status_sheets_operador_v6()
-
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
     st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
-    # v6: indicador visual de conexão Sheets antes do preenchimento — MELHORIA-P4
-    if _sheets_online_v6:
-        st.markdown('<div class="op-status-ok">🟢 Sheets online — lançamento será gravado no banco ao salvar.</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="op-status-off">🔴 Sheets offline — visita pode ficar local e deve ser conferida depois.</div>', unsafe_allow_html=True)
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
@@ -9994,31 +9919,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     st.text_input("Data da visita",
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
-
-    # v6: barra de progresso simples para orientar uso no Android — MELHORIA-P4
-    _op_tem_cond = bool(str(op_nome_cond or "").strip())
-    _op_tem_data = bool(str(st.session_state.get("op_data_visita", "") or "").strip())
-    _op_tem_param = any(
-        str(v or "").strip()
-        for k, v in st.session_state.items()
-        if str(k).startswith("op_") and any(suf in str(k) for suf in ("_ph", "_crl", "_alc", "_dc", "_cya", "_ct"))
-    )
-    _op_tem_foto = any(bool(st.session_state.get(k)) for k in ("op_fotos_antes", "op_fotos_depois", "op_fotos_cmaq", "op_fotos_extras"))
-    _op_passos = [
-        ("1 Condomínio", _op_tem_cond),
-        ("2 Data", _op_tem_data),
-        ("3 Parâmetros", _op_tem_param),
-        ("4 Fotos/Salvar", _op_tem_foto),
-    ]
-    st.markdown(
-        "<div class='op-progress-wrap'>" +
-        "".join(
-            f"<div class='op-progress-step {'done' if ok else ''}'>{'✅ ' if ok else ''}{rot}</div>"
-            for rot, ok in _op_passos
-        ) +
-        "</div>",
-        unsafe_allow_html=True,
-    )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -10796,19 +10696,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
                 salvar_dados_condominio(pasta_op, dados_ex)
 
-                # v6: spinner no I/O Sheets e proteção total; falha não derruba o app nem limpa sessão — MELHORIA-P4
-                with st.spinner("Salvando lançamento no Google Sheets..."):
-                    try:
-                        ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
-                    except Exception as _e_sh:
-                        ok_sheets = False
-                        st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
+                # v5: Sheets com proteção total — falha não derruba o app nem limpa sessão
+                try:
+                    ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                except Exception as _e_sh:
+                    ok_sheets = False
+                    st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
 
                 if ok_sheets:
-                    try:
-                        st.toast("✅ Visita salva no Google Sheets.", icon="✅")
-                    except Exception:
-                        pass
                     st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
                 else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
@@ -11803,6 +11698,8 @@ if st.session_state.pop("_cc_limpar", False):
         st.session_state[k] = ""
     # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
     st.session_state["cc_verificacoes_semanais"] = 3
+    # v6: reseta seletor de empresa/serviços sem depender do painel ativo — BUG-F
+    st.session_state["cc_empresa_servico"] = _empresa_ativa_nome()
     st.session_state["cc_srv_rt"] = False
     st.session_state["cc_srv_limpeza"] = False
     st.session_state["cc_operadores_vinculados"] = []
@@ -11826,8 +11723,10 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
-            _servicos_cc = _servicos_padrao_empresa_ativa()
-            # No cadastro separado, o serviço é determinado pelo painel ativo.
+            # v6: ao carregar edição, preserva a empresa/serviços reais do cliente — BUG-F
+            _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
+            _empresa_cc = _servicos_para_empresa(_servicos_cc)
+            st.session_state["cc_empresa_servico"] = _empresa_cc
             st.session_state["cc_srv_rt"]       = bool(_servicos_cc.get("rt", False))
             st.session_state["cc_srv_limpeza"]  = bool(_servicos_cc.get("limpeza", False))
             st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
@@ -11856,17 +11755,32 @@ def _mask_cc_cnpj():
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-# Serviço vinculado ao cadastro conforme painel ativo
-st.markdown("**🧩 Serviço vinculado ao cadastro**")
-_cc_servicos = _servicos_padrao_empresa_ativa()
-_cc_empresa_val = _servicos_para_empresa(_cc_servicos)
-if _empresa_ativa_codigo() == "aqua_gestao":
-    st.info("🔵 Este cadastro será salvo como cliente de RT / Controle Técnico da Aqua Gestão.")
-else:
+# Serviço vinculado ao cadastro
+# v6: recria o campo Transferir condomínio entre empresas diretamente na edição — BUG-F
+st.markdown("**🧩 Transferir condomínio entre empresas / serviços**")
+_cc_empresas_opcoes = ["Aqua Gestão", "Bem Star Piscinas", "Ambas"]
+if st.session_state.get("cc_empresa_servico") not in _cc_empresas_opcoes:
+    st.session_state["cc_empresa_servico"] = _empresa_ativa_nome()
+
+_cc_empresa_val = st.selectbox(
+    "Empresa / serviço vinculado",
+    options=_cc_empresas_opcoes,
+    key="cc_empresa_servico",
+    help="Use este campo para transferir o condomínio entre Aqua Gestão, Bem Star Piscinas ou deixar em ambas.",
+)
+_cc_servicos = _empresa_para_servicos(_cc_empresa_val)
+_cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
+
+if _cc_servicos_norm.get("rt") and _cc_servicos_norm.get("limpeza"):
+    st.info("🔵⭐ Este cadastro será salvo como Ambas: RT / Controle Técnico da Aqua Gestão e Limpeza / Manutenção da Bem Star Piscinas.")
+elif _cc_servicos_norm.get("limpeza"):
     st.info("⭐ Este cadastro será salvo como cliente de Limpeza / Manutenção da Bem Star Piscinas.")
+else:
+    st.info("🔵 Este cadastro será salvo como cliente de RT / Controle Técnico da Aqua Gestão.")
+
 # Mantém as chaves antigas coerentes para não quebrar edições/sessão.
-st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
-st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
+st.session_state["cc_srv_rt"] = bool(_cc_servicos_norm.get("rt"))
+st.session_state["cc_srv_limpeza"] = bool(_cc_servicos_norm.get("limpeza"))
 
 _operadores_disponiveis = []
 _ops_raw_cc = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
@@ -12005,8 +11919,9 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_i = _parse_vol(cc_vol_infantil)
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
-            _cc_servicos = _servicos_padrao_empresa_ativa()
-            _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+            # v6: salva a empresa/serviços escolhidos no campo de transferência — BUG-F
+            _cc_empresa_val = st.session_state.get("cc_empresa_servico", _empresa_ativa_nome())
+            _cc_servicos = _empresa_para_servicos(_cc_empresa_val)
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
