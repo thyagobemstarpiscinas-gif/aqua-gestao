@@ -349,7 +349,8 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        aba.update("A1:F1", [["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
+        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -390,9 +391,10 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 return True
         # Insere novo
         linha_destino = max(len(todos) + 1, 8)
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
         )
         st.cache_data.clear()
@@ -562,9 +564,10 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
+            # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
             aba.update(
-                "A1:Z1",
-                [[
+                range_name="A1:Z1",
+                values=[[
                     "", "ID Visita", "Data", "ID Cliente", "Condomínio",
                     "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA",
                     "Foto Antes", "Foto Depois", "Foto Casa Máquinas", "Observação",
@@ -609,8 +612,20 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
+
+        # v6: remove None de forma recursiva antes de gravar no Sheets/gspread — BUG-B
+        def _sem_none_sheets(valor):
+            if valor is None:
+                return ""
+            if isinstance(valor, dict):
+                return {str(k): _sem_none_sheets(v) for k, v in valor.items()}
+            if isinstance(valor, list):
+                return [_sem_none_sheets(v) for v in valor]
+            return valor
+
+        payload_limpo = limpar_payload_para_sheets(_sem_none_sheets(payload))
         try:
-            payload_json = json.dumps(payload, ensure_ascii=False)
+            payload_json = json.dumps(payload_limpo, ensure_ascii=False)
         except Exception:
             payload_json = ""
 
@@ -648,10 +663,14 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
+        # v6: garante que nenhum None chega ao gspread v5 — BUG-B
+        nova_linha = [("" if v is None else str(v)) for v in nova_linha]
+
         linha_destino = max(len(todos) + 1, 8)
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
         )
         st.cache_data.clear()
@@ -8142,705 +8161,195 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
 
 
 
-
-# =========================================
-# v6: CONSTANTES MÓDULO BEM STAR — BUG-K
-# =========================================
-
-TEXTO_NATUREZA_BS = (
-    "Este documento é um relatório operacional emitido pela Bem Star Piscinas, "
-    "descrevendo aferições, serviços executados, dosagens, registros fotográficos e "
-    "recomendações operacionais. Não constitui relatório técnico sob Responsabilidade "
-    "Técnica, não substitui ART e não possui assinatura como RT perante o CRQ. Para "
-    "Responsabilidade Técnica, ART registrada, relatório técnico mensal formal e "
-    "suporte documental para fiscalização, consulte a modalidade Aqua Gestão."
-)
-
-TEXTO_PONTE_AQUA_BS = (
-    "Caso o condomínio deseje incorporar Responsabilidade Técnica ao contrato de "
-    "manutenção, é possível migrar para a modalidade Aqua Gestão, com acompanhamento "
-    "técnico, ART quando aplicável, relatório técnico mensal, rastreabilidade dos "
-    "parâmetros físico-químicos e suporte documental para fiscalização."
-)
-
-TABELA_COMPARATIVA_BS = [
-    ("Manutenção operacional",              "Sim",  "Sim"),
-    ("Aferição de parâmetros",              "Sim",  "Sim"),
-    ("Registro fotográfico",                "Sim",  "Sim"),
-    ("Relatório operacional",               "Sim",  "Sim"),
-    ("Responsabilidade Técnica RT",         "Não",  "Sim — CRQ-MG 02402574-8"),
-    ("ART registrada no CRQ",               "Não",  "Sim"),
-    ("Relatório técnico mensal formal",     "Não",  "Sim"),
-    ("Atendimento à Vigilância Sanitária",  "Não",  "Sim"),
-    ("Conformidade ABNT NBR 10339/10818",   "Parcial", "Plena"),
-]
-
-SERVICOS_BS_LISTA = [
-    "Aferição de parâmetros",
-    "Aspiração de fundo",
-    "Escovação de paredes/fundo",
-    "Limpeza de bordas",
-    "Limpeza de skimmer/cestos",
-    "Retrolavagem do filtro",
-    "Inspeção da casa de máquinas",
-    "Inspeção visual geral",
-    "Ajustes químicos",
-    "Registro fotográfico",
-]
-
-CATEGORIAS_FOTOS_BS = [
-    "Piscina adulto",
-    "Piscina infantil",
-    "Piscina family / spa",
-    "Casa de máquinas",
-    "Equipamentos",
-    "Produtos / estoque",
-    "Bordas / ralos / entorno",
-    "Outras fotos",
-]
+def _filtrar_lancamentos_preview_por_mes(lancamentos: list[dict], mes: str, ano: str) -> list[dict]:
+    """Filtra lançamentos do relatório mensal por mês/ano sem quebrar quando a data vem vazia."""
+    # v6: corrige filtro global do relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    try:
+        mes_txt = str(mes or "").strip()
+        ano_txt = str(ano or "").strip()
+        if not mes_txt or not ano_txt:
+            return list(lancamentos or [])
+        return [
+            lc for lc in (lancamentos or [])
+            if lancamento_pertence_mes_ano(str((lc or {}).get("data", "")), mes_txt, ano_txt)
+        ]
+    except Exception as e:
+        _log_sheets_erro("_filtrar_lancamentos_preview_por_mes", e)
+        return list(lancamentos or [])
 
 
-def _bs_pdf_engine():
-    """v6: Retorna helpers ReportLab prontos para PDFs Bem Star — BUG-K"""
-    import io
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-        TableStyle, HRFlowable, Image as RLImage, PageBreak, KeepTogether)
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY, TA_RIGHT
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
+def _coletar_lancamentos_bem_star_manuais() -> list[dict]:
+    """Coleta parâmetros digitados manualmente no relatório mensal Bem Star."""
+    # v6: habilita preenchimento manual de parâmetros/dosagens no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    lancamentos = []
+    try:
+        qtd = int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12)
+    except Exception:
+        qtd = 12
+    qtd = max(1, min(qtd, 31))
+
+    for i in range(1, qtd + 1):
+        data = str(st.session_state.get(f"bs_rel_data_{i}", "") or "").strip()
+        ph = str(st.session_state.get(f"bs_rel_ph_{i}", "") or "").strip()
+        crl = str(st.session_state.get(f"bs_rel_crl_{i}", "") or "").strip()
+        ct = str(st.session_state.get(f"bs_rel_ct_{i}", "") or "").strip()
+        alc = str(st.session_state.get(f"bs_rel_alc_{i}", "") or "").strip()
+        dc = str(st.session_state.get(f"bs_rel_dc_{i}", "") or "").strip()
+        cya = str(st.session_state.get(f"bs_rel_cya_{i}", "") or "").strip()
+        dosagem_txt = str(st.session_state.get(f"bs_rel_dosagem_{i}", "") or "").strip()
+        obs = str(st.session_state.get(f"bs_rel_obs_{i}", "") or "").strip()
+
+        if not any([data, ph, crl, ct, alc, dc, cya, dosagem_txt, obs]):
+            continue
+
+        lancamentos.append({
+            "data": normalizar_data_visita(data),
+            "ph": ph,
+            "cloro_livre": crl,
+            "cloro_total": ct,
+            "alcalinidade": alc,
+            "dureza": dc,
+            "cianurico": cya,
+            "operador": str(st.session_state.get("csr_operador_rel", "") or "").strip(),
+            "observacao": obs,
+            "problemas": "",
+            "dosagens": [{"produto": dosagem_txt, "quantidade": "", "unidade": "", "finalidade": "Dosagem registrada"}] if dosagem_txt else [],
+        })
+
+    return lancamentos
+
+
+def _coletar_fotos_bem_star_preview(csr_sel: str, lancamentos_csr: list[dict]) -> list:
+    """Coleta fotos das visitas e uploads manuais do relatório mensal Bem Star."""
+    # v6: habilita fotos manuais e evita NameError no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    fotos = []
+    try:
+        for caminho in st.session_state.get("_bem_star_fotos_relatorio_paths", []) or []:
+            p = Path(caminho)
+            if p.exists():
+                fotos.append(p)
+    except Exception:
+        pass
 
     try:
-        pdfmetrics.registerFont(TTFont("BSReg",  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
-        pdfmetrics.registerFont(TTFont("BSBold", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"))
-        FR, FB = "BSReg", "BSBold"
-    except Exception:
-        FR, FB = "Helvetica", "Helvetica-Bold"
+        pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+        if pasta_fotos_csr and pasta_fotos_csr.exists():
+            for lc in lancamentos_csr or []:
+                for nf in (lc or {}).get("fotos", []) or []:
+                    pf = pasta_fotos_csr / str(nf)
+                    if pf.exists():
+                        fotos.append(pf)
+    except Exception as e:
+        _log_sheets_erro("_coletar_fotos_bem_star_preview", e)
 
-    NAVY  = colors.HexColor("#0D2A4A")
-    TEAL  = colors.HexColor("#0E7490")
-    GOLD  = colors.HexColor("#C8A951")
-    LGRAY = colors.HexColor("#F7F8FA")
-    MGRAY = colors.HexColor("#E2E8F0")
-    DGRAY = colors.HexColor("#4A5568")
-    VERDE = colors.HexColor("#1B7A1B")
-    VERM  = colors.HexColor("#C05621")
-    AMBER = colors.HexColor("#7A4000")
-    AMBER_BG = colors.HexColor("#FFFBEB")
-    W, _ = A4
-    M  = 18 * mm
-    CW = W - 2 * M
-
-    def E(n, **k):
-        return ParagraphStyle(n, fontName=FR, **k)
-
-    def P(t, s):
-        return Paragraph(str(t or "—"), s)
-
-    def Sp(h=4):
-        return Spacer(1, h * mm)
-
-    def HR():
-        return HRFlowable(width="100%", thickness=0.5, color=MGRAY, spaceAfter=3, spaceBefore=3)
-
-    # Estilos
-    S = {
-        "body":    E("body",  fontSize=9,  textColor=colors.black, spaceAfter=4, leading=14, alignment=TA_JUSTIFY),
-        "cell":    E("cell",  fontSize=8,  textColor=DGRAY, alignment=TA_CENTER, leading=11),
-        "cell_l":  E("cel_l", fontSize=8,  textColor=DGRAY, alignment=TA_LEFT,   leading=11),
-        "cell_b":  E("cel_b", fontSize=8,  textColor=NAVY,  fontName=FB, alignment=TA_LEFT, leading=11),
-        "th":      E("th",    fontSize=8,  textColor=colors.white, fontName=FB, alignment=TA_CENTER, leading=11),
-        "th_l":    E("th_l",  fontSize=8,  textColor=colors.white, fontName=FB, alignment=TA_LEFT,   leading=11),
-        "sec":     E("sec",   fontSize=9,  textColor=NAVY,  fontName=FB, spaceBefore=8, spaceAfter=3, leading=12),
-        "ok":      E("ok",    fontSize=8,  textColor=VERDE, fontName=FB, leading=11),
-        "warn":    E("warn",  fontSize=8,  textColor=VERM,  fontName=FB, leading=11),
-        "foto_leg":E("foto_l",fontSize=8,  textColor=TEAL,  fontName=FB, leading=11, alignment=TA_CENTER),
-        "aviso":   E("aviso", fontSize=8,  textColor=AMBER, backColor=AMBER_BG, leading=12, alignment=TA_JUSTIFY),
-        "label":   E("label", fontSize=7,  textColor=DGRAY, leading=10),
-        "h1_capa": E("h1c",   fontSize=22, textColor=colors.white, fontName=FB, alignment=TA_CENTER, spaceAfter=4, leading=26),
-        "sub_capa":E("sc",    fontSize=10, textColor=colors.HexColor("#A8D4E0"), alignment=TA_CENTER, spaceAfter=12, leading=15),
-        "tag_capa":E("tc",    fontSize=9,  textColor=GOLD,  alignment=TA_CENTER, spaceAfter=6, leading=12),
-        "inf_capa":E("ic",    fontSize=8,  textColor=colors.HexColor("#8FC8CC"), alignment=TA_CENTER, leading=13),
-        "rodape":  E("rod",   fontSize=7,  textColor=colors.HexColor("#A0AEC0"), alignment=TA_CENTER),
-    }
-
-    def sec_hdr(titulo, cor=NAVY):
-        t = Table([[P(titulo, E("sh_", fontSize=9, textColor=colors.white, fontName=FB, leading=12))]], colWidths=[CW])
-        t.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,-1), cor),
-            ("TOPPADDING",(0,0),(-1,-1), 5), ("BOTTOMPADDING",(0,0),(-1,-1), 5),
-            ("LEFTPADDING",(0,0),(-1,-1), 8),
-        ]))
-        return t
-
-    def tabela_dados(rows, cws, cor_header=NAVY, stripe=True):
-        t = Table(rows, colWidths=cws)
-        s = [
-            ("BACKGROUND",(0,0),(-1,0), cor_header),
-            ("GRID",(0,0),(-1,-1), 0.4, MGRAY),
-            ("TOPPADDING",(0,0),(-1,-1), 4),    ("BOTTOMPADDING",(0,0),(-1,-1), 4),
-            ("LEFTPADDING",(0,0),(-1,-1), 5),   ("VALIGN",(0,0),(-1,-1), "MIDDLE"),
-        ]
-        if stripe:
-            for i in range(1, len(rows)):
-                if i % 2 == 0:
-                    s.append(("BACKGROUND",(0,i),(-1,i), LGRAY))
-        t.setStyle(TableStyle(s))
-        return t
-
-    def bloco_info(dados_dict, cw=CW):
-        """Bloco de 2 colunas para dados de identificação."""
-        rows = []
-        items = list(dados_dict.items())
-        for i in range(0, len(items), 2):
-            k1, v1 = items[i]
-            k2, v2 = items[i+1] if i+1 < len(items) else ("", "")
-            rows.append([
-                P(k1, S["label"]), P(str(v1 or "—"), S["cell_b"]),
-                P(k2, S["label"]), P(str(v2 or "—"), S["cell_b"]),
-            ])
-        t = Table(rows, colWidths=[cw*0.15, cw*0.35, cw*0.15, cw*0.35])
-        t.setStyle(TableStyle([
-            ("GRID",(0,0),(-1,-1), 0.3, MGRAY),
-            ("TOPPADDING",(0,0),(-1,-1), 3), ("BOTTOMPADDING",(0,0),(-1,-1), 3),
-            ("LEFTPADDING",(0,0),(-1,-1), 5), ("BACKGROUND",(0,0),(-1,-1), LGRAY),
-        ]))
-        return t
-
-    def tabela_comparativa(cw=CW):
-        header = [P("Item", S["th_l"]), P("Bem Star Piscinas", S["th"]), P("Aqua Gestão", S["th"])]
-        rows = [header]
-        for item, bs, ag in TABELA_COMPARATIVA_BS:
-            c_bs = S["warn"] if bs == "Não" else (S["ok"] if bs == "Sim" else S["cell"])
-            c_ag = S["ok"] if "Sim" in ag else S["cell"]
-            rows.append([P(item, S["cell_l"]), P(bs, c_bs), P(ag, c_ag)])
-        return tabela_dados(rows, [cw*0.5, cw*0.25, cw*0.25])
-
-    def secao_aqua(cw=CW):
-        elems = []
-        elems.append(sec_hdr("11. Sobre a Responsabilidade Técnica — Aqua Gestão"))
-        elems.append(Sp(3))
-        elems.append(P(TEXTO_PONTE_AQUA_BS, S["body"]))
-        elems.append(Sp(4))
-        elems.append(tabela_comparativa(cw))
-        return elems
-
-    return dict(
-        io=io, A4=A4, mm=mm, colors=colors,
-        SimpleDocTemplate=SimpleDocTemplate,
-        Paragraph=Paragraph, Spacer=Spacer,
-        Table=Table, TableStyle=TableStyle,
-        HRFlowable=HRFlowable, RLImage=RLImage,
-        PageBreak=PageBreak, KeepTogether=KeepTogether,
-        FR=FR, FB=FB,
-        NAVY=NAVY, TEAL=TEAL, GOLD=GOLD, LGRAY=LGRAY, MGRAY=MGRAY,
-        DGRAY=DGRAY, VERDE=VERDE, VERM=VERM,
-        W=W, M=M, CW=CW, S=S,
-        E=E, P=P, Sp=Sp, HR=HR,
-        sec_hdr=sec_hdr, tabela_dados=tabela_dados,
-        bloco_info=bloco_info, tabela_comparativa=tabela_comparativa,
-        secao_aqua=secao_aqua,
-    )
+    vistos = set()
+    saida = []
+    for f in fotos:
+        chave = str(f)
+        if chave not in vistos:
+            vistos.add(chave)
+            saida.append(f)
+    return saida
 
 
-# =========================================
-# v6: GERADOR PDF MENSAL BEM STAR — BUG-K
-# =========================================
 
-def gerar_pdf_mensal_bem_star(dados: dict) -> bytes:
-    """v6: Gera PDF do Relatório Mensal Operacional — Bem Star Piscinas — BUG-K"""
-    e = _bs_pdf_engine()
-    io = e["io"]
-    buf = io.BytesIO()
-    A4 = e["A4"]; mm = e["mm"]; W = e["W"]; M = e["M"]; CW = e["CW"]
-    colors = e["colors"]
-    NAVY = e["NAVY"]; TEAL = e["TEAL"]; GOLD = e["GOLD"]
-    LGRAY = e["LGRAY"]; MGRAY = e["MGRAY"]; DGRAY = e["DGRAY"]
-    VERDE = e["VERDE"]; VERM = e["VERM"]
-    FR = e["FR"]; FB = e["FB"]
-    S = e["S"]; P = e["P"]; Sp = e["Sp"]; HR = e["HR"]
-    sec_hdr = e["sec_hdr"]; tabela_dados = e["tabela_dados"]
-    bloco_info = e["bloco_info"]; secao_aqua = e["secao_aqua"]
-    PageBreak = e["PageBreak"]; KeepTogether = e["KeepTogether"]
-    RLImage = e["RLImage"]; Table = e["Table"]; TableStyle = e["TableStyle"]
+def _gerar_parecer_tecnico_mensal_bem_star(lancamentos: list[dict], observacoes_gerais: str = "") -> str:
+    """Gera parecer técnico mensal automático do relatório Bem Star a partir dos parâmetros informados."""
+    # v6: parecer técnico mensal automático por conformidade dos parâmetros — BUG-BS-PARECER
+    def _num(v):
+        try:
+            s = str(v if v is not None else "").strip().replace(",", ".")
+            if not s or s in ("—", "-"):
+                return None
+            return float(s)
+        except Exception:
+            return None
 
-    H, _ = A4[1], None
-    H_a4 = A4[1]
+    leituras = list(lancamentos or [])
+    total = len(leituras)
 
-    # ── extrai dados ──────────────────────────────────────────────────────────
-    cliente   = str(dados.get("cliente", "") or "")
-    mes_ano   = f"{dados.get('mes','') or ''}/{dados.get('ano','') or ''}".strip("/")
-    operador  = str(dados.get("operador", "") or "")
-    obs_geral = str(dados.get("obs_geral", "") or "")
-    situacao  = str(dados.get("situacao_agua", "Satisfatória") or "Satisfatória")
-    analises  = dados.get("analises", []) or []
-    dosagens  = dados.get("dosagens", []) or []
-    servicos  = dados.get("servicos", []) or []
-    ocorrencias  = str(dados.get("ocorrencias", "") or "")
-    recomendacoes = str(dados.get("recomendacoes", "") or "")
-    fotos_cat = dados.get("fotos_categorias", {}) or {}
-    piscinas_estrutura = str(dados.get("piscinas_estrutura", "") or "")
-    dados_cliente = dados.get("dados_cliente", {}) or {}
-    emissao = str(dados.get("data_emissao", datetime.now().strftime("%d/%m/%Y")) or "")
+    def _serie(chave):
+        vals = []
+        for item in leituras:
+            val = _num((item or {}).get(chave, ""))
+            if val is not None:
+                vals.append(val)
+        return vals
 
-    # ── header/footer canvas ──────────────────────────────────────────────────
-    def capa_fn(canvas, doc):
-        canvas.saveState()
-        canvas.setFillColor(NAVY)
-        canvas.rect(0, 0, W, H_a4, fill=1, stroke=0)
-        canvas.setFillColor(GOLD)
-        canvas.rect(0, H_a4 - 3*mm, W, 3*mm, fill=1, stroke=0)
-        canvas.rect(0, 0, W, 3*mm, fill=1, stroke=0)
-        canvas.setFillColor(colors.HexColor("#0A2540"))
-        canvas.roundRect(M, H_a4*0.25, W-2*M, H_a4*0.50, 8, fill=1, stroke=0)
-        canvas.setFillColor(TEAL)
-        canvas.rect(M, H_a4*0.25 + H_a4*0.50 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
-        canvas.restoreState()
+    ph_vals = _serie("ph")
+    crl_vals = _serie("cloro_livre")
+    ct_vals = _serie("cloro_total")
+    alc_vals = _serie("alcalinidade")
+    dc_vals = _serie("dureza")
+    cya_vals = _serie("cianurico")
+    cc_vals = []
+    for item in leituras:
+        ct = _num((item or {}).get("cloro_total", ""))
+        crl = _num((item or {}).get("cloro_livre", ""))
+        if ct is not None and crl is not None:
+            cc_vals.append(max(0.0, ct - crl))
 
-    def hf_fn(canvas, doc):
-        canvas.saveState()
-        if doc.page > 1:
-            canvas.setFillColor(NAVY)
-            canvas.rect(0, H_a4 - 12*mm, W, 12*mm, fill=1, stroke=0)
-            canvas.setFillColor(GOLD)
-            canvas.rect(0, H_a4 - 12.8*mm, W, 0.8*mm, fill=1, stroke=0)
-            canvas.setFillColor(colors.white)
-            canvas.setFont(FB, 7.5)
-            canvas.drawString(M, H_a4 - 6*mm, "BEM STAR PISCINAS — RELATÓRIO MENSAL OPERACIONAL")
-            canvas.setFont(FR, 7)
-            canvas.drawRightString(W - M, H_a4 - 6*mm, f"Página {doc.page}")
-            canvas.drawString(M, H_a4 - 10*mm, "Documento operacional — não substitui relatório de Responsabilidade Técnica")
-            canvas.setFillColor(LGRAY)
-            canvas.rect(0, 0, W, 10*mm, fill=1, stroke=0)
-            canvas.setFillColor(NAVY)
-            canvas.rect(0, 9.5*mm, W, 0.5*mm, fill=1, stroke=0)
-            canvas.setFillColor(DGRAY)
-            canvas.setFont(FR, 7)
-            canvas.drawString(M, 4*mm, f"Bem Star Piscinas  |  CNPJ {CNPJ_BEM_STAR}  |  Uberlândia/MG")
-            canvas.drawRightString(W - M, 4*mm, f"Emissão: {emissao}")
-        canvas.restoreState()
+    def _conf(vals, minimo=None, maximo=None):
+        if not vals:
+            return (0, 0, 0)
+        ok = 0
+        for v in vals:
+            if minimo is not None and v < minimo:
+                continue
+            if maximo is not None and v > maximo:
+                continue
+            ok += 1
+        pct = round((ok / len(vals)) * 100)
+        return ok, len(vals), pct
 
-    doc = e["SimpleDocTemplate"](
-        buf, pagesize=A4,
-        leftMargin=M, rightMargin=M, topMargin=14*mm, bottomMargin=14*mm,
-    )
-    story = []
+    ph_ok, ph_tot, ph_pct = _conf(ph_vals, 7.2, 7.8)
+    crl_ok, crl_tot, crl_pct = _conf(crl_vals, 1.0, 3.0)
+    cc_ok, cc_tot, cc_pct = _conf(cc_vals, 0, 0.40)
+    alc_ok, alc_tot, alc_pct = _conf(alc_vals, 80, 120)
+    dc_ok, dc_tot, dc_pct = _conf(dc_vals, 150, 400)
+    cya_ok, cya_tot, cya_pct = _conf(cya_vals, 30, 50)
 
-    # ── CAPA ──────────────────────────────────────────────────────────────────
-    story.append(Sp(32))
-    story.append(P("BEM STAR PISCINAS", S["tag_capa"]))
-    story.append(P("RELATÓRIO MENSAL OPERACIONAL", S["h1_capa"]))
-    story.append(P(f"Cliente: {cliente}  |  Período: {mes_ano}", S["sub_capa"]))
-    story.append(P(f"Operador: {operador}  |  Emissão: {emissao}", S["inf_capa"]))
-    story.append(PageBreak())
+    alertas = []
+    if ph_tot and ph_pct < 85:
+        alertas.append("pH com recorrência fora da faixa recomendada")
+    if crl_tot and crl_pct < 90:
+        alertas.append("cloro livre exigindo ajuste de rotina")
+    if cc_tot and cc_pct < 90:
+        alertas.append("cloro combinado acima do limite em parte das leituras")
+    if alc_tot and alc_pct < 90:
+        alertas.append("alcalinidade fora da faixa de tamponamento ideal")
+    if dc_tot and dc_pct < 90:
+        alertas.append("dureza cálcica fora da faixa operacional")
+    if cya_tot and cya_pct < 90:
+        alertas.append("ácido cianúrico fora da faixa ideal")
 
-    # ── 1. Identificação ──────────────────────────────────────────────────────
-    story.append(sec_hdr("1. Identificação do Cliente e Período"))
-    story.append(Sp(3))
-    story.append(bloco_info({
-        "Cliente": cliente,
-        "Período": mes_ano,
-        "CNPJ": dados_cliente.get("cnpj", ""),
-        "Endereço": dados_cliente.get("endereco", ""),
-        "Responsável": dados_cliente.get("contato", ""),
-        "Operador": operador,
-        "Data de emissão": emissao,
-        "Situação geral da água": situacao,
-    }))
-    story.append(Sp(6))
+    if not total:
+        return (
+            "Não foram identificadas leituras suficientes para emissão automática do parecer técnico mensal. "
+            "Preencha os parâmetros das visitas para que o sistema consolide a avaliação do período."
+        )
 
-    # ── 2. Natureza do documento ──────────────────────────────────────────────
-    story.append(sec_hdr("2. Natureza deste Documento"))
-    story.append(Sp(3))
-    story.append(P(TEXTO_NATUREZA_BS, S["aviso"]))
-    story.append(Sp(6))
-
-    # ── 3. Resumo executivo ───────────────────────────────────────────────────
-    story.append(sec_hdr("3. Resumo Executivo do Mês"))
-    story.append(Sp(3))
-    txt_resumo = obs_geral if obs_geral else (
-        f"Manutenção operacional executada para {cliente} no período {mes_ano}. "
-        f"Situação geral da água: {situacao}."
-    )
-    story.append(P(txt_resumo, S["body"]))
-    story.append(Sp(6))
-
-    # ── 4. Estrutura das piscinas ─────────────────────────────────────────────
-    story.append(sec_hdr("4. Estrutura das Piscinas"))
-    story.append(Sp(3))
-    story.append(P(piscinas_estrutura if piscinas_estrutura else "Estrutura não informada.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 5. Histórico de parâmetros ────────────────────────────────────────────
-    story.append(sec_hdr("5. Histórico de Parâmetros Físico-Químicos"))
-    story.append(Sp(3))
-    if analises:
-        hdr_an = [P(h, S["th"]) for h in ["Data", "Piscina", "pH", "CRL mg/L", "CT mg/L", "Alc. mg/L", "Dureza mg/L", "Cian. mg/L", "Status", "Operador"]]
-        rows_an = [hdr_an]
-        for an in analises:
-            status_an = str(an.get("status", "") or "")
-            s_cel = S["ok"] if "conforme" in status_an.lower() else (S["warn"] if status_an else S["cell"])
-            rows_an.append([
-                P(an.get("data",""), S["cell"]),
-                P(an.get("piscina",""), S["cell_l"]),
-                P(an.get("ph",""), S["cell"]),
-                P(an.get("cloro_livre",""), S["cell"]),
-                P(an.get("cloro_total",""), S["cell"]),
-                P(an.get("alcalinidade",""), S["cell"]),
-                P(an.get("dureza",""), S["cell"]),
-                P(an.get("cianurico",""), S["cell"]),
-                P(status_an, s_cel),
-                P(an.get("operador",""), S["cell"]),
-            ])
-        cws_an = [CW*v for v in [0.09, 0.13, 0.06, 0.08, 0.07, 0.08, 0.09, 0.08, 0.14, 0.18]]
-        story.append(tabela_dados(rows_an, cws_an))
+    if not alertas:
+        parecer = (
+            f"No período avaliado, foram consolidadas {total} visita(s) de manutenção, com parâmetros físico-químicos "
+            "predominantemente dentro das faixas operacionais recomendadas pela ABNT NBR 10818:2025. "
+            f"Conformidades apuradas: pH {ph_ok}/{ph_tot if ph_tot else total}, cloro livre {crl_ok}/{crl_tot if crl_tot else total}, "
+            f"cloro combinado {cc_ok}/{cc_tot if cc_tot else total}, alcalinidade {alc_ok}/{alc_tot if alc_tot else total}, "
+            f"dureza {dc_ok}/{dc_tot if dc_tot else total} e CYA {cya_ok}/{cya_tot if cya_tot else total}. "
+            "A condição geral da água é considerada satisfatória para continuidade da rotina de manutenção, mantendo-se o monitoramento periódico."
+        )
     else:
-        story.append(P("Nenhum parâmetro registrado para este período.", S["body"]))
-    story.append(Sp(6))
+        parecer = (
+            f"No período avaliado, foram consolidadas {total} visita(s) de manutenção. A análise automática identificou "
+            + "; ".join(alertas)
+            + ". Recomenda-se manter acompanhamento nas próximas visitas, ajustar dosagens conforme demanda medida em campo "
+              "e registrar as correções executadas para rastreabilidade operacional."
+        )
 
-    # ── 6. Dosagens ───────────────────────────────────────────────────────────
-    story.append(sec_hdr("6. Dosagens e Produtos Aplicados"))
-    story.append(Sp(3))
-    dosagens_validas = [d for d in dosagens if d and any(str(d.get(k,"") or "").strip() for k in ("produto","quantidade","finalidade"))]
-    if dosagens_validas:
-        hdr_dos = [P(h, S["th"]) for h in ["Data", "Piscina", "Produto", "Qtd.", "Unidade", "Finalidade", "Observação"]]
-        rows_dos = [hdr_dos]
-        for d in dosagens_validas:
-            rows_dos.append([
-                P(d.get("data",""), S["cell"]),
-                P(d.get("piscina",""), S["cell_l"]),
-                P(d.get("produto",""), S["cell_l"]),
-                P(d.get("quantidade",""), S["cell"]),
-                P(d.get("unidade",""), S["cell"]),
-                P(d.get("finalidade",""), S["cell_l"]),
-                P(d.get("observacao",""), S["cell_l"]),
-            ])
-        cws_dos = [CW*v for v in [0.09, 0.12, 0.20, 0.07, 0.07, 0.22, 0.23]]
-        story.append(tabela_dados(rows_dos, cws_dos))
-    else:
-        story.append(P("Nenhuma dosagem registrada para este período.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 7. Serviços executados ────────────────────────────────────────────────
-    story.append(sec_hdr("7. Serviços Executados no Mês"))
-    story.append(Sp(3))
-    if servicos:
-        sv_rows = [[P("Serviço", S["th_l"]), P("Executado", S["th"])]]
-        for sv in SERVICOS_BS_LISTA:
-            foi = sv in servicos
-            sv_rows.append([P(sv, S["cell_l"]), P("✓ Sim" if foi else "—", S["ok"] if foi else S["cell"])])
-        story.append(tabela_dados(sv_rows, [CW*0.75, CW*0.25]))
-    else:
-        story.append(P("Serviços não informados.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 8. Ocorrências e pendências ───────────────────────────────────────────
-    story.append(sec_hdr("8. Ocorrências e Pendências"))
-    story.append(Sp(3))
-    story.append(P(ocorrencias if ocorrencias else "Nenhuma ocorrência registrada no período.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 9. Registro fotográfico ───────────────────────────────────────────────
-    story.append(sec_hdr("9. Registro Fotográfico"))
-    story.append(Sp(3))
-    _fotos_inseridas = 0
-    for cat in CATEGORIAS_FOTOS_BS:
-        paths = fotos_cat.get(cat, []) or []
-        if not paths:
-            continue
-        story.append(P(f"● {cat}", S["sec"]))
-        par = []
-        for fp in paths:
-            fp = Path(fp) if not isinstance(fp, Path) else fp
-            if fp.exists():
-                try:
-                    img = RLImage(str(fp), width=CW*0.48, height=60*mm, kind="proportional")
-                    par.append([img, P(fp.stem, S["foto_leg"])])
-                    _fotos_inseridas += 1
-                except Exception:
-                    pass
-        # agrupa em pares
-        for i in range(0, len(par), 2):
-            p1 = par[i]
-            p2 = par[i+1] if i+1 < len(par) else [Sp(0), Sp(0)]
-            row_img  = Table([[p1[0], p2[0]]], colWidths=[CW*0.49, CW*0.49])
-            row_leg  = Table([[p1[1], p2[1]]], colWidths=[CW*0.49, CW*0.49])
-            row_img.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"), ("ALIGN",(0,0),(-1,-1),"CENTER")]))
-            row_leg.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER")]))
-            story.append(row_img)
-            story.append(row_leg)
-            story.append(Sp(3))
-    if _fotos_inseridas == 0:
-        story.append(P("Nenhuma foto enviada para este relatório.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 10. Recomendações ─────────────────────────────────────────────────────
-    story.append(sec_hdr("10. Recomendações Operacionais"))
-    story.append(Sp(3))
-    story.append(P(recomendacoes if recomendacoes else "Manter frequência de visitas e monitoramento dos parâmetros.", S["body"]))
-    story.append(Sp(6))
-
-    # ── 11. Sobre a RT — Aqua Gestão ─────────────────────────────────────────
-    for el in secao_aqua():
-        story.append(el)
-    story.append(Sp(6))
-
-    # ── 12. Assinatura ────────────────────────────────────────────────────────
-    story.append(sec_hdr("12. Assinatura / Responsável Operacional"))
-    story.append(Sp(8))
-    ass_t = Table(
-        [[P("_" * 40, S["cell"]), P("_" * 40, S["cell"])],
-         [P("Responsável Operacional", S["label"]), P("Data", S["label"])],
-         [P(operador or "Bem Star Piscinas", S["cell_b"]), P(emissao, S["cell_b"])]],
-        colWidths=[CW*0.5, CW*0.5],
-    )
-    ass_t.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"), ("TOPPADDING",(0,0),(-1,-1),4)]))
-    story.append(ass_t)
-
-    doc.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
-    return buf.getvalue()
-
-
-# =========================================
-# v6: GERADOR PDF VISITA BEM STAR — BUG-K
-# =========================================
-
-def gerar_pdf_visita_bem_star_v6(dados: dict) -> bytes:
-    """v6: Gera PDF do Relatório de Visita Técnica — Bem Star Piscinas — BUG-K"""
-    e = _bs_pdf_engine()
-    io = e["io"]
-    buf = io.BytesIO()
-    A4 = e["A4"]; mm = e["mm"]; W = e["W"]; M = e["M"]; CW = e["CW"]
-    colors = e["colors"]
-    NAVY = e["NAVY"]; TEAL = e["TEAL"]; GOLD = e["GOLD"]
-    LGRAY = e["LGRAY"]; MGRAY = e["MGRAY"]; DGRAY = e["DGRAY"]
-    VERDE = e["VERDE"]; VERM = e["VERM"]
-    FR = e["FR"]; FB = e["FB"]
-    S = e["S"]; P = e["P"]; Sp = e["Sp"]; HR = e["HR"]
-    sec_hdr = e["sec_hdr"]; tabela_dados = e["tabela_dados"]
-    bloco_info = e["bloco_info"]; secao_aqua = e["secao_aqua"]
-    PageBreak = e["PageBreak"]; KeepTogether = e["KeepTogether"]
-    RLImage = e["RLImage"]; Table = e["Table"]; TableStyle = e["TableStyle"]
-
-    H_a4 = A4[1]
-
-    cliente  = str(dados.get("cliente", "") or "")
-    data_vis = str(dados.get("data", datetime.now().strftime("%d/%m/%Y")) or "")
-    horario  = str(dados.get("horario", "") or "")
-    operador = str(dados.get("operador", "") or "")
-    estrutura = str(dados.get("estrutura_piscinas", "") or "")
-    parametros = dados.get("parametros", []) or []
-    dosagens   = dados.get("dosagens", []) or []
-    servicos   = dados.get("servicos", []) or []
-    ocorrencias   = str(dados.get("ocorrencias", "") or "")
-    recomendacoes = str(dados.get("recomendacoes", "") or "")
-    fotos_cat  = dados.get("fotos_categorias", {}) or {}
-    dados_cliente = dados.get("dados_cliente", {}) or {}
-
-    def capa_fn(canvas, doc):
-        canvas.saveState()
-        canvas.setFillColor(NAVY)
-        canvas.rect(0, 0, W, H_a4, fill=1, stroke=0)
-        canvas.setFillColor(GOLD)
-        canvas.rect(0, H_a4 - 3*mm, W, 3*mm, fill=1, stroke=0)
-        canvas.rect(0, 0, W, 3*mm, fill=1, stroke=0)
-        canvas.setFillColor(colors.HexColor("#0A2540"))
-        canvas.roundRect(M, H_a4*0.25, W-2*M, H_a4*0.50, 8, fill=1, stroke=0)
-        canvas.setFillColor(TEAL)
-        canvas.rect(M, H_a4*0.25 + H_a4*0.50 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
-        canvas.restoreState()
-
-    def hf_fn(canvas, doc):
-        canvas.saveState()
-        if doc.page > 1:
-            canvas.setFillColor(NAVY)
-            canvas.rect(0, H_a4 - 12*mm, W, 12*mm, fill=1, stroke=0)
-            canvas.setFillColor(GOLD)
-            canvas.rect(0, H_a4 - 12.8*mm, W, 0.8*mm, fill=1, stroke=0)
-            canvas.setFillColor(colors.white)
-            canvas.setFont(FB, 7.5)
-            canvas.drawString(M, H_a4 - 6*mm, "BEM STAR PISCINAS — RELATÓRIO DE VISITA TÉCNICA")
-            canvas.setFont(FR, 7)
-            canvas.drawRightString(W - M, H_a4 - 6*mm, f"Página {doc.page}")
-            canvas.drawString(M, H_a4 - 10*mm, "Documento operacional — não substitui relatório de Responsabilidade Técnica")
-            canvas.setFillColor(LGRAY)
-            canvas.rect(0, 0, W, 10*mm, fill=1, stroke=0)
-            canvas.setFillColor(NAVY)
-            canvas.rect(0, 9.5*mm, W, 0.5*mm, fill=1, stroke=0)
-            canvas.setFillColor(DGRAY)
-            canvas.setFont(FR, 7)
-            canvas.drawString(M, 4*mm, f"Bem Star Piscinas  |  CNPJ {CNPJ_BEM_STAR}  |  Uberlândia/MG")
-            canvas.drawRightString(W - M, 4*mm, f"Visita: {data_vis}")
-        canvas.restoreState()
-
-    doc = e["SimpleDocTemplate"](
-        buf, pagesize=A4,
-        leftMargin=M, rightMargin=M, topMargin=14*mm, bottomMargin=14*mm,
-    )
-    story = []
-
-    # CAPA
-    story.append(Sp(32))
-    story.append(P("BEM STAR PISCINAS", S["tag_capa"]))
-    story.append(P("RELATÓRIO DE VISITA TÉCNICA", S["h1_capa"]))
-    story.append(P(f"Cliente: {cliente}  |  Data: {data_vis}  {horario}", S["sub_capa"]))
-    story.append(P(f"Operador: {operador}", S["inf_capa"]))
-    story.append(PageBreak())
-
-    # 1. Identificação da visita
-    story.append(sec_hdr("1. Identificação da Visita"))
-    story.append(Sp(3))
-    story.append(bloco_info({
-        "Cliente": cliente,
-        "Data": data_vis,
-        "Horário": horario,
-        "Operador": operador,
-        "CNPJ": dados_cliente.get("cnpj",""),
-        "Endereço": dados_cliente.get("endereco",""),
-        "Responsável": dados_cliente.get("contato",""),
-    }))
-    story.append(Sp(6))
-
-    # 2. Natureza
-    story.append(sec_hdr("2. Natureza deste Documento"))
-    story.append(Sp(3))
-    story.append(P(TEXTO_NATUREZA_BS, S["aviso"]))
-    story.append(Sp(6))
-
-    # 3. Estrutura das piscinas
-    story.append(sec_hdr("3. Estrutura das Piscinas"))
-    story.append(Sp(3))
-    story.append(P(estrutura if estrutura else "Estrutura não informada.", S["body"]))
-    story.append(Sp(6))
-
-    # 4. Parâmetros físico-químicos
-    story.append(sec_hdr("4. Parâmetros Físico-Químicos Aferidos"))
-    story.append(Sp(3))
-    param_validos = [p for p in parametros if p and any(str(p.get(k,"") or "").strip() for k in ("ph","cloro_livre","alcalinidade"))]
-    if param_validos:
-        hdr_p = [P(h, S["th"]) for h in ["Piscina","pH","CRL mg/L","CT mg/L","Alc. mg/L","Dureza mg/L","Cian. mg/L","Status"]]
-        rows_p = [hdr_p]
-        for p in param_validos:
-            st_p = str(p.get("status","") or "")
-            s_st = S["ok"] if "conforme" in st_p.lower() else (S["warn"] if st_p else S["cell"])
-            rows_p.append([
-                P(p.get("piscina",""), S["cell_l"]),
-                P(p.get("ph",""), S["cell"]),
-                P(p.get("cloro_livre",""), S["cell"]),
-                P(p.get("cloro_total",""), S["cell"]),
-                P(p.get("alcalinidade",""), S["cell"]),
-                P(p.get("dureza",""), S["cell"]),
-                P(p.get("cianurico",""), S["cell"]),
-                P(st_p, s_st),
-            ])
-        story.append(tabela_dados(rows_p, [CW*v for v in [0.18,0.08,0.10,0.08,0.10,0.12,0.10,0.14]]))
-    else:
-        story.append(P("Parâmetros não informados.", S["body"]))
-    story.append(Sp(6))
-
-    # 5. Dosagens
-    story.append(sec_hdr("5. Dosagens e Produtos Aplicados"))
-    story.append(Sp(3))
-    dos_val = [d for d in dosagens if d and any(str(d.get(k,"") or "").strip() for k in ("produto","quantidade","finalidade"))]
-    if dos_val:
-        hdr_d = [P(h, S["th"]) for h in ["Piscina","Produto","Quantidade","Unidade","Finalidade","Observação"]]
-        rows_d = [hdr_d]
-        for d in dos_val:
-            rows_d.append([
-                P(d.get("piscina",""), S["cell_l"]),
-                P(d.get("produto",""), S["cell_l"]),
-                P(d.get("quantidade",""), S["cell"]),
-                P(d.get("unidade",""), S["cell"]),
-                P(d.get("finalidade",""), S["cell_l"]),
-                P(d.get("observacao",""), S["cell_l"]),
-            ])
-        story.append(tabela_dados(rows_d, [CW*v for v in [0.14,0.22,0.09,0.08,0.25,0.22]]))
-    else:
-        story.append(P("Nenhuma dosagem registrada nesta visita.", S["body"]))
-    story.append(Sp(6))
-
-    # 6. Serviços executados
-    story.append(sec_hdr("6. Serviços Executados na Visita"))
-    story.append(Sp(3))
-    if servicos:
-        sv_rows = [[P("Serviço", S["th_l"]), P("Executado", S["th"])]]
-        for sv in SERVICOS_BS_LISTA:
-            foi = sv in servicos
-            sv_rows.append([P(sv, S["cell_l"]), P("✓ Sim" if foi else "—", S["ok"] if foi else S["cell"])])
-        story.append(tabela_dados(sv_rows, [CW*0.75, CW*0.25]))
-    else:
-        story.append(P("Serviços não informados.", S["body"]))
-    story.append(Sp(6))
-
-    # 7. Ocorrências
-    story.append(sec_hdr("7. Ocorrências"))
-    story.append(Sp(3))
-    story.append(P(ocorrencias if ocorrencias else "Nenhuma ocorrência registrada.", S["body"]))
-    story.append(Sp(6))
-
-    # 8. Registro fotográfico
-    story.append(sec_hdr("8. Registro Fotográfico"))
-    story.append(Sp(3))
-    _fi = 0
-    for cat in CATEGORIAS_FOTOS_BS:
-        paths = fotos_cat.get(cat, []) or []
-        if not paths:
-            continue
-        story.append(P(f"● {cat}", S["sec"]))
-        par = []
-        for fp in paths:
-            fp = Path(fp) if not isinstance(fp, Path) else fp
-            if fp.exists():
-                try:
-                    img = RLImage(str(fp), width=CW*0.48, height=60*mm, kind="proportional")
-                    par.append([img, P(fp.stem, S["foto_leg"])])
-                    _fi += 1
-                except Exception:
-                    pass
-        for i in range(0, len(par), 2):
-            p1 = par[i]
-            p2 = par[i+1] if i+1 < len(par) else [Sp(0), Sp(0)]
-            row_img = Table([[p1[0], p2[0]]], colWidths=[CW*0.49, CW*0.49])
-            row_leg = Table([[p1[1], p2[1]]], colWidths=[CW*0.49, CW*0.49])
-            row_img.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"),("ALIGN",(0,0),(-1,-1),"CENTER")]))
-            row_leg.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER")]))
-            story.append(row_img)
-            story.append(row_leg)
-            story.append(Sp(3))
-    if _fi == 0:
-        story.append(P("Nenhuma foto enviada para esta visita.", S["body"]))
-    story.append(Sp(6))
-
-    # 9. Recomendações
-    story.append(sec_hdr("9. Recomendações Operacionais"))
-    story.append(Sp(3))
-    story.append(P(recomendacoes if recomendacoes else "Manter monitoramento contínuo dos parâmetros.", S["body"]))
-    story.append(Sp(6))
-
-    # 10. Sobre RT — Aqua Gestão
-    for el in secao_aqua():
-        story.append(el)
-    story.append(Sp(6))
-
-    # 11. Assinatura
-    story.append(sec_hdr("10. Assinatura / Responsável Operacional"))
-    story.append(Sp(8))
-    ass_t = Table(
-        [[P("_" * 40, S["cell"]), P("_" * 40, S["cell"])],
-         [P("Responsável Operacional", S["label"]), P("Data", S["label"])],
-         [P(operador or "Bem Star Piscinas", S["cell_b"]), P(data_vis, S["cell_b"])]],
-        colWidths=[CW*0.5, CW*0.5],
-    )
-    ass_t.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),("TOPPADDING",(0,0),(-1,-1),4)]))
-    story.append(ass_t)
-
-    doc.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
-    return buf.getvalue()
-
-
+    obs = str(observacoes_gerais or "").strip()
+    if obs:
+        parecer += f" Observação complementar registrada: {obs}"
+    return parecer
 
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
@@ -8848,6 +8357,7 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(datetime.now().year)).strip()
     csr_operador_nome = str(st.session_state.get("csr_operador_rel", "") or "").strip()
     csr_obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
+    csr_parecer_manual = str(st.session_state.get("bs_rel_parecer_tecnico", "") or "").strip()
 
     erros = []
     if not csr_sel:
@@ -8867,10 +8377,11 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
     lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
     lancamentos_sheets = sheets_listar_lancamentos(csr_sel) if csr_sel else []
+    lancamentos_manuais = _coletar_lancamentos_bem_star_manuais()
 
     vistos = set()
     lancamentos_todos = []
-    for lc in (lancamentos_local or []) + (lancamentos_sheets or []):
+    for lc in (lancamentos_manuais or []) + (lancamentos_local or []) + (lancamentos_sheets or []):
         chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
         if chave not in vistos:
             vistos.add(chave)
@@ -8904,6 +8415,9 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
             "dosagens": dados.get("dosagens", lc.get("dosagens", [])),
         })
 
+    parecer_auto = _gerar_parecer_tecnico_mensal_bem_star(lanc_para_relatorio, csr_obs_geral)
+    parecer_final = csr_parecer_manual or parecer_auto
+
     fotos_paths = _coletar_fotos_bem_star_preview(csr_sel, lancamentos_csr)
     return {
         "ok": True,
@@ -8912,6 +8426,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "ano": csr_ano,
         "operador": csr_operador_nome,
         "obs_geral": csr_obs_geral,
+        "parecer_tecnico": parecer_final,
+        "parecer_tecnico_auto": parecer_auto,
         "dados_cliente": csr_dados_sel,
         "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio,
@@ -9013,6 +8529,500 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     }
 
 
+
+def gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx: dict, pdf_path: Path) -> tuple[bool, str]:
+    """Gera o relatório mensal Bem Star no modelo visual do PDF Triad Abril/2026."""
+    # v6: modelo premium do relatório mensal Bem Star — BUG-BS-MENSAL
+    try:
+        import io as _io
+        import math as _math
+        from datetime import datetime as _dt, timedelta as _td
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm, mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            Image as RLImage, PageBreak, KeepTogether
+        )
+        from PIL import Image as _PILImage, ImageOps as _PILImageOps
+
+        pdf_path = Path(pdf_path)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        AZUL = colors.HexColor("#0D2A4A")
+        OURO = colors.HexColor("#C9A227")
+        CINZA_CLARO = colors.HexColor("#F2F4F8")
+        BORDA = colors.HexColor("#D7DCE5")
+        TEXTO = colors.HexColor("#263244")
+        ALERTA = colors.HexColor("#FFF2B8")
+
+        meses = {
+            "01": "Janeiro", "02": "Fevereiro", "03": "Março", "04": "Abril",
+            "05": "Maio", "06": "Junho", "07": "Julho", "08": "Agosto",
+            "09": "Setembro", "10": "Outubro", "11": "Novembro", "12": "Dezembro",
+        }
+
+        def _mes_numero(valor: str) -> str:
+            txt = str(valor or "").strip()
+            if not txt:
+                return datetime.now().strftime("%m")
+            if txt.isdigit():
+                return txt.zfill(2)
+            alvo = normalizar_texto_busca(txt)
+            for num, nome in meses.items():
+                if normalizar_texto_busca(nome) == alvo:
+                    return num
+            return txt.zfill(2) if txt.isdigit() else datetime.now().strftime("%m")
+
+        mes_num = _mes_numero(ctx.get("mes", ""))
+        mes_nome = meses.get(mes_num, str(ctx.get("mes", "") or "").strip() or mes_num)
+        ano = str(ctx.get("ano", "") or datetime.now().year).strip()
+        cliente = str(ctx.get("cliente", "") or ctx.get("dados_cliente", {}).get("nome", "") or "Cliente").strip()
+        operador = str(ctx.get("operador", "") or "Marlon").strip()
+        obs_geral = str(ctx.get("obs_geral", "") or "").strip()
+        lancamentos = list(ctx.get("lancamentos") or [])
+        fotos = list(ctx.get("fotos") or [])
+
+        try:
+            dt_ini = _dt(int(ano), int(mes_num), 1)
+            dt_fim = (_dt(int(ano), int(mes_num), 28) + _td(days=4)).replace(day=1) - _td(days=1)
+            periodo = f"{dt_ini.strftime('%d/%m/%Y')} a {dt_fim.strftime('%d/%m/%Y')}"
+        except Exception:
+            periodo = f"01/{mes_num}/{ano} a 30/{mes_num}/{ano}"
+
+        def _f(v, default=None):
+            try:
+                if v is None:
+                    return default
+                txt = str(v).replace(",", ".").strip()
+                if not txt or txt == "—":
+                    return default
+                return float(txt)
+            except Exception:
+                return default
+
+        def _fmt_num(v, casas=2):
+            n = _f(v, None)
+            if n is None:
+                return "—"
+            return f"{n:.{casas}f}"
+
+        def _fmt_int(v):
+            n = _f(v, None)
+            if n is None:
+                return "—"
+            return str(int(round(n)))
+
+        def _data_dt(txt):
+            for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+                try:
+                    return _dt.strptime(str(txt or "").strip(), fmt)
+                except Exception:
+                    pass
+            return None
+
+        def _dia_semana(txt):
+            dt = _data_dt(txt)
+            nomes = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+            return nomes[dt.weekday()] if dt else "—"
+
+        def _cl_comb(l):
+            crl = _f(l.get("cloro_livre"), None)
+            ct = _f(l.get("cloro_total"), None)
+            if crl is None or ct is None:
+                return _f(l.get("cloraminas"), None)
+            return max(ct - crl, 0.0)
+
+        def _within(v, lo=None, hi=None, below=None):
+            n = _f(v, None)
+            if n is None:
+                return False
+            if below is not None:
+                return n < below
+            if lo is not None and n < lo:
+                return False
+            if hi is not None and n > hi:
+                return False
+            return True
+
+        lancamentos = sorted(lancamentos, key=lambda l: _data_dt(l.get("data", "")) or _dt.max)
+        total_visitas = len(lancamentos)
+
+        def _serie(campo, calc=None):
+            vals = []
+            for l in lancamentos:
+                v = calc(l) if calc else _f(l.get(campo), None)
+                if v is not None:
+                    vals.append(v)
+            return vals
+
+        def _stats(vals):
+            if not vals:
+                return ("—", "—", "—")
+            return (min(vals), sum(vals) / len(vals), max(vals))
+
+        def _conf(vals, pred):
+            if not vals:
+                return "0/0 (0%)"
+            ok = sum(1 for v in vals if pred(v))
+            pct = round(ok * 100 / len(vals))
+            return f"{ok}/{len(vals)} ({pct}%)"
+
+        ph_vals = _serie("ph")
+        crl_vals = _serie("cloro_livre")
+        ct_vals = _serie("cloro_total")
+        cc_vals = _serie("", calc=_cl_comb)
+        alc_vals = _serie("alcalinidade")
+        dc_vals = _serie("dureza")
+        cya_vals = _serie("cianurico")
+
+        ph_ok = _conf(ph_vals, lambda v: 7.2 <= v <= 7.8)
+        crl_ok = _conf(crl_vals, lambda v: 1.0 <= v <= 3.0)
+        cc_ok = _conf(cc_vals, lambda v: v < 0.40)
+        alc_ok = _conf(alc_vals, lambda v: 80 <= v <= 120)
+        dc_ok = _conf(dc_vals, lambda v: 150 <= v <= 400)
+        cya_ok = _conf(cya_vals, lambda v: 30 <= v <= 50)
+
+        styles = getSampleStyleSheet()
+        s_title = ParagraphStyle("bs_title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=20, leading=24, alignment=TA_CENTER, textColor=AZUL, spaceAfter=3)
+        s_subtitle = ParagraphStyle("bs_subtitle", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=10, leading=13, alignment=TA_CENTER, textColor=OURO, spaceAfter=14)
+        s_h1 = ParagraphStyle("bs_h1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13.5, leading=17, textColor=AZUL, spaceBefore=6, spaceAfter=7)
+        s_h2 = ParagraphStyle("bs_h2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=AZUL, spaceBefore=5, spaceAfter=5)
+        s_body = ParagraphStyle("bs_body", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.2, leading=12.6, alignment=TA_JUSTIFY, textColor=TEXTO, spaceAfter=6)
+        s_small = ParagraphStyle("bs_small", parent=s_body, fontSize=7.7, leading=10, textColor=colors.HexColor("#5D6878"), alignment=TA_LEFT)
+        s_note = ParagraphStyle("bs_note", parent=s_body, fontSize=8.5, leading=11.5, textColor=colors.HexColor("#4D5968"), alignment=TA_LEFT)
+        s_center = ParagraphStyle("bs_center", parent=s_body, alignment=TA_CENTER)
+        s_rt_title = ParagraphStyle("bs_rt_title", parent=s_title, fontSize=19, leading=23, spaceAfter=8)
+        s_rt_sub = ParagraphStyle("bs_rt_sub", parent=s_body, fontName="Helvetica-Bold", fontSize=11, leading=14, alignment=TA_CENTER, textColor=AZUL)
+
+        doc = SimpleDocTemplate(
+            str(pdf_path),
+            pagesize=A4,
+            leftMargin=20*mm,
+            rightMargin=20*mm,
+            topMargin=25*mm,
+            bottomMargin=17*mm,
+            title=f"Relatório Mensal de Manutenção - {cliente} - {mes_nome}/{ano}",
+            author="Bem Star Piscinas",
+        )
+
+        def _header_footer(canvas, doc_):
+            canvas.saveState()
+            w, h = A4
+            canvas.setFillColor(AZUL)
+            canvas.rect(0, h - 16*mm, w, 16*mm, fill=1, stroke=0)
+            canvas.setStrokeColor(OURO)
+            canvas.setLineWidth(0.8)
+            canvas.line(0, h - 16*mm, w, h - 16*mm)
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica-Bold", 8.5)
+            canvas.drawString(20*mm, h - 8*mm, "BEM STAR PISCINAS")
+            canvas.setFont("Helvetica", 7)
+            canvas.drawString(20*mm, h - 11.5*mm, "Manutenção Profissional de Piscinas — Uberlândia/MG")
+            canvas.setFont("Helvetica-Bold", 6.8)
+            canvas.drawRightString(w - 20*mm, h - 8*mm, "RELATÓRIO MENSAL DE MANUTENÇÃO")
+            canvas.setFont("Helvetica-Bold", 6.8)
+            canvas.drawRightString(w - 20*mm, h - 11.5*mm, f"{mes_nome} / {ano}")
+            canvas.setStrokeColor(BORDA)
+            canvas.setLineWidth(0.4)
+            canvas.line(20*mm, 13*mm, w - 20*mm, 13*mm)
+            canvas.setFillColor(colors.HexColor("#667085"))
+            canvas.setFont("Helvetica", 6.6)
+            canvas.drawString(20*mm, 8.5*mm, f"Bem Star Piscinas Ltda  |  CNPJ {CNPJ_BEM_STAR}  |  Uberlândia/MG")
+            canvas.drawRightString(w - 20*mm, 8.5*mm, f"Página {doc_.page}")
+            canvas.restoreState()
+
+        elems = []
+
+        elems.append(Paragraph("Relatório Mensal de Manutenção", s_title))
+        elems.append(Paragraph(f"BEM STAR PISCINAS — {mes_nome} / {ano}", s_subtitle))
+
+        freq_txt = "Seg/Qua/Sex"
+        if total_visitas:
+            freq_txt = "Seg/Qua/Sex" if total_visitas >= 10 else "conforme visitas registradas"
+
+        info = [
+            [Paragraph("<b>CLIENTE</b>", s_small), Paragraph(cliente, s_body)],
+            [Paragraph("<b>MÊS DE REFERÊNCIA</b>", s_small), Paragraph(f"{mes_nome} / {ano}", s_body)],
+            [Paragraph("<b>PERÍODO</b>", s_small), Paragraph(periodo, s_body)],
+            [Paragraph("<b>RESPONSÁVEL — BEM<br/>STAR</b>", s_small), Paragraph(f"{RESPONSAVEL_TÉCNICO} — Quím. CRQ-MG 02ª Região<br/>nº {CRQ_NUMERO}", s_body)],
+            [Paragraph("<b>OPERADOR DE CAMPO</b>", s_small), Paragraph(operador or "—", s_body)],
+            [Paragraph("<b>TOTAL DE VISITAS</b>", s_small), Paragraph(f"{total_visitas} visitas ({freq_txt})", s_body)],
+            [Paragraph("<b>PRESTADOR DE SERVIÇO</b>", s_small), Paragraph(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", s_body)],
+        ]
+        t_info = Table(info, colWidths=[5.0*cm, 10.8*cm])
+        t_info.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.35, BORDA),
+            ("BACKGROUND", (0,0), (0,-1), CINZA_CLARO),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 8),
+            ("RIGHTPADDING", (0,0), (-1,-1), 8),
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ]))
+        elems.append(t_info)
+        elems.append(Spacer(1, 10))
+
+        foto_capa = fotos[0] if fotos else None
+        if foto_capa and Path(foto_capa).exists():
+            try:
+                buf = _io.BytesIO()
+                img = _PILImage.open(foto_capa)
+                img = _PILImageOps.exif_transpose(img).convert("RGB")
+                iw, ih = img.size
+                max_w, max_h = 8.3*cm, 10.5*cm
+                ratio = iw / ih if ih else 1
+                if ratio >= 1:
+                    w_img = max_w
+                    h_img = min(max_h, w_img / ratio)
+                else:
+                    h_img = max_h
+                    w_img = min(max_w, h_img * ratio)
+                img.save(buf, format="JPEG", quality=88)
+                buf.seek(0)
+                rl_img = RLImage(buf, width=w_img, height=h_img)
+                foto_box = Table([[rl_img], [Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note)]], colWidths=[15.8*cm])
+                foto_box.setStyle(TableStyle([
+                    ("BOX", (0,0), (-1,-1), 0.35, BORDA),
+                    ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7F8FB")),
+                    ("ALIGN", (0,0), (-1,0), "CENTER"),
+                    ("ALIGN", (0,1), (-1,1), "CENTER"),
+                    ("TOPPADDING", (0,0), (-1,-1), 8),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+                ]))
+                elems.append(foto_box)
+            except Exception:
+                elems.append(Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note))
+        else:
+            elems.append(Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note))
+
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("1. Resumo do Mês", s_h1))
+        elems.append(Paragraph(
+            f"No período de {periodo} foram realizadas {total_visitas} visitas de manutenção na piscina do {cliente}, em frequência {freq_txt.lower()}. "
+            "Os parâmetros físico-químicos foram aferidos nas visitas registradas, com aplicação dos produtos de tratamento conforme demanda observada.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Conformidade do mês (faixa ABNT NBR 10818:2025):</b>", s_body))
+        elems.append(Paragraph(f"• pH: {ph_ok.split('(')[-1].strip(')')} das leituras dentro da faixa 7,2–7,8.", s_body))
+        elems.append(Paragraph(f"• Cloro livre: {crl_ok.split('(')[-1].strip(')')} das leituras dentro da faixa 1,0–3,0 mg/L.", s_body))
+        elems.append(Paragraph(f"• Cloro combinado: {cc_ok.split('(')[-1].strip(')')} das leituras abaixo de 0,40 mg/L.", s_body))
+
+        elems.append(Paragraph("2. Registros de Visita — Parâmetros Físico-Químicos", s_h1))
+        elems.append(Paragraph("Cloro Combinado calculado como (Cl Total − Cl Livre). Valores destacados em amarelo indicam leituras fora da faixa de referência da NBR 10818:2025.", s_small))
+
+        header = ["#", "Data", "Dia", "pH", "Cl Livre<br/>(mg/L)", "Cl Total<br/>(mg/L)", "Cl Comb.<br/>(mg/L)", "Alc.<br/>(mg/L)", "Dureza<br/>(mg/L)", "CYA<br/>(mg/L)"]
+        rows = [[Paragraph(f"<b>{h}</b>", s_small) for h in header]]
+        bg_cmds = []
+        for i, l in enumerate(lancamentos, start=1):
+            cc = _cl_comb(l)
+            vals = [
+                str(i), normalizar_data_visita(l.get("data", "")), _dia_semana(l.get("data", "")),
+                _fmt_num(l.get("ph"), 2), _fmt_num(l.get("cloro_livre"), 2),
+                _fmt_num(l.get("cloro_total"), 2), _fmt_num(cc, 2),
+                _fmt_int(l.get("alcalinidade")), _fmt_int(l.get("dureza")), _fmt_int(l.get("cianurico")),
+            ]
+            rows.append([Paragraph(v, s_small) for v in vals])
+            r = i
+            checks = [
+                (3, _within(l.get("ph"), 7.2, 7.8)),
+                (4, _within(l.get("cloro_livre"), 1.0, 3.0)),
+                (6, _within(cc, below=0.40)),
+                (7, _within(l.get("alcalinidade"), 80, 120)),
+                (8, _within(l.get("dureza"), 150, 400)),
+                (9, _within(l.get("cianurico"), 30, 50)),
+            ]
+            for col, ok in checks:
+                if not ok:
+                    bg_cmds.append(("BACKGROUND", (col, r), (col, r), ALERTA))
+        t_vis = Table(rows, colWidths=[0.6*cm, 2.05*cm, 0.8*cm, 1.05*cm, 1.55*cm, 1.55*cm, 1.55*cm, 1.35*cm, 1.45*cm, 1.25*cm], repeatRows=1)
+        t_vis.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("FONTSIZE", (0,0), (-1,-1), 7.2),
+            ("TOPPADDING", (0,0), (-1,-1), 3.2),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3.2),
+        ] + bg_cmds))
+        elems.append(t_vis)
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("3. Análise Estatística do Mês", s_h1))
+        stat_defs = [
+            ("pH", ph_vals, "7,2 – 7,8", ph_ok, 2),
+            ("Cloro Livre (mg/L)", crl_vals, "1,0 – 3,0", crl_ok, 2),
+            ("Cloro Total (mg/L)", ct_vals, "—", "—", 2),
+            ("Cloro Combinado (mg/L)", cc_vals, "< 0,40", cc_ok, 2),
+            ("Alcalinidade (mg/L CaCO3)", alc_vals, "80 – 120", alc_ok, 0),
+            ("Dureza (mg/L CaCO3)", dc_vals, "150 – 400", dc_ok, 0),
+            ("CYA (mg/L)", cya_vals, "30 – 50", cya_ok, 0),
+        ]
+        stat_rows = [[Paragraph("<b>Parâmetro</b>", s_small), Paragraph("<b>Mínimo</b>", s_small), Paragraph("<b>Média</b>", s_small), Paragraph("<b>Máximo</b>", s_small), Paragraph("<b>Faixa NBR 10818</b>", s_small), Paragraph("<b>Conformidade</b>", s_small)]]
+        for nome, vals, faixa, conf, casas in stat_defs:
+            mn, av, mx = _stats(vals)
+            stat_rows.append([
+                Paragraph(nome, s_small),
+                Paragraph(_fmt_num(mn, casas) if mn != "—" else "—", s_small),
+                Paragraph(_fmt_num(av, casas) if av != "—" else "—", s_small),
+                Paragraph(_fmt_num(mx, casas) if mx != "—" else "—", s_small),
+                Paragraph(faixa, s_small),
+                Paragraph(conf, s_small),
+            ])
+        t_stats = Table(stat_rows, colWidths=[4.3*cm, 1.55*cm, 1.55*cm, 1.55*cm, 3.0*cm, 3.2*cm], repeatRows=1)
+        t_stats.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN", (1,1), (-1,-1), "CENTER"),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        elems.append(t_stats)
+        elems.append(Spacer(1, 8))
+
+        parecer_tecnico_mensal = str(ctx.get("parecer_tecnico") or ctx.get("obs_geral") or "").strip()
+        if not parecer_tecnico_mensal:
+            parecer_tecnico_mensal = _gerar_parecer_tecnico_mensal_bem_star(lancamentos, "")
+        elems.append(Paragraph("4. Parecer Técnico Mensal", s_h1))
+        elems.append(Paragraph(parecer_tecnico_mensal, s_body))
+        elems.append(Spacer(1, 8))
+
+        # v6: removida seção fixa específica de equipamento do relatório Bem Star — BUG-BS-AERACAO
+        elems.append(Paragraph("5. Observações Técnicas dos Demais Parâmetros", s_h1))
+        elems.append(Paragraph(f"<b>Cloro Livre:</b> {crl_ok} dentro do intervalo seguro para uso. Monitorar leituras próximas ao limite mínimo em períodos de maior carga de banhistas.", s_body))
+        elems.append(Paragraph(f"<b>Cloro Combinado (cloraminas):</b> {cc_ok} abaixo de 0,40 mg/L. Caso valores permaneçam elevados, avaliar oxidação periódica e rotina de retrolavagem do filtro.", s_body))
+        elems.append(Paragraph(f"<b>Alcalinidade Total:</b> {alc_ok} dentro da faixa NBR 10818:2025 (80–120 mg/L). O bom poder tampão ajuda a conter oscilações maiores de pH.", s_body))
+        elems.append(Paragraph(f"<b>Dureza Cálcica:</b> {dc_ok} dentro da faixa segura (150–400 mg/L). Monitorar para reduzir risco de corrosão por baixa dureza ou incrustação por excesso.", s_body))
+        elems.append(Paragraph(f"<b>Ácido Cianúrico (CYA):</b> {cya_ok} dentro do intervalo ideal (30–50 mg/L) para piscinas externas, garantindo proteção do cloro contra degradação por radiação UV.", s_body))
+
+        elems.append(Paragraph("6. Ações Realizadas e Recomendações", s_h1))
+        elems.append(Paragraph("<b>Ações executadas no mês:</b>", s_body))
+        for item in [
+            f"Aferição de parâmetros físico-químicos nas {total_visitas} visitas registradas;",
+            "Dosagem de cloro conforme demanda observada;",
+            "Correção de pH quando necessário;",
+            "Aspiração de fundo e limpeza de skimmers conforme rotina operacional;",
+            "Retrolavagem do filtro conforme cronograma operacional;",
+            "Verificação visual de turbidez e coloração da água.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+
+        # v6: inclui dosagens digitadas no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+        dosagens_txt = []
+        for _lc_dos in lancamentos:
+            for _dos in (_lc_dos.get("dosagens", []) or []):
+                if isinstance(_dos, dict):
+                    _txt = " ".join(str(_dos.get(k, "") or "").strip() for k in ("produto", "quantidade", "unidade", "finalidade")).strip()
+                else:
+                    _txt = str(_dos or "").strip()
+                if _txt and _txt not in dosagens_txt:
+                    dosagens_txt.append(_txt)
+        if dosagens_txt:
+            elems.append(Paragraph("<b>Dosagens registradas no período:</b>", s_body))
+            for _txt in dosagens_txt[:20]:
+                elems.append(Paragraph(f"• {_txt}", s_body))
+
+        elems.append(Paragraph("<b>Recomendações para o próximo período:</b>", s_body))
+        recs = [
+            "Manter monitoramento de pH, cloro livre e cloro combinado;",
+            "Acompanhar leituras fora de faixa e registrar as correções químicas executadas;",
+            "Manter frequência de retrolavagem alinhada à pressão diferencial do filtro;",
+            "Monitorar evolução do CYA para não ultrapassar 50 mg/L quando houver uso de cloro estabilizado.",
+        ]
+        if obs_geral:
+            recs.insert(0, obs_geral)
+        for item in recs:
+            elems.append(Paragraph(f"• {item}", s_body))
+
+        elems.append(Paragraph("7. Encerramento do Período", s_h1))
+        elems.append(Paragraph(
+            f"O presente relatório consolida as atividades de manutenção executadas pela Bem Star Piscinas Ltda no mês de {mes_nome} / {ano} no {cliente}, em conformidade com o escopo contratado.",
+            s_body
+        ))
+        elems.append(Spacer(1, 10))
+        elems.append(Paragraph("_______________________________________________<br/><b>Thyago Fernando da Silveira</b><br/>Sócio-Administrador — Bem Star Piscinas Ltda<br/>Quím. CRQ-MG 02ª Região nº 024025748<br/>CNPJ 26.799.958/0001-88", s_center))
+        elems.append(Paragraph(f"Operador responsável pelas visitas: {operador or '—'}", s_center))
+        elems.append(Paragraph(f"Uberlândia/MG, {hoje_br()}", s_center))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("Este Relatório NÃO é um Relatório<br/>Técnico de RT", s_rt_title))
+        elems.append(Paragraph("Entenda a diferença e a importância da Responsabilidade Técnica", s_rt_sub))
+        elems.append(Paragraph(
+            "O documento que você acabou de ler é um relatório operacional de manutenção, emitido pela Bem Star Piscinas dentro do escopo de serviços operacionais contratados. Ele registra o que foi feito em campo: leituras de parâmetros, dosagens aplicadas e observações do operador.",
+            s_body
+        ))
+        elems.append(Paragraph(
+            "Esse documento não substitui — e não tem natureza de — um Relatório Técnico assinado por Responsável Técnico (RT) em Química, exigido para piscinas de uso coletivo conforme as Resoluções Normativas CFQ nº 332/2025 e nº 345/2026 e a ABNT NBR 10818:2025.",
+            s_body
+        ))
+        elems.append(Paragraph("Comparativo Direto", s_h1))
+        comp_rows = [
+            ["", "Relatório Operacional<br/>(Bem Star)", "Relatório Técnico — RT<br/>(Aqua Gestão)"],
+            ["Natureza do documento", "Registro operacional de manutenção", "Documento técnico formal com responsabilidade legal"],
+            ["Profissional responsável", "Operador e responsável da empresa", "Químico Responsável Técnico (CRQ)"],
+            ["Base normativa", "Boa prática de manutenção", "Resoluções CFQ 332/2025 e 345/2026 + ABNT NBR 10818:2025"],
+            ["Numeração e rastreabilidade", "Não aplicável", "Sim (RT-VT, RT-MN, RT-NC)"],
+            ["Validade em fiscalização", "Não substitui relatório de RT", "Sim — documento aceito"],
+            ["Assinatura técnica (CRQ)", "Não", "Sim"],
+        ]
+        comp = [[Paragraph(c, s_small) for c in row] for row in comp_rows]
+        t_comp = Table(comp, colWidths=[4.2*cm, 5.2*cm, 6.4*cm], repeatRows=1)
+        t_comp.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#F7F8FA")),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING", (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+        ]))
+        elems.append(t_comp)
+        elems.append(Paragraph("Por que isso importa para o condomínio?", s_h1))
+        for item in [
+            "Conformidade legal: piscinas de uso coletivo devem possuir profissional habilitado em Química registrado no CRQ como RT.",
+            "Documentação técnica formal: emissão de Relatório Técnico de Visita (RT-VT), de Manutenção (RT-MN) e de Não Conformidade (RT-NC), com numeração e rastreabilidade.",
+            "Defesa em fiscalizações: respaldo perante Vigilância Sanitária, Ministério Público e seguradoras em caso de auditoria ou acidente.",
+            "Otimização química e financeira: controle técnico profissional reduz consumo de produtos e prolonga a vida útil dos equipamentos.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("AQUA GESTÃO — RESPONSABILIDADE TÉCNICA EM QUÍMICA", s_h1))
+        elems.append(Paragraph(
+            "A Aqua Gestão Controle Técnico Ltda (CNPJ 66.008.795/0001-92) é a empresa parceira especializada em Responsabilidade Técnica para piscinas coletivas, sob atuação do Quím. Thyago Fernando da Silveira — CRQ-MG 02ª Região nº 024025748, com mais de 12 anos de experiência no setor.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Serviços oferecidos:</b>", s_body))
+        for item in [
+            "Cadastro do RT junto ao CRQ-MG;",
+            "Emissão mensal de Relatório Técnico de Visita (RT-VT);",
+            "Relatórios de Manutenção (RT-MN) e de Não Conformidade (RT-NC);",
+            "Plano de tratamento e protocolos de emergência;",
+            "Suporte técnico ao síndico e à equipe operacional.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(Paragraph(
+            "Para contratar o serviço de RT ou solicitar uma proposta técnico-comercial, fale com a equipe da Bem Star Piscinas — encaminharemos seu contato à Aqua Gestão Controle Técnico para apresentação do escopo e elaboração do contrato.",
+            s_body
+        ))
+        elems.append(Spacer(1, 16))
+        destaque = Table([[Paragraph("“A água tratada com responsabilidade técnica é a diferença entre uma piscina operacional e uma piscina segura.”", ParagraphStyle("quote", parent=s_body, fontName="Helvetica-Oblique", alignment=TA_CENTER, fontSize=12, leading=16, textColor=AZUL))]], colWidths=[15.8*cm])
+        destaque.setStyle(TableStyle([
+            ("BOX", (0,0), (-1,-1), 0.45, OURO),
+            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#FFFCF0")),
+            ("PADDING", (0,0), (-1,-1), 12),
+        ]))
+        elems.append(destaque)
+
+        doc.build(elems, onFirstPage=_header_footer, onLaterPages=_header_footer)
+        return True, ""
+    except Exception as e:
+        _log_sheets_erro("gerar_pdf_relatorio_mensal_bem_star_modelo_triad", e)
+        return False, str(e)
+
 def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     ctx = _coletar_contexto_relatorio_bem_star()
     if not ctx.get("ok"):
@@ -9032,6 +9042,7 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     docx_path = pasta_saida / f"{base_nome}.docx"
     pdf_path = pasta_saida / f"{base_nome}.pdf"
 
+    # v6: mantém DOCX legado e gera PDF oficial no modelo Triad — BUG-BS-MENSAL
     ok_docx, erro_docx = gerar_relatorio_visita_docx(
         output_path=docx_path,
         nome_local=ctx["dados_cliente"].get("nome", ctx["cliente"]),
@@ -9047,18 +9058,10 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
         fotos=ctx["fotos"],
     )
     if not ok_docx:
-        msg = f"Erro ao gerar DOCX do relatório Bem Star: {erro_docx}"
-        return {
-            "ok": False,
-            "empresa": "Bem Star Piscinas",
-            "preview": preview,
-            "erros": [erro_docx],
-            "mensagem": msg,
-            "fotos": ctx.get("fotos", []),
-            "origem_fotos": ctx.get("origem_fotos", ""),
-        }
+        st.session_state["_bem_star_docx_ultimo_erro"] = erro_docx
 
-    ok_pdf, erro_pdf = converter_docx_para_pdf(docx_path, pdf_path)
+    # v6: PDF Bem Star passa a seguir o modelo visual do relatório Triad Abril/2026 — BUG-BS-MENSAL
+    ok_pdf, erro_pdf = gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx, pdf_path)
     if not preview:
         registrar_documento_manifest(ctx["pasta"], ctx["cliente"], "Relatório", docx_path, pdf_path, ok_pdf, erro_pdf)
 
@@ -9067,9 +9070,9 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
         "empresa": "Bem Star Piscinas",
         "preview": preview,
         "mensagem": (
-            f"Prévia exata Bem Star atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
+            f"Prévia exata Bem Star no modelo Triad atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
             if preview else
-            f"Relatório Bem Star gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
+            f"Relatório Bem Star no modelo Triad gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
         ),
         "docx": docx_path,
         "pdf": pdf_path,
@@ -9087,351 +9090,6 @@ def renderizar_relatorio_oficial(empresa: str = "Aqua Gestão", preview: bool = 
     if empresa == "Bem Star Piscinas":
         return _renderizar_relatorio_bem_star(preview=preview)
     return _renderizar_relatorio_rt(preview=preview)
-
-
-
-
-# =========================================
-# v6: TELA RELATÓRIO MENSAL BEM STAR — BUG-K
-# =========================================
-
-def tela_relatorio_mensal_bem_star():
-    """v6: Tela editável do Relatório Mensal Operacional — Bem Star Piscinas — BUG-K"""
-    import io as _io_bs
-    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
-    st.subheader("📅 Relatório Mensal Operacional — Bem Star Piscinas")
-    st.caption("Preencha os campos e gere o PDF do relatório mensal no padrão visual Bem Star.")
-
-    # ── Bloco 1: Identificação ───────────────────────────────────────────────
-    with st.expander("1️⃣ Identificação do Cliente e Período", expanded=True):
-        bm_c1, bm_c2, bm_c3 = st.columns([2, 1, 1])
-        with bm_c1:
-            # Seleção de cliente
-            @st.cache_data(ttl=30)
-            def _bm_clientes():
-                _todos = sheets_listar_clientes_completo()
-                _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
-                try:
-                    _local = []
-                    _p = GENERATED_DIR / "_clientes_sem_rt.json"
-                    if _p.exists():
-                        _local = json.loads(_p.read_text(encoding="utf-8"))
-                    _nomes = {c["nome"].lower() for c in _bs}
-                    for c in _local:
-                        if c.get("nome","").lower() not in _nomes:
-                            _bs.append(c)
-                except Exception:
-                    pass
-                return _bs
-            _bm_lista = _bm_clientes()
-            _bm_opcoes = [c["nome"] for c in _bm_lista]
-            if not _bm_opcoes:
-                st.info("Nenhum cliente Bem Star cadastrado. Use o painel de clientes para cadastrar.")
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
-            bm_cliente = st.selectbox("Cliente", _bm_opcoes, key="bm_mensal_cliente")
-            bm_dados_cliente = next((c for c in _bm_lista if c["nome"] == bm_cliente), {})
-        with bm_c2:
-            bm_mes = st.text_input("Mês (MM)", key="bm_mensal_mes", placeholder=datetime.now().strftime("%m"), max_chars=2)
-        with bm_c3:
-            bm_ano = st.text_input("Ano (AAAA)", key="bm_mensal_ano", placeholder=str(datetime.now().year), max_chars=4)
-        bm_operador = st.text_input("Operador responsável", key="bm_mensal_operador", placeholder="Nome do operador")
-        bm_obs_geral = st.text_area("Observações gerais do mês", key="bm_mensal_obs", height=80,
-            placeholder="Condições gerais, eventos relevantes do mês...")
-        bm_situacao = st.selectbox("Situação geral da água", ["Satisfatória","Em correção","Não satisfatória"], key="bm_mensal_situacao")
-        bm_estrutura = st.text_area("Estrutura das piscinas", key="bm_mensal_estrutura", height=70,
-            placeholder="Ex.: Piscina adulto 150m³, infantil 40m³, filtragem a areia...")
-
-    # ── Bloco 2: Parâmetros por visita ───────────────────────────────────────
-    with st.expander("2️⃣ Parâmetros Físico-Químicos por Visita", expanded=False):
-        n_analises = st.number_input("Quantas visitas registrar?", min_value=1, max_value=20,
-            value=int(st.session_state.get("bm_mensal_n_analises", 4) or 4), step=1, key="bm_mensal_n_analises")
-        bm_analises = []
-        for _i in range(int(n_analises)):
-            st.markdown(f"**Visita {_i+1}**")
-            _c1,_c2,_c3 = st.columns([1,1,1])
-            with _c1:
-                _data_i = st.text_input("Data", key=f"bm_an_data_{_i}", placeholder="DD/MM/AAAA")
-                _pisc_i = st.text_input("Piscina", key=f"bm_an_pisc_{_i}", placeholder="Ex.: Adulto")
-                _ph_i   = st.text_input("pH", key=f"bm_an_ph_{_i}", placeholder="7.2")
-            with _c2:
-                _cl_i   = st.text_input("CRL mg/L", key=f"bm_an_cl_{_i}", placeholder="1.5")
-                _ct_i   = st.text_input("CT mg/L",  key=f"bm_an_ct_{_i}", placeholder="2.0")
-                _alc_i  = st.text_input("Alcalinidade mg/L", key=f"bm_an_alc_{_i}", placeholder="100")
-            with _c3:
-                _dur_i  = st.text_input("Dureza mg/L", key=f"bm_an_dur_{_i}", placeholder="200")
-                _cya_i  = st.text_input("Cian. mg/L", key=f"bm_an_cya_{_i}", placeholder="30")
-                _st_i   = st.selectbox("Status", ["Conforme","Em correção","Não conforme"], key=f"bm_an_st_{_i}")
-            _op_i = st.text_input("Operador", key=f"bm_an_op_{_i}", placeholder="Nome do operador")
-            bm_analises.append({
-                "data": _data_i, "piscina": _pisc_i, "ph": _ph_i,
-                "cloro_livre": _cl_i, "cloro_total": _ct_i, "alcalinidade": _alc_i,
-                "dureza": _dur_i, "cianurico": _cya_i, "status": _st_i, "operador": _op_i,
-            })
-            if _i < int(n_analises) - 1:
-                st.markdown("---")
-
-    # ── Bloco 3: Dosagens por visita ─────────────────────────────────────────
-    with st.expander("3️⃣ Dosagens e Produtos por Visita", expanded=False):
-        n_dos = st.number_input("Quantas dosagens registrar?", min_value=0, max_value=30,
-            value=int(st.session_state.get("bm_mensal_n_dos", 4) or 4), step=1, key="bm_mensal_n_dos")
-        bm_dosagens = []
-        for _i in range(int(n_dos)):
-            _d1, _d2, _d3 = st.columns([1,1,1])
-            with _d1:
-                _dd_i  = st.text_input("Data", key=f"bm_dos_data_{_i}", placeholder="DD/MM/AAAA")
-                _dp_i  = st.text_input("Piscina", key=f"bm_dos_pisc_{_i}", placeholder="Adulto")
-                _dpr_i = st.text_input("Produto", key=f"bm_dos_prod_{_i}", placeholder="Cloro granulado")
-            with _d2:
-                _dq_i  = st.text_input("Quantidade", key=f"bm_dos_qtd_{_i}", placeholder="500")
-                _du_i  = st.text_input("Unidade", key=f"bm_dos_un_{_i}", placeholder="g / mL / kg")
-                _df_i  = st.text_input("Finalidade", key=f"bm_dos_fin_{_i}", placeholder="Desinfecção")
-            with _d3:
-                _dob_i = st.text_input("Observação", key=f"bm_dos_obs_{_i}", placeholder="Opcional")
-            bm_dosagens.append({
-                "data": _dd_i, "piscina": _dp_i, "produto": _dpr_i,
-                "quantidade": _dq_i, "unidade": _du_i, "finalidade": _df_i, "observacao": _dob_i,
-            })
-            if _i < int(n_dos) - 1:
-                st.markdown("---")
-
-    # ── Bloco 4: Serviços ────────────────────────────────────────────────────
-    with st.expander("4️⃣ Serviços Executados no Mês", expanded=False):
-        bm_servicos = st.multiselect("Selecione os serviços executados no mês",
-            SERVICOS_BS_LISTA, default=SERVICOS_BS_LISTA[:6], key="bm_mensal_servicos")
-
-    # ── Bloco 5: Ocorrências e recomendações ─────────────────────────────────
-    with st.expander("5️⃣ Ocorrências, Pendências e Recomendações", expanded=False):
-        bm_ocorrencias   = st.text_area("Ocorrências e pendências do mês", key="bm_mensal_ocorrencias", height=100,
-            placeholder="Descreva ocorrências, equipamentos com problema, pendências...")
-        bm_recomendacoes = st.text_area("Recomendações operacionais", key="bm_mensal_recomendacoes", height=100,
-            placeholder="Ex.: Verificar vazão da bomba, reavaliar dosagem após 7 dias...")
-
-    # ── Bloco 6: Upload de fotos ──────────────────────────────────────────────
-    with st.expander("6️⃣ Registro Fotográfico", expanded=False):
-        st.caption("Envie fotos organizadas por categoria. Serão incluídas no PDF em pares, com legenda.")
-        bm_fotos_cat = {}
-        _bm_fc1, _bm_fc2 = st.columns(2)
-        for _idx, cat in enumerate(CATEGORIAS_FOTOS_BS):
-            _col = _bm_fc1 if _idx % 2 == 0 else _bm_fc2
-            with _col:
-                _uploads = st.file_uploader(f"📷 {cat}", accept_multiple_files=True,
-                    type=["jpg","jpeg","png","webp"], key=f"bm_foto_cat_{_idx}")
-                if _uploads:
-                    _paths = []
-                    _pasta_up = GENERATED_DIR / slugify_nome(st.session_state.get("bm_mensal_cliente","_upload")) / "fotos_mensal"
-                    _pasta_up.mkdir(parents=True, exist_ok=True)
-                    for _uf in _uploads:
-                        _fp = _pasta_up / limpar_nome_arquivo(f"{cat}_{_uf.name}")
-                        _fp.write_bytes(_uf.getbuffer())
-                        _paths.append(_fp)
-                    bm_fotos_cat[cat] = _paths
-                    st.caption(f"✓ {len(_paths)} foto(s) carregada(s)")
-
-    # ── Botão gerar PDF mensal ────────────────────────────────────────────────
-    st.markdown("---")
-    if st.button("📄 Gerar PDF — Relatório Mensal Bem Star", type="primary", use_container_width=True, key="btn_bm_mensal_pdf"):
-        _bm_dados = {
-            "cliente":           st.session_state.get("bm_mensal_cliente",""),
-            "mes":               st.session_state.get("bm_mensal_mes",""),
-            "ano":               st.session_state.get("bm_mensal_ano",""),
-            "operador":          st.session_state.get("bm_mensal_operador",""),
-            "obs_geral":         st.session_state.get("bm_mensal_obs",""),
-            "situacao_agua":     st.session_state.get("bm_mensal_situacao","Satisfatória"),
-            "piscinas_estrutura":st.session_state.get("bm_mensal_estrutura",""),
-            "analises":          bm_analises,
-            "dosagens":          bm_dosagens,
-            "servicos":          st.session_state.get("bm_mensal_servicos",[]),
-            "ocorrencias":       st.session_state.get("bm_mensal_ocorrencias",""),
-            "recomendacoes":     st.session_state.get("bm_mensal_recomendacoes",""),
-            "fotos_categorias":  bm_fotos_cat,
-            "dados_cliente":     bm_dados_cliente,
-            "data_emissao":      datetime.now().strftime("%d/%m/%Y"),
-        }
-        try:
-            with st.spinner("Gerando PDF Mensal Bem Star..."):
-                _pdf_bytes = gerar_pdf_mensal_bem_star(_bm_dados)
-            _cliente_slug = slugify_nome(st.session_state.get("bm_mensal_cliente","cliente"))
-            _mes_r = st.session_state.get("bm_mensal_mes","")
-            _ano_r = st.session_state.get("bm_mensal_ano","")
-            _nome_pdf = limpar_nome_arquivo(f"RelatorioMensal_BemStar_{_cliente_slug}_{_mes_r}{_ano_r}.pdf")
-            st.success(f"✅ PDF Mensal Bem Star gerado com sucesso!")
-            st.download_button(
-                "⬇️ Baixar Relatório Mensal PDF",
-                data=_pdf_bytes, file_name=_nome_pdf, mime="application/pdf",
-                use_container_width=True, key="dl_bm_mensal_pdf",
-            )
-        except Exception as _e_bm:
-            import traceback as _tb
-            st.error(f"Erro ao gerar PDF Mensal: {_e_bm}")
-            st.code(_tb.format_exc(), language="text")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# =========================================
-# v6: TELA RELATÓRIO DE VISITA BEM STAR — BUG-K
-# =========================================
-
-def tela_relatorio_visita_bem_star():
-    """v6: Tela do Relatório de Visita Técnica — Bem Star Piscinas — BUG-K"""
-    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
-    st.subheader("🔍 Relatório de Visita Técnica — Bem Star Piscinas")
-    st.caption("Preencha os campos desta visita e gere o PDF do relatório de visita no padrão visual Bem Star.")
-
-    # ── Identificação da visita ──────────────────────────────────────────────
-    with st.expander("1️⃣ Identificação da Visita", expanded=True):
-        @st.cache_data(ttl=30)
-        def _bv_clientes():
-            _todos = sheets_listar_clientes_completo()
-            _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
-            try:
-                _p = GENERATED_DIR / "_clientes_sem_rt.json"
-                if _p.exists():
-                    _local = json.loads(_p.read_text(encoding="utf-8"))
-                    _nomes = {c["nome"].lower() for c in _bs}
-                    for c in _local:
-                        if c.get("nome","").lower() not in _nomes:
-                            _bs.append(c)
-            except Exception:
-                pass
-            return _bs
-        _bv_lista = _bv_clientes()
-        _bv_opcoes = [c["nome"] for c in _bv_lista]
-        if not _bv_opcoes:
-            st.info("Nenhum cliente Bem Star cadastrado.")
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
-        _bv_c1, _bv_c2, _bv_c3 = st.columns([2,1,1])
-        with _bv_c1:
-            bv_cliente = st.selectbox("Cliente", _bv_opcoes, key="bv_cliente")
-            bv_dados_cliente = next((c for c in _bv_lista if c["nome"] == bv_cliente), {})
-        with _bv_c2:
-            bv_data = st.text_input("Data da visita", key="bv_data", placeholder=datetime.now().strftime("%d/%m/%Y"))
-        with _bv_c3:
-            bv_horario = st.text_input("Horário", key="bv_horario", placeholder="09:00")
-        bv_operador = st.text_input("Operador responsável", key="bv_operador", placeholder="Nome do operador")
-        bv_estrutura = st.text_area("Estrutura das piscinas", key="bv_estrutura", height=70,
-            placeholder="Descreva a estrutura: adulto, infantil, spa, volumes...")
-
-    # ── Parâmetros ───────────────────────────────────────────────────────────
-    with st.expander("2️⃣ Parâmetros Físico-Químicos Aferidos", expanded=False):
-        n_pisc = st.number_input("Quantas piscinas aferir?", min_value=1, max_value=6,
-            value=int(st.session_state.get("bv_n_pisc",2) or 2), step=1, key="bv_n_pisc")
-        bv_parametros = []
-        for _i in range(int(n_pisc)):
-            st.markdown(f"**Piscina {_i+1}**")
-            _bp1, _bp2, _bp3 = st.columns(3)
-            with _bp1:
-                _pisc_n = st.text_input("Nome da piscina", key=f"bv_pisc_{_i}", placeholder="Ex.: Adulto")
-                _pisc_ph = st.text_input("pH", key=f"bv_ph_{_i}", placeholder="7.2")
-                _pisc_cl = st.text_input("CRL mg/L", key=f"bv_cl_{_i}", placeholder="1.5")
-            with _bp2:
-                _pisc_ct = st.text_input("CT mg/L", key=f"bv_ct_{_i}", placeholder="2.0")
-                _pisc_alc = st.text_input("Alcalinidade mg/L", key=f"bv_alc_{_i}", placeholder="100")
-                _pisc_dur = st.text_input("Dureza mg/L", key=f"bv_dur_{_i}", placeholder="200")
-            with _bp3:
-                _pisc_cya = st.text_input("Cian. mg/L", key=f"bv_cya_{_i}", placeholder="30")
-                _pisc_st = st.selectbox("Status", ["Conforme","Em correção","Não conforme"], key=f"bv_st_{_i}")
-            bv_parametros.append({
-                "piscina": _pisc_n, "ph": _pisc_ph, "cloro_livre": _pisc_cl,
-                "cloro_total": _pisc_ct, "alcalinidade": _pisc_alc, "dureza": _pisc_dur,
-                "cianurico": _pisc_cya, "status": _pisc_st,
-            })
-            if _i < int(n_pisc) - 1:
-                st.markdown("---")
-
-    # ── Dosagens ─────────────────────────────────────────────────────────────
-    with st.expander("3️⃣ Dosagens desta Visita", expanded=False):
-        n_bv_dos = st.number_input("Quantas dosagens?", min_value=0, max_value=15,
-            value=int(st.session_state.get("bv_n_dos",3) or 3), step=1, key="bv_n_dos")
-        bv_dosagens = []
-        for _i in range(int(n_bv_dos)):
-            _dd1, _dd2 = st.columns(2)
-            with _dd1:
-                _bvdp = st.text_input("Piscina", key=f"bv_dpisc_{_i}", placeholder="Adulto")
-                _bvdpr = st.text_input("Produto", key=f"bv_dprod_{_i}", placeholder="Cloro granulado")
-                _bvdq = st.text_input("Quantidade", key=f"bv_dqtd_{_i}", placeholder="500")
-            with _dd2:
-                _bvdu = st.text_input("Unidade", key=f"bv_dun_{_i}", placeholder="g / mL / kg")
-                _bvdf = st.text_input("Finalidade", key=f"bv_dfin_{_i}", placeholder="Desinfecção")
-                _bvdo = st.text_input("Observação", key=f"bv_dobs_{_i}", placeholder="Opcional")
-            bv_dosagens.append({
-                "piscina": _bvdp, "produto": _bvdpr, "quantidade": _bvdq,
-                "unidade": _bvdu, "finalidade": _bvdf, "observacao": _bvdo,
-            })
-            if _i < int(n_bv_dos) - 1:
-                st.markdown("---")
-
-    # ── Serviços ─────────────────────────────────────────────────────────────
-    with st.expander("4️⃣ Serviços Executados nesta Visita", expanded=False):
-        bv_servicos = st.multiselect("Serviços executados", SERVICOS_BS_LISTA,
-            default=SERVICOS_BS_LISTA[:5], key="bv_servicos")
-
-    # ── Ocorrências e recomendações ───────────────────────────────────────────
-    with st.expander("5️⃣ Ocorrências e Recomendações", expanded=False):
-        bv_ocorrencias   = st.text_area("Ocorrências nesta visita", key="bv_ocorrencias", height=80,
-            placeholder="Descreva problemas identificados, equipamentos com falha...")
-        bv_recomendacoes = st.text_area("Recomendações operacionais", key="bv_recomendacoes", height=80,
-            placeholder="Ex.: Verificar pH na próxima visita, ajustar dosagem de cloro...")
-
-    # ── Fotos ─────────────────────────────────────────────────────────────────
-    with st.expander("6️⃣ Registro Fotográfico", expanded=False):
-        st.caption("Envie fotos por categoria. Incluídas no PDF em pares, com legenda.")
-        bv_fotos_cat = {}
-        _bv_fc1, _bv_fc2 = st.columns(2)
-        for _idx, cat in enumerate(CATEGORIAS_FOTOS_BS):
-            _col = _bv_fc1 if _idx % 2 == 0 else _bv_fc2
-            with _col:
-                _ups = st.file_uploader(f"📷 {cat}", accept_multiple_files=True,
-                    type=["jpg","jpeg","png","webp"], key=f"bv_foto_{_idx}")
-                if _ups:
-                    _paths = []
-                    _pasta = GENERATED_DIR / slugify_nome(st.session_state.get("bv_cliente","_upload")) / "fotos_visita"
-                    _pasta.mkdir(parents=True, exist_ok=True)
-                    for _uf in _ups:
-                        _fp = _pasta / limpar_nome_arquivo(f"{cat}_{_uf.name}")
-                        _fp.write_bytes(_uf.getbuffer())
-                        _paths.append(_fp)
-                    bv_fotos_cat[cat] = _paths
-                    st.caption(f"✓ {len(_paths)} foto(s)")
-
-    # ── Botão gerar PDF ───────────────────────────────────────────────────────
-    st.markdown("---")
-    if st.button("📄 Gerar PDF — Relatório de Visita Bem Star", type="primary", use_container_width=True, key="btn_bv_pdf"):
-        _bv_dados = {
-            "cliente":            st.session_state.get("bv_cliente",""),
-            "data":               st.session_state.get("bv_data",""),
-            "horario":            st.session_state.get("bv_horario",""),
-            "operador":           st.session_state.get("bv_operador",""),
-            "estrutura_piscinas": st.session_state.get("bv_estrutura",""),
-            "parametros":         bv_parametros,
-            "dosagens":           bv_dosagens,
-            "servicos":           st.session_state.get("bv_servicos",[]),
-            "ocorrencias":        st.session_state.get("bv_ocorrencias",""),
-            "recomendacoes":      st.session_state.get("bv_recomendacoes",""),
-            "fotos_categorias":   bv_fotos_cat,
-            "dados_cliente":      bv_dados_cliente,
-        }
-        try:
-            with st.spinner("Gerando PDF de Visita Bem Star..."):
-                _pdf_bv = gerar_pdf_visita_bem_star_v6(_bv_dados)
-            _bv_slug = slugify_nome(st.session_state.get("bv_cliente","cliente"))
-            _bv_data = (st.session_state.get("bv_data","") or "").replace("/","")
-            _bv_nome = limpar_nome_arquivo(f"RelatorioVisita_BemStar_{_bv_slug}_{_bv_data}.pdf")
-            st.success("✅ PDF de Visita Bem Star gerado com sucesso!")
-            st.download_button(
-                "⬇️ Baixar Relatório de Visita PDF",
-                data=_pdf_bv, file_name=_bv_nome, mime="application/pdf",
-                use_container_width=True, key="dl_bv_pdf",
-            )
-        except Exception as _e_bv:
-            import traceback as _tb
-            st.error(f"Erro ao gerar PDF de Visita: {_e_bv}")
-            st.code(_tb.format_exc(), language="text")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
 
 
 def gerar_relatorio_mensal() -> tuple[bool, str]:
@@ -9940,7 +9598,8 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
+                    # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -10133,6 +9792,9 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
+    # v6: logout administrativo nunca derruba sessão do operador — BUG-A
+    if st.session_state.get("modo_atual") == "operador":
+        return
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -13437,9 +13099,387 @@ if _empresa_ativa_codigo() != "bem_star":
 # =========================================
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
-    # v6: Relatório Mensal e de Visita Bem Star — padrão visual premium — BUG-K
-    tela_relatorio_mensal_bem_star()
-    tela_relatorio_visita_bem_star()
+    st.subheader("Bem Star — Relatório Técnico Simples / Operacional")
+    st.caption("Módulo exclusivo da Bem Star Piscinas para limpeza, manutenção, visitas operacionais, análises básicas, dosagens e relatório sem RT.")
+    
+    with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
+    
+        # Lista clientes sem RT já cadastrados
+        CLIENTES_SEM_RT_JSON = GENERATED_DIR / "_clientes_sem_rt.json"
+    
+        def carregar_clientes_sem_rt() -> list:
+            if CLIENTES_SEM_RT_JSON.exists():
+                try:
+                    return json.loads(CLIENTES_SEM_RT_JSON.read_text(encoding="utf-8"))
+                except Exception:
+                    return []
+            return []
+    
+        def salvar_clientes_sem_rt(lista: list):
+            GENERATED_DIR.mkdir(exist_ok=True)
+            CLIENTES_SEM_RT_JSON.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+        clientes_sem_rt = carregar_clientes_sem_rt()
+    
+        # ── Importar do Sheets ────────────────────────────────────────────────────
+        @st.cache_data(ttl=60)
+        def _clientes_sheets_csr():
+            return sheets_listar_clientes_completo()
+    
+        _cls_sheets = filtrar_clientes_por_empresa(_clientes_sheets_csr(), "bem_star")
+        if _cls_sheets:
+            _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
+            _sel_csr_imp = st.selectbox(
+                "🔗 Importar cliente do Google Sheets",
+                _opcoes_csr_imp,
+                key="sel_importar_csr",
+                help="Importa os dados do cadastro principal para o formulário abaixo."
+            )
+            if _sel_csr_imp and _sel_csr_imp != "— Importar do cadastro principal (Sheets) —":
+                if st.button("⬇️ Importar dados", key="btn_imp_csr", use_container_width=False):
+                    _d = next((c for c in _cls_sheets if c["nome"] == _sel_csr_imp), {})
+                    if _d:
+                        st.session_state["csr_nome"]     = _d.get("nome", "")
+                        st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
+                        st.session_state["csr_endereco"] = _d.get("endereco", "")
+                        st.session_state["csr_contato"]  = _d.get("contato", "")
+                        st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
+                        st.success(f"✅ Dados de '{_sel_csr_imp}' importados!")
+                        st.rerun()
+            st.markdown("---")
+    
+        st.markdown("**Novo cliente sem RT:**")
+    
+        def _mask_csr_cnpj():
+            st.session_state["csr_cnpj"] = formatar_cnpj(st.session_state.get("csr_cnpj", ""))
+    
+        def _mask_csr_telefone():
+            st.session_state["csr_telefone"] = formatar_telefone(st.session_state.get("csr_telefone", ""))
+    
+        csr1, csr2 = st.columns(2)
+        with csr1:
+            csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+            if st.session_state.get("_csr_cep_fmt"):
+                st.session_state["csr_cep"] = st.session_state.pop("_csr_cep_fmt")
+            _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
+            with _csr_cep_c1:
+                st.text_input("CEP", key="csr_cep", placeholder="00000-000",
+                    help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+            with _csr_cep_c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                _btn_csr_cep = st.button("🔍", key="btn_buscar_cep_csr", help="Buscar CEP")
+            if _btn_csr_cep:
+                _cep_v = re.sub(r"\D", "", st.session_state.get("csr_cep", ""))
+                if len(_cep_v) == 8:
+                    with st.spinner("Buscando CEP..."):
+                        _dc = buscar_cep(_cep_v)
+                    if _dc:
+                        _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                        st.session_state["csr_endereco"] = _end
+                        st.session_state["_csr_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                        st.rerun()
+                    else:
+                        st.error("CEP não encontrado.")
+                else:
+                    st.warning("Digite um CEP válido com 8 dígitos.")
+            csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+        with csr2:
+            csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
+            csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
+            csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
+    
+        if st.button("➕ Salvar cliente (Bem Star)", use_container_width=True):
+            if not csr_nome.strip():
+                st.error("Informe o nome do local.")
+            else:
+                novo = {
+                    "nome": csr_nome.strip(),
+                    "cnpj": formatar_cnpj(csr_cnpj.strip()),
+                    "endereco": csr_endereco.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": formatar_telefone(csr_telefone.strip()),
+                    "cadastrado_em": _agora_brasilia(),
+                }
+                # Atualiza se já existe, senão adiciona
+                nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
+                if csr_nome.strip().lower() in nomes_existentes:
+                    idx_ex = nomes_existentes.index(csr_nome.strip().lower())
+                    clientes_sem_rt[idx_ex] = novo
+                    st.success(f"Cliente '{csr_nome}' atualizado.")
+                else:
+                    clientes_sem_rt.append(novo)
+                    st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
+                salvar_clientes_sem_rt(clientes_sem_rt)
+                # Salva também no Google Sheets (col M = Bem Star Piscinas)
+                with st.spinner("Sincronizando com Google Sheets..."):
+                    _cl_sheets = sheets_listar_clientes_completo()
+                    _existe_sheets = next((c for c in _cl_sheets
+                        if c["nome"].lower().strip() == csr_nome.strip().lower()), None)
+                    if _existe_sheets:
+                        sheets_editar_cliente(
+                            id_cliente=_existe_sheets["id"],
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                    else:
+                        sheets_salvar_cliente(
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                st.cache_data.clear()
+                # Cria pasta do cliente no generated
+                pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
+                pasta_csr.mkdir(parents=True, exist_ok=True)
+                _dados_csr_local = carregar_dados_condominio(pasta_csr) or {}
+                _dados_csr_local.update({
+                    "nome_condominio": csr_nome.strip(),
+                    "cnpj_condominio": csr_cnpj.strip(),
+                    "cnpj": csr_cnpj.strip(),
+                    "endereco_condominio": csr_endereco.strip(),
+                    "endereco": csr_endereco.strip(),
+                    "nome_sindico": csr_contato.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": csr_telefone.strip(),
+                    "empresa": "Bem Star Piscinas",
+                    "servicos": {"rt": False, "limpeza": True},
+                    "tipo": "sem_rt",
+                    "salvo_em": _agora_brasilia(),
+                })
+                salvar_dados_condominio(pasta_csr, _dados_csr_local)
+                st.rerun()
+    
+        if clientes_sem_rt:
+            st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
+            for c in clientes_sem_rt:
+                st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
+    
+    # ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
+    st.markdown("---")
+    st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
+    
+    # Carrega clientes Bem Star do Sheets (fonte principal) + fallback JSON local
+    @st.cache_data(ttl=30)
+    def _clientes_bem_star_relatorio():
+        _todos = sheets_listar_clientes_completo()
+        _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
+        # Fallback: também inclui clientes do JSON local
+        _json_local = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+        _nomes_sheets = {c["nome"].lower() for c in _bs}
+        for _cl in _json_local:
+            if _cl["nome"].lower() not in _nomes_sheets:
+                _bs.append(_cl)
+        return _bs
+    
+    clientes_sem_rt_reload = _clientes_bem_star_relatorio()
+    opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
+    
+    if not opcoes_csr:
+        st.info("Cadastre um cliente Bem Star acima para gerar o relatório técnico.")
+    else:
+        rts1, rts2, rts3 = st.columns([2, 1, 1])
+        with rts1:
+            csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
+        with rts2:
+            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
+        with rts3:
+            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
+    
+        csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
+    
+        # ── Busca lançamentos: JSON local + Google Sheets ──────────────────────
+        pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
+        _lanc_local_csr = []
+        if pasta_csr_sel and pasta_csr_sel.exists():
+            _dados_json_csr = carregar_dados_condominio(pasta_csr_sel)
+            _lanc_local_csr = (_dados_json_csr or {}).get("lancamentos_campo", [])
+    
+        _lanc_sheets_csr = []
+        if csr_sel:
+            try:
+                _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+            except Exception:
+                _lanc_sheets_csr = []
+    
+        # Deduplica local + Sheets
+        _vistos_csr = set()
+        _lanc_todos_csr = []
+        for _lc in _lanc_local_csr + _lanc_sheets_csr:
+            _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
+            if _ch not in _vistos_csr:
+                _vistos_csr.add(_ch)
+                _lanc_todos_csr.append(_lc)
+    
+        # Filtra por mês/ano
+        def _filtrar_mes_csr(lancamentos, mes, ano):
+            """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
+            if not mes or not ano:
+                return lancamentos
+            return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
+    
+        _mes_csr  = (csr_mes or "").strip()
+        _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
+        lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
+
+        st.markdown("**✍️ Preenchimento manual do relatório mensal Bem Star**")
+        st.caption("Use estes campos quando o relatório mensal precisar ser preenchido diretamente, com fotos, parâmetros e dosagens.")
+        st.number_input("Total de visitas para preencher", min_value=1, max_value=31, value=int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12), step=1, key="bs_rel_qtd_visitas")
+        with st.expander("Abrir campos de parâmetros, dosagens e observações", expanded=True):
+            _qtd_manual_bs = int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12)
+            for _i in range(1, _qtd_manual_bs + 1):
+                st.markdown(f"**Visita {_i}**")
+                _c1, _c2, _c3, _c4 = st.columns([1.25, 0.75, 0.75, 0.75])
+                with _c1:
+                    st.text_input("Data", key=f"bs_rel_data_{_i}", placeholder="dd/mm/aaaa")
+                with _c2:
+                    st.text_input("pH", key=f"bs_rel_ph_{_i}", placeholder="7,40")
+                with _c3:
+                    st.text_input("Cl livre", key=f"bs_rel_crl_{_i}", placeholder="2,00")
+                with _c4:
+                    st.text_input("Cl total", key=f"bs_rel_ct_{_i}", placeholder="2,20")
+                _c5, _c6, _c7 = st.columns(3)
+                with _c5:
+                    st.text_input("Alcalinidade", key=f"bs_rel_alc_{_i}", placeholder="100")
+                with _c6:
+                    st.text_input("Dureza", key=f"bs_rel_dc_{_i}", placeholder="200")
+                with _c7:
+                    st.text_input("CYA", key=f"bs_rel_cya_{_i}", placeholder="40")
+                st.text_input("Dosagem aplicada", key=f"bs_rel_dosagem_{_i}", placeholder="Ex.: Hipoclorito 65% 500g; Ácido muriático 300mL")
+                st.text_input("Observação da visita", key=f"bs_rel_obs_{_i}", placeholder="Ocorrência, limpeza, retrolavagem, aspecto visual...")
+                st.markdown("---")
+
+        _uploads_bs = st.file_uploader(
+            "Fotos do relatório mensal Bem Star",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="bs_rel_fotos_upload",
+            help="Envie as fotos que devem aparecer na capa/registro fotográfico do relatório.",
+        )
+        if _uploads_bs and csr_sel:
+            _pasta_upload_bs = GENERATED_DIR / slugify_nome(csr_sel) / "fotos_relatorio_bem_star"
+            _pasta_upload_bs.mkdir(parents=True, exist_ok=True)
+            _paths_bs = []
+            for _idx_foto, _up in enumerate(_uploads_bs, start=1):
+                _ext = Path(_up.name).suffix.lower() or ".jpg"
+                _dest = _pasta_upload_bs / limpar_nome_arquivo(f"{_mes_csr}_{_ano_csr}_foto_{_idx_foto}{_ext}")
+                _dest.write_bytes(_up.getvalue())
+                _paths_bs.append(str(_dest))
+            st.session_state["_bem_star_fotos_relatorio_paths"] = _paths_bs
+            st.success(f"{len(_paths_bs)} foto(s) carregada(s) para o relatório Bem Star.")
+
+        _lanc_manual_csr = _filtrar_mes_csr(_coletar_lancamentos_bem_star_manuais(), _mes_csr, _ano_csr)
+        if _lanc_manual_csr:
+            _vistos_manual_merge = {f"{lc.get('data','')}-{lc.get('ph','')}-{lc.get('cloro_livre','')}" for lc in lancamentos_csr}
+            for _lc_manual in _lanc_manual_csr:
+                _ch_manual = f"{_lc_manual.get('data','')}-{_lc_manual.get('ph','')}-{_lc_manual.get('cloro_livre','')}"
+                if _ch_manual not in _vistos_manual_merge:
+                    lancamentos_csr.append(_lc_manual)
+                    _vistos_manual_merge.add(_ch_manual)
+
+    
+        # ── Painel de lançamentos disponíveis ────────────────────────────────
+        if lancamentos_csr:
+            _fonte_csr = "📱 local + Sheets" if _lanc_sheets_csr else "📱 local"
+            _periodo_csr = f"{lancamentos_csr[0].get('data','?')} → {lancamentos_csr[-1].get('data','?')}"
+            st.markdown(
+                f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;"
+                f"background:rgba(20,120,60,0.07);margin-bottom:12px;'>"
+                f"<strong>📱 {len(lancamentos_csr)} lançamento(s) encontrado(s) — {_fonte_csr}</strong><br>"
+                f"<span style='font-size:0.85rem;color:#3a6a3a;'>Período: {_periodo_csr}</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("👁 Ver lançamentos"):
+                for _lc in lancamentos_csr:
+                    st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
+        else:
+            st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
+    
+        csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
+        csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
+            placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+
+        # v6: campo automático/editável de parecer técnico mensal Bem Star — BUG-BS-PARECER
+        _parecer_auto_bs = _gerar_parecer_tecnico_mensal_bem_star(lancamentos_csr, csr_obs_geral)
+        if not st.session_state.get("bs_rel_parecer_tecnico"):
+            st.session_state["bs_rel_parecer_tecnico"] = _parecer_auto_bs
+        st.text_area(
+            "Parecer técnico mensal automático",
+            key="bs_rel_parecer_tecnico",
+            height=140,
+            help="O sistema preenche automaticamente conforme os parâmetros. Você pode ajustar o texto antes de gerar.",
+        )
+    
+        # ── Coleta fotos das visitas ─────────────────────────────────────────
+        pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+        fotos_csr = []
+        if pasta_fotos_csr and pasta_fotos_csr.exists():
+            for _lc in lancamentos_csr:
+                for _nf in _lc.get("fotos", []):
+                    _pf = pasta_fotos_csr / _nf
+                    if _pf.exists():
+                        fotos_csr.append((_lc.get("data",""), _pf))
+    
+        if fotos_csr:
+            st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
+    
+        
+    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Gerando relatório Bem Star..."):
+                _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
+    
+            if not _resultado_bs.get("ok"):
+                st.error(_resultado_bs.get("mensagem", "Erro ao gerar relatório Bem Star."))
+            else:
+                docx_csr = Path(_resultado_bs["docx"])
+                pdf_csr = Path(_resultado_bs["pdf"])
+                ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
+                err_pdf_csr = _resultado_bs.get("erro_pdf")
+                _ctx_bs = _resultado_bs.get("dados", {})
+                st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
+                dl1, dl2 = st.columns(2)
+                with dl1:
+                    with open(docx_csr, "rb") as _f:
+                        st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True)
+                with dl2:
+                    if ok_pdf_csr and pdf_csr.exists():
+                        with open(pdf_csr, "rb") as _f:
+                            st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
+                                mime="application/pdf", use_container_width=True)
+                    else:
+                        st.warning(f"PDF não gerado: {err_pdf_csr}")
+    
+                _msg_rel = montar_mensagem_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
+                    tipo="relatorio",
+                    mes=_ctx_bs.get("mes", csr_mes),
+                    ano=_ctx_bs.get("ano", csr_ano),
+                )
+                exibir_bloco_envio_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    pasta=Path(_resultado_bs["pasta"]),
+                    telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
+                    email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
+                    mensagem=_msg_rel,
+                    key_suffix="relatorio",
+                )
+    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório Bem Star: {e}")
+            import traceback
+            st.code(traceback.format_exc(), language="text")
+    
+    
     st.markdown("</div>", unsafe_allow_html=True)
     
     
