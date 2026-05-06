@@ -8252,12 +8252,112 @@ def _coletar_fotos_bem_star_preview(csr_sel: str, lancamentos_csr: list[dict]) -
     return saida
 
 
+
+def _gerar_parecer_tecnico_mensal_bem_star(lancamentos: list[dict], observacoes_gerais: str = "") -> str:
+    """Gera parecer técnico mensal automático do relatório Bem Star a partir dos parâmetros informados."""
+    # v6: parecer técnico mensal automático por conformidade dos parâmetros — BUG-BS-PARECER
+    def _num(v):
+        try:
+            s = str(v if v is not None else "").strip().replace(",", ".")
+            if not s or s in ("—", "-"):
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    leituras = list(lancamentos or [])
+    total = len(leituras)
+
+    def _serie(chave):
+        vals = []
+        for item in leituras:
+            val = _num((item or {}).get(chave, ""))
+            if val is not None:
+                vals.append(val)
+        return vals
+
+    ph_vals = _serie("ph")
+    crl_vals = _serie("cloro_livre")
+    ct_vals = _serie("cloro_total")
+    alc_vals = _serie("alcalinidade")
+    dc_vals = _serie("dureza")
+    cya_vals = _serie("cianurico")
+    cc_vals = []
+    for item in leituras:
+        ct = _num((item or {}).get("cloro_total", ""))
+        crl = _num((item or {}).get("cloro_livre", ""))
+        if ct is not None and crl is not None:
+            cc_vals.append(max(0.0, ct - crl))
+
+    def _conf(vals, minimo=None, maximo=None):
+        if not vals:
+            return (0, 0, 0)
+        ok = 0
+        for v in vals:
+            if minimo is not None and v < minimo:
+                continue
+            if maximo is not None and v > maximo:
+                continue
+            ok += 1
+        pct = round((ok / len(vals)) * 100)
+        return ok, len(vals), pct
+
+    ph_ok, ph_tot, ph_pct = _conf(ph_vals, 7.2, 7.8)
+    crl_ok, crl_tot, crl_pct = _conf(crl_vals, 1.0, 3.0)
+    cc_ok, cc_tot, cc_pct = _conf(cc_vals, 0, 0.40)
+    alc_ok, alc_tot, alc_pct = _conf(alc_vals, 80, 120)
+    dc_ok, dc_tot, dc_pct = _conf(dc_vals, 150, 400)
+    cya_ok, cya_tot, cya_pct = _conf(cya_vals, 30, 50)
+
+    alertas = []
+    if ph_tot and ph_pct < 85:
+        alertas.append("pH com recorrência fora da faixa recomendada")
+    if crl_tot and crl_pct < 90:
+        alertas.append("cloro livre exigindo ajuste de rotina")
+    if cc_tot and cc_pct < 90:
+        alertas.append("cloro combinado acima do limite em parte das leituras")
+    if alc_tot and alc_pct < 90:
+        alertas.append("alcalinidade fora da faixa de tamponamento ideal")
+    if dc_tot and dc_pct < 90:
+        alertas.append("dureza cálcica fora da faixa operacional")
+    if cya_tot and cya_pct < 90:
+        alertas.append("ácido cianúrico fora da faixa ideal")
+
+    if not total:
+        return (
+            "Não foram identificadas leituras suficientes para emissão automática do parecer técnico mensal. "
+            "Preencha os parâmetros das visitas para que o sistema consolide a avaliação do período."
+        )
+
+    if not alertas:
+        parecer = (
+            f"No período avaliado, foram consolidadas {total} visita(s) de manutenção, com parâmetros físico-químicos "
+            "predominantemente dentro das faixas operacionais recomendadas pela ABNT NBR 10818:2025. "
+            f"Conformidades apuradas: pH {ph_ok}/{ph_tot if ph_tot else total}, cloro livre {crl_ok}/{crl_tot if crl_tot else total}, "
+            f"cloro combinado {cc_ok}/{cc_tot if cc_tot else total}, alcalinidade {alc_ok}/{alc_tot if alc_tot else total}, "
+            f"dureza {dc_ok}/{dc_tot if dc_tot else total} e CYA {cya_ok}/{cya_tot if cya_tot else total}. "
+            "A condição geral da água é considerada satisfatória para continuidade da rotina de manutenção, mantendo-se o monitoramento periódico."
+        )
+    else:
+        parecer = (
+            f"No período avaliado, foram consolidadas {total} visita(s) de manutenção. A análise automática identificou "
+            + "; ".join(alertas)
+            + ". Recomenda-se manter acompanhamento nas próximas visitas, ajustar dosagens conforme demanda medida em campo "
+              "e registrar as correções executadas para rastreabilidade operacional."
+        )
+
+    obs = str(observacoes_gerais or "").strip()
+    if obs:
+        parecer += f" Observação complementar registrada: {obs}"
+    return parecer
+
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
     csr_ano = str(st.session_state.get("csr_ano_rel", "") or str(datetime.now().year)).strip()
     csr_operador_nome = str(st.session_state.get("csr_operador_rel", "") or "").strip()
     csr_obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
+    csr_parecer_manual = str(st.session_state.get("bs_rel_parecer_tecnico", "") or "").strip()
 
     erros = []
     if not csr_sel:
@@ -8315,6 +8415,9 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
             "dosagens": dados.get("dosagens", lc.get("dosagens", [])),
         })
 
+    parecer_auto = _gerar_parecer_tecnico_mensal_bem_star(lanc_para_relatorio, csr_obs_geral)
+    parecer_final = csr_parecer_manual or parecer_auto
+
     fotos_paths = _coletar_fotos_bem_star_preview(csr_sel, lancamentos_csr)
     return {
         "ok": True,
@@ -8323,6 +8426,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "ano": csr_ano,
         "operador": csr_operador_nome,
         "obs_geral": csr_obs_geral,
+        "parecer_tecnico": parecer_final,
+        "parecer_tecnico_auto": parecer_auto,
         "dados_cliente": csr_dados_sel,
         "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio,
@@ -8779,73 +8884,14 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx: dict, pdf_path: Path) 
         elems.append(t_stats)
         elems.append(Spacer(1, 8))
 
-        ph_altos = [(normalizar_data_visita(l.get("data", "")), _f(l.get("ph"))) for l in lancamentos if _f(l.get("ph"), 0) and _f(l.get("ph"), 0) > 7.8]
-        elems.append(Paragraph("4. Observação Técnica — Tendência de pH Elevado", s_h1))
-        if ph_altos:
-            destaques = ", ".join([f"{d} (pH {v:.2f})" for d, v in ph_altos[:4]])
-            elems.append(Paragraph(
-                f"Durante o mês de {mes_nome}/{ano} foram registradas leituras de pH acima da faixa recomendada pela ABNT NBR 10818:2025 (7,2–7,8), com destaque para {destaques}. "
-                "Após avaliação operacional, deve-se verificar se há aeração excessiva por cascatas, jatos, bordas infinitas ou retorno hidráulico exposto ao ar.",
-                s_body
-            ))
-        else:
-            elems.append(Paragraph(
-                f"Durante o mês de {mes_nome}/{ano}, não houve tendência crítica de pH elevado nos registros consolidados. Mesmo assim, recomenda-se manter atenção a cascatas, jatos e pontos de aeração que possam deslocar o equilíbrio químico da água.",
-                s_body
-            ))
-        elems.append(Paragraph("<b>O que é a aeração e por que ela eleva o pH?</b>", s_h2))
-        elems.append(Paragraph(
-            "Aeração é o processo pelo qual a água, ao ser agitada ou exposta ao ar, troca gases dissolvidos com a atmosfera. O gás de maior interesse nesse contexto é o dióxido de carbono (CO2), naturalmente dissolvido na água da piscina.",
-            s_body
-        ))
-        elems.append(Paragraph(
-            "Quando a água passa por cascata, jatos ou queda livre, o contato intenso com o ar provoca a liberação do CO2 dissolvido para a atmosfera. Esse processo desloca o equilíbrio químico do sistema carbonato/bicarbonato no sentido de aumentar o pH, sem adição de alcalinizante.",
-            s_body
-        ))
-        fundamento = Table([[Paragraph("<b>FUNDAMENTO QUÍMICO — EQUILÍBRIO DO CARBONATO</b><br/>Reação simplificada:<br/><br/>CO2 + H2O ⇌ H2CO3 ⇌ H+ + HCO3−<br/><br/>Ao remover CO2 da água por aeração, o equilíbrio se desloca consumindo íons H+. Como pH é o logaritmo negativo da concentração de H+, a redução desses íons resulta em aumento do pH.", s_note)]], colWidths=[15.8*cm])
-        fundamento.setStyle(TableStyle([
-            ("BOX", (0,0), (-1,-1), 0.35, BORDA),
-            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7F9FC")),
-            ("LEFTPADDING", (0,0), (-1,-1), 9),
-            ("RIGHTPADDING", (0,0), (-1,-1), 9),
-            ("TOPPADDING", (0,0), (-1,-1), 8),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
-        ]))
-        elems.append(fundamento)
-        elems.append(Paragraph(
-            "Impacto operacional: com pH acima de 7,8, o cloro perde eficiência germicida, exigindo maior consumo de produto para manter a sanitização. Há ainda risco aumentado de incrustação calcária em bordas, grelhas e equipamentos.",
-            s_body
-        ))
-        elems.append(PageBreak())
+        parecer_tecnico_mensal = str(ctx.get("parecer_tecnico") or ctx.get("obs_geral") or "").strip()
+        if not parecer_tecnico_mensal:
+            parecer_tecnico_mensal = _gerar_parecer_tecnico_mensal_bem_star(lancamentos, "")
+        elems.append(Paragraph("4. Parecer Técnico Mensal", s_h1))
+        elems.append(Paragraph(parecer_tecnico_mensal, s_body))
+        elems.append(Spacer(1, 8))
 
-        elems.append(Paragraph("Recomendações — Duas Alternativas Possíveis", s_h1))
-        elems.append(Paragraph("<b>Cenário A — Desviar o retorno da cascata para bocais submersos:</b>", s_h2))
-        elems.append(Paragraph(
-            "Mantém-se a cascata em funcionamento intermitente apenas para uso estético/recreativo. Reduz drasticamente a perda de CO2 e tende a estabilizar o pH naturalmente dentro da faixa recomendada (7,2–7,8), reduzindo a necessidade de correções com redutor.",
-            s_body
-        ))
-        elems.append(Paragraph("<b>Cenário B — Manter a cascata em operação contínua:</b>", s_h2))
-        elems.append(Paragraph(
-            "Caso o condomínio opte por manter o retorno hidráulico pela cascata por questão estética ou de circulação de água, recomenda-se avaliar a instalação de dosador de pastilhas de Tricloro na casa de máquinas, em derivação da linha de retorno (by-pass).",
-            s_body
-        ))
-        elems.append(Paragraph("SOLUÇÃO TÉCNICA — DOSADOR DE PASTILHAS DE TRICLORO", s_h1))
-        elems.append(Paragraph("<b>Por que o dosador de pastilhas de Tricloro resolve a tendência de pH alto?</b>", s_h2))
-        elems.append(Paragraph(
-            "O Tricloro (ácido tricloroisocianúrico) é um sanitizante clorado estabilizado de caráter levemente ácido. Quando dissolvido na água, libera cloro ativo e contribui simultaneamente para a redução natural do pH. Em piscinas com tendência crônica de pH elevado, o uso contínuo de tricloro compensa quimicamente a perda de CO2.",
-            s_body
-        ))
-        elems.append(Paragraph("<b>Vantagens operacionais:</b>", s_body))
-        for item in [
-            "Dosagem contínua e automática a cada acionamento da bomba;",
-            "Estabilização simultânea do cloro residual e do pH;",
-            "Redução do consumo de ácido muriático;",
-            "Liberação gradual de CYA (estabilizante) — exige monitoramento para não ultrapassar 50 mg/L;",
-            "Menor exposição do operador à manipulação de produto líquido.",
-        ]:
-            elems.append(Paragraph(f"• {item}", s_body))
-        elems.append(PageBreak())
-
+        # v6: removida seção fixa específica de equipamento do relatório Bem Star — BUG-BS-AERACAO
         elems.append(Paragraph("5. Observações Técnicas dos Demais Parâmetros", s_h1))
         elems.append(Paragraph(f"<b>Cloro Livre:</b> {crl_ok} dentro do intervalo seguro para uso. Monitorar leituras próximas ao limite mínimo em períodos de maior carga de banhistas.", s_body))
         elems.append(Paragraph(f"<b>Cloro Combinado (cloraminas):</b> {cc_ok} abaixo de 0,40 mg/L. Caso valores permaneçam elevados, avaliar oxidação periódica e rotina de retrolavagem do filtro.", s_body))
@@ -8883,7 +8929,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx: dict, pdf_path: Path) 
         elems.append(Paragraph("<b>Recomendações para o próximo período:</b>", s_body))
         recs = [
             "Manter monitoramento de pH, cloro livre e cloro combinado;",
-            "Avaliar impacto de cascata, jatos ou pontos de aeração quando houver tendência de pH elevado;",
+            "Acompanhar leituras fora de faixa e registrar as correções químicas executadas;",
             "Manter frequência de retrolavagem alinhada à pressão diferencial do filtro;",
             "Monitorar evolução do CYA para não ultrapassar 50 mg/L quando houver uso de cloro estabilizado.",
         ]
@@ -13358,6 +13404,17 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
             placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+
+        # v6: campo automático/editável de parecer técnico mensal Bem Star — BUG-BS-PARECER
+        _parecer_auto_bs = _gerar_parecer_tecnico_mensal_bem_star(lancamentos_csr, csr_obs_geral)
+        if not st.session_state.get("bs_rel_parecer_tecnico"):
+            st.session_state["bs_rel_parecer_tecnico"] = _parecer_auto_bs
+        st.text_area(
+            "Parecer técnico mensal automático",
+            key="bs_rel_parecer_tecnico",
+            height=140,
+            help="O sistema preenche automaticamente conforme os parâmetros. Você pode ajustar o texto antes de gerar.",
+        )
     
         # ── Coleta fotos das visitas ─────────────────────────────────────────
         pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
