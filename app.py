@@ -349,7 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
@@ -390,11 +390,8 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
                 st.session_state.pop("_operadores_erro", None)
                 return True
         # Insere novo
-        # v6: gspread v5 não aceita None; sanitiza a linha antes de enviar ao Sheets — BUG-B
-        nova_linha = ["" if v is None else str(v) for v in nova_linha]
-
         linha_destino = max(len(todos) + 1, 8)
-        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -567,7 +564,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
-            # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
+            # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
             aba.update(
                 range_name="A1:Z1",
                 values=[[
@@ -610,13 +607,23 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
-        payload = limpar_payload_para_sheets(dict(lancamento))
+        payload = dict(lancamento)
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
-        # v6: gspread v5 não aceita None; sanitiza payload antes do JSON/Sheets — BUG-B
-        payload_limpo = {k: ("" if v is None else v) for k, v in payload.items()}
+
+        # v6: remove None de forma recursiva antes de gravar no Sheets/gspread — BUG-B
+        def _sem_none_sheets(valor):
+            if valor is None:
+                return ""
+            if isinstance(valor, dict):
+                return {str(k): _sem_none_sheets(v) for k, v in valor.items()}
+            if isinstance(valor, list):
+                return [_sem_none_sheets(v) for v in valor]
+            return valor
+
+        payload_limpo = limpar_payload_para_sheets(_sem_none_sheets(payload))
         try:
             payload_json = json.dumps(payload_limpo, ensure_ascii=False)
         except Exception:
@@ -656,11 +663,11 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             mes_ano,                                  # Z
         ]
 
-        # v6: gspread v5 não aceita None; sanitiza a linha de visita antes de enviar ao Sheets — BUG-B
-        nova_linha = ["" if v is None else str(v) for v in nova_linha]
+        # v6: garante que nenhum None chega ao gspread v5 — BUG-B
+        nova_linha = [("" if v is None else str(v)) for v in nova_linha]
 
         linha_destino = max(len(todos) + 1, 8)
-        # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
+        # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
         aba.update(
             range_name=f"A{linha_destino}:Z{linha_destino}",
             values=[nova_linha],
@@ -8324,6 +8331,543 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     }
 
 
+
+def gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx: dict, pdf_path: Path) -> tuple[bool, str]:
+    """Gera o relatório mensal Bem Star no modelo visual do PDF Triad Abril/2026."""
+    # v6: modelo premium do relatório mensal Bem Star — BUG-BS-MENSAL
+    try:
+        import io as _io
+        import math as _math
+        from datetime import datetime as _dt, timedelta as _td
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm, mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            Image as RLImage, PageBreak, KeepTogether
+        )
+        from PIL import Image as _PILImage, ImageOps as _PILImageOps
+
+        pdf_path = Path(pdf_path)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        AZUL = colors.HexColor("#0D2A4A")
+        OURO = colors.HexColor("#C9A227")
+        CINZA_CLARO = colors.HexColor("#F2F4F8")
+        BORDA = colors.HexColor("#D7DCE5")
+        TEXTO = colors.HexColor("#263244")
+        ALERTA = colors.HexColor("#FFF2B8")
+
+        meses = {
+            "01": "Janeiro", "02": "Fevereiro", "03": "Março", "04": "Abril",
+            "05": "Maio", "06": "Junho", "07": "Julho", "08": "Agosto",
+            "09": "Setembro", "10": "Outubro", "11": "Novembro", "12": "Dezembro",
+        }
+
+        def _mes_numero(valor: str) -> str:
+            txt = str(valor or "").strip()
+            if not txt:
+                return datetime.now().strftime("%m")
+            if txt.isdigit():
+                return txt.zfill(2)
+            alvo = normalizar_texto_busca(txt)
+            for num, nome in meses.items():
+                if normalizar_texto_busca(nome) == alvo:
+                    return num
+            return txt.zfill(2) if txt.isdigit() else datetime.now().strftime("%m")
+
+        mes_num = _mes_numero(ctx.get("mes", ""))
+        mes_nome = meses.get(mes_num, str(ctx.get("mes", "") or "").strip() or mes_num)
+        ano = str(ctx.get("ano", "") or datetime.now().year).strip()
+        cliente = str(ctx.get("cliente", "") or ctx.get("dados_cliente", {}).get("nome", "") or "Cliente").strip()
+        operador = str(ctx.get("operador", "") or "Marlon").strip()
+        obs_geral = str(ctx.get("obs_geral", "") or "").strip()
+        lancamentos = list(ctx.get("lancamentos") or [])
+        fotos = list(ctx.get("fotos") or [])
+
+        try:
+            dt_ini = _dt(int(ano), int(mes_num), 1)
+            dt_fim = (_dt(int(ano), int(mes_num), 28) + _td(days=4)).replace(day=1) - _td(days=1)
+            periodo = f"{dt_ini.strftime('%d/%m/%Y')} a {dt_fim.strftime('%d/%m/%Y')}"
+        except Exception:
+            periodo = f"01/{mes_num}/{ano} a 30/{mes_num}/{ano}"
+
+        def _f(v, default=None):
+            try:
+                if v is None:
+                    return default
+                txt = str(v).replace(",", ".").strip()
+                if not txt or txt == "—":
+                    return default
+                return float(txt)
+            except Exception:
+                return default
+
+        def _fmt_num(v, casas=2):
+            n = _f(v, None)
+            if n is None:
+                return "—"
+            return f"{n:.{casas}f}"
+
+        def _fmt_int(v):
+            n = _f(v, None)
+            if n is None:
+                return "—"
+            return str(int(round(n)))
+
+        def _data_dt(txt):
+            for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+                try:
+                    return _dt.strptime(str(txt or "").strip(), fmt)
+                except Exception:
+                    pass
+            return None
+
+        def _dia_semana(txt):
+            dt = _data_dt(txt)
+            nomes = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+            return nomes[dt.weekday()] if dt else "—"
+
+        def _cl_comb(l):
+            crl = _f(l.get("cloro_livre"), None)
+            ct = _f(l.get("cloro_total"), None)
+            if crl is None or ct is None:
+                return _f(l.get("cloraminas"), None)
+            return max(ct - crl, 0.0)
+
+        def _within(v, lo=None, hi=None, below=None):
+            n = _f(v, None)
+            if n is None:
+                return False
+            if below is not None:
+                return n < below
+            if lo is not None and n < lo:
+                return False
+            if hi is not None and n > hi:
+                return False
+            return True
+
+        lancamentos = sorted(lancamentos, key=lambda l: _data_dt(l.get("data", "")) or _dt.max)
+        total_visitas = len(lancamentos)
+
+        def _serie(campo, calc=None):
+            vals = []
+            for l in lancamentos:
+                v = calc(l) if calc else _f(l.get(campo), None)
+                if v is not None:
+                    vals.append(v)
+            return vals
+
+        def _stats(vals):
+            if not vals:
+                return ("—", "—", "—")
+            return (min(vals), sum(vals) / len(vals), max(vals))
+
+        def _conf(vals, pred):
+            if not vals:
+                return "0/0 (0%)"
+            ok = sum(1 for v in vals if pred(v))
+            pct = round(ok * 100 / len(vals))
+            return f"{ok}/{len(vals)} ({pct}%)"
+
+        ph_vals = _serie("ph")
+        crl_vals = _serie("cloro_livre")
+        ct_vals = _serie("cloro_total")
+        cc_vals = _serie("", calc=_cl_comb)
+        alc_vals = _serie("alcalinidade")
+        dc_vals = _serie("dureza")
+        cya_vals = _serie("cianurico")
+
+        ph_ok = _conf(ph_vals, lambda v: 7.2 <= v <= 7.8)
+        crl_ok = _conf(crl_vals, lambda v: 1.0 <= v <= 3.0)
+        cc_ok = _conf(cc_vals, lambda v: v < 0.40)
+        alc_ok = _conf(alc_vals, lambda v: 80 <= v <= 120)
+        dc_ok = _conf(dc_vals, lambda v: 150 <= v <= 400)
+        cya_ok = _conf(cya_vals, lambda v: 30 <= v <= 50)
+
+        styles = getSampleStyleSheet()
+        s_title = ParagraphStyle("bs_title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=20, leading=24, alignment=TA_CENTER, textColor=AZUL, spaceAfter=3)
+        s_subtitle = ParagraphStyle("bs_subtitle", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=10, leading=13, alignment=TA_CENTER, textColor=OURO, spaceAfter=14)
+        s_h1 = ParagraphStyle("bs_h1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13.5, leading=17, textColor=AZUL, spaceBefore=6, spaceAfter=7)
+        s_h2 = ParagraphStyle("bs_h2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=AZUL, spaceBefore=5, spaceAfter=5)
+        s_body = ParagraphStyle("bs_body", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.2, leading=12.6, alignment=TA_JUSTIFY, textColor=TEXTO, spaceAfter=6)
+        s_small = ParagraphStyle("bs_small", parent=s_body, fontSize=7.7, leading=10, textColor=colors.HexColor("#5D6878"), alignment=TA_LEFT)
+        s_note = ParagraphStyle("bs_note", parent=s_body, fontSize=8.5, leading=11.5, textColor=colors.HexColor("#4D5968"), alignment=TA_LEFT)
+        s_center = ParagraphStyle("bs_center", parent=s_body, alignment=TA_CENTER)
+        s_rt_title = ParagraphStyle("bs_rt_title", parent=s_title, fontSize=19, leading=23, spaceAfter=8)
+        s_rt_sub = ParagraphStyle("bs_rt_sub", parent=s_body, fontName="Helvetica-Bold", fontSize=11, leading=14, alignment=TA_CENTER, textColor=AZUL)
+
+        doc = SimpleDocTemplate(
+            str(pdf_path),
+            pagesize=A4,
+            leftMargin=20*mm,
+            rightMargin=20*mm,
+            topMargin=25*mm,
+            bottomMargin=17*mm,
+            title=f"Relatório Mensal de Manutenção - {cliente} - {mes_nome}/{ano}",
+            author="Bem Star Piscinas",
+        )
+
+        def _header_footer(canvas, doc_):
+            canvas.saveState()
+            w, h = A4
+            canvas.setFillColor(AZUL)
+            canvas.rect(0, h - 16*mm, w, 16*mm, fill=1, stroke=0)
+            canvas.setStrokeColor(OURO)
+            canvas.setLineWidth(0.8)
+            canvas.line(0, h - 16*mm, w, h - 16*mm)
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica-Bold", 8.5)
+            canvas.drawString(20*mm, h - 8*mm, "BEM STAR PISCINAS")
+            canvas.setFont("Helvetica", 7)
+            canvas.drawString(20*mm, h - 11.5*mm, "Manutenção Profissional de Piscinas — Uberlândia/MG")
+            canvas.setFont("Helvetica-Bold", 6.8)
+            canvas.drawRightString(w - 20*mm, h - 8*mm, "RELATÓRIO MENSAL DE MANUTENÇÃO")
+            canvas.setFont("Helvetica-Bold", 6.8)
+            canvas.drawRightString(w - 20*mm, h - 11.5*mm, f"{mes_nome} / {ano}")
+            canvas.setStrokeColor(BORDA)
+            canvas.setLineWidth(0.4)
+            canvas.line(20*mm, 13*mm, w - 20*mm, 13*mm)
+            canvas.setFillColor(colors.HexColor("#667085"))
+            canvas.setFont("Helvetica", 6.6)
+            canvas.drawString(20*mm, 8.5*mm, f"Bem Star Piscinas Ltda  |  CNPJ {CNPJ_BEM_STAR}  |  Uberlândia/MG")
+            canvas.drawRightString(w - 20*mm, 8.5*mm, f"Página {doc_.page}")
+            canvas.restoreState()
+
+        elems = []
+
+        elems.append(Paragraph("Relatório Mensal de Manutenção", s_title))
+        elems.append(Paragraph(f"BEM STAR PISCINAS — {mes_nome} / {ano}", s_subtitle))
+
+        freq_txt = "Seg/Qua/Sex"
+        if total_visitas:
+            freq_txt = "Seg/Qua/Sex" if total_visitas >= 10 else "conforme visitas registradas"
+
+        info = [
+            [Paragraph("<b>CLIENTE</b>", s_small), Paragraph(cliente, s_body)],
+            [Paragraph("<b>MÊS DE REFERÊNCIA</b>", s_small), Paragraph(f"{mes_nome} / {ano}", s_body)],
+            [Paragraph("<b>PERÍODO</b>", s_small), Paragraph(periodo, s_body)],
+            [Paragraph("<b>RESPONSÁVEL — BEM<br/>STAR</b>", s_small), Paragraph(f"{RESPONSAVEL_TÉCNICO} — Quím. CRQ-MG 02ª Região<br/>nº {CRQ_NUMERO}", s_body)],
+            [Paragraph("<b>OPERADOR DE CAMPO</b>", s_small), Paragraph(operador or "—", s_body)],
+            [Paragraph("<b>TOTAL DE VISITAS</b>", s_small), Paragraph(f"{total_visitas} visitas ({freq_txt})", s_body)],
+            [Paragraph("<b>PRESTADOR DE SERVIÇO</b>", s_small), Paragraph(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", s_body)],
+        ]
+        t_info = Table(info, colWidths=[5.0*cm, 10.8*cm])
+        t_info.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.35, BORDA),
+            ("BACKGROUND", (0,0), (0,-1), CINZA_CLARO),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 8),
+            ("RIGHTPADDING", (0,0), (-1,-1), 8),
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ]))
+        elems.append(t_info)
+        elems.append(Spacer(1, 10))
+
+        foto_capa = fotos[0] if fotos else None
+        if foto_capa and Path(foto_capa).exists():
+            try:
+                buf = _io.BytesIO()
+                img = _PILImage.open(foto_capa)
+                img = _PILImageOps.exif_transpose(img).convert("RGB")
+                iw, ih = img.size
+                max_w, max_h = 8.3*cm, 10.5*cm
+                ratio = iw / ih if ih else 1
+                if ratio >= 1:
+                    w_img = max_w
+                    h_img = min(max_h, w_img / ratio)
+                else:
+                    h_img = max_h
+                    w_img = min(max_w, h_img * ratio)
+                img.save(buf, format="JPEG", quality=88)
+                buf.seek(0)
+                rl_img = RLImage(buf, width=w_img, height=h_img)
+                foto_box = Table([[rl_img], [Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note)]], colWidths=[15.8*cm])
+                foto_box.setStyle(TableStyle([
+                    ("BOX", (0,0), (-1,-1), 0.35, BORDA),
+                    ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7F8FB")),
+                    ("ALIGN", (0,0), (-1,0), "CENTER"),
+                    ("ALIGN", (0,1), (-1,1), "CENTER"),
+                    ("TOPPADDING", (0,0), (-1,-1), 8),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+                ]))
+                elems.append(foto_box)
+            except Exception:
+                elems.append(Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note))
+        else:
+            elems.append(Paragraph(f"Piscina do {cliente} — registro fotográfico de visita técnica em {mes_nome} / {ano}.", s_note))
+
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("1. Resumo do Mês", s_h1))
+        elems.append(Paragraph(
+            f"No período de {periodo} foram realizadas {total_visitas} visitas de manutenção na piscina do {cliente}, em frequência {freq_txt.lower()}. "
+            "Os parâmetros físico-químicos foram aferidos nas visitas registradas, com aplicação dos produtos de tratamento conforme demanda observada.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Conformidade do mês (faixa ABNT NBR 10818:2025):</b>", s_body))
+        elems.append(Paragraph(f"• pH: {ph_ok.split('(')[-1].strip(')')} das leituras dentro da faixa 7,2–7,8.", s_body))
+        elems.append(Paragraph(f"• Cloro livre: {crl_ok.split('(')[-1].strip(')')} das leituras dentro da faixa 1,0–3,0 mg/L.", s_body))
+        elems.append(Paragraph(f"• Cloro combinado: {cc_ok.split('(')[-1].strip(')')} das leituras abaixo de 0,40 mg/L.", s_body))
+
+        elems.append(Paragraph("2. Registros de Visita — Parâmetros Físico-Químicos", s_h1))
+        elems.append(Paragraph("Cloro Combinado calculado como (Cl Total − Cl Livre). Valores destacados em amarelo indicam leituras fora da faixa de referência da NBR 10818:2025.", s_small))
+
+        header = ["#", "Data", "Dia", "pH", "Cl Livre<br/>(mg/L)", "Cl Total<br/>(mg/L)", "Cl Comb.<br/>(mg/L)", "Alc.<br/>(mg/L)", "Dureza<br/>(mg/L)", "CYA<br/>(mg/L)"]
+        rows = [[Paragraph(f"<b>{h}</b>", s_small) for h in header]]
+        bg_cmds = []
+        for i, l in enumerate(lancamentos, start=1):
+            cc = _cl_comb(l)
+            vals = [
+                str(i), normalizar_data_visita(l.get("data", "")), _dia_semana(l.get("data", "")),
+                _fmt_num(l.get("ph"), 2), _fmt_num(l.get("cloro_livre"), 2),
+                _fmt_num(l.get("cloro_total"), 2), _fmt_num(cc, 2),
+                _fmt_int(l.get("alcalinidade")), _fmt_int(l.get("dureza")), _fmt_int(l.get("cianurico")),
+            ]
+            rows.append([Paragraph(v, s_small) for v in vals])
+            r = i
+            checks = [
+                (3, _within(l.get("ph"), 7.2, 7.8)),
+                (4, _within(l.get("cloro_livre"), 1.0, 3.0)),
+                (6, _within(cc, below=0.40)),
+                (7, _within(l.get("alcalinidade"), 80, 120)),
+                (8, _within(l.get("dureza"), 150, 400)),
+                (9, _within(l.get("cianurico"), 30, 50)),
+            ]
+            for col, ok in checks:
+                if not ok:
+                    bg_cmds.append(("BACKGROUND", (col, r), (col, r), ALERTA))
+        t_vis = Table(rows, colWidths=[0.6*cm, 2.05*cm, 0.8*cm, 1.05*cm, 1.55*cm, 1.55*cm, 1.55*cm, 1.35*cm, 1.45*cm, 1.25*cm], repeatRows=1)
+        t_vis.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("FONTSIZE", (0,0), (-1,-1), 7.2),
+            ("TOPPADDING", (0,0), (-1,-1), 3.2),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3.2),
+        ] + bg_cmds))
+        elems.append(t_vis)
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("3. Análise Estatística do Mês", s_h1))
+        stat_defs = [
+            ("pH", ph_vals, "7,2 – 7,8", ph_ok, 2),
+            ("Cloro Livre (mg/L)", crl_vals, "1,0 – 3,0", crl_ok, 2),
+            ("Cloro Total (mg/L)", ct_vals, "—", "—", 2),
+            ("Cloro Combinado (mg/L)", cc_vals, "< 0,40", cc_ok, 2),
+            ("Alcalinidade (mg/L CaCO3)", alc_vals, "80 – 120", alc_ok, 0),
+            ("Dureza (mg/L CaCO3)", dc_vals, "150 – 400", dc_ok, 0),
+            ("CYA (mg/L)", cya_vals, "30 – 50", cya_ok, 0),
+        ]
+        stat_rows = [[Paragraph("<b>Parâmetro</b>", s_small), Paragraph("<b>Mínimo</b>", s_small), Paragraph("<b>Média</b>", s_small), Paragraph("<b>Máximo</b>", s_small), Paragraph("<b>Faixa NBR 10818</b>", s_small), Paragraph("<b>Conformidade</b>", s_small)]]
+        for nome, vals, faixa, conf, casas in stat_defs:
+            mn, av, mx = _stats(vals)
+            stat_rows.append([
+                Paragraph(nome, s_small),
+                Paragraph(_fmt_num(mn, casas) if mn != "—" else "—", s_small),
+                Paragraph(_fmt_num(av, casas) if av != "—" else "—", s_small),
+                Paragraph(_fmt_num(mx, casas) if mx != "—" else "—", s_small),
+                Paragraph(faixa, s_small),
+                Paragraph(conf, s_small),
+            ])
+        t_stats = Table(stat_rows, colWidths=[4.3*cm, 1.55*cm, 1.55*cm, 1.55*cm, 3.0*cm, 3.2*cm], repeatRows=1)
+        t_stats.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN", (1,1), (-1,-1), "CENTER"),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        elems.append(t_stats)
+        elems.append(Spacer(1, 8))
+
+        ph_altos = [(normalizar_data_visita(l.get("data", "")), _f(l.get("ph"))) for l in lancamentos if _f(l.get("ph"), 0) and _f(l.get("ph"), 0) > 7.8]
+        elems.append(Paragraph("4. Observação Técnica — Tendência de pH Elevado", s_h1))
+        if ph_altos:
+            destaques = ", ".join([f"{d} (pH {v:.2f})" for d, v in ph_altos[:4]])
+            elems.append(Paragraph(
+                f"Durante o mês de {mes_nome}/{ano} foram registradas leituras de pH acima da faixa recomendada pela ABNT NBR 10818:2025 (7,2–7,8), com destaque para {destaques}. "
+                "Após avaliação operacional, deve-se verificar se há aeração excessiva por cascatas, jatos, bordas infinitas ou retorno hidráulico exposto ao ar.",
+                s_body
+            ))
+        else:
+            elems.append(Paragraph(
+                f"Durante o mês de {mes_nome}/{ano}, não houve tendência crítica de pH elevado nos registros consolidados. Mesmo assim, recomenda-se manter atenção a cascatas, jatos e pontos de aeração que possam deslocar o equilíbrio químico da água.",
+                s_body
+            ))
+        elems.append(Paragraph("<b>O que é a aeração e por que ela eleva o pH?</b>", s_h2))
+        elems.append(Paragraph(
+            "Aeração é o processo pelo qual a água, ao ser agitada ou exposta ao ar, troca gases dissolvidos com a atmosfera. O gás de maior interesse nesse contexto é o dióxido de carbono (CO2), naturalmente dissolvido na água da piscina.",
+            s_body
+        ))
+        elems.append(Paragraph(
+            "Quando a água passa por cascata, jatos ou queda livre, o contato intenso com o ar provoca a liberação do CO2 dissolvido para a atmosfera. Esse processo desloca o equilíbrio químico do sistema carbonato/bicarbonato no sentido de aumentar o pH, sem adição de alcalinizante.",
+            s_body
+        ))
+        fundamento = Table([[Paragraph("<b>FUNDAMENTO QUÍMICO — EQUILÍBRIO DO CARBONATO</b><br/>Reação simplificada:<br/><br/>CO2 + H2O ⇌ H2CO3 ⇌ H+ + HCO3−<br/><br/>Ao remover CO2 da água por aeração, o equilíbrio se desloca consumindo íons H+. Como pH é o logaritmo negativo da concentração de H+, a redução desses íons resulta em aumento do pH.", s_note)]], colWidths=[15.8*cm])
+        fundamento.setStyle(TableStyle([
+            ("BOX", (0,0), (-1,-1), 0.35, BORDA),
+            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7F9FC")),
+            ("LEFTPADDING", (0,0), (-1,-1), 9),
+            ("RIGHTPADDING", (0,0), (-1,-1), 9),
+            ("TOPPADDING", (0,0), (-1,-1), 8),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+        ]))
+        elems.append(fundamento)
+        elems.append(Paragraph(
+            "Impacto operacional: com pH acima de 7,8, o cloro perde eficiência germicida, exigindo maior consumo de produto para manter a sanitização. Há ainda risco aumentado de incrustação calcária em bordas, grelhas e equipamentos.",
+            s_body
+        ))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("Recomendações — Duas Alternativas Possíveis", s_h1))
+        elems.append(Paragraph("<b>Cenário A — Desviar o retorno da cascata para bocais submersos:</b>", s_h2))
+        elems.append(Paragraph(
+            "Mantém-se a cascata em funcionamento intermitente apenas para uso estético/recreativo. Reduz drasticamente a perda de CO2 e tende a estabilizar o pH naturalmente dentro da faixa recomendada (7,2–7,8), reduzindo a necessidade de correções com redutor.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Cenário B — Manter a cascata em operação contínua:</b>", s_h2))
+        elems.append(Paragraph(
+            "Caso o condomínio opte por manter o retorno hidráulico pela cascata por questão estética ou de circulação de água, recomenda-se avaliar a instalação de dosador de pastilhas de Tricloro na casa de máquinas, em derivação da linha de retorno (by-pass).",
+            s_body
+        ))
+        elems.append(Paragraph("SOLUÇÃO TÉCNICA — DOSADOR DE PASTILHAS DE TRICLORO", s_h1))
+        elems.append(Paragraph("<b>Por que o dosador de pastilhas de Tricloro resolve a tendência de pH alto?</b>", s_h2))
+        elems.append(Paragraph(
+            "O Tricloro (ácido tricloroisocianúrico) é um sanitizante clorado estabilizado de caráter levemente ácido. Quando dissolvido na água, libera cloro ativo e contribui simultaneamente para a redução natural do pH. Em piscinas com tendência crônica de pH elevado, o uso contínuo de tricloro compensa quimicamente a perda de CO2.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Vantagens operacionais:</b>", s_body))
+        for item in [
+            "Dosagem contínua e automática a cada acionamento da bomba;",
+            "Estabilização simultânea do cloro residual e do pH;",
+            "Redução do consumo de ácido muriático;",
+            "Liberação gradual de CYA (estabilizante) — exige monitoramento para não ultrapassar 50 mg/L;",
+            "Menor exposição do operador à manipulação de produto líquido.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("5. Observações Técnicas dos Demais Parâmetros", s_h1))
+        elems.append(Paragraph(f"<b>Cloro Livre:</b> {crl_ok} dentro do intervalo seguro para uso. Monitorar leituras próximas ao limite mínimo em períodos de maior carga de banhistas.", s_body))
+        elems.append(Paragraph(f"<b>Cloro Combinado (cloraminas):</b> {cc_ok} abaixo de 0,40 mg/L. Caso valores permaneçam elevados, avaliar oxidação periódica e rotina de retrolavagem do filtro.", s_body))
+        elems.append(Paragraph(f"<b>Alcalinidade Total:</b> {alc_ok} dentro da faixa NBR 10818:2025 (80–120 mg/L). O bom poder tampão ajuda a conter oscilações maiores de pH.", s_body))
+        elems.append(Paragraph(f"<b>Dureza Cálcica:</b> {dc_ok} dentro da faixa segura (150–400 mg/L). Monitorar para reduzir risco de corrosão por baixa dureza ou incrustação por excesso.", s_body))
+        elems.append(Paragraph(f"<b>Ácido Cianúrico (CYA):</b> {cya_ok} dentro do intervalo ideal (30–50 mg/L) para piscinas externas, garantindo proteção do cloro contra degradação por radiação UV.", s_body))
+
+        elems.append(Paragraph("6. Ações Realizadas e Recomendações", s_h1))
+        elems.append(Paragraph("<b>Ações executadas no mês:</b>", s_body))
+        for item in [
+            f"Aferição de parâmetros físico-químicos nas {total_visitas} visitas registradas;",
+            "Dosagem de cloro conforme demanda observada;",
+            "Correção de pH quando necessário;",
+            "Aspiração de fundo e limpeza de skimmers conforme rotina operacional;",
+            "Retrolavagem do filtro conforme cronograma operacional;",
+            "Verificação visual de turbidez e coloração da água.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(Paragraph("<b>Recomendações para o próximo período:</b>", s_body))
+        recs = [
+            "Manter monitoramento de pH, cloro livre e cloro combinado;",
+            "Avaliar impacto de cascata, jatos ou pontos de aeração quando houver tendência de pH elevado;",
+            "Manter frequência de retrolavagem alinhada à pressão diferencial do filtro;",
+            "Monitorar evolução do CYA para não ultrapassar 50 mg/L quando houver uso de cloro estabilizado.",
+        ]
+        if obs_geral:
+            recs.insert(0, obs_geral)
+        for item in recs:
+            elems.append(Paragraph(f"• {item}", s_body))
+
+        elems.append(Paragraph("7. Encerramento do Período", s_h1))
+        elems.append(Paragraph(
+            f"O presente relatório consolida as atividades de manutenção executadas pela Bem Star Piscinas Ltda no mês de {mes_nome} / {ano} no {cliente}, em conformidade com o escopo contratado.",
+            s_body
+        ))
+        elems.append(Spacer(1, 10))
+        elems.append(Paragraph("_______________________________________________<br/><b>Thyago Fernando da Silveira</b><br/>Sócio-Administrador — Bem Star Piscinas Ltda<br/>Quím. CRQ-MG 02ª Região nº 024025748<br/>CNPJ 26.799.958/0001-88", s_center))
+        elems.append(Paragraph(f"Operador responsável pelas visitas: {operador or '—'}", s_center))
+        elems.append(Paragraph(f"Uberlândia/MG, {hoje_br()}", s_center))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("Este Relatório NÃO é um Relatório<br/>Técnico de RT", s_rt_title))
+        elems.append(Paragraph("Entenda a diferença e a importância da Responsabilidade Técnica", s_rt_sub))
+        elems.append(Paragraph(
+            "O documento que você acabou de ler é um relatório operacional de manutenção, emitido pela Bem Star Piscinas dentro do escopo de serviços operacionais contratados. Ele registra o que foi feito em campo: leituras de parâmetros, dosagens aplicadas e observações do operador.",
+            s_body
+        ))
+        elems.append(Paragraph(
+            "Esse documento não substitui — e não tem natureza de — um Relatório Técnico assinado por Responsável Técnico (RT) em Química, exigido para piscinas de uso coletivo conforme as Resoluções Normativas CFQ nº 332/2025 e nº 345/2026 e a ABNT NBR 10818:2025.",
+            s_body
+        ))
+        elems.append(Paragraph("Comparativo Direto", s_h1))
+        comp_rows = [
+            ["", "Relatório Operacional<br/>(Bem Star)", "Relatório Técnico — RT<br/>(Aqua Gestão)"],
+            ["Natureza do documento", "Registro operacional de manutenção", "Documento técnico formal com responsabilidade legal"],
+            ["Profissional responsável", "Operador e responsável da empresa", "Químico Responsável Técnico (CRQ)"],
+            ["Base normativa", "Boa prática de manutenção", "Resoluções CFQ 332/2025 e 345/2026 + ABNT NBR 10818:2025"],
+            ["Numeração e rastreabilidade", "Não aplicável", "Sim (RT-VT, RT-MN, RT-NC)"],
+            ["Validade em fiscalização", "Não substitui relatório de RT", "Sim — documento aceito"],
+            ["Assinatura técnica (CRQ)", "Não", "Sim"],
+        ]
+        comp = [[Paragraph(c, s_small) for c in row] for row in comp_rows]
+        t_comp = Table(comp, colWidths=[4.2*cm, 5.2*cm, 6.4*cm], repeatRows=1)
+        t_comp.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+            ("BACKGROUND", (0,0), (-1,0), CINZA_CLARO),
+            ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#F7F8FA")),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING", (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+        ]))
+        elems.append(t_comp)
+        elems.append(Paragraph("Por que isso importa para o condomínio?", s_h1))
+        for item in [
+            "Conformidade legal: piscinas de uso coletivo devem possuir profissional habilitado em Química registrado no CRQ como RT.",
+            "Documentação técnica formal: emissão de Relatório Técnico de Visita (RT-VT), de Manutenção (RT-MN) e de Não Conformidade (RT-NC), com numeração e rastreabilidade.",
+            "Defesa em fiscalizações: respaldo perante Vigilância Sanitária, Ministério Público e seguradoras em caso de auditoria ou acidente.",
+            "Otimização química e financeira: controle técnico profissional reduz consumo de produtos e prolonga a vida útil dos equipamentos.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(PageBreak())
+
+        elems.append(Paragraph("AQUA GESTÃO — RESPONSABILIDADE TÉCNICA EM QUÍMICA", s_h1))
+        elems.append(Paragraph(
+            "A Aqua Gestão Controle Técnico Ltda (CNPJ 66.008.795/0001-92) é a empresa parceira especializada em Responsabilidade Técnica para piscinas coletivas, sob atuação do Quím. Thyago Fernando da Silveira — CRQ-MG 02ª Região nº 024025748, com mais de 12 anos de experiência no setor.",
+            s_body
+        ))
+        elems.append(Paragraph("<b>Serviços oferecidos:</b>", s_body))
+        for item in [
+            "Cadastro do RT junto ao CRQ-MG;",
+            "Emissão mensal de Relatório Técnico de Visita (RT-VT);",
+            "Relatórios de Manutenção (RT-MN) e de Não Conformidade (RT-NC);",
+            "Plano de tratamento e protocolos de emergência;",
+            "Suporte técnico ao síndico e à equipe operacional.",
+        ]:
+            elems.append(Paragraph(f"• {item}", s_body))
+        elems.append(Paragraph(
+            "Para contratar o serviço de RT ou solicitar uma proposta técnico-comercial, fale com a equipe da Bem Star Piscinas — encaminharemos seu contato à Aqua Gestão Controle Técnico para apresentação do escopo e elaboração do contrato.",
+            s_body
+        ))
+        elems.append(Spacer(1, 16))
+        destaque = Table([[Paragraph("“A água tratada com responsabilidade técnica é a diferença entre uma piscina operacional e uma piscina segura.”", ParagraphStyle("quote", parent=s_body, fontName="Helvetica-Oblique", alignment=TA_CENTER, fontSize=12, leading=16, textColor=AZUL))]], colWidths=[15.8*cm])
+        destaque.setStyle(TableStyle([
+            ("BOX", (0,0), (-1,-1), 0.45, OURO),
+            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#FFFCF0")),
+            ("PADDING", (0,0), (-1,-1), 12),
+        ]))
+        elems.append(destaque)
+
+        doc.build(elems, onFirstPage=_header_footer, onLaterPages=_header_footer)
+        return True, ""
+    except Exception as e:
+        _log_sheets_erro("gerar_pdf_relatorio_mensal_bem_star_modelo_triad", e)
+        return False, str(e)
+
 def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     ctx = _coletar_contexto_relatorio_bem_star()
     if not ctx.get("ok"):
@@ -8343,6 +8887,7 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     docx_path = pasta_saida / f"{base_nome}.docx"
     pdf_path = pasta_saida / f"{base_nome}.pdf"
 
+    # v6: mantém DOCX legado e gera PDF oficial no modelo Triad — BUG-BS-MENSAL
     ok_docx, erro_docx = gerar_relatorio_visita_docx(
         output_path=docx_path,
         nome_local=ctx["dados_cliente"].get("nome", ctx["cliente"]),
@@ -8358,18 +8903,10 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
         fotos=ctx["fotos"],
     )
     if not ok_docx:
-        msg = f"Erro ao gerar DOCX do relatório Bem Star: {erro_docx}"
-        return {
-            "ok": False,
-            "empresa": "Bem Star Piscinas",
-            "preview": preview,
-            "erros": [erro_docx],
-            "mensagem": msg,
-            "fotos": ctx.get("fotos", []),
-            "origem_fotos": ctx.get("origem_fotos", ""),
-        }
+        st.session_state["_bem_star_docx_ultimo_erro"] = erro_docx
 
-    ok_pdf, erro_pdf = converter_docx_para_pdf(docx_path, pdf_path)
+    # v6: PDF Bem Star passa a seguir o modelo visual do relatório Triad Abril/2026 — BUG-BS-MENSAL
+    ok_pdf, erro_pdf = gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx, pdf_path)
     if not preview:
         registrar_documento_manifest(ctx["pasta"], ctx["cliente"], "Relatório", docx_path, pdf_path, ok_pdf, erro_pdf)
 
@@ -8378,9 +8915,9 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
         "empresa": "Bem Star Piscinas",
         "preview": preview,
         "mensagem": (
-            f"Prévia exata Bem Star atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
+            f"Prévia exata Bem Star no modelo Triad atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
             if preview else
-            f"Relatório Bem Star gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
+            f"Relatório Bem Star no modelo Triad gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
         ),
         "docx": docx_path,
         "pdf": pdf_path,
@@ -8906,8 +9443,8 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    # v6: usa kwargs no gspread.update para evitar DeprecationWarning — BUG-C
-                aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
+                    # v6: gspread update com kwargs para evitar DeprecationWarning — BUG-C
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -9100,6 +9637,9 @@ def _admin_sessao_valida() -> bool:
 
 def _admin_sair_para_entrada(abrir_login: bool = True):
     """Sai do administrativo sem apagar rascunhos/relatórios em andamento."""
+    # v6: logout administrativo nunca derruba sessão do operador — BUG-A
+    if st.session_state.get("modo_atual") == "operador":
+        return
     try:
         if st.session_state.get("empresa_ativa") == "aqua_gestao" and "_relatorio_rt_salvar_rascunho" in globals():
             _relatorio_rt_salvar_rascunho("logout_admin")
@@ -11698,8 +12238,6 @@ if st.session_state.pop("_cc_limpar", False):
         st.session_state[k] = ""
     # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
     st.session_state["cc_verificacoes_semanais"] = 3
-    # v6: reseta seletor de empresa/serviços sem depender do painel ativo — BUG-F
-    st.session_state["cc_empresa_servico"] = _empresa_ativa_nome()
     st.session_state["cc_srv_rt"] = False
     st.session_state["cc_srv_limpeza"] = False
     st.session_state["cc_operadores_vinculados"] = []
@@ -11723,10 +12261,8 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
-            # v6: ao carregar edição, preserva a empresa/serviços reais do cliente — BUG-F
-            _servicos_cc = _normalizar_servicos_cliente(_cc_cliente_editar)
-            _empresa_cc = _servicos_para_empresa(_servicos_cc)
-            st.session_state["cc_empresa_servico"] = _empresa_cc
+            _servicos_cc = _servicos_padrao_empresa_ativa()
+            # No cadastro separado, o serviço é determinado pelo painel ativo.
             st.session_state["cc_srv_rt"]       = bool(_servicos_cc.get("rt", False))
             st.session_state["cc_srv_limpeza"]  = bool(_servicos_cc.get("limpeza", False))
             st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
@@ -11755,32 +12291,17 @@ def _mask_cc_cnpj():
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
-# Serviço vinculado ao cadastro
-# v6: recria o campo Transferir condomínio entre empresas diretamente na edição — BUG-F
-st.markdown("**🧩 Transferir condomínio entre empresas / serviços**")
-_cc_empresas_opcoes = ["Aqua Gestão", "Bem Star Piscinas", "Ambas"]
-if st.session_state.get("cc_empresa_servico") not in _cc_empresas_opcoes:
-    st.session_state["cc_empresa_servico"] = _empresa_ativa_nome()
-
-_cc_empresa_val = st.selectbox(
-    "Empresa / serviço vinculado",
-    options=_cc_empresas_opcoes,
-    key="cc_empresa_servico",
-    help="Use este campo para transferir o condomínio entre Aqua Gestão, Bem Star Piscinas ou deixar em ambas.",
-)
-_cc_servicos = _empresa_para_servicos(_cc_empresa_val)
-_cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
-
-if _cc_servicos_norm.get("rt") and _cc_servicos_norm.get("limpeza"):
-    st.info("🔵⭐ Este cadastro será salvo como Ambas: RT / Controle Técnico da Aqua Gestão e Limpeza / Manutenção da Bem Star Piscinas.")
-elif _cc_servicos_norm.get("limpeza"):
-    st.info("⭐ Este cadastro será salvo como cliente de Limpeza / Manutenção da Bem Star Piscinas.")
-else:
+# Serviço vinculado ao cadastro conforme painel ativo
+st.markdown("**🧩 Serviço vinculado ao cadastro**")
+_cc_servicos = _servicos_padrao_empresa_ativa()
+_cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+if _empresa_ativa_codigo() == "aqua_gestao":
     st.info("🔵 Este cadastro será salvo como cliente de RT / Controle Técnico da Aqua Gestão.")
-
+else:
+    st.info("⭐ Este cadastro será salvo como cliente de Limpeza / Manutenção da Bem Star Piscinas.")
 # Mantém as chaves antigas coerentes para não quebrar edições/sessão.
-st.session_state["cc_srv_rt"] = bool(_cc_servicos_norm.get("rt"))
-st.session_state["cc_srv_limpeza"] = bool(_cc_servicos_norm.get("limpeza"))
+st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
+st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
 
 _operadores_disponiveis = []
 _ops_raw_cc = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
@@ -11919,9 +12440,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         _vol_i = _parse_vol(cc_vol_infantil)
         _vol_f = _parse_vol(cc_vol_family)
         with st.spinner("Salvando no Google Sheets..."):
-            # v6: salva a empresa/serviços escolhidos no campo de transferência — BUG-F
-            _cc_empresa_val = st.session_state.get("cc_empresa_servico", _empresa_ativa_nome())
-            _cc_servicos = _empresa_para_servicos(_cc_empresa_val)
+            _cc_servicos = _servicos_padrao_empresa_ativa()
+            _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
