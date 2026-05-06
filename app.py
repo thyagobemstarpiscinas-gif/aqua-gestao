@@ -1600,10 +1600,12 @@ def _normalizar_mes_ano_relatorio(mes: str | int | None, ano: str | int | None) 
 
 def calcular_datas_visitas_mes(dias_semana: list[str] | tuple[str, ...] | None,
                                 mes: str | int | None,
-                                ano: str | int | None) -> list[str]:
-    """Retorna todas as datas do mês que caem nos dias de visita selecionados.
+                                ano: str | int | None,
+                                limite: int | None = None) -> list[str]:
+    """Retorna as datas do mês que caem nos dias de visita selecionados.
 
-    # v6: terça + quinta em abril preenche automaticamente as datas correspondentes — BUG-REL-DATAS
+    # v6: respeita o mês/ano digitado e limita as linhas pela frequência semanal — BUG-REL-DATAS
+    Ex.: 2x/semana abre 8 campos, mesmo se o calendário do mês tiver 9 ocorrências.
     """
     dias_idx = []
     for dia in dias_semana or []:
@@ -1628,37 +1630,50 @@ def calcular_datas_visitas_mes(dias_semana: list[str] | tuple[str, ...] | None,
             continue
         if dt.weekday() in dias_idx:
             datas.append(dt.strftime("%d/%m/%Y"))
-    return datas[:ANALISES_MAX_SUGERIDO]
+    try:
+        limite_int = int(limite) if limite is not None else ANALISES_MAX_SUGERIDO
+    except Exception:
+        limite_int = ANALISES_MAX_SUGERIDO
+    limite_int = max(1, min(limite_int, ANALISES_MAX_SUGERIDO))
+    return datas[:limite_int]
 
 
 def aplicar_datas_visitas_relatorio_auto() -> list[str]:
     """Aplica datas automáticas nas linhas de análises do relatório técnico.
 
-    # v6: não sobrescreve datas digitadas manualmente, exceto datas criadas pela própria automação — BUG-REL-DATAS
+    # v6: força datas e quantidade de linhas conforme mês/dias/frequência — BUG-REL-DATAS
+    Corrige rascunho antigo que mantinha data de outro mês, como maio em relatório de abril.
     """
+    linhas_freq = calcular_linhas_analises_por_frequencia(
+        st.session_state.get("rel_verificacoes_semanais", 3),
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
     datas_auto = calcular_datas_visitas_mes(
         st.session_state.get("rel_dias_semana_visitas", []),
         st.session_state.get("rel_mes_referencia"),
         st.session_state.get("rel_ano_referencia"),
+        limite=linhas_freq,
     )
     if not datas_auto:
         return []
 
     antigas = st.session_state.get("_rel_datas_auto_anteriores", [])
-    antigas_set = set(antigas if isinstance(antigas, list) else [])
-    qtd = max(1, min(len(datas_auto), ANALISES_MAX_SUGERIDO))
+    qtd = max(1, min(len(datas_auto), linhas_freq, ANALISES_MAX_SUGERIDO))
     garantir_campos_analises(qtd)
     st.session_state["rel_analises_total"] = qtd
 
+    # v6: datas automáticas assumem o controle das linhas visíveis quando há dias selecionados — BUG-REL-DATAS
+    # Isso troca corretamente abril/maio ao alterar o mês e impede sobra de data antiga em rascunho.
     for i, data_auto in enumerate(datas_auto[:qtd]):
         chave = f"rel_analise_data_{i}"
-        atual = str(st.session_state.get(chave, "") or "").strip()
-        if not atual or atual in antigas_set:
-            st.session_state[chave] = data_auto
+        st.session_state[chave] = data_auto
 
-    for i in range(qtd, len(antigas)):
+    # v6: limpa datas excedentes de automação anterior para não reaparecerem ao aumentar/reduzir linhas — BUG-REL-DATAS
+    total_anterior = max(len(antigas) if isinstance(antigas, list) else 0, int(st.session_state.get("rel_analises_total", qtd) or qtd))
+    for i in range(qtd, min(total_anterior + 1, ANALISES_MAX_SUGERIDO)):
         chave = f"rel_analise_data_{i}"
-        if str(st.session_state.get(chave, "") or "").strip() == antigas[i]:
+        if str(st.session_state.get(chave, "") or "").strip() in set(antigas if isinstance(antigas, list) else []):
             st.session_state[chave] = ""
 
     st.session_state["_rel_datas_auto_anteriores"] = datas_auto[:qtd]
