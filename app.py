@@ -8160,6 +8160,98 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
     return clientes
 
 
+
+def _filtrar_lancamentos_preview_por_mes(lancamentos: list[dict], mes: str, ano: str) -> list[dict]:
+    """Filtra lançamentos do relatório mensal por mês/ano sem quebrar quando a data vem vazia."""
+    # v6: corrige filtro global do relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    try:
+        mes_txt = str(mes or "").strip()
+        ano_txt = str(ano or "").strip()
+        if not mes_txt or not ano_txt:
+            return list(lancamentos or [])
+        return [
+            lc for lc in (lancamentos or [])
+            if lancamento_pertence_mes_ano(str((lc or {}).get("data", "")), mes_txt, ano_txt)
+        ]
+    except Exception as e:
+        _log_sheets_erro("_filtrar_lancamentos_preview_por_mes", e)
+        return list(lancamentos or [])
+
+
+def _coletar_lancamentos_bem_star_manuais() -> list[dict]:
+    """Coleta parâmetros digitados manualmente no relatório mensal Bem Star."""
+    # v6: habilita preenchimento manual de parâmetros/dosagens no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    lancamentos = []
+    try:
+        qtd = int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12)
+    except Exception:
+        qtd = 12
+    qtd = max(1, min(qtd, 31))
+
+    for i in range(1, qtd + 1):
+        data = str(st.session_state.get(f"bs_rel_data_{i}", "") or "").strip()
+        ph = str(st.session_state.get(f"bs_rel_ph_{i}", "") or "").strip()
+        crl = str(st.session_state.get(f"bs_rel_crl_{i}", "") or "").strip()
+        ct = str(st.session_state.get(f"bs_rel_ct_{i}", "") or "").strip()
+        alc = str(st.session_state.get(f"bs_rel_alc_{i}", "") or "").strip()
+        dc = str(st.session_state.get(f"bs_rel_dc_{i}", "") or "").strip()
+        cya = str(st.session_state.get(f"bs_rel_cya_{i}", "") or "").strip()
+        dosagem_txt = str(st.session_state.get(f"bs_rel_dosagem_{i}", "") or "").strip()
+        obs = str(st.session_state.get(f"bs_rel_obs_{i}", "") or "").strip()
+
+        if not any([data, ph, crl, ct, alc, dc, cya, dosagem_txt, obs]):
+            continue
+
+        lancamentos.append({
+            "data": normalizar_data_visita(data),
+            "ph": ph,
+            "cloro_livre": crl,
+            "cloro_total": ct,
+            "alcalinidade": alc,
+            "dureza": dc,
+            "cianurico": cya,
+            "operador": str(st.session_state.get("csr_operador_rel", "") or "").strip(),
+            "observacao": obs,
+            "problemas": "",
+            "dosagens": [{"produto": dosagem_txt, "quantidade": "", "unidade": "", "finalidade": "Dosagem registrada"}] if dosagem_txt else [],
+        })
+
+    return lancamentos
+
+
+def _coletar_fotos_bem_star_preview(csr_sel: str, lancamentos_csr: list[dict]) -> list:
+    """Coleta fotos das visitas e uploads manuais do relatório mensal Bem Star."""
+    # v6: habilita fotos manuais e evita NameError no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+    fotos = []
+    try:
+        for caminho in st.session_state.get("_bem_star_fotos_relatorio_paths", []) or []:
+            p = Path(caminho)
+            if p.exists():
+                fotos.append(p)
+    except Exception:
+        pass
+
+    try:
+        pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+        if pasta_fotos_csr and pasta_fotos_csr.exists():
+            for lc in lancamentos_csr or []:
+                for nf in (lc or {}).get("fotos", []) or []:
+                    pf = pasta_fotos_csr / str(nf)
+                    if pf.exists():
+                        fotos.append(pf)
+    except Exception as e:
+        _log_sheets_erro("_coletar_fotos_bem_star_preview", e)
+
+    vistos = set()
+    saida = []
+    for f in fotos:
+        chave = str(f)
+        if chave not in vistos:
+            vistos.add(chave)
+            saida.append(f)
+    return saida
+
+
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
@@ -8185,10 +8277,11 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
     lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
     lancamentos_sheets = sheets_listar_lancamentos(csr_sel) if csr_sel else []
+    lancamentos_manuais = _coletar_lancamentos_bem_star_manuais()
 
     vistos = set()
     lancamentos_todos = []
-    for lc in (lancamentos_local or []) + (lancamentos_sheets or []):
+    for lc in (lancamentos_manuais or []) + (lancamentos_local or []) + (lancamentos_sheets or []):
         chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
         if chave not in vistos:
             vistos.add(chave)
@@ -8771,6 +8864,22 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo_triad(ctx: dict, pdf_path: Path) 
             "Verificação visual de turbidez e coloração da água.",
         ]:
             elems.append(Paragraph(f"• {item}", s_body))
+
+        # v6: inclui dosagens digitadas no relatório Bem Star — BUG-BS-MENSAL-CAMPO
+        dosagens_txt = []
+        for _lc_dos in lancamentos:
+            for _dos in (_lc_dos.get("dosagens", []) or []):
+                if isinstance(_dos, dict):
+                    _txt = " ".join(str(_dos.get(k, "") or "").strip() for k in ("produto", "quantidade", "unidade", "finalidade")).strip()
+                else:
+                    _txt = str(_dos or "").strip()
+                if _txt and _txt not in dosagens_txt:
+                    dosagens_txt.append(_txt)
+        if dosagens_txt:
+            elems.append(Paragraph("<b>Dosagens registradas no período:</b>", s_body))
+            for _txt in dosagens_txt[:20]:
+                elems.append(Paragraph(f"• {_txt}", s_body))
+
         elems.append(Paragraph("<b>Recomendações para o próximo período:</b>", s_body))
         recs = [
             "Manter monitoramento de pH, cloro livre e cloro combinado;",
@@ -13172,6 +13281,62 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _mes_csr  = (csr_mes or "").strip()
         _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
         lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
+
+        st.markdown("**✍️ Preenchimento manual do relatório mensal Bem Star**")
+        st.caption("Use estes campos quando o relatório mensal precisar ser preenchido diretamente, com fotos, parâmetros e dosagens.")
+        st.number_input("Total de visitas para preencher", min_value=1, max_value=31, value=int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12), step=1, key="bs_rel_qtd_visitas")
+        with st.expander("Abrir campos de parâmetros, dosagens e observações", expanded=True):
+            _qtd_manual_bs = int(st.session_state.get("bs_rel_qtd_visitas", 12) or 12)
+            for _i in range(1, _qtd_manual_bs + 1):
+                st.markdown(f"**Visita {_i}**")
+                _c1, _c2, _c3, _c4 = st.columns([1.25, 0.75, 0.75, 0.75])
+                with _c1:
+                    st.text_input("Data", key=f"bs_rel_data_{_i}", placeholder="dd/mm/aaaa")
+                with _c2:
+                    st.text_input("pH", key=f"bs_rel_ph_{_i}", placeholder="7,40")
+                with _c3:
+                    st.text_input("Cl livre", key=f"bs_rel_crl_{_i}", placeholder="2,00")
+                with _c4:
+                    st.text_input("Cl total", key=f"bs_rel_ct_{_i}", placeholder="2,20")
+                _c5, _c6, _c7 = st.columns(3)
+                with _c5:
+                    st.text_input("Alcalinidade", key=f"bs_rel_alc_{_i}", placeholder="100")
+                with _c6:
+                    st.text_input("Dureza", key=f"bs_rel_dc_{_i}", placeholder="200")
+                with _c7:
+                    st.text_input("CYA", key=f"bs_rel_cya_{_i}", placeholder="40")
+                st.text_input("Dosagem aplicada", key=f"bs_rel_dosagem_{_i}", placeholder="Ex.: Hipoclorito 65% 500g; Ácido muriático 300mL")
+                st.text_input("Observação da visita", key=f"bs_rel_obs_{_i}", placeholder="Ocorrência, limpeza, retrolavagem, aspecto visual...")
+                st.markdown("---")
+
+        _uploads_bs = st.file_uploader(
+            "Fotos do relatório mensal Bem Star",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="bs_rel_fotos_upload",
+            help="Envie as fotos que devem aparecer na capa/registro fotográfico do relatório.",
+        )
+        if _uploads_bs and csr_sel:
+            _pasta_upload_bs = GENERATED_DIR / slugify_nome(csr_sel) / "fotos_relatorio_bem_star"
+            _pasta_upload_bs.mkdir(parents=True, exist_ok=True)
+            _paths_bs = []
+            for _idx_foto, _up in enumerate(_uploads_bs, start=1):
+                _ext = Path(_up.name).suffix.lower() or ".jpg"
+                _dest = _pasta_upload_bs / limpar_nome_arquivo(f"{_mes_csr}_{_ano_csr}_foto_{_idx_foto}{_ext}")
+                _dest.write_bytes(_up.getvalue())
+                _paths_bs.append(str(_dest))
+            st.session_state["_bem_star_fotos_relatorio_paths"] = _paths_bs
+            st.success(f"{len(_paths_bs)} foto(s) carregada(s) para o relatório Bem Star.")
+
+        _lanc_manual_csr = _filtrar_mes_csr(_coletar_lancamentos_bem_star_manuais(), _mes_csr, _ano_csr)
+        if _lanc_manual_csr:
+            _vistos_manual_merge = {f"{lc.get('data','')}-{lc.get('ph','')}-{lc.get('cloro_livre','')}" for lc in lancamentos_csr}
+            for _lc_manual in _lanc_manual_csr:
+                _ch_manual = f"{_lc_manual.get('data','')}-{_lc_manual.get('ph','')}-{_lc_manual.get('cloro_livre','')}"
+                if _ch_manual not in _vistos_manual_merge:
+                    lancamentos_csr.append(_lc_manual)
+                    _vistos_manual_merge.add(_ch_manual)
+
     
         # ── Painel de lançamentos disponíveis ────────────────────────────────
         if lancamentos_csr:
