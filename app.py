@@ -13942,7 +13942,8 @@ st.info(
 )
 
 # _BOTAO_ADITIVO_LINHA_CORRETA_
-col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.6, 1.4, 1, 1])
+# v6: adiciona contrato Aqua de limpeza/manutenção sem RT no mesmo cadastro — BUG-CONTRATO-SEM-RT
+col_btn1, col_btn2, col_btn3, col_btn4, col_btn5 = st.columns([1.35, 1.7, 1.35, 0.9, 0.9])
 
 with col_btn1:
     gerar = st.button(
@@ -13952,6 +13953,13 @@ with col_btn1:
     )
 
 with col_btn2:
+    gerar_contrato_limpeza_sem_rt = st.button(
+        "🧽 Gerar limpeza sem RT",
+        use_container_width=True,
+        help="Gera contrato Aqua Gestão de limpeza e manutenção operacional, sem RT, sem ART e sem assinatura técnica.",
+    )
+
+with col_btn3:
     gerar_aditivo_rapido = st.button(
         "📄 Gerar aditivo (desconto)",
         use_container_width=True,
@@ -13960,12 +13968,12 @@ with col_btn2:
              "Preencha o campo 'Valor aditivo' antes de gerar.",
     )
 
-with col_btn3:
+with col_btn4:
     if st.button("🗑️ Limpar", use_container_width=True):
         limpar_formulario()
         st.rerun()
 
-with col_btn4:
+with col_btn5:
     if st.button("📁 Abrir pasta", use_container_width=True):
         abrir_pasta_windows(GENERATED_DIR)
 
@@ -17195,6 +17203,370 @@ def gerar_contrato_e_aditivo():
         st.error(f"Erro na geração do contrato: {e}")
 
 
+
+def gerar_contrato_limpeza_manutencao_aqua_sem_rt():
+    """Gera contrato Aqua Gestão de limpeza e manutenção sem RT.
+
+    # v6: contrato operacional sem Responsabilidade Técnica/ART — BUG-CONTRATO-SEM-RT
+    """
+    email_cliente = (st.session_state.get("email_cliente") or "").strip()
+    dados = {
+        "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
+        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
+        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
+        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
+        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
+        "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
+        "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
+    }
+    erros = validar_para_geracao(dados, email_cliente)
+
+    if erros:
+        st.error("Corrija os campos antes de gerar o contrato de limpeza e manutenção sem RT:")
+        for erro in erros:
+            st.write(f"- {erro}")
+        return
+
+    try:
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
+        nome_sindico = (st.session_state.get("nome_sindico") or "").strip()
+        whatsapp_cliente = (st.session_state.get("whatsapp_cliente") or "").strip()
+
+        nome_pasta = slugify_nome(nome_condominio)
+        pasta_condominio = GENERATED_DIR / nome_pasta
+        pasta_condominio.mkdir(parents=True, exist_ok=True)
+
+        snapshot = salvar_snapshot_formulario()
+        snapshot["tipo_contrato_operacional"] = "limpeza_manutencao_sem_rt"
+        snapshot["rt_incluida"] = False
+        salvar_dados_condominio(pasta_condominio, snapshot)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_nome = limpar_nome_arquivo(f"Contrato_Limpeza_Manutencao_Sem_RT_Aqua_{nome_condominio}_{timestamp}")
+        contrato_docx = pasta_condominio / f"{base_nome}.docx"
+        contrato_pdf = pasta_condominio / f"{base_nome}_PDF_AQUA_SEM_RT.pdf"
+
+        contratada_nome = "AQUA GESTÃO CONTROLE TÉCNICO LTDA"
+        contratada_cnpj = "66.008.795/0001-92"
+        contratada_endereco = "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680"
+
+        cnpj_condominio = (st.session_state.get("cnpj_condominio") or "").strip()
+        endereco_condominio = (st.session_state.get("endereco_condominio") or "").strip()
+        cpf_sindico = (st.session_state.get("cpf_sindico") or "").strip()
+        cargo_sindico = (st.session_state.get("cargo_sindico") or "Síndico/Representante legal").strip()
+        valor_mensal = valor_para_template((st.session_state.get("valor_mensal") or "").strip())
+        valor_extenso = (st.session_state.get("valor_mensal_extenso") or "").strip()
+        dia_pagamento = (st.session_state.get("dia_pagamento") or "10").strip()
+        forma_pagamento = (st.session_state.get("forma_pagamento") or "Pix").strip()
+        frequencia = (st.session_state.get("frequencia_visitas") or "1").strip()
+        data_inicio = (st.session_state.get("data_inicio") or "").strip()
+        data_fim = (st.session_state.get("data_fim") or "").strip()
+        data_assinatura = (st.session_state.get("data_assinatura") or hoje_br()).strip()
+        volumes_piscinas = (st.session_state.get("volumes_piscinas") or "Volumes não informados").strip()
+
+        if frequencia.strip() == "1":
+            frequencia_txt = "1 (uma) visita operacional semanal"
+        elif re.match(r"^\d+$", frequencia.strip()):
+            frequencia_txt = f"{frequencia.strip()} visitas operacionais semanais"
+        else:
+            frequencia_txt = frequencia
+
+        def _docx_shading(cell, fill: str):
+            tc_pr = cell._tc.get_or_add_tcPr()
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:fill"), fill)
+            tc_pr.append(shd)
+
+        def _docx_cell_text(cell, texto: str, bold: bool = False):
+            cell.text = ""
+            p = cell.paragraphs[0]
+            run = p.add_run(str(texto or "—"))
+            run.bold = bold
+            run.font.size = Pt(9)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+        doc = Document()
+        for section in doc.sections:
+            section.top_margin = Cm(1.8)
+            section.bottom_margin = Cm(1.8)
+            section.left_margin = Cm(2.0)
+            section.right_margin = Cm(2.0)
+
+        logo = encontrar_logo()
+        if logo and Path(logo).exists():
+            try:
+                p_logo = doc.add_paragraph()
+                p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p_logo.add_run().add_picture(str(logo), width=Inches(1.35))
+            except Exception:
+                pass
+
+        p_titulo = doc.add_paragraph()
+        p_titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r_titulo = p_titulo.add_run("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE LIMPEZA E MANUTENÇÃO DE PISCINAS")
+        r_titulo.bold = True
+        r_titulo.font.size = Pt(13)
+
+        p_sub = doc.add_paragraph()
+        p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r_sub = p_sub.add_run("Aqua Gestão — modalidade operacional sem Responsabilidade Técnica (RT), sem ART e sem assinatura técnica")
+        r_sub.italic = True
+        r_sub.font.size = Pt(9)
+
+        tabela = doc.add_table(rows=4, cols=2)
+        tabela.alignment = WD_TABLE_ALIGNMENT.CENTER
+        tabela.style = "Table Grid"
+        linhas_qualificacao = [
+            ("CONTRATADA", f"{contratada_nome}\nCNPJ: {contratada_cnpj}\n{contratada_endereco}"),
+            ("CONTRATANTE", f"{nome_condominio}\nCNPJ/CPF: {cnpj_condominio}\n{endereco_condominio}"),
+            ("REPRESENTANTE", f"{nome_sindico}\nCPF: {cpf_sindico}\nCargo: {cargo_sindico}"),
+            ("OBJETO", "Limpeza, conservação, manutenção operacional e acompanhamento visual/rotineiro das piscinas indicadas neste contrato."),
+        ]
+        for i, (rotulo, valor) in enumerate(linhas_qualificacao):
+            c0, c1 = tabela.rows[i].cells
+            _docx_shading(c0, "EAF4FF")
+            _docx_cell_text(c0, rotulo, bold=True)
+            _docx_cell_text(c1, valor)
+
+        def _par(texto: str, bold: bool = False, size: int = 10, align=None):
+            p = doc.add_paragraph()
+            if align:
+                p.alignment = align
+            r = p.add_run(texto)
+            r.bold = bold
+            r.font.size = Pt(size)
+            return p
+
+        _par("1. OBJETO", bold=True)
+        _par(
+            "A CONTRATADA prestará serviços de limpeza e manutenção operacional das piscinas, "
+            "incluindo aspiração, escovação, peneiração, limpeza de bordas, verificação operacional "
+            "da casa de máquinas, retrolavagem quando necessária e registro básico das condições encontradas."
+        )
+
+        _par("2. FREQUÊNCIA E PISCINAS ATENDIDAS", bold=True)
+        _par(f"A frequência contratada é de {frequencia_txt}. Piscinas/volumes informados: {volumes_piscinas}.")
+
+        _par("3. PRODUTOS E INSUMOS", bold=True)
+        _par(
+            "Produtos químicos, peças, equipamentos, areia, elementos filtrantes, mão de obra extraordinária "
+            "e correções estruturais somente estarão incluídos quando expressamente informados na proposta comercial "
+            "ou autorizados por escrito pelo CONTRATANTE."
+        )
+
+        _par("4. LIMITAÇÃO EXPRESSA — CONTRATO SEM RT", bold=True)
+        _par(
+            "Este contrato não inclui Responsabilidade Técnica (RT), Anotação de Responsabilidade Técnica (ART), "
+            "emissão de relatório técnico mensal assinado por responsável técnico, representação perante CRQ/CFQ "
+            "ou assinatura técnica de parâmetros laboratoriais. Caso o CONTRATANTE necessite de RT, ART ou "
+            "documentação técnica regulatória, deverá contratar módulo específico de Responsabilidade Técnica."
+        )
+
+        _par("5. OBRIGAÇÕES DA CONTRATADA", bold=True)
+        _par(
+            "Executar as rotinas operacionais contratadas com zelo; comunicar anormalidades visíveis; manter "
+            "organização e segurança durante a execução; e registrar ocorrências relevantes para ciência do CONTRATANTE."
+        )
+
+        _par("6. OBRIGAÇÕES DO CONTRATANTE", bold=True)
+        _par(
+            "Garantir acesso às piscinas e casa de máquinas; manter instalações elétricas e hidráulicas em condições "
+            "seguras; informar restrições de acesso; efetuar os pagamentos nas datas ajustadas; e autorizar previamente "
+            "serviços ou compras não incluídos neste contrato."
+        )
+
+        _par("7. PREÇO, PAGAMENTO E VIGÊNCIA", bold=True)
+        valor_frase = f"O valor mensal é de {valor_mensal}"
+        if valor_extenso:
+            valor_frase += f" ({valor_extenso})"
+        valor_frase += f", com vencimento todo dia {dia_pagamento}, por {forma_pagamento}."
+        vigencia = f" A vigência inicia em {data_inicio}"
+        if data_fim:
+            vigencia += f" e encerra em {data_fim}."
+        else:
+            vigencia += "."
+        _par(valor_frase + vigencia)
+
+        _par("8. RESCISÃO", bold=True)
+        _par(
+            "O contrato poderá ser rescindido por qualquer das partes mediante aviso prévio de 30 (trinta) dias, "
+            "sem prejuízo dos valores vencidos, serviços executados, materiais autorizados e demais obrigações pendentes."
+        )
+
+        _par("9. FORO", bold=True)
+        _par(
+            "Fica eleito o foro da comarca de Uberlândia/MG para dirimir controvérsias decorrentes deste contrato, "
+            "salvo acordo escrito entre as partes."
+        )
+
+        _par(f"Uberlândia/MG, {data_assinatura}.", align=WD_ALIGN_PARAGRAPH.CENTER)
+        doc.add_paragraph()
+        tabela_ass = doc.add_table(rows=1, cols=2)
+        tabela_ass.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for cell, texto in [
+            (tabela_ass.cell(0, 0), f"______________________________\n{contratada_nome}\nCNPJ: {contratada_cnpj}"),
+            (tabela_ass.cell(0, 1), f"______________________________\n{nome_sindico or 'Representante legal'}\n{nome_condominio}"),
+        ]:
+            cell.text = texto
+            for p in cell.paragraphs:
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(9)
+
+        doc.save(str(contrato_docx))
+
+        # PDF ReportLab independente de LibreOffice.
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+        def _esc_pdf(valor):
+            import html
+            return html.escape(str(valor or ""), quote=False).replace("\n", "<br/>")
+
+        pdf_doc = SimpleDocTemplate(
+            str(contrato_pdf),
+            pagesize=A4,
+            rightMargin=1.55 * cm,
+            leftMargin=1.55 * cm,
+            topMargin=1.75 * cm,
+            bottomMargin=1.45 * cm,
+            title="Contrato de limpeza e manutenção sem RT - Aqua Gestão",
+            author="Aqua Gestão Controle Técnico Ltda",
+        )
+        styles = getSampleStyleSheet()
+        s_title = ParagraphStyle("AquaSemRtTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=14, leading=17, textColor=colors.HexColor("#0D2A4A"), alignment=TA_CENTER, spaceAfter=4)
+        s_sub = ParagraphStyle("AquaSemRtSub", parent=styles["Normal"], fontName="Helvetica", fontSize=8.5, leading=10.5, textColor=colors.HexColor("#5E6F82"), alignment=TA_CENTER, spaceAfter=8)
+        s_h = ParagraphStyle("AquaSemRtH", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=9.5, leading=12, textColor=colors.HexColor("#0D2A4A"), spaceBefore=7, spaceAfter=3)
+        s_body = ParagraphStyle("AquaSemRtBody", parent=styles["Normal"], fontName="Helvetica", fontSize=8.8, leading=11.4, textColor=colors.HexColor("#263442"), alignment=TA_JUSTIFY, spaceAfter=4)
+        s_small = ParagraphStyle("AquaSemRtSmall", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10, textColor=colors.HexColor("#263442"), alignment=TA_LEFT)
+        s_center = ParagraphStyle("AquaSemRtCenter", parent=styles["Normal"], fontName="Helvetica", fontSize=8.5, leading=10.5, alignment=TA_CENTER)
+
+        story = []
+        story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE LIMPEZA E MANUTENÇÃO DE PISCINAS", s_title))
+        story.append(Paragraph("Aqua Gestão — modalidade operacional sem RT, sem ART e sem assinatura técnica", s_sub))
+        story.append(HRFlowable(width="100%", thickness=1.0, color=colors.HexColor("#F0C040"), spaceAfter=8))
+
+        qual_pdf = [
+            [Paragraph("<b>CONTRATADA</b>", s_small), Paragraph(f"{_esc_pdf(contratada_nome)}<br/>CNPJ: {_esc_pdf(contratada_cnpj)}<br/>{_esc_pdf(contratada_endereco)}", s_small)],
+            [Paragraph("<b>CONTRATANTE</b>", s_small), Paragraph(f"{_esc_pdf(nome_condominio)}<br/>CNPJ/CPF: {_esc_pdf(cnpj_condominio)}<br/>{_esc_pdf(endereco_condominio)}", s_small)],
+            [Paragraph("<b>REPRESENTANTE</b>", s_small), Paragraph(f"{_esc_pdf(nome_sindico)}<br/>CPF: {_esc_pdf(cpf_sindico)}<br/>Cargo: {_esc_pdf(cargo_sindico)}", s_small)],
+            [Paragraph("<b>OBJETO</b>", s_small), Paragraph("Limpeza, conservação, manutenção operacional e acompanhamento visual/rotineiro das piscinas indicadas neste contrato.", s_small)],
+        ]
+        tq = Table(qual_pdf, colWidths=[3.6 * cm, 13.4 * cm])
+        tq.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.55, colors.HexColor("#D7E1EA")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D7E1EA")),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF4FF")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(tq)
+        story.append(Spacer(1, 6))
+
+        secoes_pdf = [
+            ("1. OBJETO", "A CONTRATADA prestará serviços de limpeza e manutenção operacional das piscinas, incluindo aspiração, escovação, peneiração, limpeza de bordas, verificação operacional da casa de máquinas, retrolavagem quando necessária e registro básico das condições encontradas."),
+            ("2. FREQUÊNCIA E PISCINAS ATENDIDAS", f"A frequência contratada é de {frequencia_txt}. Piscinas/volumes informados: {volumes_piscinas}."),
+            ("3. PRODUTOS E INSUMOS", "Produtos químicos, peças, equipamentos, areia, elementos filtrantes, mão de obra extraordinária e correções estruturais somente estarão incluídos quando expressamente informados na proposta comercial ou autorizados por escrito pelo CONTRATANTE."),
+            ("4. LIMITAÇÃO EXPRESSA — CONTRATO SEM RT", "Este contrato não inclui Responsabilidade Técnica (RT), Anotação de Responsabilidade Técnica (ART), emissão de relatório técnico mensal assinado por responsável técnico, representação perante CRQ/CFQ ou assinatura técnica de parâmetros laboratoriais. Caso o CONTRATANTE necessite de RT, ART ou documentação técnica regulatória, deverá contratar módulo específico de Responsabilidade Técnica."),
+            ("5. OBRIGAÇÕES DA CONTRATADA", "Executar as rotinas operacionais contratadas com zelo; comunicar anormalidades visíveis; manter organização e segurança durante a execução; e registrar ocorrências relevantes para ciência do CONTRATANTE."),
+            ("6. OBRIGAÇÕES DO CONTRATANTE", "Garantir acesso às piscinas e casa de máquinas; manter instalações elétricas e hidráulicas em condições seguras; informar restrições de acesso; efetuar os pagamentos nas datas ajustadas; e autorizar previamente serviços ou compras não incluídos neste contrato."),
+            ("7. PREÇO, PAGAMENTO E VIGÊNCIA", valor_frase + vigencia),
+            ("8. RESCISÃO", "O contrato poderá ser rescindido por qualquer das partes mediante aviso prévio de 30 (trinta) dias, sem prejuízo dos valores vencidos, serviços executados, materiais autorizados e demais obrigações pendentes."),
+            ("9. FORO", "Fica eleito o foro da comarca de Uberlândia/MG para dirimir controvérsias decorrentes deste contrato, salvo acordo escrito entre as partes."),
+        ]
+        for titulo, corpo in secoes_pdf:
+            story.append(Paragraph(_esc_pdf(titulo), s_h))
+            story.append(Paragraph(_esc_pdf(corpo), s_body))
+
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(f"Uberlândia/MG, {_esc_pdf(data_assinatura)}.", s_center))
+        story.append(Spacer(1, 16))
+        ass = Table([[
+            Paragraph(f"______________________________<br/><b>{_esc_pdf(contratada_nome)}</b><br/>CNPJ: {_esc_pdf(contratada_cnpj)}", s_center),
+            Paragraph(f"______________________________<br/><b>{_esc_pdf(nome_sindico or 'Representante legal')}</b><br/>{_esc_pdf(nome_condominio)}", s_center),
+        ]], colWidths=[8.2 * cm, 8.2 * cm])
+        ass.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "BOTTOM"), ("PADDING", (0, 0), (-1, -1), 4)]))
+        story.append(ass)
+
+        pdf_doc.build(story)
+
+        registrar_documento_manifest(
+            pasta_condominio=pasta_condominio,
+            nome_condominio=nome_condominio,
+            tipo="Contrato limpeza/manutenção sem RT — Aqua Gestão",
+            arquivo_docx=contrato_docx,
+            arquivo_pdf=contrato_pdf,
+            pdf_gerado=contrato_pdf.exists(),
+            erro_pdf=None if contrato_pdf.exists() else "PDF não gerado",
+            dados_utilizados=dados,
+            extras={"fluxo": "contrato_limpeza_manutencao_sem_rt", "rt_incluida": False},
+        )
+
+        st.session_state.ultima_pasta_gerada = str(pasta_condominio)
+        st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
+        st.session_state.ultimos_docs_gerados.update({
+            "contrato_limpeza_sem_rt_docx": str(contrato_docx) if contrato_docx.exists() else None,
+            "contrato_limpeza_sem_rt_pdf": str(contrato_pdf) if contrato_pdf.exists() else None,
+        })
+
+        st.success("Contrato de limpeza e manutenção sem RT gerado com sucesso.")
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("Arquivos gerados — contrato sem RT")
+        c1, c2 = st.columns(2)
+        with c1:
+            if contrato_docx.exists():
+                with open(contrato_docx, "rb") as f:
+                    st.download_button(
+                        "Baixar DOCX do contrato sem RT",
+                        data=f,
+                        file_name=contrato_docx.name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True,
+                    )
+        with c2:
+            if contrato_pdf.exists():
+                with open(contrato_pdf, "rb") as f:
+                    st.download_button(
+                        "📄 Baixar PDF do contrato sem RT",
+                        data=f,
+                        file_name=contrato_pdf.name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        mensagem = (
+            f"Prezados,\n\n"
+            f"Encaminho o contrato de prestação de serviços de limpeza e manutenção de piscinas referente ao {nome_condominio}.\n\n"
+            "Este contrato é da modalidade operacional sem Responsabilidade Técnica (RT), sem ART e sem assinatura técnica. "
+            "Caso seja necessário contratar RT/documentação técnica regulatória, seguimos à disposição para enviar a modalidade específica.\n\n"
+            "Permaneço à disposição para conferência e ajustes."
+        )
+
+        exibir_bloco_envio(
+            nome_condominio=nome_condominio,
+            pasta_condominio=pasta_condominio,
+            whatsapp_cliente=whatsapp_cliente,
+            email_cliente=email_cliente,
+            mensagem=mensagem,
+        )
+
+    except Exception as e:
+        st.error(f"Erro na geração do contrato de limpeza e manutenção sem RT: {e}")
+
+
 def gerar_somente_aditivo_rapido():
     email_cliente = st.session_state.email_cliente.strip()
     dados = {
@@ -17343,6 +17715,10 @@ def gerar_somente_aditivo_rapido():
 
 if gerar:
     gerar_contrato_e_aditivo()
+
+# v6: processa contrato Aqua de limpeza/manutenção sem RT — BUG-CONTRATO-SEM-RT
+if gerar_contrato_limpeza_sem_rt:
+    gerar_contrato_limpeza_manutencao_aqua_sem_rt()
 
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
