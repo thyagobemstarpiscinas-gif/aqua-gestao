@@ -349,7 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])  # v6: kwargs gspread v5 — BUG-C
+        aba.update("A1:F1", [["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -391,10 +391,10 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         # Insere novo
         linha_destino = max(len(todos) + 1, 8)
         aba.update(
-            range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[nova_linha],
+            f"A{linha_destino}:Z{linha_destino}",
+            [nova_linha],
             value_input_option="RAW"
-        )  # v6: kwargs gspread v5 — BUG-C
+        )
         st.cache_data.clear()
         st.session_state.pop("_operadores_erro", None)
         return True
@@ -563,8 +563,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
             aba.update(
-                range_name="A1:Z1",
-                values=[[
+                "A1:Z1",
+                [[
                     "", "ID Visita", "Data", "ID Cliente", "Condomínio",
                     "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA",
                     "Foto Antes", "Foto Depois", "Foto Casa Máquinas", "Observação",
@@ -572,7 +572,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                     "Status", "Operador", "Problemas", "Payload JSON", "Salvo em",
                     "Fonte", "Mês/Ano",
                 ]]
-            )  # v6: kwargs gspread v5 — BUG-C
+            )
 
         todos = aba.get_all_values()
         visitas_existentes = [
@@ -609,10 +609,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
-        # v6: gspread v5 não aceita None; sanitiza payload completo antes de serializar/gravar — BUG-B
-        payload_limpo = {k: ("" if v is None else v) for k, v in limpar_payload_para_sheets(payload).items()}
         try:
-            payload_json = json.dumps(payload_limpo, ensure_ascii=False)
+            payload_json = json.dumps(payload, ensure_ascii=False)
         except Exception:
             payload_json = ""
 
@@ -651,13 +649,11 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         ]
 
         linha_destino = max(len(todos) + 1, 8)
-        # v6: remove None de cada célula antes de gravar no Sheets — BUG-B
-        nova_linha = ["" if v is None else str(v) for v in nova_linha]
         aba.update(
-            range_name=f"A{linha_destino}:Z{linha_destino}",
-            values=[nova_linha],
+            f"A{linha_destino}:Z{linha_destino}",
+            [nova_linha],
             value_input_option="RAW"
-        )  # v6: kwargs gspread v5 — BUG-C
+        )
         st.cache_data.clear()
         return True
 
@@ -1540,144 +1536,16 @@ ANALISES_MAX_SUGERIDO = 40
 def calcular_linhas_analises_por_frequencia(verificacoes_semanais: int | str | None = None, mes: str | None = None, ano: str | None = None) -> int:
     """Calcula quantas linhas de análise o relatório deve abrir.
 
-    # v6: a quantidade acompanha a frequência escolhida — BUG-REL-DATAS
-    2x/semana abre 8 linhas, 3x/semana abre 12 linhas, e assim por diante.
-    O limite superior continua protegido por ANALISES_MAX_SUGERIDO.
+    Regra operacional adotada: 12 linhas como padrão mínimo.
+    Para clientes com rotina cadastrada, usa verificações semanais × 4 semanas.
+    Se o mês tiver mais lançamentos reais importados, o sistema expande automaticamente.
     """
     try:
         freq = int(float(str(verificacoes_semanais or "").replace(",", ".")))
     except Exception:
         freq = 3
     freq = max(1, min(freq, 7))
-    return max(1, min(freq * 4, ANALISES_MAX_SUGERIDO))
-
-
-DIAS_SEMANA_RELATORIO = {
-    "Segunda-feira": 0,
-    "Terça-feira": 1,
-    "Quarta-feira": 2,
-    "Quinta-feira": 3,
-    "Sexta-feira": 4,
-    "Sábado": 5,
-    "Domingo": 6,
-}
-
-
-def _normalizar_mes_ano_relatorio(mes: str | int | None, ano: str | int | None) -> tuple[int, int]:
-    """Normaliza mês/ano do relatório para geração automática de datas.
-
-    # v6: aceita mês numérico ou por extenso sem dependências novas — BUG-REL-DATAS
-    """
-    meses_nome = {
-        "janeiro": 1, "jan": 1,
-        "fevereiro": 2, "fev": 2,
-        "marco": 3, "março": 3, "mar": 3,
-        "abril": 4, "abr": 4,
-        "maio": 5, "mai": 5,
-        "junho": 6, "jun": 6,
-        "julho": 7, "jul": 7,
-        "agosto": 8, "ago": 8,
-        "setembro": 9, "set": 9,
-        "outubro": 10, "out": 10,
-        "novembro": 11, "nov": 11,
-        "dezembro": 12, "dez": 12,
-    }
-    mes_txt = str(mes or "").strip().lower()
-    mes_txt_norm = normalizar_texto_busca(mes_txt) if "normalizar_texto_busca" in globals() else mes_txt
-    try:
-        mes_int = int(float(mes_txt.replace(",", ".")))
-    except Exception:
-        mes_int = meses_nome.get(mes_txt_norm, datetime.now().month)
-    try:
-        ano_int = int(str(ano or "").strip())
-    except Exception:
-        ano_int = datetime.now().year
-    mes_int = max(1, min(int(mes_int), 12))
-    if ano_int < 2000:
-        ano_int = datetime.now().year
-    return mes_int, ano_int
-
-
-def calcular_datas_visitas_mes(dias_semana: list[str] | tuple[str, ...] | None,
-                                mes: str | int | None,
-                                ano: str | int | None,
-                                limite: int | None = None) -> list[str]:
-    """Retorna as datas do mês que caem nos dias de visita selecionados.
-
-    # v6: respeita o mês/ano digitado e limita as linhas pela frequência semanal — BUG-REL-DATAS
-    Ex.: 2x/semana abre 8 campos, mesmo se o calendário do mês tiver 9 ocorrências.
-    """
-    dias_idx = []
-    for dia in dias_semana or []:
-        if dia in DIAS_SEMANA_RELATORIO:
-            dias_idx.append(DIAS_SEMANA_RELATORIO[dia])
-    dias_idx = sorted(set(dias_idx))
-    if not dias_idx:
-        return []
-
-    mes_int, ano_int = _normalizar_mes_ano_relatorio(mes, ano)
-    try:
-        import calendar as _calendar
-        ultimo_dia = _calendar.monthrange(ano_int, mes_int)[1]
-    except Exception:
-        ultimo_dia = 31
-
-    datas = []
-    for dia_mes in range(1, ultimo_dia + 1):
-        try:
-            dt = date(ano_int, mes_int, dia_mes)
-        except Exception:
-            continue
-        if dt.weekday() in dias_idx:
-            datas.append(dt.strftime("%d/%m/%Y"))
-    try:
-        limite_int = int(limite) if limite is not None else ANALISES_MAX_SUGERIDO
-    except Exception:
-        limite_int = ANALISES_MAX_SUGERIDO
-    limite_int = max(1, min(limite_int, ANALISES_MAX_SUGERIDO))
-    return datas[:limite_int]
-
-
-def aplicar_datas_visitas_relatorio_auto() -> list[str]:
-    """Aplica datas automáticas nas linhas de análises do relatório técnico.
-
-    # v6: força datas e quantidade de linhas conforme mês/dias/frequência — BUG-REL-DATAS
-    Corrige rascunho antigo que mantinha data de outro mês, como maio em relatório de abril.
-    """
-    linhas_freq = calcular_linhas_analises_por_frequencia(
-        st.session_state.get("rel_verificacoes_semanais", 3),
-        st.session_state.get("rel_mes_referencia"),
-        st.session_state.get("rel_ano_referencia"),
-    )
-    datas_auto = calcular_datas_visitas_mes(
-        st.session_state.get("rel_dias_semana_visitas", []),
-        st.session_state.get("rel_mes_referencia"),
-        st.session_state.get("rel_ano_referencia"),
-        limite=linhas_freq,
-    )
-    if not datas_auto:
-        return []
-
-    antigas = st.session_state.get("_rel_datas_auto_anteriores", [])
-    qtd = max(1, min(len(datas_auto), linhas_freq, ANALISES_MAX_SUGERIDO))
-    garantir_campos_analises(qtd)
-    st.session_state["rel_analises_total"] = qtd
-
-    # v6: datas automáticas assumem o controle das linhas visíveis quando há dias selecionados — BUG-REL-DATAS
-    # Isso troca corretamente abril/maio ao alterar o mês e impede sobra de data antiga em rascunho.
-    for i, data_auto in enumerate(datas_auto[:qtd]):
-        chave = f"rel_analise_data_{i}"
-        st.session_state[chave] = data_auto
-
-    # v6: limpa datas excedentes de automação anterior para não reaparecerem ao aumentar/reduzir linhas — BUG-REL-DATAS
-    total_anterior = max(len(antigas) if isinstance(antigas, list) else 0, int(st.session_state.get("rel_analises_total", qtd) or qtd))
-    for i in range(qtd, min(total_anterior + 1, ANALISES_MAX_SUGERIDO)):
-        chave = f"rel_analise_data_{i}"
-        if str(st.session_state.get(chave, "") or "").strip() in set(antigas if isinstance(antigas, list) else []):
-            st.session_state[chave] = ""
-
-    st.session_state["_rel_datas_auto_anteriores"] = datas_auto[:qtd]
-    return datas_auto[:qtd]
+    return max(ANALISES_PADRAO, min(freq * 4, ANALISES_MAX_SUGERIDO))
 
 
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
@@ -5892,8 +5760,7 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
 
 
 def garantir_campos_analises(qtd: int):
-    # v6: permite reduzir para 8 linhas quando a frequência for 2x/semana — BUG-REL-DATAS
-    qtd = max(1, int(qtd or ANALISES_PADRAO))
+    qtd = max(ANALISES_PADRAO, int(qtd or ANALISES_PADRAO))
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
@@ -8703,7 +8570,6 @@ def inicializar_campos():
         "rel_nr_26": "",
         "rel_nr_06": "",
         "rel_analises_total": ANALISES_PADRAO,
-        "rel_dias_semana_visitas": [],  # v6: dias da semana usados para autopreencher datas — BUG-REL-DATAS
     }
     garantir_campos_analises(st.session_state.get("rel_analises_total", ANALISES_PADRAO) if hasattr(st, "session_state") else ANALISES_PADRAO)
     for i in range(ANALISES_PADRAO):
@@ -8755,8 +8621,6 @@ def limpar_formulario():
     st.session_state.rel_salvar_alteracoes_cadastro = False
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
-    st.session_state.rel_dias_semana_visitas = []  # v6: limpa seleção automática de dias — BUG-REL-DATAS
-    st.session_state["_rel_datas_auto_anteriores"] = []  # v6: limpa histórico de datas automáticas — BUG-REL-DATAS
     st.session_state.rel_art_status = "Emitida"
     st.session_state.rel_art_status_widget = "Emitida"
     st.session_state.rel_art_numero = ""
@@ -8820,7 +8684,6 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo"),
         "rel_mes_referencia": (st.session_state.get("rel_mes_referencia") or ""),
         "rel_ano_referencia": (st.session_state.get("rel_ano_referencia") or ""),
-        "rel_dias_semana_visitas": list(st.session_state.get("rel_dias_semana_visitas") or []),  # v6: persiste dias automáticos — BUG-REL-DATAS
         "rel_data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()),
         "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida"),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or ""),
@@ -8884,7 +8747,7 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
     campos_simples = [
         "rel_nome_condominio", "rel_cnpj_condominio", "rel_endereco_condominio",
         "rel_representante", "rel_cpf_cnpj_representante", "rel_tipo_atendimento",
-        "rel_mes_referencia", "rel_ano_referencia", "rel_dias_semana_visitas", "rel_data_emissao",
+        "rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao",
         "rel_art_status", "rel_art_numero", "rel_art_inicio", "rel_art_fim",
         "rel_status_agua", "rel_diagnostico", "rel_nbr_11238", "rel_nr_26", "rel_nr_06",
         "rel_nbr11238_profundidade", "rel_nbr11238_retrolavagem", "rel_nbr11238_skimmers", "rel_nbr11238_circulacao", "rel_nbr11238_chuveiro",
@@ -8999,15 +8862,13 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "empresa_ativa": "aqua_gestao",
-        "rel_analises_total": max(total, 1),  # v6: preserva relatórios com 8 linhas — BUG-REL-DATAS
+        "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
     }
     for k, v in st.session_state.items():
         if str(k).startswith(("rel_", "csr_")) or str(k) in ("nome_condominio", "cnpj_condominio", "endereco_condominio"):
             try:
-                if k == "rel_dias_semana_visitas" and isinstance(v, (list, tuple)):
-                    dados["campos"][k] = list(v)  # v6: preserva multiselect de dias no rascunho — BUG-REL-DATAS
-                elif isinstance(v, (str, int, float, bool)) or v is None:
+                if isinstance(v, (str, int, float, bool)) or v is None:
                     dados["campos"][k] = v
                 else:
                     dados["campos"][k] = str(v)
@@ -9033,7 +8894,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])  # v6: kwargs gspread v5 — BUG-C
+                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -9099,13 +8960,6 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         for k, v in campos.items():
             if str(k).startswith("_"):
                 continue
-            if k == "rel_dias_semana_visitas" and isinstance(v, str):
-                # v6: recupera seleção de dias mesmo se rascunho antigo salvou a lista como texto — BUG-REL-DATAS
-                try:
-                    import ast as _ast_rel_dias
-                    v = _ast_rel_dias.literal_eval(v)
-                except Exception:
-                    v = []
             st.session_state[k] = v
         st.session_state["empresa_ativa"] = "aqua_gestao"
         # Correção: não alterar key de widget após renderização.
@@ -15086,6 +14940,344 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =========================================
+# CONTRATO AQUA GESTÃO — LIMPEZA E MANUTENÇÃO
+# =========================================
+# v6: retoma contrato de limpeza/manutenção no painel Aqua Gestão — BUG-CONTRATO-AQUA
+
+def gerar_contrato_limpeza_manutencao_aqua_pdf(dados: dict) -> Path:
+    """Gera contrato operacional de limpeza e manutenção de piscinas com identidade Aqua Gestão."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        )
+    except Exception as e:
+        raise RuntimeError(f"ReportLab indisponível para gerar contrato Aqua Gestão: {e}")
+
+    nome = str(dados.get("nome", "") or "").strip()
+    cnpj = str(dados.get("cnpj", "") or "").strip()
+    endereco = str(dados.get("endereco", "") or "").strip()
+    representante = str(dados.get("representante", "") or "").strip()
+    telefone = str(dados.get("telefone", "") or "").strip()
+    piscinas = str(dados.get("piscinas", "") or "").strip() or "Conforme cadastro e vistoria inicial."
+    frequencia = str(dados.get("frequencia", "") or "").strip() or "Conforme programação acordada entre as partes."
+    produtos = str(dados.get("produtos", "") or "").strip() or "Produtos químicos conforme condição comercial acordada."
+    valor = valor_para_template(str(dados.get("valor", "") or "").strip())
+    valor_extenso = str(dados.get("valor_extenso", "") or "").strip() or valor
+    vencimento = str(dados.get("vencimento", "") or "").strip() or "10"
+    pagamento = str(dados.get("pagamento", "") or "").strip() or "Pix"
+    prazo = str(dados.get("prazo", "") or "").strip() or "12 meses"
+    data_inicio = str(dados.get("data_inicio", "") or "").strip() or hoje_br()
+    data_fim = str(dados.get("data_fim", "") or "").strip() or "Indeterminado"
+    local_data = str(dados.get("local_data", "") or "").strip() or f"Uberlândia/MG, {hoje_br()}"
+
+    if not nome:
+        raise ValueError("Nome/Razão social do contratante não informado.")
+    if not valor:
+        raise ValueError("Valor mensal não informado.")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pasta = GENERATED_DIR / slugify_nome(nome)
+    pasta.mkdir(parents=True, exist_ok=True)
+    pdf_path = pasta / limpar_nome_arquivo(f"Contrato_Limpeza_Manutencao_Aqua_Gestao_{nome}_{timestamp}.pdf")
+
+    styles = getSampleStyleSheet()
+    s_titulo = ParagraphStyle(
+        "aq_lm_titulo", parent=styles["Heading1"], alignment=TA_CENTER,
+        fontSize=15, leading=18, textColor=colors.HexColor("#0D2A4A"), spaceAfter=4
+    )
+    s_sub = ParagraphStyle(
+        "aq_lm_sub", parent=styles["Normal"], alignment=TA_CENTER,
+        fontSize=10.5, leading=13, textColor=colors.HexColor("#1565A8"), spaceAfter=8
+    )
+    s_clausula = ParagraphStyle(
+        "aq_lm_clausula", parent=styles["Normal"], fontSize=10,
+        leading=13, spaceBefore=9, spaceAfter=3, fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#0D2A4A")
+    )
+    s_body = ParagraphStyle(
+        "aq_lm_body", parent=styles["Normal"], fontSize=9.5,
+        leading=14, alignment=TA_JUSTIFY, spaceAfter=5
+    )
+    s_center = ParagraphStyle(
+        "aq_lm_center", parent=styles["Normal"], fontSize=10,
+        leading=13, alignment=TA_CENTER, spaceBefore=5, spaceAfter=5
+    )
+    s_small = ParagraphStyle(
+        "aq_lm_small", parent=styles["Normal"], fontSize=8,
+        leading=10, alignment=TA_CENTER, textColor=colors.grey
+    )
+
+    story = []
+    story.append(Paragraph("AQUA GESTÃO", s_titulo))
+    story.append(Paragraph("Contrato de prestação de serviços de limpeza e manutenção de piscinas", s_sub))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1565A8")))
+    story.append(Spacer(1, 0.25 * cm))
+
+    id_data = [
+        ["CONTRATADA", "AQUA GESTÃO, CNPJ 66.008.795/0001-92\nR. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680"],
+        ["CONTRATANTE", f"{nome}{' — CPF/CNPJ ' + cnpj if cnpj else ''}\n{endereco or 'Endereço não informado'}"],
+        ["REPRESENTANTE", f"{representante or 'Não informado'}{(' — ' + telefone) if telefone else ''}"],
+    ]
+    t_id = Table(id_data, colWidths=[3.4 * cm, 14 * cm])
+    t_id.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#1565A8")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C7D9")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D2A4A")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(t_id)
+    story.append(Spacer(1, 0.28 * cm))
+
+    clausulas = [
+        ("CLÁUSULA 1 — DO OBJETO",
+         "O presente contrato tem por objeto a prestação de serviços regulares de limpeza, conservação e manutenção operacional de piscina(s), incluindo rotinas de aspiração, escovação, peneiração, limpeza de cestos, acompanhamento visual, apoio à filtração e registros operacionais compatíveis com a rotina contratada. "
+         f"Piscina(s) atendida(s): {piscinas}"),
+        ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
+         f"Os serviços serão executados com a seguinte frequência: {frequencia}. Os dias e horários poderão ser ajustados por necessidade operacional, clima, feriados, disponibilidade de acesso, caso fortuito ou força maior."),
+        ("CLÁUSULA 3 — DOS PRODUTOS, INSUMOS E EQUIPAMENTOS",
+         f"{produtos}. Materiais, peças, acessórios, reparos elétricos, hidráulicos, troca de equipamentos, obras civis e serviços extraordinários somente serão executados mediante autorização e orçamento específico."),
+        ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
+         f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de R$ {valor} ({valor_extenso}), com vencimento todo dia {vencimento} de cada mês, mediante {pagamento}. O atraso poderá gerar multa de 2%, juros de 1% ao mês pro rata die e correção monetária."),
+        ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
+         f"O contrato terá prazo de {prazo}, com início em {data_inicio} e término em {data_fim}. A continuidade da prestação sem oposição expressa poderá caracterizar prorrogação por acordo entre as partes."),
+        ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
+         "A CONTRATADA executará os serviços com zelo, boa-fé e técnica compatível com o escopo contratado. O CONTRATANTE deverá garantir acesso ao local, manter sistemas básicos em condição de uso, comunicar eventos e alterações de rotina e efetuar os pagamentos nas datas pactuadas."),
+        ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+         "A CONTRATADA não se responsabiliza por defeitos estruturais, falhas elétricas, hidráulicas ou mecânicas fora do escopo, mau uso por terceiros, vandalismo, intempéries, ausência de produtos quando estes forem de responsabilidade do CONTRATANTE ou restrições de acesso ao local."),
+        ("CLÁUSULA 8 — DA RESCISÃO",
+         "O contrato poderá ser rescindido por acordo entre as partes ou mediante aviso prévio de 30 dias. Em caso de inadimplência, restrição de acesso ou descumprimento relevante, a parte prejudicada poderá suspender ou encerrar a prestação, preservados os valores vencidos."),
+        ("CLÁUSULA 9 — DISPOSIÇÕES GERAIS",
+         "Qualquer alteração de escopo, frequência, preço, inclusão de produtos ou condição relevante deverá ser formalizada por escrito. Fica eleito o foro da Comarca de Uberlândia/MG para solução de controvérsias, salvo acordo diverso entre as partes."),
+    ]
+
+    for titulo, corpo in clausulas:
+        story.append(Paragraph(titulo, s_clausula))
+        story.append(Paragraph(corpo, s_body))
+
+    story.append(Spacer(1, 0.4 * cm))
+    story.append(Paragraph(f"{local_data}.", s_center))
+    story.append(Spacer(1, 0.8 * cm))
+
+    ass_data = [
+        ["___________________________________", "___________________________________"],
+        ["AQUA GESTÃO\nCONTRATADA", f"{nome}\nCONTRATANTE"],
+        ["", ""],
+        ["___________________________________", "___________________________________"],
+        ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
+    ]
+    t_ass = Table(ass_data, colWidths=[8.8 * cm, 8.8 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(t_ass)
+    story.append(Spacer(1, 0.25 * cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#1565A8")))
+    story.append(Paragraph("Aqua Gestão — Controle Técnico de Piscinas · Documento contratual de uso operacional", s_small))
+
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        topMargin=1.7 * cm,
+        bottomMargin=1.6 * cm,
+        leftMargin=2.2 * cm,
+        rightMargin=2.2 * cm,
+        title=f"Contrato de limpeza e manutenção — {nome}",
+        author="Aqua Gestão",
+    )
+    doc.build(story)
+    return pdf_path
+
+
+# v6: renderiza contrato de limpeza/manutenção também quando empresa ativa é Aqua Gestão — BUG-CONTRATO-AQUA
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    st.subheader("📝 Contrato Aqua Gestão — Limpeza e Manutenção")
+    st.caption("Gera contrato operacional de prestação de serviços de limpeza e manutenção de piscinas, separado do contrato de RT.")
+
+    with st.expander("📋 Preencher e gerar contrato de limpeza/manutenção", expanded=False):
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _clientes_aq_limpeza_contrato():
+            try:
+                _todos = sheets_listar_clientes_completo() or []
+                _filtrados = filtrar_clientes_por_empresa(_todos, "aqua_gestao")
+                if _filtrados:
+                    return sorted(_filtrados, key=lambda x: str(x.get("nome", "")).lower())
+                return sorted(_todos, key=lambda x: str(x.get("nome", "")).lower())
+            except Exception as e:
+                _log_sheets_erro("_clientes_aq_limpeza_contrato", e)
+                return []
+
+        st.session_state.setdefault("aq_lm_data_inicio", hoje_br())
+        st.session_state.setdefault("aq_lm_data_ass", hoje_br())
+        st.session_state.setdefault("aq_lm_local", "Uberlândia/MG")
+        st.session_state.setdefault("aq_lm_pagamento", "Pix")
+        st.session_state.setdefault("aq_lm_duracao", "12 meses com prorrogação automática")
+        st.session_state.setdefault("aq_lm_produtos", "Não incluídos (por conta do contratante)")
+        st.session_state.setdefault("aq_lm_frequencia", "1 visita semanal")
+
+        col_atualizar_aq, col_info_aq = st.columns([1, 3])
+        with col_atualizar_aq:
+            if st.button("🔄 Atualizar clientes", key="btn_atualizar_clientes_aq_lm"):
+                _clientes_aq_limpeza_contrato.clear()
+                st.session_state.pop("_aq_lm_clientes_ultimo_ok", None)
+                st.rerun()
+
+        _aq_lm_clientes = _clientes_aq_limpeza_contrato() or []
+        if _aq_lm_clientes:
+            st.session_state["_aq_lm_clientes_ultimo_ok"] = _aq_lm_clientes
+        else:
+            _aq_lm_clientes = st.session_state.get("_aq_lm_clientes_ultimo_ok", [])
+
+        _aq_lm_nomes = ["— selecione ou preencha manualmente —"] + [
+            c.get("nome", "") for c in _aq_lm_clientes if c.get("nome")
+        ]
+        _aq_lm_sel = st.selectbox(
+            "Carregar dados de cliente cadastrado",
+            _aq_lm_nomes,
+            key="aq_lm_cliente_sel"
+        )
+
+        if st.button("📂 Carregar dados do cliente", key="btn_aq_lm_carregar"):
+            _d = next((c for c in _aq_lm_clientes if c.get("nome") == _aq_lm_sel), {})
+            if _d:
+                st.session_state["aq_lm_nome"] = _d.get("nome", "")
+                st.session_state["aq_lm_cnpj"] = _d.get("cnpj", "")
+                st.session_state["aq_lm_endereco"] = _d.get("endereco", "")
+                st.session_state["aq_lm_representante"] = _d.get("contato", "")
+                st.session_state["aq_lm_telefone"] = _d.get("telefone", "")
+                _vols = []
+                if _d.get("vol_adulto"):
+                    _vols.append(f"Piscina adulto: {_d.get('vol_adulto')} m³")
+                if _d.get("vol_infantil"):
+                    _vols.append(f"Piscina infantil: {_d.get('vol_infantil')} m³")
+                if _d.get("vol_family"):
+                    _vols.append(f"Piscina family/spa: {_d.get('vol_family')} m³")
+                if _vols and not st.session_state.get("aq_lm_piscinas"):
+                    st.session_state["aq_lm_piscinas"] = " | ".join(_vols)
+                st.success(f"✅ Dados de '{_d.get('nome', '')}' carregados.")
+                st.rerun()
+            else:
+                st.warning("Selecione um cliente válido ou preencha manualmente.")
+
+        st.markdown("---")
+        st.markdown("**Dados do contratante**")
+        _aq_c1, _aq_c2 = st.columns(2)
+        with _aq_c1:
+            st.text_input("Nome / Razão social *", key="aq_lm_nome", placeholder="Ex.: Condomínio Residencial")
+            st.text_area("Endereço completo", key="aq_lm_endereco", height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
+        with _aq_c2:
+            st.text_input("CPF / CNPJ", key="aq_lm_cnpj", placeholder="00.000.000/0000-00")
+            st.text_input("Representante / síndico", key="aq_lm_representante", placeholder="Nome completo do responsável")
+            st.text_input("Telefone / WhatsApp", key="aq_lm_telefone", placeholder="(34) 99999-9999")
+
+        st.markdown("**Serviço contratado**")
+        st.text_area(
+            "Piscinas atendidas",
+            key="aq_lm_piscinas",
+            height=65,
+            placeholder="Ex.: Piscina adulto 150 m³, piscina infantil 30 m³, área externa descoberta"
+        )
+
+        _aq_s1, _aq_s2, _aq_s3 = st.columns(3)
+        with _aq_s1:
+            _aq_freq = st.selectbox(
+                "Frequência de visitas",
+                ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Diária", "Outra"],
+                key="aq_lm_frequencia"
+            )
+            if _aq_freq == "Outra":
+                st.text_input("Especificar frequência", key="aq_lm_freq_outro", placeholder="Ex.: quinzenal")
+        with _aq_s2:
+            st.radio(
+                "Produtos químicos",
+                ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
+                key="aq_lm_produtos"
+            )
+        with _aq_s3:
+            st.text_input("Prazo de vigência", key="aq_lm_prazo", placeholder="Ex.: 12 meses")
+
+        st.markdown("**Valores e pagamento**")
+        _aq_v1, _aq_v2, _aq_v3, _aq_v4 = st.columns(4)
+        with _aq_v1:
+            st.text_input("Valor mensal (R$) *", key="aq_lm_valor", placeholder="Ex.: 350,00")
+        with _aq_v2:
+            st.text_input("Valor por extenso", key="aq_lm_valor_extenso", placeholder="Ex.: trezentos e cinquenta reais")
+        with _aq_v3:
+            st.text_input("Dia de vencimento", key="aq_lm_vencimento", placeholder="Ex.: 10")
+        with _aq_v4:
+            st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_lm_pagamento")
+
+        st.markdown("**Datas**")
+        _aq_d1, _aq_d2, _aq_d3 = st.columns(3)
+        with _aq_d1:
+            st.text_input("Data de início", key="aq_lm_data_inicio", placeholder="dd/mm/aaaa")
+        with _aq_d2:
+            st.text_input("Data de término", key="aq_lm_data_fim", placeholder="dd/mm/aaaa ou Indeterminado")
+        with _aq_d3:
+            st.text_input("Local de assinatura", key="aq_lm_local", placeholder="Ex.: Uberlândia/MG")
+        st.text_input("Data de assinatura", key="aq_lm_data_ass", placeholder="dd/mm/aaaa")
+
+        if st.button("📄 Gerar Contrato Aqua Gestão — Limpeza/Manutenção", type="primary", use_container_width=True, key="btn_gerar_contrato_aq_lm"):
+            _freq_final = (st.session_state.get("aq_lm_freq_outro", "").strip() or st.session_state.get("aq_lm_frequencia", ""))
+            _produtos_final = (
+                "Produtos químicos incluídos no valor mensal."
+                if "incluídos" in st.session_state.get("aq_lm_produtos", "").lower()
+                else "Produtos químicos não incluídos no valor mensal, ficando sob responsabilidade do contratante, salvo orçamento específico."
+            )
+            _dados_contrato_aq = {
+                "nome": st.session_state.get("aq_lm_nome", ""),
+                "cnpj": st.session_state.get("aq_lm_cnpj", ""),
+                "endereco": st.session_state.get("aq_lm_endereco", ""),
+                "representante": st.session_state.get("aq_lm_representante", ""),
+                "telefone": st.session_state.get("aq_lm_telefone", ""),
+                "piscinas": st.session_state.get("aq_lm_piscinas", ""),
+                "frequencia": _freq_final,
+                "produtos": _produtos_final,
+                "valor": st.session_state.get("aq_lm_valor", ""),
+                "valor_extenso": st.session_state.get("aq_lm_valor_extenso", ""),
+                "vencimento": st.session_state.get("aq_lm_vencimento", ""),
+                "pagamento": st.session_state.get("aq_lm_pagamento", "Pix"),
+                "prazo": st.session_state.get("aq_lm_prazo", ""),
+                "data_inicio": st.session_state.get("aq_lm_data_inicio", ""),
+                "data_fim": st.session_state.get("aq_lm_data_fim", "") or "Indeterminado",
+                "local_data": f"{st.session_state.get('aq_lm_local', 'Uberlândia/MG')}, {st.session_state.get('aq_lm_data_ass', hoje_br())}",
+            }
+            try:
+                with st.spinner("Gerando contrato Aqua Gestão..."):
+                    _pdf_aq_lm = gerar_contrato_limpeza_manutencao_aqua_pdf(_dados_contrato_aq)
+                st.success("✅ Contrato Aqua Gestão de limpeza/manutenção gerado com sucesso.")
+                with open(_pdf_aq_lm, "rb") as _f_pdf_aq_lm:
+                    st.download_button(
+                        "⬇️ Baixar Contrato PDF",
+                        data=_f_pdf_aq_lm.read(),
+                        file_name=_pdf_aq_lm.name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"download_contrato_aq_lm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    )
+            except Exception as e:
+                st.error(f"Erro ao gerar contrato Aqua Gestão: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
 # DOWNLOADS DOS ÚLTIMOS DOCUMENTOS GERADOS
 # =========================================
 # Exibe os downloads logo aqui, antes do relatório, independente de onde o botão foi clicado.
@@ -15748,44 +15940,14 @@ if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
 st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
-_freq_rel_col1, _freq_rel_col2, _freq_rel_col3 = st.columns([1, 1.45, 2.2])
+_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
 with _freq_rel_col1:
-    st.number_input(
-        "Verificações por semana",
-        min_value=1,
-        max_value=7,
-        value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3),
-        step=1,
-        key="rel_verificacoes_semanais",
-    )
+    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
 with _freq_rel_col2:
-    st.multiselect(
-        "Dias das visitas",
-        options=list(DIAS_SEMANA_RELATORIO.keys()),
-        key="rel_dias_semana_visitas",
-        placeholder="Ex.: terça e quinta",
-        help="Ao escolher o mês/ano e os dias da semana, o sistema preenche automaticamente as datas das análises.",
-    )
-with _freq_rel_col3:
-    _linhas_freq = calcular_linhas_analises_por_frequencia(
-        st.session_state.get("rel_verificacoes_semanais", 3),
-        st.session_state.get("rel_mes_referencia"),
-        st.session_state.get("rel_ano_referencia"),
-    )
-    _datas_auto_rel = aplicar_datas_visitas_relatorio_auto()
-    if _datas_auto_rel:
-        st.caption(
-            f"Datas automáticas: {len(_datas_auto_rel)} visita(s) em "
-            f"{str(st.session_state.get('rel_mes_referencia') or '').zfill(2)}/"
-            f"{st.session_state.get('rel_ano_referencia')}. "
-            "As linhas abaixo já foram preenchidas conforme os dias selecionados."
-        )
-    else:
-        garantir_campos_analises(_linhas_freq)
-        st.caption(
-            f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana "
-            f"→ {_linhas_freq} linha(s). Se selecionar os dias da semana, as datas serão preenchidas automaticamente."
-        )
+    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
+if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
+    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -15801,8 +15963,7 @@ st.markdown("**Análises físico-químicas**")
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
 _linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-# v6: mantém a quantidade já definida pela automação de dias ou pela frequência — BUG-REL-DATAS
-garantir_campos_analises(st.session_state.get("rel_analises_total", _linhas_minimas_rel) or _linhas_minimas_rel)
+garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
