@@ -12932,7 +12932,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     )
                     _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
                                     or st.session_state.get("bs_cont_frequencia",""))
-                    _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                    # v6: corrige detecção exata de produtos incluídos; "Não incluídos" não pode cair como incluído — BUG-CONTRATO-AQUA
+                    _produtos_bs_opcao = st.session_state.get("bs_cont_produtos", "")
+                    _prods_inc_bs = normalizar_texto_busca(_produtos_bs_opcao) == normalizar_texto_busca("Incluídos no valor")
                     gerar_contrato_bem_star_docx(
                         nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
                         cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
@@ -12967,7 +12969,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
                         _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
                         _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
-                        _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                        # v6: corrige detecção exata de produtos incluídos no fallback PDF; "Não incluídos" não pode cair como incluído — BUG-CONTRATO-AQUA
+                        _produtos_bs_opcao = st.session_state.get("bs_cont_produtos", "")
+                        _prods_inc = normalizar_texto_busca(_produtos_bs_opcao) == normalizar_texto_busca("Incluídos no valor")
                         _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
                         _valor    = (st.session_state.get("bs_cont_valor","")).strip()
                         _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
@@ -15235,9 +15239,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
 
         if st.button("📄 Gerar Contrato Aqua Gestão — Limpeza/Manutenção", type="primary", use_container_width=True, key="btn_gerar_contrato_aq_lm"):
             _freq_final = (st.session_state.get("aq_lm_freq_outro", "").strip() or st.session_state.get("aq_lm_frequencia", ""))
+            # v6: corrige detecção exata de produtos incluídos; "Não incluídos" contém a palavra incluídos e gerava cláusula errada — BUG-CONTRATO-AQUA
+            _produtos_aq_opcao = st.session_state.get("aq_lm_produtos", "")
+            _produtos_aq_incluidos = normalizar_texto_busca(_produtos_aq_opcao) == normalizar_texto_busca("Incluídos no valor")
             _produtos_final = (
                 "Produtos químicos incluídos no valor mensal."
-                if "incluídos" in st.session_state.get("aq_lm_produtos", "").lower()
+                if _produtos_aq_incluidos
                 else "Produtos químicos não incluídos no valor mensal, ficando sob responsabilidade do contratante, salvo orçamento específico."
             )
             _dados_contrato_aq = {
