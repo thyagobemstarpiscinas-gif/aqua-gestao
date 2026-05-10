@@ -334,6 +334,7 @@ def sheets_listar_operadores() -> list[dict]:
         return operadores
     except Exception as e:
         _log_sheets_erro("sheets_listar_operadores", e)
+        st.session_state["_sheets_leitura_falhou"] = "operadores"
         return []
 
 
@@ -580,14 +581,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             r for r in todos
             if len(r) > 1 and str(r[1]).strip().startswith("V")
         ]
-        # Usa MAX do número existente para evitar colisão em caso de deleção manual
-        nums_existentes = []
-        for r in visitas_existentes:
-            try:
-                nums_existentes.append(int(str(r[1]).strip()[1:]))
-            except Exception:
-                pass
-        proximo_num = (max(nums_existentes) + 1) if nums_existentes else 1
+        proximo_num = len(visitas_existentes) + 1
         id_visita = f"V{proximo_num:05d}"
 
         data_normalizada = normalizar_data_visita(lancamento.get("data", ""))
@@ -764,7 +758,9 @@ def sheets_listar_clientes() -> list[str]:
             if len(row) > 2 and str(row[1]).startswith("C") and row[2].strip():
                 nomes.append(row[2].strip())
         return nomes
-    except Exception:
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_clientes", e)
+        st.session_state["_sheets_leitura_falhou"] = "clientes"
         return []
 
 
@@ -838,6 +834,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
+        st.session_state["_sheets_leitura_falhou"] = "clientes_completo"
         return []
 
 
@@ -1023,6 +1020,7 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
 
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
+        st.session_state["_sheets_leitura_falhou"] = "lancamentos"
         return []
 
 
@@ -9667,6 +9665,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
             "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
         })
+
+    # Aviso de falha de leitura do Sheets (visível apenas quando ocorre)
+    _sheets_falhou = st.session_state.pop("_sheets_leitura_falhou", None)
+    if _sheets_falhou:
+        st.warning(
+            "⚠️ Não foi possível carregar os dados do servidor agora. "
+            "Verifique a conexão com a internet e recarregue a página. "
+            "Se o problema persistir, registre a visita normalmente — ela ficará salva localmente."
+        )
 
     # v4 — operador não escolhe empresa.
     # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
