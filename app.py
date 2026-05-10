@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -14133,6 +14132,63 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
 
 with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física ou jurídica", expanded=False):
     st.caption("Gera contrato comercial da Aqua Gestão sem Responsabilidade Técnica mensal. Para RT/ART, use o botão 'Gerar contrato RT'.")
+
+    # v6: carregar dados de cliente PF/PJ cadastrado no contrato Aqua sem RT — BUG-CLIENTE-PF-CONTRATO
+    try:
+        _aq_sem_clientes = filtrar_clientes_por_empresa(sheets_listar_clientes_completo(), "aqua_gestao")
+    except Exception:
+        _aq_sem_clientes = []
+    _aq_sem_clientes = sorted(
+        [c for c in (_aq_sem_clientes or []) if str(c.get("nome", "")).strip()],
+        key=lambda c: normalizar_texto_busca(c.get("nome", "")),
+    )
+    _aq_sem_opcoes_clientes = [""] + [c.get("id") or c.get("nome") for c in _aq_sem_clientes]
+    _aq_sem_por_id = {(c.get("id") or c.get("nome")): c for c in _aq_sem_clientes}
+    _aq_sem_sel_cliente = st.selectbox(
+        "Carregar dados de cliente cadastrado",
+        options=_aq_sem_opcoes_clientes,
+        key="aq_sem_rt_cliente_cadastrado_sel",
+        format_func=lambda k: "Selecionar cliente cadastrado..." if not k else (
+            f"{_aq_sem_por_id.get(k, {}).get('nome', k)} — {_aq_sem_por_id.get(k, {}).get('tipo_cliente', 'Cliente')}"
+        ),
+        help="Use este campo para puxar automaticamente Nome, CPF/CNPJ, endereço, telefone e piscina/local atendido.",
+    )
+    if st.button("📥 Carregar cliente no contrato", key="btn_aq_sem_rt_carregar_cliente", use_container_width=True):
+        _cliente_aq_sem = _aq_sem_por_id.get(_aq_sem_sel_cliente)
+        if not _cliente_aq_sem:
+            st.warning("Selecione um cliente cadastrado para carregar.")
+        else:
+            _tipo_cli_aq_sem = _cliente_aq_sem.get("tipo_cliente") or "Pessoa jurídica"
+            _doc_cli_aq_sem = _cliente_aq_sem.get("cpf") if _tipo_cli_aq_sem == "Pessoa física" else _cliente_aq_sem.get("cnpj")
+            if not _doc_cli_aq_sem:
+                _doc_cli_aq_sem = _cliente_aq_sem.get("documento", "")
+            _vols_aq_sem = []
+            for _rot_aq_sem, _ch_aq_sem in (
+                ("Piscina adulto", "vol_adulto"),
+                ("Piscina infantil", "vol_infantil"),
+                ("Piscina family/spa", "vol_family"),
+            ):
+                try:
+                    _v_aq_sem = float(_cliente_aq_sem.get(_ch_aq_sem, 0) or 0)
+                except Exception:
+                    _v_aq_sem = 0
+                if _v_aq_sem:
+                    _vols_aq_sem.append(f"{_rot_aq_sem}: {_v_aq_sem:g} m³")
+            _piscinas_txt_aq_sem = " | ".join(_vols_aq_sem) or (
+                "Piscina residencial" if _tipo_cli_aq_sem == "Pessoa física" else "Piscina/local conforme cadastro"
+            )
+            st.session_state["aq_sem_rt_tipo_contratante"] = _tipo_cli_aq_sem
+            st.session_state["aq_sem_rt_nome"] = _cliente_aq_sem.get("nome", "")
+            st.session_state["aq_sem_rt_documento"] = _doc_cli_aq_sem or ""
+            st.session_state["aq_sem_rt_endereco"] = _cliente_aq_sem.get("endereco", "")
+            st.session_state["aq_sem_rt_responsavel"] = (
+                _cliente_aq_sem.get("nome", "") if _tipo_cli_aq_sem == "Pessoa física"
+                else (_cliente_aq_sem.get("contato", "") or _cliente_aq_sem.get("nome", ""))
+            )
+            st.session_state["aq_sem_rt_telefone"] = _cliente_aq_sem.get("telefone", "")
+            st.session_state["aq_sem_rt_piscinas"] = _piscinas_txt_aq_sem
+            st.success(f"Dados de {_cliente_aq_sem.get('nome', 'cliente')} carregados no contrato.")
+            st.rerun()
 
     aq_sem_tipo = st.radio(
         "Tipo de contratante",
