@@ -10691,29 +10691,31 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     ok_sheets = False
                     st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
 
+                # Guarda sempre o último lançamento (sucesso ou falha no Sheets)
+                st.session_state["_op_ultimo_lancamento"] = lancamento
+
                 if ok_sheets:
                     st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
+                    st.session_state["op_salvo_sucesso"] = {
+                        "nome": op_nome_cond, "data": data_vis,
+                        "operador": op_operador.strip() or "Não informado",
+                        "total": len(pendentes),
+                    }
+                    st.session_state["op_limpar_campos"] = True
+                    deletar_rascunho_operador(op_nome_cond)
+                    st.rerun()
                 else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
+                    st.session_state["_op_lancamento_pendente_sheets"] = lancamento
+                    st.session_state["op_limpar_campos"] = False
                     st.warning(
-                        "⚠️ A visita foi salva localmente e o PDF pode ser gerado normalmente. "
-                        "Houve falha ao gravar no Google Sheets — o relatório mensal pode não importar automaticamente."
+                        "⚠️ Visita salva localmente — rascunho e campos mantidos.\n\n"
+                        "Não foi possível enviar ao Google Sheets agora (sem conexão ou instabilidade). "
+                        "**Não feche o app.** Quando a internet voltar, tente salvar novamente."
                     )
                     if erro_sh:
                         with st.expander("Detalhes do erro Sheets", expanded=False):
                             st.code(erro_sh[:1500])
-                st.session_state["op_salvo_sucesso"] = {
-                    "nome": op_nome_cond, "data": data_vis,
-                    "operador": op_operador.strip() or "Não informado",
-                    "total": len(pendentes),
-                }
-                # Guarda último lançamento para gerar relatório
-                st.session_state["_op_ultimo_lancamento"] = lancamento
-                # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
-                st.session_state["op_limpar_campos"] = True
-                # Remove rascunho após salvar lançamento definitivo
-                deletar_rascunho_operador(op_nome_cond)
-                st.rerun()
 
         pasta_hc = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) if op_nome_cond.strip() else None
         if pasta_hc and pasta_hc.exists():
