@@ -665,7 +665,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "Aqua Gestão"):
+                           empresa: str = "Aqua Gestão", tipo_cliente: str = "Pessoa jurídica", cpf: str = ""):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
@@ -707,6 +707,12 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
         id_cliente = f"C{proximo_num:03d}"
 
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        # v6: cadastro aceita Pessoa Física; coluna N armazena CPF ou CNPJ — BUG-CLIENTE-PF
+        tipo_cliente = str(tipo_cliente or "Pessoa jurídica").strip()
+        if tipo_cliente not in ("Pessoa física", "Pessoa jurídica"):
+            tipo_cliente = "Pessoa jurídica"
+        documento_cliente = formatar_cpf(cpf) if tipo_cliente == "Pessoa física" else formatar_cnpj(cnpj)
+
         nova_linha = [
             "",                                    # A - vazia
             id_cliente,                            # B - ID
@@ -721,7 +727,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             str(vol_infantil) if vol_infantil else "", # K - Vol Infantil m3
             str(vol_family) if vol_family else "", # L - Vol Family m3
             empresa,                               # M - Empresa
-            cnpj,                                  # N - CNPJ # _CNPJ_COLUNA_N_
+            documento_cliente,                     # N - CPF/CNPJ # v6: Pessoa Física/Pessoa Jurídica — BUG-CLIENTE-PF
         ]
 
         # Determina posicao alfabetica dentro do bloco de clientes
@@ -810,10 +816,19 @@ def sheets_listar_clientes_completo() -> list[dict]:
             _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
             if not _empresa_cl:
                 _empresa_cl = "Aqua Gestão"
-            _cnpj_cl = str(row[13]).strip() if len(row) > 13 else ""  # _CNPJ_LER_COLUNA_N_
+            _doc_cl = str(row[13]).strip() if len(row) > 13 else ""  # _CNPJ_LER_COLUNA_N_
+            # v6: identifica CPF/CNPJ sem alterar nomes das abas do Sheets — BUG-CLIENTE-PF
+            _doc_digits = re.sub(r"\D", "", _doc_cl)
+            _tipo_cliente_cl = "Pessoa física" if len(_doc_digits) == 11 else "Pessoa jurídica"
+            _cpf_cl = formatar_cpf(_doc_cl) if _tipo_cliente_cl == "Pessoa física" else ""
+            _cnpj_cl = formatar_cnpj(_doc_cl) if _tipo_cliente_cl == "Pessoa jurídica" else ""
+            _documento_cl = _cpf_cl or _cnpj_cl or _doc_cl
             cliente_base = {
                 "id":           id_val,
                 "nome":         nome,
+                "tipo_cliente": _tipo_cliente_cl,
+                "documento":    _documento_cl,
+                "cpf":          _cpf_cl,
                 "cnpj":         _cnpj_cl,
                 "telefone":     telefone,
                 "contato":      contato,
@@ -837,7 +852,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "") -> bool:
+                           empresa: str = "", tipo_cliente: str = "Pessoa jurídica", cpf: str = "") -> bool:
     """Edita cliente existente na aba Clientes pelo ID."""
     import re as _re
     try:
@@ -853,6 +868,11 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                 # Preserva empresa existente se não informada
                 _empresa_atual = str(row[12]).strip() if len(row) > 12 else ""
                 _empresa_final = empresa if empresa else (_empresa_atual or "Aqua Gestão")
+                # v6: edição preserva documento PF/PJ na coluna N — BUG-CLIENTE-PF
+                tipo_cliente = str(tipo_cliente or "Pessoa jurídica").strip()
+                if tipo_cliente not in ("Pessoa física", "Pessoa jurídica"):
+                    tipo_cliente = "Pessoa jurídica"
+                documento_cliente = formatar_cpf(cpf) if tipo_cliente == "Pessoa física" else formatar_cnpj(cnpj)
                 nova = [
                     "",
                     id_cliente,
@@ -867,8 +887,9 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_infantil) if vol_infantil else "",
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
+                    documento_cliente,             # N - CPF/CNPJ
                 ]
-                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                aba.update(range_name=f"A{linha_sheets}:N{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -2956,6 +2977,7 @@ def aplicar_snapshot_relatorio_independente(dados: dict):
 def obter_snapshot_relatorio_independente() -> dict:
     return {
         "nome_condominio": (st.session_state.get("rel_nome_condominio") or "").strip(),
+        "tipo_cliente": (st.session_state.get("rel_tipo_cliente") or "Pessoa jurídica").strip(),
         "cnpj_condominio": (st.session_state.get("rel_cnpj_condominio") or "").strip(),
         "endereco_condominio": (st.session_state.get("rel_endereco_condominio") or "").strip(),
         "nome_sindico": (st.session_state.get("rel_representante") or "").strip(),
@@ -5942,6 +5964,11 @@ def montar_dados_relatorio() -> dict:
     if not any(observacoes):
         observacoes = textos_auto["observacoes"]
 
+    # v6: tipo de cliente PF/PJ usado no relatório mensal — BUG-REL-PF
+    tipo_cliente_rel = (st.session_state.get("rel_tipo_cliente") or "Pessoa jurídica").strip()
+    if tipo_cliente_rel not in ("Pessoa física", "Pessoa jurídica"):
+        tipo_cliente_rel = "Pessoa jurídica"
+
     return {
         "empresa_rt": EMPRESA_RT,
         "responsavel_tecnico": RESPONSAVEL_TÉCNICO,
@@ -5950,6 +5977,8 @@ def montar_dados_relatorio() -> dict:
         "qualificacao": QUALIFICACAO_RT,
         "certificacoes": CERTIFICACOES_RT,
         "nome_condominio": nome_condominio,
+        "tipo_cliente": tipo_cliente_rel,
+        "doc_label_cliente": "CPF" if tipo_cliente_rel == "Pessoa física" else "CNPJ",
         "cnpj_condominio": dados_base.get("cnpj_condominio", ""),
         "endereco_condominio": dados_base.get("endereco_condominio", ""),
         "representante": representante,
@@ -6050,6 +6079,8 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
     placeholders = {
         "{{NOME_CONDOMINIO}}": dados_relatorio["nome_condominio"],
         "{{CNPJ_CONDOMINIO}}": dados_relatorio["cnpj_condominio"],
+        "{{DOCUMENTO_CLIENTE_LABEL}}": dados_relatorio.get("doc_label_cliente", "CNPJ"),
+        "{{TIPO_CLIENTE}}": dados_relatorio.get("tipo_cliente", "Pessoa jurídica"),
         "{{ENDERECO_CONDOMINIO}}": dados_relatorio["endereco_condominio"],
         "{{NOME_SINDICO}}": dados_relatorio["representante"],
         "{{RESPONSAVEL_TÉCNICO}}": dados_relatorio["responsavel_tecnico"],
@@ -11679,7 +11710,7 @@ else:
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
-    for k in ["cc_nome","cc_cnpj","cc_cep","cc_endereco","cc_contato","cc_telefone",
+    for k in ["cc_nome","cc_cnpj","cc_cpf","cc_cep","cc_endereco","cc_contato","cc_telefone",
               "cc_vol_adulto","cc_vol_infantil","cc_vol_family",
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
@@ -11688,6 +11719,7 @@ if st.session_state.pop("_cc_limpar", False):
     st.session_state["cc_verificacoes_semanais"] = 3
     st.session_state["cc_srv_rt"] = False
     st.session_state["cc_srv_limpeza"] = False
+    st.session_state["cc_tipo_cliente"] = "Pessoa jurídica"
     st.session_state["cc_operadores_vinculados"] = []
 
 # ── Seletor de edição ────────────────────────────────────────────────────────
@@ -11706,6 +11738,9 @@ if _cc_modo == "✏️ Editar cliente existente":
         _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
         if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
             st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
+            # v6: carrega PF/PJ no cadastro — BUG-CLIENTE-PF
+            st.session_state["cc_tipo_cliente"] = _cc_cliente_editar.get("tipo_cliente", "Pessoa jurídica")
+            st.session_state["cc_cpf"]          = _cc_cliente_editar.get("cpf","")
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
             st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
@@ -11736,6 +11771,10 @@ if _cc_modo == "✏️ Editar cliente existente":
 def _mask_cc_cnpj():
     st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj",""))
 
+# v6: máscara CPF para cadastro de Pessoa Física — BUG-CLIENTE-PF
+def _mask_cc_cpf():
+    st.session_state["cc_cpf"] = formatar_cpf(st.session_state.get("cc_cpf",""))
+
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
@@ -11750,6 +11789,17 @@ else:
 # Mantém as chaves antigas coerentes para não quebrar edições/sessão.
 st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
 st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
+
+# v6: cadastro de clientes PF/PJ no mesmo fluxo — BUG-CLIENTE-PF
+if "cc_tipo_cliente" not in st.session_state:
+    st.session_state["cc_tipo_cliente"] = "Pessoa jurídica"
+cc_tipo_cliente = st.radio(
+    "Tipo de cliente",
+    ["Pessoa jurídica", "Pessoa física"],
+    key="cc_tipo_cliente",
+    horizontal=True,
+    help="Pessoa física usa CPF; pessoa jurídica usa CNPJ. O relatório mensal também passa a aceitar cliente PF.",
+)
 
 _operadores_disponiveis = []
 _ops_raw_cc = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
@@ -11780,7 +11830,9 @@ if not _operadores_disponiveis:
 
 cc1, cc2 = st.columns(2)
 with cc1:
-    cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+    _cc_nome_label = "Nome completo do cliente *" if cc_tipo_cliente == "Pessoa física" else "Nome do condomínio / local *"
+    _cc_nome_placeholder = "Ex.: Anna Paula de Lima Mota Couto" if cc_tipo_cliente == "Pessoa física" else "Ex.: Residencial Bella Vista"
+    cc_nome     = st.text_input(_cc_nome_label, key="cc_nome", placeholder=_cc_nome_placeholder)
     # CEP com busca automática ViaCEP
     # Aplica CEP formatado se acabou de buscar
     if st.session_state.get("_cc_cep_fmt"):
@@ -11813,13 +11865,19 @@ with cc1:
             st.warning("Digite um CEP válido com 8 dígitos.")
     cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
 with cc2:
-    cc_cnpj     = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
-    cc_contato  = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
+    if cc_tipo_cliente == "Pessoa física":
+        cc_cpf = st.text_input("CPF do cliente (opcional)", key="cc_cpf", placeholder="000.000.000-00", on_change=_mask_cc_cpf)
+        cc_cnpj = ""
+        cc_contato  = st.text_input("Responsável / contato", key="cc_contato", placeholder="Nome do responsável")
+    else:
+        cc_cnpj = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
+        cc_cpf = ""
+        cc_contato  = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
     cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
 
 # ── Volumes das piscinas ─────────────────────────────────────────────────────
 st.markdown("**🏊 Volumes das piscinas (m³)**")
-st.caption("Preencha apenas as piscinas que este local possui. O volume é usado para calcular dosagens automaticamente.")
+st.caption("Preencha apenas as piscinas que este local possui. Para cliente pessoa física, use Adulto ou piscinas extras conforme o imóvel. O volume é usado para calcular dosagens automaticamente.")
 
 cv1, cv2, cv3 = st.columns(3)
 with cv1:
@@ -11914,6 +11972,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
+                    tipo_cliente=cc_tipo_cliente,
+                    cpf=st.session_state.get("cc_cpf", "").strip(),
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
@@ -11923,6 +11983,8 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
+                    tipo_cliente=cc_tipo_cliente,
+                    cpf=st.session_state.get("cc_cpf", "").strip(),
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
 
@@ -11931,8 +11993,11 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             _dados_cliente_local = carregar_dados_condominio(_pasta_cliente) or {}
             _dados_cliente_local.update({
                 "nome_condominio": cc_nome.strip(),
-                "cnpj_condominio": cc_cnpj.strip(),
-                "cnpj": cc_cnpj.strip(),
+                "tipo_cliente": cc_tipo_cliente,
+                "cpf": st.session_state.get("cc_cpf", "").strip(),
+                "cnpj_condominio": cc_cnpj.strip() if cc_tipo_cliente == "Pessoa jurídica" else st.session_state.get("cc_cpf", "").strip(),
+                "cnpj": cc_cnpj.strip() if cc_tipo_cliente == "Pessoa jurídica" else "",
+                "documento": (st.session_state.get("cc_cpf", "").strip() if cc_tipo_cliente == "Pessoa física" else cc_cnpj.strip()),
                 "cep": cc_cep.strip(),
                 "endereco_condominio": cc_endereco.strip(),
                 "endereco": cc_endereco.strip(),
@@ -13827,20 +13892,6 @@ with col_btn4:
 
 # v6: contrato Aqua Gestão sem RT para PF/PJ — BUG-D
 def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
-#   3. Substitua TODA a função pelo bloco abaixo
-#   4. Localize o expander e adicione o campo "produtos_inclusos" (ver seção INTERFACE)
-#   5. Rode:  python -m py_compile app.py && python healthcheck.py
-#   6. Teste na porta 8501
-#   7. git add app.py && git commit -m "fix: contrato sem RT v2 — rescisao, reajuste, produtos, testemunhas"
-#   8. git push origin main
-# =============================================================================
-
-
-# =========================================
-# SEÇÃO 1 — FUNÇÃO PDF (substitui a existente)
-# =========================================
-
-def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     """Gera contrato Aqua Gestão sem RT/ART em PDF — v2.
 
     Melhorias v2 (2026-05-10):
@@ -14079,6 +14130,262 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     pdf = buf.getvalue()
     buf.close()
     return pdf
+
+with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física ou jurídica", expanded=False):
+    st.caption("Gera contrato comercial da Aqua Gestão sem Responsabilidade Técnica mensal. Para RT/ART, use o botão 'Gerar contrato RT'.")
+
+    aq_sem_tipo = st.radio(
+        "Tipo de contratante",
+        ["Pessoa física", "Pessoa jurídica"],
+        horizontal=True,
+        key="aq_sem_rt_tipo_contratante",
+    )
+
+    aq_doc_label = "CPF" if aq_sem_tipo == "Pessoa física" else "CNPJ"
+    aq_doc_placeholder = "000.000.000-00" if aq_sem_tipo == "Pessoa física" else "00.000.000/0000-00"
+
+    # v6: máscaras automáticas CPF/CNPJ, telefone e CEP — BUG-D
+    def _formatar_cep_aq_sem(valor: str) -> str:
+        dig = re.sub(r"\D", "", str(valor or ""))[:8]
+        if len(dig) <= 5:
+            return dig
+        return f"{dig[:5]}-{dig[5:]}"
+
+    def _mask_aq_sem_documento():
+        valor = st.session_state.get("aq_sem_rt_documento", "")
+        if st.session_state.get("aq_sem_rt_tipo_contratante") == "Pessoa física":
+            st.session_state["aq_sem_rt_documento"] = formatar_cpf(valor)
+        else:
+            st.session_state["aq_sem_rt_documento"] = formatar_cnpj(valor)
+
+    def _mask_aq_sem_telefone():
+        st.session_state["aq_sem_rt_telefone"] = formatar_telefone(st.session_state.get("aq_sem_rt_telefone", ""))
+
+    def _mask_aq_sem_cep():
+        st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(st.session_state.get("aq_sem_rt_cep", ""))
+
+    if st.session_state.get("aq_sem_rt_documento"):
+        _mask_aq_sem_documento()
+    if st.session_state.get("aq_sem_rt_telefone"):
+        _mask_aq_sem_telefone()
+    if st.session_state.get("aq_sem_rt_cep"):
+        _mask_aq_sem_cep()
+
+    _aqs1, _aqs2 = st.columns(2)
+    with _aqs1:
+        aq_sem_nome = st.text_input(
+            "Nome completo / Razão social *",
+            key="aq_sem_rt_nome",
+            value=st.session_state.get("nome_condominio", ""),
+            placeholder="Nome do contratante",
+        )
+        _aq_cep_c1, _aq_cep_c2 = st.columns([3, 1])
+        with _aq_cep_c1:
+            aq_sem_cep = st.text_input(
+                "CEP",
+                key="aq_sem_rt_cep",
+                placeholder="00000-000",
+                on_change=_mask_aq_sem_cep,
+                help="Digite o CEP. Use a lupa para tentar preencher o endereço automaticamente.",
+            )
+        with _aq_cep_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _btn_aq_sem_cep = st.button("🔍", key="btn_buscar_cep_aq_sem_rt", help="Buscar CEP")
+        if _btn_aq_sem_cep:
+            _cep_limpo = re.sub(r"\D", "", st.session_state.get("aq_sem_rt_cep", ""))
+            if len(_cep_limpo) == 8:
+                with st.spinner("Buscando CEP..."):
+                    _dados_cep_aq = buscar_cep(_cep_limpo)
+                if _dados_cep_aq:
+                    st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(_cep_limpo)
+                    st.session_state["aq_sem_rt_endereco"] = ", ".join(
+                        p for p in [
+                            _dados_cep_aq.get("logradouro", ""),
+                            _dados_cep_aq.get("bairro", ""),
+                            f"{_dados_cep_aq.get('localidade', '')}/{_dados_cep_aq.get('uf', '')}",
+                        ] if p
+                    )
+                    st.rerun()
+                else:
+                    st.warning("CEP não encontrado.")
+            else:
+                st.warning("Digite um CEP válido com 8 dígitos.")
+
+        aq_sem_endereco = st.text_area(
+            "Endereço completo",
+            key="aq_sem_rt_endereco",
+            value=st.session_state.get("endereco_condominio", ""),
+            height=70,
+        )
+        aq_sem_piscinas = st.text_area(
+            "Piscinas/local atendido",
+            key="aq_sem_rt_piscinas",
+            value=st.session_state.get("volumes_piscinas", ""),
+            height=65,
+            placeholder="Ex.: Piscina residencial, adulto, infantil, spa, etc.",
+        )
+
+    with _aqs2:
+        _doc_padrao_aq_sem = st.session_state.get("cnpj_condominio", "")
+        if not st.session_state.get("aq_sem_rt_documento") and _doc_padrao_aq_sem:
+            st.session_state["aq_sem_rt_documento"] = formatar_cpf(_doc_padrao_aq_sem) if aq_sem_tipo == "Pessoa física" else formatar_cnpj(_doc_padrao_aq_sem)
+        aq_sem_doc = st.text_input(
+            f"{aq_doc_label} do contratante",
+            key="aq_sem_rt_documento",
+            placeholder=aq_doc_placeholder,
+            on_change=_mask_aq_sem_documento,
+        )
+        aq_sem_resp = st.text_input(
+            "Responsável / representante",
+            key="aq_sem_rt_responsavel",
+            value=(st.session_state.get("nome_sindico", "") if aq_sem_tipo == "Pessoa jurídica" else st.session_state.get("aq_sem_rt_nome", "")),
+        )
+        _tel_padrao_aq_sem = st.session_state.get("whatsapp_cliente", "") or st.session_state.get("telefone_cliente", "")
+        if not st.session_state.get("aq_sem_rt_telefone") and _tel_padrao_aq_sem:
+            st.session_state["aq_sem_rt_telefone"] = formatar_telefone(_tel_padrao_aq_sem)
+        aq_sem_tel = st.text_input(
+            "Telefone / WhatsApp",
+            key="aq_sem_rt_telefone",
+            placeholder="(00) 00000-0000",
+            on_change=_mask_aq_sem_telefone,
+        )
+
+    # v6: descrição automática de serviços por tipo de contratante — BUG-D
+    _aq_sem_servicos_pf = (
+        "Serviço residencial de limpeza e manutenção de piscina, incluindo aspiração, peneiração "
+        "e retirada de resíduos, escovação de bordas, paredes e fundo quando necessário, limpeza "
+        "de cestos, skimmer e pré-filtro quando aplicável, lavagem/retrolavagem do filtro quando "
+        "necessária, verificação visual da água e da casa de máquinas, medição e registro de "
+        "parâmetros quando contratado, aplicação de produtos químicos de rotina quando fornecidos "
+        "pelo contratante ou incluídos na proposta, recomendações de tratamento e orientação "
+        "operacional, sem emissão de RT/ART e sem assunção de Responsabilidade Técnica mensal."  # v6: descrição PF para limpeza e manutenção residencial — BUG-D
+    )
+    _aq_sem_servicos_pj = (
+        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de "
+        "tratamento, registro documental e apoio técnico sem emissão de RT/ART."
+    )
+    _aq_sem_servicos_antigos = {
+        "",
+        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de tratamento, registro documental e apoio técnico sem emissão de RT/ART.",
+        _aq_sem_servicos_pf,
+        _aq_sem_servicos_pj,
+    }
+    _aq_sem_tipo_prev = st.session_state.get("_aq_sem_rt_tipo_servicos_prev")
+    _aq_sem_default_servicos = _aq_sem_servicos_pf if aq_sem_tipo == "Pessoa física" else _aq_sem_servicos_pj
+    if _aq_sem_tipo_prev != aq_sem_tipo and st.session_state.get("aq_sem_rt_servicos", "") in _aq_sem_servicos_antigos:
+        st.session_state["aq_sem_rt_servicos"] = _aq_sem_default_servicos
+    st.session_state["_aq_sem_rt_tipo_servicos_prev"] = aq_sem_tipo
+    st.session_state.setdefault("aq_sem_rt_servicos", _aq_sem_default_servicos)
+
+    st.markdown("**Serviço sem RT/ART**")
+    aq_sem_servicos = st.text_area(
+        "Descrição dos serviços para pessoa física" if aq_sem_tipo == "Pessoa física" else "Descrição dos serviços para pessoa jurídica",
+        key="aq_sem_rt_servicos",
+        height=100,
+        help="Campo editável. Para pessoa física, o texto padrão fica direcionado à limpeza e manutenção de piscina residencial sem RT/ART.",  # v6: ajuda ajustada ao escopo de limpeza/manutenção — BUG-D
+    )
+
+    _aqv1, _aqv2, _aqv3, _aqv4 = st.columns(4)
+    with _aqv1:
+        aq_sem_freq = st.text_input("Frequência", key="aq_sem_rt_frequencia", value="Conforme agenda acordada")
+    with _aqv2:
+        aq_sem_valor = st.text_input("Valor mensal (R$) *", key="aq_sem_rt_valor", placeholder="Ex.: 350,00")
+    with _aqv3:
+        aq_sem_venc = st.text_input("Dia de vencimento", key="aq_sem_rt_vencimento", value="10")
+    with _aqv4:
+        aq_sem_pagamento = st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_sem_rt_pagamento")
+
+    _aqd1, _aqd2, _aqd3 = st.columns(3)
+    with _aqd1:
+        aq_sem_inicio = st.text_input("Data de início", key="aq_sem_rt_inicio", value=st.session_state.get("data_inicio", hoje_br()))
+    with _aqd2:
+        aq_sem_fim = st.text_input("Data de término", key="aq_sem_rt_fim", value="Indeterminado")
+    with _aqd3:
+        aq_sem_ass = st.text_input("Data de assinatura", key="aq_sem_rt_assinatura", value=hoje_br())
+
+    aq_sem_valor_extenso = st.text_input("Valor por extenso", key="aq_sem_rt_valor_extenso", placeholder="Ex.: trezentos e cinquenta reais")
+
+    # v6: produtos químicos inclusos ou por conta do contratante — BUG-CONTRATO-V2
+    aq_sem_produtos = st.radio(
+        "Produtos químicos",
+        ["Não inclusos — por conta do contratante", "Inclusos no valor mensal"],
+        key="aq_sem_rt_produtos_inclusos",
+        horizontal=True,
+        help="Define se os produtos químicos estão inclusos no valor mensal ou são responsabilidade do contratante.",
+    )
+
+    if st.button("📄 Gerar contrato Aqua Gestão sem RT", type="primary", use_container_width=True, key="btn_aq_sem_rt_gerar"):
+        if not str(aq_sem_nome or "").strip():
+            st.error("Informe o nome do contratante.")
+        elif not str(aq_sem_valor or "").strip():
+            st.error("Informe o valor mensal.")
+        else:
+            try:
+                _dados_aq_sem = {
+                    "tipo_contratante": aq_sem_tipo,
+                    "nome_contratante": aq_sem_nome,
+                    "documento_contratante": aq_sem_doc,
+                    "endereco_contratante": aq_sem_endereco,
+                    "cep_contratante": aq_sem_cep,
+                    "responsavel_contratante": aq_sem_resp or aq_sem_nome,
+                    "telefone_contratante": aq_sem_tel,
+                    "piscinas": aq_sem_piscinas,
+                    "servicos": aq_sem_servicos,
+                    "frequencia": aq_sem_freq,
+                    "valor_mensal": valor_para_template(aq_sem_valor),
+                    "valor_extenso": aq_sem_valor_extenso,
+                    # v6: envia regra de produtos ao PDF — BUG-CONTRATO-V2
+                    "produtos_inclusos": aq_sem_produtos,
+                    "dia_pagamento": aq_sem_venc,
+                    "forma_pagamento": aq_sem_pagamento,
+                    "data_inicio": aq_sem_inicio,
+                    "data_fim": aq_sem_fim,
+                    "local_data_assinatura": f"Uberlândia/MG, {aq_sem_ass}",
+                }
+                _pdf_aq_sem = gerar_contrato_aqua_sem_rt_pdf(_dados_aq_sem)
+                _nome_pasta_aq_sem = slugify_nome(aq_sem_nome)
+                _pasta_aq_sem = GENERATED_DIR / _nome_pasta_aq_sem
+                _pasta_aq_sem.mkdir(parents=True, exist_ok=True)
+                _ts_aq_sem = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _nome_arq_aq_sem = limpar_nome_arquivo(f"Contrato_Aqua_Gestao_Sem_RT_{aq_sem_nome}_{_ts_aq_sem}.pdf")
+                _saida_aq_sem = _pasta_aq_sem / _nome_arq_aq_sem
+                _saida_aq_sem.write_bytes(_pdf_aq_sem)
+
+                try:
+                    registrar_documento_manifest(
+                        pasta_condominio=_pasta_aq_sem,
+                        nome_condominio=aq_sem_nome,
+                        tipo="Contrato sem RT — Aqua Gestão",
+                        arquivo_docx=None,
+                        arquivo_pdf=_saida_aq_sem,
+                        pdf_gerado=True,
+                        erro_pdf=None,
+                        dados_utilizados=_dados_aq_sem,
+                        extras={"sem_rt": True, "tipo_contratante": aq_sem_tipo},
+                    )
+                except Exception:
+                    pass
+
+                st.session_state.ultima_pasta_gerada = str(_pasta_aq_sem)
+                st.success("✅ Contrato Aqua Gestão sem RT gerado com sucesso.")
+                st.download_button(
+                    "⬇️ Baixar contrato PDF",
+                    data=_pdf_aq_sem,
+                    file_name=_saida_aq_sem.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"dl_aq_sem_rt_{_ts_aq_sem}",
+                )
+            except Exception as _e_aq_sem:
+                st.error(f"Erro ao gerar contrato Aqua Gestão sem RT: {_e_aq_sem}")
+
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# POPs ADAPTATIVOS — RT / ROTINA OPERACIONAL
+# =========================================
 
 def _dados_pops_rt_do_formulario() -> dict:
     """Coleta dados atuais do formulário para gerar o Caderno de POPs."""
@@ -15474,7 +15781,11 @@ if _clientes_rel:
                 _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
                 if _dados_rel:
                     st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
-                    st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
+                    # v6: relatório mensal aceita cliente Pessoa Física — BUG-REL-PF
+                    _rel_tipo_cliente = _dados_rel.get("tipo_cliente", "Pessoa jurídica")
+                    st.session_state["rel_tipo_cliente"] = _rel_tipo_cliente
+                    _rel_doc = _dados_rel.get("cpf") if _rel_tipo_cliente == "Pessoa física" else _dados_rel.get("cnpj", "")
+                    st.session_state["rel_cnpj_condominio"] = formatar_cpf(_rel_doc or "") if _rel_tipo_cliente == "Pessoa física" else formatar_cnpj(_rel_doc or "")
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
                     st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
                     st.session_state["rel_cpf_cnpj_representante"] = ""
@@ -15753,10 +16064,15 @@ if st.session_state.pop("_rel_auto_importar_cliente", False):
     elif nome_rel_atual:
         st.warning(f"Cliente carregado, mas nenhum lançamento de visita foi encontrado para {nome_rel_atual} no período informado.")
 
-st.markdown("**Dados do condomínio / local atendido**")
+# v6: labels do relatório mensal adaptam PF/PJ — BUG-REL-PF
+if "rel_tipo_cliente" not in st.session_state:
+    st.session_state["rel_tipo_cliente"] = "Pessoa jurídica"
+st.markdown("**Dados do cliente / local atendido**")
+st.radio("Tipo de cliente do relatório", ["Pessoa jurídica", "Pessoa física"], key="rel_tipo_cliente", horizontal=True)
+_rel_pf = st.session_state.get("rel_tipo_cliente") == "Pessoa física"
 rd1, rd2 = st.columns(2)
 with rd1:
-    st.text_input("Condomínio / estabelecimento", key="rel_nome_condominio")
+    st.text_input("Nome do cliente" if _rel_pf else "Condomínio / estabelecimento", key="rel_nome_condominio")
     if st.session_state.get("_rel_cep_fmt"):
         st.session_state["rel_cep"] = st.session_state.pop("_rel_cep_fmt")
     _rel_cep_c1, _rel_cep_c2 = st.columns([3, 1])
@@ -15784,9 +16100,12 @@ with rd1:
     st.text_input("Representante / síndico / contato local", key="rel_representante")
 with rd2:
     st.text_input(
-        "CNPJ do condomínio / estabelecimento",
+        "CPF do cliente" if _rel_pf else "CNPJ do condomínio / estabelecimento",
         key="rel_cnpj_condominio",
-        on_change=lambda: st.session_state.__setitem__("rel_cnpj_condominio", formatar_cnpj(st.session_state.get("rel_cnpj_condominio", "")))
+        on_change=lambda: st.session_state.__setitem__(
+            "rel_cnpj_condominio",
+            formatar_cpf(st.session_state.get("rel_cnpj_condominio", "")) if st.session_state.get("rel_tipo_cliente") == "Pessoa física" else formatar_cnpj(st.session_state.get("rel_cnpj_condominio", ""))
+        )
     )
     st.text_input("CPF/CNPJ do representante", key="rel_cpf_cnpj_representante", on_change=lambda: on_change_rel_documento_representante())
     st.file_uploader(
