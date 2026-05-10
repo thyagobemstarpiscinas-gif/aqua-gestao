@@ -349,7 +349,7 @@ def sheets_criar_aba_operadores():
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
         # Cabeçalho
-        aba.update("A1:F1", [["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])
+        aba.update(range_name="A1:F1", values=[["Nome", "PIN", "Condomínios (separados por |)", "Ativo", "Cadastrado_em", "Obs"]])  # v6: kwargs gspread v5 — BUG-C
         aba.format("A1:F1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.07, "green": 0.16, "blue": 0.46}})
         return True
     except Exception as e:
@@ -391,10 +391,10 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
         # Insere novo
         linha_destino = max(len(todos) + 1, 8)
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
-        )
+        )  # v6: kwargs gspread v5 — BUG-C
         st.cache_data.clear()
         st.session_state.pop("_operadores_erro", None)
         return True
@@ -563,8 +563,8 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         except Exception:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
             aba.update(
-                "A1:Z1",
-                [[
+                range_name="A1:Z1",
+                values=[[
                     "", "ID Visita", "Data", "ID Cliente", "Condomínio",
                     "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA",
                     "Foto Antes", "Foto Depois", "Foto Casa Máquinas", "Observação",
@@ -572,7 +572,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
                     "Status", "Operador", "Problemas", "Payload JSON", "Salvo em",
                     "Fonte", "Mês/Ano",
                 ]]
-            )
+            )  # v6: kwargs gspread v5 — BUG-C
 
         todos = aba.get_all_values()
         visitas_existentes = [
@@ -609,8 +609,10 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
+        # v6: gspread v5 não aceita None; sanitiza payload completo antes de serializar/gravar — BUG-B
+        payload_limpo = {k: ("" if v is None else v) for k, v in limpar_payload_para_sheets(payload).items()}
         try:
-            payload_json = json.dumps(payload, ensure_ascii=False)
+            payload_json = json.dumps(payload_limpo, ensure_ascii=False)
         except Exception:
             payload_json = ""
 
@@ -649,11 +651,13 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         ]
 
         linha_destino = max(len(todos) + 1, 8)
+        # v6: remove None de cada célula antes de gravar no Sheets — BUG-B
+        nova_linha = ["" if v is None else str(v) for v in nova_linha]
         aba.update(
-            f"A{linha_destino}:Z{linha_destino}",
-            [nova_linha],
+            range_name=f"A{linha_destino}:Z{linha_destino}",
+            values=[nova_linha],
             value_input_option="RAW"
-        )
+        )  # v6: kwargs gspread v5 — BUG-C
         st.cache_data.clear()
         return True
 
@@ -1536,16 +1540,144 @@ ANALISES_MAX_SUGERIDO = 40
 def calcular_linhas_analises_por_frequencia(verificacoes_semanais: int | str | None = None, mes: str | None = None, ano: str | None = None) -> int:
     """Calcula quantas linhas de análise o relatório deve abrir.
 
-    Regra operacional adotada: 12 linhas como padrão mínimo.
-    Para clientes com rotina cadastrada, usa verificações semanais × 4 semanas.
-    Se o mês tiver mais lançamentos reais importados, o sistema expande automaticamente.
+    # v6: a quantidade acompanha a frequência escolhida — BUG-REL-DATAS
+    2x/semana abre 8 linhas, 3x/semana abre 12 linhas, e assim por diante.
+    O limite superior continua protegido por ANALISES_MAX_SUGERIDO.
     """
     try:
         freq = int(float(str(verificacoes_semanais or "").replace(",", ".")))
     except Exception:
         freq = 3
     freq = max(1, min(freq, 7))
-    return max(ANALISES_PADRAO, min(freq * 4, ANALISES_MAX_SUGERIDO))
+    return max(1, min(freq * 4, ANALISES_MAX_SUGERIDO))
+
+
+DIAS_SEMANA_RELATORIO = {
+    "Segunda-feira": 0,
+    "Terça-feira": 1,
+    "Quarta-feira": 2,
+    "Quinta-feira": 3,
+    "Sexta-feira": 4,
+    "Sábado": 5,
+    "Domingo": 6,
+}
+
+
+def _normalizar_mes_ano_relatorio(mes: str | int | None, ano: str | int | None) -> tuple[int, int]:
+    """Normaliza mês/ano do relatório para geração automática de datas.
+
+    # v6: aceita mês numérico ou por extenso sem dependências novas — BUG-REL-DATAS
+    """
+    meses_nome = {
+        "janeiro": 1, "jan": 1,
+        "fevereiro": 2, "fev": 2,
+        "marco": 3, "março": 3, "mar": 3,
+        "abril": 4, "abr": 4,
+        "maio": 5, "mai": 5,
+        "junho": 6, "jun": 6,
+        "julho": 7, "jul": 7,
+        "agosto": 8, "ago": 8,
+        "setembro": 9, "set": 9,
+        "outubro": 10, "out": 10,
+        "novembro": 11, "nov": 11,
+        "dezembro": 12, "dez": 12,
+    }
+    mes_txt = str(mes or "").strip().lower()
+    mes_txt_norm = normalizar_texto_busca(mes_txt) if "normalizar_texto_busca" in globals() else mes_txt
+    try:
+        mes_int = int(float(mes_txt.replace(",", ".")))
+    except Exception:
+        mes_int = meses_nome.get(mes_txt_norm, datetime.now().month)
+    try:
+        ano_int = int(str(ano or "").strip())
+    except Exception:
+        ano_int = datetime.now().year
+    mes_int = max(1, min(int(mes_int), 12))
+    if ano_int < 2000:
+        ano_int = datetime.now().year
+    return mes_int, ano_int
+
+
+def calcular_datas_visitas_mes(dias_semana: list[str] | tuple[str, ...] | None,
+                                mes: str | int | None,
+                                ano: str | int | None,
+                                limite: int | None = None) -> list[str]:
+    """Retorna as datas do mês que caem nos dias de visita selecionados.
+
+    # v6: respeita o mês/ano digitado e limita as linhas pela frequência semanal — BUG-REL-DATAS
+    Ex.: 2x/semana abre 8 campos, mesmo se o calendário do mês tiver 9 ocorrências.
+    """
+    dias_idx = []
+    for dia in dias_semana or []:
+        if dia in DIAS_SEMANA_RELATORIO:
+            dias_idx.append(DIAS_SEMANA_RELATORIO[dia])
+    dias_idx = sorted(set(dias_idx))
+    if not dias_idx:
+        return []
+
+    mes_int, ano_int = _normalizar_mes_ano_relatorio(mes, ano)
+    try:
+        import calendar as _calendar
+        ultimo_dia = _calendar.monthrange(ano_int, mes_int)[1]
+    except Exception:
+        ultimo_dia = 31
+
+    datas = []
+    for dia_mes in range(1, ultimo_dia + 1):
+        try:
+            dt = date(ano_int, mes_int, dia_mes)
+        except Exception:
+            continue
+        if dt.weekday() in dias_idx:
+            datas.append(dt.strftime("%d/%m/%Y"))
+    try:
+        limite_int = int(limite) if limite is not None else ANALISES_MAX_SUGERIDO
+    except Exception:
+        limite_int = ANALISES_MAX_SUGERIDO
+    limite_int = max(1, min(limite_int, ANALISES_MAX_SUGERIDO))
+    return datas[:limite_int]
+
+
+def aplicar_datas_visitas_relatorio_auto() -> list[str]:
+    """Aplica datas automáticas nas linhas de análises do relatório técnico.
+
+    # v6: força datas e quantidade de linhas conforme mês/dias/frequência — BUG-REL-DATAS
+    Corrige rascunho antigo que mantinha data de outro mês, como maio em relatório de abril.
+    """
+    linhas_freq = calcular_linhas_analises_por_frequencia(
+        st.session_state.get("rel_verificacoes_semanais", 3),
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
+    datas_auto = calcular_datas_visitas_mes(
+        st.session_state.get("rel_dias_semana_visitas", []),
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+        limite=linhas_freq,
+    )
+    if not datas_auto:
+        return []
+
+    antigas = st.session_state.get("_rel_datas_auto_anteriores", [])
+    qtd = max(1, min(len(datas_auto), linhas_freq, ANALISES_MAX_SUGERIDO))
+    garantir_campos_analises(qtd)
+    st.session_state["rel_analises_total"] = qtd
+
+    # v6: datas automáticas assumem o controle das linhas visíveis quando há dias selecionados — BUG-REL-DATAS
+    # Isso troca corretamente abril/maio ao alterar o mês e impede sobra de data antiga em rascunho.
+    for i, data_auto in enumerate(datas_auto[:qtd]):
+        chave = f"rel_analise_data_{i}"
+        st.session_state[chave] = data_auto
+
+    # v6: limpa datas excedentes de automação anterior para não reaparecerem ao aumentar/reduzir linhas — BUG-REL-DATAS
+    total_anterior = max(len(antigas) if isinstance(antigas, list) else 0, int(st.session_state.get("rel_analises_total", qtd) or qtd))
+    for i in range(qtd, min(total_anterior + 1, ANALISES_MAX_SUGERIDO)):
+        chave = f"rel_analise_data_{i}"
+        if str(st.session_state.get(chave, "") or "").strip() in set(antigas if isinstance(antigas, list) else []):
+            st.session_state[chave] = ""
+
+    st.session_state["_rel_datas_auto_anteriores"] = datas_auto[:qtd]
+    return datas_auto[:qtd]
 
 
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
@@ -2608,6 +2740,37 @@ def formatar_cnpj(texto: str) -> str:
     return f"{dig[:2]}.{dig[2:5]}.{dig[5:8]}/{dig[8:12]}-{dig[12:]}"
 
 
+def formatar_cpf_cnpj(texto: str) -> str:
+    """Formata CPF ou CNPJ conforme quantidade de dígitos."""
+    # v6: permite contrato para pessoa física sem criar novos campos de documento — BUG-PF-CONTRATO
+    dig = apenas_digitos(texto)
+    if len(dig) <= 11:
+        return formatar_cpf(dig)
+    return formatar_cnpj(dig)
+
+
+def rotulo_documento_por_tipo(tipo_pessoa: str) -> str:
+    """Retorna o rótulo correto do documento do contratante."""
+    # v6: alterna CPF/CNPJ na tela de contratos Aqua Gestão e Bem Star — BUG-PF-CONTRATO
+    return "CPF do contratante" if str(tipo_pessoa or "").lower().startswith("pessoa física") else "CNPJ do contratante"
+
+
+def validar_documento_por_tipo(documento: str, tipo_pessoa: str) -> bool:
+    """Valida CPF para pessoa física e CNPJ para pessoa jurídica."""
+    # v6: valida documento de contrato conforme tipo de pessoa — BUG-PF-CONTRATO
+    if str(tipo_pessoa or "").lower().startswith("pessoa física"):
+        return validar_cpf(documento)
+    return validar_cnpj(documento)
+
+
+def formatar_documento_por_tipo(documento: str, tipo_pessoa: str) -> str:
+    """Aplica máscara de CPF ou CNPJ conforme tipo de pessoa."""
+    # v6: mantém máscara correta ao alternar PF/PJ — BUG-PF-CONTRATO
+    if str(tipo_pessoa or "").lower().startswith("pessoa física"):
+        return formatar_cpf(documento)
+    return formatar_cnpj(documento)
+
+
 def formatar_telefone(texto: str) -> str:
     dig = apenas_digitos(texto)
 
@@ -2694,10 +2857,17 @@ def _buscar_dados_cnpj(cnpj_digits: str) -> dict | None:
 
 
 def on_change_cnpj():
-    cnpj_raw = st.session_state.get("cnpj_condominio", "")
-    cnpj_fmt = formatar_cnpj(cnpj_raw)
-    st.session_state.cnpj_condominio = cnpj_fmt
-    digits = re.sub(r"\D", "", cnpj_fmt)
+    # v6: campo aceita CPF para pessoa física e CNPJ para pessoa jurídica — BUG-PF-CONTRATO
+    tipo_pessoa = st.session_state.get("tipo_contratante", "Pessoa jurídica")
+    doc_raw = st.session_state.get("cnpj_condominio", "")
+    doc_fmt = formatar_documento_por_tipo(doc_raw, tipo_pessoa)
+    st.session_state.cnpj_condominio = doc_fmt
+
+    if str(tipo_pessoa or "").lower().startswith("pessoa física"):
+        st.session_state["_cnpj_busca_ok"] = ""
+        return
+
+    digits = re.sub(r"\D", "", doc_fmt)
     if len(digits) == 14:
         dados = _buscar_dados_cnpj(digits)
         if dados:
@@ -2718,6 +2888,13 @@ def on_change_cnpj():
             st.session_state["_cnpj_busca_ok"] = f"Dados encontrados: {razao.title()}"
         else:
             st.session_state["_cnpj_busca_ok"] = ""
+
+
+def on_change_bs_cont_doc():
+    """Formata o documento do contratante Bem Star conforme PF/PJ."""
+    # v6: adiciona suporte de contrato Bem Star para pessoa física — BUG-PF-CONTRATO
+    tipo_pessoa = st.session_state.get("bs_cont_tipo_pessoa", "Pessoa jurídica")
+    st.session_state.bs_cont_cnpj = formatar_documento_por_tipo(st.session_state.get("bs_cont_cnpj", ""), tipo_pessoa)
 
 
 def on_change_whatsapp():
@@ -2823,11 +3000,17 @@ def validar_email(email: str) -> bool:
 
 def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     erros = []
+    tipo_pessoa = dados.get("TIPO_CONTRATANTE", "Pessoa jurídica")  # v6: valida PF/PJ no contrato — BUG-PF-CONTRATO
+    documento_contratante = dados.get("CNPJ_CONDOMINIO", "")
 
-    if not validar_cpf(dados["CPF_SINDICO"]):
+    if not validar_documento_por_tipo(documento_contratante, tipo_pessoa):
+        erros.append(f"{rotulo_documento_por_tipo(tipo_pessoa)} inválido.")
+
+    cpf_representante = dados.get("CPF_SINDICO", "")
+    if cpf_representante and not validar_cpf(cpf_representante):
+        erros.append("CPF do representante inválido.")
+    if not str(tipo_pessoa or "").lower().startswith("pessoa física") and not cpf_representante:
         erros.append("CPF do síndico/representante inválido.")
-    if not validar_cnpj(dados["CNPJ_CONDOMINIO"]):
-        erros.append("CNPJ do condomínio inválido.")
     if not validar_data_br(dados["DATA_ASSINATURA"]):
         erros.append("Data de assinatura inválida. Use o formato dd/mm/aaaa.")
     if not validar_data_br(dados["DATA_INICIO"]):
@@ -2846,6 +3029,7 @@ def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
 
 def salvar_snapshot_formulario() -> dict:
     return {
+        "tipo_contratante": (st.session_state.get("tipo_contratante") or "Pessoa jurídica").strip(),  # v6: persiste PF/PJ no contrato — BUG-PF-CONTRATO
         "nome_condominio": (st.session_state.get("nome_condominio") or "").strip(),
         "cnpj_condominio": (st.session_state.get("cnpj_condominio") or "").strip(),
         "endereco_condominio": (st.session_state.get("endereco_condominio") or "").strip(),
@@ -3013,17 +3197,20 @@ def salvar_relatorio_no_cadastro_principal():
 
 
 def validar_campos_obrigatorios(dados: dict) -> list[str]:
+    tipo_pessoa = dados.get("TIPO_CONTRATANTE", "Pessoa jurídica")  # v6: obrigatórios dinâmicos para PF/PJ — BUG-PF-CONTRATO
+    pessoa_fisica = str(tipo_pessoa or "").lower().startswith("pessoa física")
     campos = {
-        "Nome do condomínio": dados.get("NOME_CONDOMINIO", ""),
-        "CNPJ do condomínio": dados.get("CNPJ_CONDOMINIO", ""),
-        "Endereço do condomínio": dados.get("ENDERECO_CONDOMINIO", ""),
-        "Nome do síndico / representante": dados.get("NOME_SINDICO", ""),
-        "CPF do síndico / representante": dados.get("CPF_SINDICO", ""),
+        ("Nome do contratante" if pessoa_fisica else "Nome do condomínio / razão social"): dados.get("NOME_CONDOMINIO", ""),
+        rotulo_documento_por_tipo(tipo_pessoa): dados.get("CNPJ_CONDOMINIO", ""),
+        "Endereço do contratante": dados.get("ENDERECO_CONDOMINIO", ""),
         "Valor mensal": dados.get("VALOR_MENSAL", ""),
         "Data de início": dados.get("DATA_INICIO", ""),
         "Data de fim": dados.get("DATA_FIM", ""),
         "Data de assinatura": dados.get("DATA_ASSINATURA", ""),
     }
+    if not pessoa_fisica:
+        campos["Nome do síndico / representante"] = dados.get("NOME_SINDICO", "")
+        campos["CPF do síndico / representante"] = dados.get("CPF_SINDICO", "")
     faltando = [nome for nome, valor in campos.items() if not (valor or "").strip()]
     return faltando
 
@@ -5760,7 +5947,8 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
 
 
 def garantir_campos_analises(qtd: int):
-    qtd = max(ANALISES_PADRAO, int(qtd or ANALISES_PADRAO))
+    # v6: permite reduzir para 8 linhas quando a frequência for 2x/semana — BUG-REL-DATAS
+    qtd = max(1, int(qtd or ANALISES_PADRAO))
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
@@ -8522,6 +8710,7 @@ def validar_para_geracao(dados_base: dict, email_cliente: str) -> list[str]:
 
 def inicializar_campos():
     defaults = {
+        "tipo_contratante": "Pessoa jurídica",  # v6: habilita contrato PF/PJ — BUG-PF-CONTRATO
         "nome_condominio": "",
         "cnpj_condominio": "",
         "endereco_condominio": "",
@@ -8570,6 +8759,7 @@ def inicializar_campos():
         "rel_nr_26": "",
         "rel_nr_06": "",
         "rel_analises_total": ANALISES_PADRAO,
+        "rel_dias_semana_visitas": [],  # v6: dias da semana usados para autopreencher datas — BUG-REL-DATAS
     }
     garantir_campos_analises(st.session_state.get("rel_analises_total", ANALISES_PADRAO) if hasattr(st, "session_state") else ANALISES_PADRAO)
     for i in range(ANALISES_PADRAO):
@@ -8598,6 +8788,7 @@ def inicializar_campos():
 
 
 def limpar_formulario():
+    st.session_state.tipo_contratante = "Pessoa jurídica"  # v6: limpa tipo PF/PJ sem apagar sessão — BUG-PF-CONTRATO
     st.session_state.nome_condominio = ""
     st.session_state.cnpj_condominio = ""
     st.session_state.endereco_condominio = ""
@@ -8621,6 +8812,8 @@ def limpar_formulario():
     st.session_state.rel_salvar_alteracoes_cadastro = False
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
+    st.session_state.rel_dias_semana_visitas = []  # v6: limpa seleção automática de dias — BUG-REL-DATAS
+    st.session_state["_rel_datas_auto_anteriores"] = []  # v6: limpa histórico de datas automáticas — BUG-REL-DATAS
     st.session_state.rel_art_status = "Emitida"
     st.session_state.rel_art_status_widget = "Emitida"
     st.session_state.rel_art_numero = ""
@@ -8684,6 +8877,7 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo"),
         "rel_mes_referencia": (st.session_state.get("rel_mes_referencia") or ""),
         "rel_ano_referencia": (st.session_state.get("rel_ano_referencia") or ""),
+        "rel_dias_semana_visitas": list(st.session_state.get("rel_dias_semana_visitas") or []),  # v6: persiste dias automáticos — BUG-REL-DATAS
         "rel_data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()),
         "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida"),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or ""),
@@ -8747,7 +8941,7 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
     campos_simples = [
         "rel_nome_condominio", "rel_cnpj_condominio", "rel_endereco_condominio",
         "rel_representante", "rel_cpf_cnpj_representante", "rel_tipo_atendimento",
-        "rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao",
+        "rel_mes_referencia", "rel_ano_referencia", "rel_dias_semana_visitas", "rel_data_emissao",
         "rel_art_status", "rel_art_numero", "rel_art_inicio", "rel_art_fim",
         "rel_status_agua", "rel_diagnostico", "rel_nbr_11238", "rel_nr_26", "rel_nr_06",
         "rel_nbr11238_profundidade", "rel_nbr11238_retrolavagem", "rel_nbr11238_skimmers", "rel_nbr11238_circulacao", "rel_nbr11238_chuveiro",
@@ -8862,13 +9056,15 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "empresa_ativa": "aqua_gestao",
-        "rel_analises_total": max(total, ANALISES_PADRAO),
+        "rel_analises_total": max(total, 1),  # v6: preserva relatórios com 8 linhas — BUG-REL-DATAS
         "campos": {},
     }
     for k, v in st.session_state.items():
         if str(k).startswith(("rel_", "csr_")) or str(k) in ("nome_condominio", "cnpj_condominio", "endereco_condominio"):
             try:
-                if isinstance(v, (str, int, float, bool)) or v is None:
+                if k == "rel_dias_semana_visitas" and isinstance(v, (list, tuple)):
+                    dados["campos"][k] = list(v)  # v6: preserva multiselect de dias no rascunho — BUG-REL-DATAS
+                elif isinstance(v, (str, int, float, bool)) or v is None:
                     dados["campos"][k] = v
                 else:
                     dados["campos"][k] = str(v)
@@ -8894,7 +9090,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
                     aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
                 except Exception:
                     aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
+                    aba_rasc_rt.update(range_name="A1:C1", values=[["Usuario", "Salvo em", "Dados JSON"]])  # v6: kwargs gspread v5 — BUG-C
                 payload = json.dumps(dados, ensure_ascii=False)
                 if len(payload) > 45000:
                     payload = payload[:45000] + "..."
@@ -8960,6 +9156,13 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         for k, v in campos.items():
             if str(k).startswith("_"):
                 continue
+            if k == "rel_dias_semana_visitas" and isinstance(v, str):
+                # v6: recupera seleção de dias mesmo se rascunho antigo salvou a lista como texto — BUG-REL-DATAS
+                try:
+                    import ast as _ast_rel_dias
+                    v = _ast_rel_dias.literal_eval(v)
+                except Exception:
+                    v = []
             st.session_state[k] = v
         st.session_state["empresa_ativa"] = "aqua_gestao"
         # Correção: não alterar key de widget após renderização.
@@ -12842,15 +13045,31 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     
         _bc1, _bc2 = st.columns(2)
         with _bc1:
-            bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
-                placeholder="Ex.: Condomínio Residencial Bella Vista")
+            bs_tipo_pessoa = st.radio(
+                "Tipo de contratante",
+                ["Pessoa jurídica", "Pessoa física"],
+                key="bs_cont_tipo_pessoa",
+                horizontal=True,
+                help="Use Pessoa física para contrato em CPF; use Pessoa jurídica para empresa/condomínio em CNPJ.",
+            )
+            # v6: contrato Bem Star passa a aceitar pessoa física e pessoa jurídica — BUG-PF-CONTRATO
+            _bs_rotulo_nome = "Nome completo *" if bs_tipo_pessoa == "Pessoa física" else "Nome / Razão social *"
+            _bs_placeholder_nome = "Ex.: João da Silva" if bs_tipo_pessoa == "Pessoa física" else "Ex.: Condomínio Residencial Bella Vista"
+            bs_nome     = st.text_input(_bs_rotulo_nome, key="bs_cont_nome",
+                placeholder=_bs_placeholder_nome)
             bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
                 height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
         with _bc2:
-            bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
-                placeholder="00.000.000/0000-00")
-            bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
-                placeholder="Nome completo do responsável")
+            _bs_rotulo_doc = rotulo_documento_por_tipo(bs_tipo_pessoa)
+            _bs_placeholder_doc = "000.000.000-00" if bs_tipo_pessoa == "Pessoa física" else "00.000.000/0000-00"
+            bs_cnpj     = st.text_input(_bs_rotulo_doc, key="bs_cont_cnpj",
+                placeholder=_bs_placeholder_doc, on_change=on_change_bs_cont_doc)
+            if bs_tipo_pessoa == "Pessoa física":
+                bs_contato = st.text_input("Contato / responsável", key="bs_cont_contato",
+                    placeholder="Pode repetir o nome do contratante")
+            else:
+                bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
+                    placeholder="Nome completo do responsável")
             bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
                 placeholder="(34) 99999-9999")
     
@@ -12922,6 +13141,11 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 st.error("Informe o nome do contratante.")
             elif not (st.session_state.get("bs_cont_valor","")).strip():
                 st.error("Informe o valor mensal.")
+            elif (st.session_state.get("bs_cont_cnpj","")).strip() and not validar_documento_por_tipo(
+                st.session_state.get("bs_cont_cnpj",""),
+                st.session_state.get("bs_cont_tipo_pessoa", "Pessoa jurídica"),
+            ):
+                st.error(f"{rotulo_documento_por_tipo(st.session_state.get('bs_cont_tipo_pessoa', 'Pessoa jurídica'))} inválido.")
             else:
                 # ── Tenta gerar via template_bem_star.docx (preferencial) ──────
                 if TEMPLATE_BEM_STAR.exists():
@@ -12932,9 +13156,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     )
                     _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
                                     or st.session_state.get("bs_cont_frequencia",""))
-                    # v6: corrige detecção exata de produtos incluídos; "Não incluídos" não pode cair como incluído — BUG-CONTRATO-AQUA
-                    _produtos_bs_opcao = st.session_state.get("bs_cont_produtos", "")
-                    _prods_inc_bs = normalizar_texto_busca(_produtos_bs_opcao) == normalizar_texto_busca("Incluídos no valor")
+                    _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
                     gerar_contrato_bem_star_docx(
                         nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
                         cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
@@ -12950,6 +13172,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
                         produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
                                               else "Produtos não incluídos no valor mensal"),
+                        tipo_pessoa         = st.session_state.get("bs_cont_tipo_pessoa", "Pessoa jurídica"),
                     )
                 else:
                     # ── Fallback ReportLab (mantido para compatibilidade) ──────
@@ -12962,6 +13185,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         import io as _io
     
                         # ── Coleta valores ─────────────────────────────────────────
+                        _tipo_bs  = st.session_state.get("bs_cont_tipo_pessoa", "Pessoa jurídica")  # v6: fallback Bem Star PF/PJ — BUG-PF-CONTRATO
+                        _pf_bs    = str(_tipo_bs or "").lower().startswith("pessoa física")
                         _nome     = (st.session_state.get("bs_cont_nome","")).strip()
                         _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
                         _end      = (st.session_state.get("bs_cont_endereco","")).strip()
@@ -12969,20 +13194,18 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
                         _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
                         _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
-                        # v6: corrige detecção exata de produtos incluídos no fallback PDF; "Não incluídos" não pode cair como incluído — BUG-CONTRATO-AQUA
-                        _produtos_bs_opcao = st.session_state.get("bs_cont_produtos", "")
-                        _prods_inc = normalizar_texto_busca(_produtos_bs_opcao) == normalizar_texto_busca("Incluídos no valor")
+                        _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                        _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
                         _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
                         _valor    = (st.session_state.get("bs_cont_valor","")).strip()
                         _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
                         _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
                         _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
                         _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
-                        _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
                         _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
                         _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
                         _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
-                        _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
+                        _qualif   = (f"inscrito(a) no CPF sob nº {_cnpj}," if _pf_bs and _cnpj else (f"inscrita no CNPJ sob nº {_cnpj}," if _cnpj else ""))
                         _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
                         _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
     
@@ -13302,12 +13525,23 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.text_input("Nome do condomínio", key="nome_condominio", on_change=on_change_nome_condominio)
+    tipo_contratante = st.radio(
+        "Tipo de contratante",
+        ["Pessoa jurídica", "Pessoa física"],
+        key="tipo_contratante",
+        horizontal=True,
+        help="Use Pessoa física para contratos em CPF; use Pessoa jurídica para condomínio/empresa em CNPJ.",
+    )
+    # v6: contrato Aqua Gestão passa a aceitar pessoa física e pessoa jurídica — BUG-PF-CONTRATO
+    _rotulo_nome_contratante = "Nome completo do contratante" if tipo_contratante == "Pessoa física" else "Nome do condomínio / razão social"
+    _rotulo_doc_contratante = rotulo_documento_por_tipo(tipo_contratante)
+    _placeholder_doc_contratante = "000.000.000-00" if tipo_contratante == "Pessoa física" else "00.000.000/0000-00"
+    st.text_input(_rotulo_nome_contratante, key="nome_condominio", on_change=on_change_nome_condominio)
     st.text_input(
-        "CNPJ do condomínio",
+        _rotulo_doc_contratante,
         key="cnpj_condominio",
         on_change=on_change_cnpj,
-        placeholder="00.000.000/0000-00",
+        placeholder=_placeholder_doc_contratante,
     )
     if st.session_state.get("_rt_cep_fmt"):
         st.session_state["rt_cep"] = st.session_state.pop("_rt_cep_fmt")
@@ -13332,20 +13566,26 @@ with col1:
                 st.error("CEP não encontrado.")
         else:
             st.warning("Digite um CEP válido com 8 dígitos.")
-    st.text_area("Endereço do condomínio", key="endereco_condominio", height=100)
-    st.text_input("Nome do síndico / representante", key="nome_sindico")
-    st.text_input(
-        "CPF do síndico / representante",
-        key="cpf_sindico",
-        on_change=on_change_cpf,
-        placeholder="000.000.000-00",
-    )
-    st.text_input(
-        "Cargo / qualificação do representante",
-        key="cargo_sindico",
-        placeholder="Ex.: Síndico, Presidente, Administrador",
-        value=st.session_state.get("cargo_sindico", "Síndico"),
-    )
+    st.text_area("Endereço do contratante", key="endereco_condominio", height=100)
+    if tipo_contratante == "Pessoa física":
+        st.caption("Pessoa física: o próprio contratante será usado como representante na assinatura.")
+        st.session_state["nome_sindico"] = st.session_state.get("nome_sindico") or st.session_state.get("nome_condominio", "")
+        st.session_state["cpf_sindico"] = st.session_state.get("cpf_sindico") or st.session_state.get("cnpj_condominio", "")
+        st.session_state["cargo_sindico"] = "Contratante pessoa física"
+    else:
+        st.text_input("Nome do síndico / representante", key="nome_sindico")
+        st.text_input(
+            "CPF do síndico / representante",
+            key="cpf_sindico",
+            on_change=on_change_cpf,
+            placeholder="000.000.000-00",
+        )
+        st.text_input(
+            "Cargo / qualificação do representante",
+            key="cargo_sindico",
+            placeholder="Ex.: Síndico, Presidente, Administrador",
+            value=st.session_state.get("cargo_sindico", "Síndico"),
+        )
 
 with col2:
     st.text_input(
@@ -14944,347 +15184,6 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =========================================
-# CONTRATO AQUA GESTÃO — LIMPEZA E MANUTENÇÃO
-# =========================================
-# v6: retoma contrato de limpeza/manutenção no painel Aqua Gestão — BUG-CONTRATO-AQUA
-
-def gerar_contrato_limpeza_manutencao_aqua_pdf(dados: dict) -> Path:
-    """Gera contrato operacional de limpeza e manutenção de piscinas com identidade Aqua Gestão."""
-    try:
-        from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import cm
-        from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-        )
-    except Exception as e:
-        raise RuntimeError(f"ReportLab indisponível para gerar contrato Aqua Gestão: {e}")
-
-    nome = str(dados.get("nome", "") or "").strip()
-    cnpj = str(dados.get("cnpj", "") or "").strip()
-    endereco = str(dados.get("endereco", "") or "").strip()
-    representante = str(dados.get("representante", "") or "").strip()
-    telefone = str(dados.get("telefone", "") or "").strip()
-    piscinas = str(dados.get("piscinas", "") or "").strip() or "Conforme cadastro e vistoria inicial."
-    frequencia = str(dados.get("frequencia", "") or "").strip() or "Conforme programação acordada entre as partes."
-    produtos = str(dados.get("produtos", "") or "").strip() or "Produtos químicos conforme condição comercial acordada."
-    valor = valor_para_template(str(dados.get("valor", "") or "").strip())
-    valor_extenso = str(dados.get("valor_extenso", "") or "").strip() or valor
-    vencimento = str(dados.get("vencimento", "") or "").strip() or "10"
-    pagamento = str(dados.get("pagamento", "") or "").strip() or "Pix"
-    prazo = str(dados.get("prazo", "") or "").strip() or "12 meses"
-    data_inicio = str(dados.get("data_inicio", "") or "").strip() or hoje_br()
-    data_fim = str(dados.get("data_fim", "") or "").strip() or "Indeterminado"
-    local_data = str(dados.get("local_data", "") or "").strip() or f"Uberlândia/MG, {hoje_br()}"
-
-    if not nome:
-        raise ValueError("Nome/Razão social do contratante não informado.")
-    if not valor:
-        raise ValueError("Valor mensal não informado.")
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pasta = GENERATED_DIR / slugify_nome(nome)
-    pasta.mkdir(parents=True, exist_ok=True)
-    pdf_path = pasta / limpar_nome_arquivo(f"Contrato_Limpeza_Manutencao_Aqua_Gestao_{nome}_{timestamp}.pdf")
-
-    styles = getSampleStyleSheet()
-    s_titulo = ParagraphStyle(
-        "aq_lm_titulo", parent=styles["Heading1"], alignment=TA_CENTER,
-        fontSize=15, leading=18, textColor=colors.HexColor("#0D2A4A"), spaceAfter=4
-    )
-    s_sub = ParagraphStyle(
-        "aq_lm_sub", parent=styles["Normal"], alignment=TA_CENTER,
-        fontSize=10.5, leading=13, textColor=colors.HexColor("#1565A8"), spaceAfter=8
-    )
-    s_clausula = ParagraphStyle(
-        "aq_lm_clausula", parent=styles["Normal"], fontSize=10,
-        leading=13, spaceBefore=9, spaceAfter=3, fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#0D2A4A")
-    )
-    s_body = ParagraphStyle(
-        "aq_lm_body", parent=styles["Normal"], fontSize=9.5,
-        leading=14, alignment=TA_JUSTIFY, spaceAfter=5
-    )
-    s_center = ParagraphStyle(
-        "aq_lm_center", parent=styles["Normal"], fontSize=10,
-        leading=13, alignment=TA_CENTER, spaceBefore=5, spaceAfter=5
-    )
-    s_small = ParagraphStyle(
-        "aq_lm_small", parent=styles["Normal"], fontSize=8,
-        leading=10, alignment=TA_CENTER, textColor=colors.grey
-    )
-
-    story = []
-    story.append(Paragraph("AQUA GESTÃO", s_titulo))
-    story.append(Paragraph("Contrato de prestação de serviços de limpeza e manutenção de piscinas", s_sub))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1565A8")))
-    story.append(Spacer(1, 0.25 * cm))
-
-    id_data = [
-        ["CONTRATADA", "AQUA GESTÃO, CNPJ 66.008.795/0001-92\nR. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680"],
-        ["CONTRATANTE", f"{nome}{' — CPF/CNPJ ' + cnpj if cnpj else ''}\n{endereco or 'Endereço não informado'}"],
-        ["REPRESENTANTE", f"{representante or 'Não informado'}{(' — ' + telefone) if telefone else ''}"],
-    ]
-    t_id = Table(id_data, colWidths=[3.4 * cm, 14 * cm])
-    t_id.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#1565A8")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C7D9")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D2A4A")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    story.append(t_id)
-    story.append(Spacer(1, 0.28 * cm))
-
-    clausulas = [
-        ("CLÁUSULA 1 — DO OBJETO",
-         "O presente contrato tem por objeto a prestação de serviços regulares de limpeza, conservação e manutenção operacional de piscina(s), incluindo rotinas de aspiração, escovação, peneiração, limpeza de cestos, acompanhamento visual, apoio à filtração e registros operacionais compatíveis com a rotina contratada. "
-         f"Piscina(s) atendida(s): {piscinas}"),
-        ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
-         f"Os serviços serão executados com a seguinte frequência: {frequencia}. Os dias e horários poderão ser ajustados por necessidade operacional, clima, feriados, disponibilidade de acesso, caso fortuito ou força maior."),
-        ("CLÁUSULA 3 — DOS PRODUTOS, INSUMOS E EQUIPAMENTOS",
-         f"{produtos}. Materiais, peças, acessórios, reparos elétricos, hidráulicos, troca de equipamentos, obras civis e serviços extraordinários somente serão executados mediante autorização e orçamento específico."),
-        ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
-         f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de R$ {valor} ({valor_extenso}), com vencimento todo dia {vencimento} de cada mês, mediante {pagamento}. O atraso poderá gerar multa de 2%, juros de 1% ao mês pro rata die e correção monetária."),
-        ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
-         f"O contrato terá prazo de {prazo}, com início em {data_inicio} e término em {data_fim}. A continuidade da prestação sem oposição expressa poderá caracterizar prorrogação por acordo entre as partes."),
-        ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
-         "A CONTRATADA executará os serviços com zelo, boa-fé e técnica compatível com o escopo contratado. O CONTRATANTE deverá garantir acesso ao local, manter sistemas básicos em condição de uso, comunicar eventos e alterações de rotina e efetuar os pagamentos nas datas pactuadas."),
-        ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
-         "A CONTRATADA não se responsabiliza por defeitos estruturais, falhas elétricas, hidráulicas ou mecânicas fora do escopo, mau uso por terceiros, vandalismo, intempéries, ausência de produtos quando estes forem de responsabilidade do CONTRATANTE ou restrições de acesso ao local."),
-        ("CLÁUSULA 8 — DA RESCISÃO",
-         "O contrato poderá ser rescindido por acordo entre as partes ou mediante aviso prévio de 30 dias. Em caso de inadimplência, restrição de acesso ou descumprimento relevante, a parte prejudicada poderá suspender ou encerrar a prestação, preservados os valores vencidos."),
-        ("CLÁUSULA 9 — DISPOSIÇÕES GERAIS",
-         "Qualquer alteração de escopo, frequência, preço, inclusão de produtos ou condição relevante deverá ser formalizada por escrito. Fica eleito o foro da Comarca de Uberlândia/MG para solução de controvérsias, salvo acordo diverso entre as partes."),
-    ]
-
-    for titulo, corpo in clausulas:
-        story.append(Paragraph(titulo, s_clausula))
-        story.append(Paragraph(corpo, s_body))
-
-    story.append(Spacer(1, 0.4 * cm))
-    story.append(Paragraph(f"{local_data}.", s_center))
-    story.append(Spacer(1, 0.8 * cm))
-
-    ass_data = [
-        ["___________________________________", "___________________________________"],
-        ["AQUA GESTÃO\nCONTRATADA", f"{nome}\nCONTRATANTE"],
-        ["", ""],
-        ["___________________________________", "___________________________________"],
-        ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
-    ]
-    t_ass = Table(ass_data, colWidths=[8.8 * cm, 8.8 * cm])
-    t_ass.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    story.append(t_ass)
-    story.append(Spacer(1, 0.25 * cm))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#1565A8")))
-    story.append(Paragraph("Aqua Gestão — Controle Técnico de Piscinas · Documento contratual de uso operacional", s_small))
-
-    doc = SimpleDocTemplate(
-        str(pdf_path),
-        pagesize=A4,
-        topMargin=1.7 * cm,
-        bottomMargin=1.6 * cm,
-        leftMargin=2.2 * cm,
-        rightMargin=2.2 * cm,
-        title=f"Contrato de limpeza e manutenção — {nome}",
-        author="Aqua Gestão",
-    )
-    doc.build(story)
-    return pdf_path
-
-
-# v6: renderiza contrato de limpeza/manutenção também quando empresa ativa é Aqua Gestão — BUG-CONTRATO-AQUA
-if st.session_state.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
-    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
-    st.subheader("📝 Contrato Aqua Gestão — Limpeza e Manutenção")
-    st.caption("Gera contrato operacional de prestação de serviços de limpeza e manutenção de piscinas, separado do contrato de RT.")
-
-    with st.expander("📋 Preencher e gerar contrato de limpeza/manutenção", expanded=False):
-        @st.cache_data(ttl=300, show_spinner=False)
-        def _clientes_aq_limpeza_contrato():
-            try:
-                _todos = sheets_listar_clientes_completo() or []
-                _filtrados = filtrar_clientes_por_empresa(_todos, "aqua_gestao")
-                if _filtrados:
-                    return sorted(_filtrados, key=lambda x: str(x.get("nome", "")).lower())
-                return sorted(_todos, key=lambda x: str(x.get("nome", "")).lower())
-            except Exception as e:
-                _log_sheets_erro("_clientes_aq_limpeza_contrato", e)
-                return []
-
-        st.session_state.setdefault("aq_lm_data_inicio", hoje_br())
-        st.session_state.setdefault("aq_lm_data_ass", hoje_br())
-        st.session_state.setdefault("aq_lm_local", "Uberlândia/MG")
-        st.session_state.setdefault("aq_lm_pagamento", "Pix")
-        st.session_state.setdefault("aq_lm_duracao", "12 meses com prorrogação automática")
-        st.session_state.setdefault("aq_lm_produtos", "Não incluídos (por conta do contratante)")
-        st.session_state.setdefault("aq_lm_frequencia", "1 visita semanal")
-
-        col_atualizar_aq, col_info_aq = st.columns([1, 3])
-        with col_atualizar_aq:
-            if st.button("🔄 Atualizar clientes", key="btn_atualizar_clientes_aq_lm"):
-                _clientes_aq_limpeza_contrato.clear()
-                st.session_state.pop("_aq_lm_clientes_ultimo_ok", None)
-                st.rerun()
-
-        _aq_lm_clientes = _clientes_aq_limpeza_contrato() or []
-        if _aq_lm_clientes:
-            st.session_state["_aq_lm_clientes_ultimo_ok"] = _aq_lm_clientes
-        else:
-            _aq_lm_clientes = st.session_state.get("_aq_lm_clientes_ultimo_ok", [])
-
-        _aq_lm_nomes = ["— selecione ou preencha manualmente —"] + [
-            c.get("nome", "") for c in _aq_lm_clientes if c.get("nome")
-        ]
-        _aq_lm_sel = st.selectbox(
-            "Carregar dados de cliente cadastrado",
-            _aq_lm_nomes,
-            key="aq_lm_cliente_sel"
-        )
-
-        if st.button("📂 Carregar dados do cliente", key="btn_aq_lm_carregar"):
-            _d = next((c for c in _aq_lm_clientes if c.get("nome") == _aq_lm_sel), {})
-            if _d:
-                st.session_state["aq_lm_nome"] = _d.get("nome", "")
-                st.session_state["aq_lm_cnpj"] = _d.get("cnpj", "")
-                st.session_state["aq_lm_endereco"] = _d.get("endereco", "")
-                st.session_state["aq_lm_representante"] = _d.get("contato", "")
-                st.session_state["aq_lm_telefone"] = _d.get("telefone", "")
-                _vols = []
-                if _d.get("vol_adulto"):
-                    _vols.append(f"Piscina adulto: {_d.get('vol_adulto')} m³")
-                if _d.get("vol_infantil"):
-                    _vols.append(f"Piscina infantil: {_d.get('vol_infantil')} m³")
-                if _d.get("vol_family"):
-                    _vols.append(f"Piscina family/spa: {_d.get('vol_family')} m³")
-                if _vols and not st.session_state.get("aq_lm_piscinas"):
-                    st.session_state["aq_lm_piscinas"] = " | ".join(_vols)
-                st.success(f"✅ Dados de '{_d.get('nome', '')}' carregados.")
-                st.rerun()
-            else:
-                st.warning("Selecione um cliente válido ou preencha manualmente.")
-
-        st.markdown("---")
-        st.markdown("**Dados do contratante**")
-        _aq_c1, _aq_c2 = st.columns(2)
-        with _aq_c1:
-            st.text_input("Nome / Razão social *", key="aq_lm_nome", placeholder="Ex.: Condomínio Residencial")
-            st.text_area("Endereço completo", key="aq_lm_endereco", height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
-        with _aq_c2:
-            st.text_input("CPF / CNPJ", key="aq_lm_cnpj", placeholder="00.000.000/0000-00")
-            st.text_input("Representante / síndico", key="aq_lm_representante", placeholder="Nome completo do responsável")
-            st.text_input("Telefone / WhatsApp", key="aq_lm_telefone", placeholder="(34) 99999-9999")
-
-        st.markdown("**Serviço contratado**")
-        st.text_area(
-            "Piscinas atendidas",
-            key="aq_lm_piscinas",
-            height=65,
-            placeholder="Ex.: Piscina adulto 150 m³, piscina infantil 30 m³, área externa descoberta"
-        )
-
-        _aq_s1, _aq_s2, _aq_s3 = st.columns(3)
-        with _aq_s1:
-            _aq_freq = st.selectbox(
-                "Frequência de visitas",
-                ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Diária", "Outra"],
-                key="aq_lm_frequencia"
-            )
-            if _aq_freq == "Outra":
-                st.text_input("Especificar frequência", key="aq_lm_freq_outro", placeholder="Ex.: quinzenal")
-        with _aq_s2:
-            st.radio(
-                "Produtos químicos",
-                ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
-                key="aq_lm_produtos"
-            )
-        with _aq_s3:
-            st.text_input("Prazo de vigência", key="aq_lm_prazo", placeholder="Ex.: 12 meses")
-
-        st.markdown("**Valores e pagamento**")
-        _aq_v1, _aq_v2, _aq_v3, _aq_v4 = st.columns(4)
-        with _aq_v1:
-            st.text_input("Valor mensal (R$) *", key="aq_lm_valor", placeholder="Ex.: 350,00")
-        with _aq_v2:
-            st.text_input("Valor por extenso", key="aq_lm_valor_extenso", placeholder="Ex.: trezentos e cinquenta reais")
-        with _aq_v3:
-            st.text_input("Dia de vencimento", key="aq_lm_vencimento", placeholder="Ex.: 10")
-        with _aq_v4:
-            st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_lm_pagamento")
-
-        st.markdown("**Datas**")
-        _aq_d1, _aq_d2, _aq_d3 = st.columns(3)
-        with _aq_d1:
-            st.text_input("Data de início", key="aq_lm_data_inicio", placeholder="dd/mm/aaaa")
-        with _aq_d2:
-            st.text_input("Data de término", key="aq_lm_data_fim", placeholder="dd/mm/aaaa ou Indeterminado")
-        with _aq_d3:
-            st.text_input("Local de assinatura", key="aq_lm_local", placeholder="Ex.: Uberlândia/MG")
-        st.text_input("Data de assinatura", key="aq_lm_data_ass", placeholder="dd/mm/aaaa")
-
-        if st.button("📄 Gerar Contrato Aqua Gestão — Limpeza/Manutenção", type="primary", use_container_width=True, key="btn_gerar_contrato_aq_lm"):
-            _freq_final = (st.session_state.get("aq_lm_freq_outro", "").strip() or st.session_state.get("aq_lm_frequencia", ""))
-            # v6: corrige detecção exata de produtos incluídos; "Não incluídos" contém a palavra incluídos e gerava cláusula errada — BUG-CONTRATO-AQUA
-            _produtos_aq_opcao = st.session_state.get("aq_lm_produtos", "")
-            _produtos_aq_incluidos = normalizar_texto_busca(_produtos_aq_opcao) == normalizar_texto_busca("Incluídos no valor")
-            _produtos_final = (
-                "Produtos químicos incluídos no valor mensal."
-                if _produtos_aq_incluidos
-                else "Produtos químicos não incluídos no valor mensal, ficando sob responsabilidade do contratante, salvo orçamento específico."
-            )
-            _dados_contrato_aq = {
-                "nome": st.session_state.get("aq_lm_nome", ""),
-                "cnpj": st.session_state.get("aq_lm_cnpj", ""),
-                "endereco": st.session_state.get("aq_lm_endereco", ""),
-                "representante": st.session_state.get("aq_lm_representante", ""),
-                "telefone": st.session_state.get("aq_lm_telefone", ""),
-                "piscinas": st.session_state.get("aq_lm_piscinas", ""),
-                "frequencia": _freq_final,
-                "produtos": _produtos_final,
-                "valor": st.session_state.get("aq_lm_valor", ""),
-                "valor_extenso": st.session_state.get("aq_lm_valor_extenso", ""),
-                "vencimento": st.session_state.get("aq_lm_vencimento", ""),
-                "pagamento": st.session_state.get("aq_lm_pagamento", "Pix"),
-                "prazo": st.session_state.get("aq_lm_prazo", ""),
-                "data_inicio": st.session_state.get("aq_lm_data_inicio", ""),
-                "data_fim": st.session_state.get("aq_lm_data_fim", "") or "Indeterminado",
-                "local_data": f"{st.session_state.get('aq_lm_local', 'Uberlândia/MG')}, {st.session_state.get('aq_lm_data_ass', hoje_br())}",
-            }
-            try:
-                with st.spinner("Gerando contrato Aqua Gestão..."):
-                    _pdf_aq_lm = gerar_contrato_limpeza_manutencao_aqua_pdf(_dados_contrato_aq)
-                st.success("✅ Contrato Aqua Gestão de limpeza/manutenção gerado com sucesso.")
-                with open(_pdf_aq_lm, "rb") as _f_pdf_aq_lm:
-                    st.download_button(
-                        "⬇️ Baixar Contrato PDF",
-                        data=_f_pdf_aq_lm.read(),
-                        file_name=_pdf_aq_lm.name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key=f"download_contrato_aq_lm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                    )
-            except Exception as e:
-                st.error(f"Erro ao gerar contrato Aqua Gestão: {e}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# =========================================
 # DOWNLOADS DOS ÚLTIMOS DOCUMENTOS GERADOS
 # =========================================
 # Exibe os downloads logo aqui, antes do relatório, independente de onde o botão foi clicado.
@@ -15947,14 +15846,44 @@ if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
 st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
-_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
+_freq_rel_col1, _freq_rel_col2, _freq_rel_col3 = st.columns([1, 1.45, 2.2])
 with _freq_rel_col1:
-    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
+    st.number_input(
+        "Verificações por semana",
+        min_value=1,
+        max_value=7,
+        value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3),
+        step=1,
+        key="rel_verificacoes_semanais",
+    )
 with _freq_rel_col2:
-    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
-if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
-    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+    st.multiselect(
+        "Dias das visitas",
+        options=list(DIAS_SEMANA_RELATORIO.keys()),
+        key="rel_dias_semana_visitas",
+        placeholder="Ex.: terça e quinta",
+        help="Ao escolher o mês/ano e os dias da semana, o sistema preenche automaticamente as datas das análises.",
+    )
+with _freq_rel_col3:
+    _linhas_freq = calcular_linhas_analises_por_frequencia(
+        st.session_state.get("rel_verificacoes_semanais", 3),
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
+    _datas_auto_rel = aplicar_datas_visitas_relatorio_auto()
+    if _datas_auto_rel:
+        st.caption(
+            f"Datas automáticas: {len(_datas_auto_rel)} visita(s) em "
+            f"{str(st.session_state.get('rel_mes_referencia') or '').zfill(2)}/"
+            f"{st.session_state.get('rel_ano_referencia')}. "
+            "As linhas abaixo já foram preenchidas conforme os dias selecionados."
+        )
+    else:
+        garantir_campos_analises(_linhas_freq)
+        st.caption(
+            f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana "
+            f"→ {_linhas_freq} linha(s). Se selecionar os dias da semana, as datas serão preenchidas automaticamente."
+        )
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -15970,7 +15899,8 @@ st.markdown("**Análises físico-químicas**")
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
 _linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
+# v6: mantém a quantidade já definida pela automação de dias ou pela frequência — BUG-REL-DATAS
+garantir_campos_analises(st.session_state.get("rel_analises_total", _linhas_minimas_rel) or _linhas_minimas_rel)
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
@@ -16455,6 +16385,7 @@ def gerar_contrato_bem_star_docx(
     local_data_assinatura: str,
     piscinas_atendidas: str = "",
     produtos_incluidos: str = "",
+    tipo_pessoa: str = "Pessoa jurídica",
 ) -> Path | None:
     """Gera contrato Bem Star usando template_bem_star.docx.
     Retorna o Path do arquivo gerado, ou None se o template estiver ausente."""
@@ -16468,6 +16399,8 @@ def gerar_contrato_bem_star_docx(
     placeholders = {
         "{{CNPJ_CONTRATADA}}": CNPJ_BEM_STAR,
         "{{ENDERECO_CONTRATADA}}": ENDERECO_BEM_STAR,
+        "{{TIPO_CONTRATANTE}}": tipo_pessoa,  # v6: expõe PF/PJ ao template Bem Star — BUG-PF-CONTRATO
+        "{{ROTULO_DOCUMENTO_CONTRATANTE}}": rotulo_documento_por_tipo(tipo_pessoa),
         "{{NOME_CONTRATANTE}}": nome_contratante,
         "{{CPF_CNPJ_CONTRATANTE}}": cpf_cnpj,
         "{{ENDERECO_CONTRATANTE}}": endereco_contratante,
@@ -16595,9 +16528,11 @@ def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
     nome_contratante = _valor("NOME_CONTRATANTE", "NOME_CONDOMINIO", padrao="Dado não informado")
     cpf_cnpj_contratante = _valor("CPF_CNPJ_CONTRATANTE", "CNPJ_CONDOMINIO", padrao="Dado não informado")
     endereco_contratante = _valor("ENDERECO_CONTRATANTE", "ENDERECO_CONDOMINIO", padrao="Dado não informado")
-    representante = _valor("REPRESENTANTE_CONTRATANTE", "NOME_SINDICO", padrao="Dado não informado")
-    cpf_sindico = _valor("CPF_SINDICO", padrao="Dado não informado")
-    qualificacao_representante = _valor("QUALIFICACAO_REPRESENTANTE", padrao="Síndico")
+    tipo_contratante = _valor("TIPO_CONTRATANTE", padrao="Pessoa jurídica")  # v6: ajusta qualificação PF/PJ no PDF — BUG-PF-CONTRATO
+    pessoa_fisica = str(tipo_contratante or "").lower().startswith("pessoa física")
+    representante = _valor("REPRESENTANTE_CONTRATANTE", "NOME_SINDICO", padrao=nome_contratante if pessoa_fisica else "Dado não informado")
+    cpf_sindico = _valor("CPF_SINDICO", padrao=cpf_cnpj_contratante if pessoa_fisica else "Dado não informado")
+    qualificacao_representante = _valor("QUALIFICACAO_REPRESENTANTE", padrao="Contratante pessoa física" if pessoa_fisica else "Síndico")
     valor_mensal = _valor("VALOR_MENSAL", padrao="Dado não informado")
     valor_mensal_extenso = _valor("VALOR_MENSAL_EXTENSO", padrao="")
     dia_pagamento = _valor("DIA_PAGAMENTO", padrao="Dado não informado")
@@ -16607,6 +16542,19 @@ def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
     data_fim = _valor("DATA_FIM_CONTRATO", "DATA_FIM", padrao="")
     local_data_assinatura = _valor("LOCAL_DATA_ASSINATURA", "DATA_ASSINATURA", padrao="Uberlândia/MG")
     volumes_piscinas = _valor("VOLUMES_PISCINAS", padrao="Dado não informado")
+
+    # v6: texto das partes muda quando o contrato for para pessoa física — BUG-PF-CONTRATO
+    if pessoa_fisica:
+        parte_contratante = (
+            f"{nome_contratante}, inscrito(a) no CPF sob nº {cpf_cnpj_contratante}, "
+            f"residente e domiciliado(a) em {endereco_contratante}, doravante denominada CONTRATANTE"
+        )
+    else:
+        parte_contratante = (
+            f"{nome_contratante}, inscrita no CNPJ sob nº {cpf_cnpj_contratante}, "
+            f"situada em {endereco_contratante}, representada por {representante}, CPF nº {cpf_sindico}, "
+            f"na qualidade de {qualificacao_representante}, doravante denominada CONTRATANTE"
+        )
 
     # Normalização visual de frequência para não repetir "(s)" de forma estranha.
     freq_txt = frequencia_visitas
@@ -16921,7 +16869,7 @@ def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
 
     clausula(
         "1. DAS PARTES",
-        f"Pelo presente instrumento particular, de um lado AQUA GESTÃO CONTROLE TÉCNICO LTDA, pessoa jurídica de direito privado inscrita no CNPJ sob nº 66.008.795/0001-92, com atuação técnica vinculada ao Responsável Técnico Thyago Fernando da Silveira, CRQ-MG 2ª Região, CRQ 024025748, doravante denominada CONTRATADA; e, de outro lado, {nome_contratante}, inscrita no CPF/CNPJ sob nº {cpf_cnpj_contratante}, situada em {endereco_contratante}, representada por {representante}, CPF nº {cpf_sindico}, na qualidade de {qualificacao_representante}, doravante denominada CONTRATANTE, resolvem celebrar o presente Contrato de Responsabilidade Técnica.",
+        f"Pelo presente instrumento particular, de um lado AQUA GESTÃO CONTROLE TÉCNICO LTDA, pessoa jurídica de direito privado inscrita no CNPJ sob nº 66.008.795/0001-92, com atuação técnica vinculada ao Responsável Técnico Thyago Fernando da Silveira, CRQ-MG 2ª Região, CRQ 024025748, doravante denominada CONTRATADA; e, de outro lado, {parte_contratante}, resolvem celebrar o presente Contrato de Responsabilidade Técnica.",
     )
 
     clausula(
@@ -17208,13 +17156,20 @@ def gerar_contrato_e_aditivo():
     para manter o contrato limpo para CRQ/ART e alinhado ao item 3.2.
     """
     email_cliente = st.session_state.email_cliente.strip()
+    tipo_contratante = (st.session_state.get("tipo_contratante") or "Pessoa jurídica").strip()  # v6: contrato Aqua Gestão PF/PJ — BUG-PF-CONTRATO
+    pessoa_fisica = tipo_contratante.lower().startswith("pessoa física")
+    nome_contratante_base = (st.session_state.get("nome_condominio") or "").strip()
+    doc_contratante_base = (st.session_state.get("cnpj_condominio") or "").strip()
+    representante_base = ((st.session_state.get("nome_sindico") or "").strip() or nome_contratante_base) if pessoa_fisica else (st.session_state.get("nome_sindico") or "").strip()
+    cpf_representante_base = ((st.session_state.get("cpf_sindico") or "").strip() or doc_contratante_base) if pessoa_fisica else (st.session_state.get("cpf_sindico") or "").strip()
     dados = {
+        "TIPO_CONTRATANTE": tipo_contratante,
         "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
-        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
-        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "NOME_CONDOMINIO": nome_contratante_base,
+        "CNPJ_CONDOMINIO": doc_contratante_base,
         "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
-        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
-        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "NOME_SINDICO": representante_base,
+        "CPF_SINDICO": cpf_representante_base,
         "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
         "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
         "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
@@ -17247,12 +17202,14 @@ def gerar_contrato_e_aditivo():
         placeholders = {
             "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
             "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
-            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
-            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{TIPO_CONTRATANTE}}": tipo_contratante,  # v6: informa PF/PJ ao contrato — BUG-PF-CONTRATO
+            "{{ROTULO_DOCUMENTO_CONTRATANTE}}": rotulo_documento_por_tipo(tipo_contratante),
+            "{{NOME_CONTRATANTE}}": nome_contratante_base,
+            "{{CPF_CNPJ_CONTRATANTE}}": doc_contratante_base,
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
-            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
-            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
-            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": representante_base,
+            "{{CPF_SINDICO}}": cpf_representante_base,
+            "{{QUALIFICACAO_REPRESENTANTE}}": ("Contratante pessoa física" if pessoa_fisica else (st.session_state.get("cargo_sindico") or "Síndico").strip()),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
             "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
             "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
@@ -17365,13 +17322,20 @@ def gerar_contrato_e_aditivo():
 
 def gerar_somente_aditivo_rapido():
     email_cliente = st.session_state.email_cliente.strip()
+    tipo_contratante = (st.session_state.get("tipo_contratante") or "Pessoa jurídica").strip()  # v6: contrato Aqua Gestão PF/PJ — BUG-PF-CONTRATO
+    pessoa_fisica = tipo_contratante.lower().startswith("pessoa física")
+    nome_contratante_base = (st.session_state.get("nome_condominio") or "").strip()
+    doc_contratante_base = (st.session_state.get("cnpj_condominio") or "").strip()
+    representante_base = ((st.session_state.get("nome_sindico") or "").strip() or nome_contratante_base) if pessoa_fisica else (st.session_state.get("nome_sindico") or "").strip()
+    cpf_representante_base = ((st.session_state.get("cpf_sindico") or "").strip() or doc_contratante_base) if pessoa_fisica else (st.session_state.get("cpf_sindico") or "").strip()
     dados = {
+        "TIPO_CONTRATANTE": tipo_contratante,
         "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
-        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
-        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "NOME_CONDOMINIO": nome_contratante_base,
+        "CNPJ_CONDOMINIO": doc_contratante_base,
         "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
-        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
-        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "NOME_SINDICO": representante_base,
+        "CPF_SINDICO": cpf_representante_base,
         "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
         "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
         "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
@@ -17405,12 +17369,14 @@ def gerar_somente_aditivo_rapido():
         placeholders = {
             "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
             "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
-            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
-            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{TIPO_CONTRATANTE}}": tipo_contratante,  # v6: informa PF/PJ ao contrato — BUG-PF-CONTRATO
+            "{{ROTULO_DOCUMENTO_CONTRATANTE}}": rotulo_documento_por_tipo(tipo_contratante),
+            "{{NOME_CONTRATANTE}}": nome_contratante_base,
+            "{{CPF_CNPJ_CONTRATANTE}}": doc_contratante_base,
             "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
-            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
-            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
-            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": representante_base,
+            "{{CPF_SINDICO}}": cpf_representante_base,
+            "{{QUALIFICACAO_REPRESENTANTE}}": ("Contratante pessoa física" if pessoa_fisica else (st.session_state.get("cargo_sindico") or "Síndico").strip()),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
             "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
             "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
