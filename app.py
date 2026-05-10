@@ -13827,7 +13827,29 @@ with col_btn4:
 
 # v6: contrato Aqua Gestão sem RT para PF/PJ — BUG-D
 def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
-    """Gera contrato Aqua Gestão sem RT/ART em PDF, para pessoa física ou jurídica."""
+#   3. Substitua TODA a função pelo bloco abaixo
+#   4. Localize o expander e adicione o campo "produtos_inclusos" (ver seção INTERFACE)
+#   5. Rode:  python -m py_compile app.py && python healthcheck.py
+#   6. Teste na porta 8501
+#   7. git add app.py && git commit -m "fix: contrato sem RT v2 — rescisao, reajuste, produtos, testemunhas"
+#   8. git push origin main
+# =============================================================================
+
+
+# =========================================
+# SEÇÃO 1 — FUNÇÃO PDF (substitui a existente)
+# =========================================
+
+def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
+    """Gera contrato Aqua Gestão sem RT/ART em PDF — v2.
+
+    Melhorias v2 (2026-05-10):
+    - [C1] Cláusula de rescisão com aviso prévio de 30 dias
+    - [C2] Declaração explícita sobre produtos químicos (incluso / não incluso)
+    - [C3] Reajuste anual pelo IPCA para contratos de vigência indeterminada
+    - [C4] Bloco de assinatura com 2 testemunhas
+    - [C5] Renumeração correta das cláusulas (1 a 11)
+    """
     import io as _io
     import html as _html
     from reportlab.lib import colors
@@ -13849,7 +13871,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     cep = _v("cep_contratante", "")
     telefone = _v("telefone_contratante", "não informado")
     responsavel = _v("responsavel_contratante", nome if tipo == "Pessoa física" else "Representante não informado")
-    servicos = _v("servicos", "Limpeza e manutenção de piscinas residenciais, com rotina operacional, conservação, orientação de tratamento e registros básicos, sem emissão de RT/ART.")  # v6: contrato sem RT ajustado para limpeza e manutenção residencial — BUG-D
+    servicos = _v("servicos", "Limpeza e manutenção de piscinas residenciais, com rotina operacional, conservação, orientação de tratamento e registros básicos, sem emissão de RT/ART.")
     piscinas = _v("piscinas", "Conforme informado pela CONTRATANTE")
     frequencia = _v("frequencia", "Conforme agenda acordada")
     valor = _v("valor_mensal", "não informado")
@@ -13859,6 +13881,18 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     inicio = _v("data_inicio", hoje_br())
     fim = _v("data_fim", "Indeterminado")
     local_data = _v("local_data_assinatura", f"Uberlândia/MG, {hoje_br()}")
+
+    # [C2] Produtos químicos — incluso ou por conta do contratante
+    produtos_raw = _v("produtos_inclusos", "nao_incluso")
+    if "incluso" in produtos_raw.lower() and "nao" not in produtos_raw.lower() and "não" not in produtos_raw.lower():
+        produtos_texto = (
+            "Os produtos químicos necessários à manutenção da água estão <b>inclusos no valor mensal</b> ajustado."
+        )
+    else:
+        produtos_texto = (
+            "Os produtos químicos necessários à manutenção da água são de <b>responsabilidade e custo da CONTRATANTE</b>, "
+            "salvo acordo expresso em proposta comercial vinculada."
+        )
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(
@@ -13873,21 +13907,21 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     )
 
     AZUL_ESCURO = colors.HexColor("#0D2A4A")
-    AZUL_MEDIO = colors.HexColor("#1565A8")
-    AZUL_CLARO = colors.HexColor("#EAF4FF")
-    CINZA = colors.HexColor("#2F3742")
+    AZUL_MEDIO  = colors.HexColor("#1565A8")
+    AZUL_CLARO  = colors.HexColor("#EAF4FF")
+    CINZA       = colors.HexColor("#2F3742")
     CINZA_CLARO = colors.HexColor("#F4F7FA")
-    BORDA = colors.HexColor("#D9E2EC")
-    DOURADO = colors.HexColor("#C8960C")
+    BORDA       = colors.HexColor("#D9E2EC")
+    DOURADO     = colors.HexColor("#C8960C")
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle("AquaTituloSemRT", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=15.5, leading=19, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=6))
-    styles.add(ParagraphStyle("AquaSubSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=8.8, leading=11.5, textColor=CINZA, alignment=TA_CENTER, spaceAfter=8))
-    styles.add(ParagraphStyle("AquaH2SemRT", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.2, leading=13, textColor=AZUL_ESCURO, spaceBefore=7, spaceAfter=4))
-    styles.add(ParagraphStyle("AquaBodySemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=8.8, leading=12.1, textColor=CINZA, alignment=TA_JUSTIFY, spaceAfter=5))
-    styles.add(ParagraphStyle("AquaSmallSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=10, textColor=CINZA, alignment=TA_LEFT))
-    styles.add(ParagraphStyle("AquaTableHeadSemRT", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=10, textColor=colors.white, alignment=TA_CENTER))
-    styles.add(ParagraphStyle("AquaTableSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=7.9, leading=10.2, textColor=CINZA, alignment=TA_LEFT))
+    styles.add(ParagraphStyle("AquaTituloSemRT",    parent=styles["Title"],   fontName="Helvetica-Bold", fontSize=15.5, leading=19,   textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=6))
+    styles.add(ParagraphStyle("AquaSubSemRT",       parent=styles["Normal"],  fontName="Helvetica",      fontSize=8.8,  leading=11.5, textColor=CINZA,       alignment=TA_CENTER, spaceAfter=8))
+    styles.add(ParagraphStyle("AquaH2SemRT",        parent=styles["Heading2"],fontName="Helvetica-Bold", fontSize=10.2, leading=13,   textColor=AZUL_ESCURO, spaceBefore=7, spaceAfter=4))
+    styles.add(ParagraphStyle("AquaBodySemRT",      parent=styles["Normal"],  fontName="Helvetica",      fontSize=8.8,  leading=12.1, textColor=CINZA,       alignment=TA_JUSTIFY, spaceAfter=5))
+    styles.add(ParagraphStyle("AquaSmallSemRT",     parent=styles["Normal"],  fontName="Helvetica",      fontSize=7.8,  leading=10,   textColor=CINZA,       alignment=TA_LEFT))
+    styles.add(ParagraphStyle("AquaTableHeadSemRT", parent=styles["Normal"],  fontName="Helvetica-Bold", fontSize=8.2,  leading=10,   textColor=colors.white,alignment=TA_CENTER))
+    styles.add(ParagraphStyle("AquaTableSemRT",     parent=styles["Normal"],  fontName="Helvetica",      fontSize=7.9,  leading=10.2, textColor=CINZA,       alignment=TA_LEFT))
 
     def _p(txt: str, style="AquaBodySemRT"):
         return Paragraph(_html.escape(str(txt or "")).replace("\n", "<br/>"), styles[style])
@@ -13914,7 +13948,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
         canvas.setFont("Helvetica-Bold", 8.8)
         canvas.drawRightString(w - 1.45 * cm, h - 0.62 * cm, "AQUA GESTÃO — CONTRATO SEM RT/ART")
         canvas.setFont("Helvetica", 7.1)
-        canvas.drawRightString(w - 1.45 * cm, h - 0.99 * cm, "Prestação de serviços de limpeza e manutenção de piscinas")  # v6: subtítulo do contrato sem RT ajustado ao escopo real — BUG-D
+        canvas.drawRightString(w - 1.45 * cm, h - 0.99 * cm, "Prestação de serviços de limpeza e manutenção de piscinas")
 
         canvas.setStrokeColor(BORDA)
         canvas.setLineWidth(0.35)
@@ -13927,14 +13961,20 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
 
     story = []
     story.append(Spacer(1, 2 * mm))
-    story.append(_raw("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>LIMPEZA E MANUTENÇÃO DE PISCINAS", "AquaTituloSemRT"))  # v6: título do contrato sem RT ajustado para limpeza/manutenção — BUG-D
-    story.append(_raw("Documento comercial Aqua Gestão para limpeza e manutenção residencial sem RT/ART mensal. Não substitui contrato de Responsabilidade Técnica.", "AquaSubSemRT"))  # v6: aviso de natureza do contrato sem RT — BUG-D
+    story.append(_raw("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>LIMPEZA E MANUTENÇÃO DE PISCINAS", "AquaTituloSemRT"))
+    story.append(_raw("Documento comercial Aqua Gestão para limpeza e manutenção residencial sem RT/ART mensal. Não substitui contrato de Responsabilidade Técnica.", "AquaSubSemRT"))
 
+    # Tabela de identificação
     linhas_id = [
         [_raw("CONTRATADA", "AquaTableHeadSemRT"), _raw("CONTRATANTE", "AquaTableHeadSemRT")],
         [
             _raw("<b>AQUA GESTÃO CONTROLE TÉCNICO LTDA</b><br/>CNPJ: 66.008.795/0001-92<br/>Endereço: R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG<br/>Responsável: Thyago Fernando da Silveira", "AquaTableSemRT"),
-            _raw(f"<b>{_html.escape(nome)}</b><br/>{doc_label}: {_html.escape(documento)}<br/>Endereço: {_html.escape(endereco)}" + (f"<br/>CEP: {_html.escape(cep)}" if cep else "") + f"<br/>Responsável: {_html.escape(responsavel)}<br/>Telefone: {_html.escape(telefone)}", "AquaTableSemRT"),
+            _raw(
+                f"<b>{_html.escape(nome)}</b><br/>{doc_label}: {_html.escape(documento)}<br/>Endereço: {_html.escape(endereco)}"
+                + (f"<br/>CEP: {_html.escape(cep)}" if cep else "")
+                + f"<br/>Responsável: {_html.escape(responsavel)}<br/>Telefone: {_html.escape(telefone)}",
+                "AquaTableSemRT",
+            ),
         ],
     ]
     tabela = Table(linhas_id, colWidths=[8.5 * cm, 8.5 * cm])
@@ -13943,51 +13983,66 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
         ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
         ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING",   (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
     ]))
     story.append(tabela)
     story.append(Spacer(1, 4 * mm))
 
     def h(t): story.append(_raw(t, "AquaH2SemRT"))
-    def p(t): story.append(_p(t, "AquaBodySemRT"))
+    def p(t): story.append(_raw(t, "AquaBodySemRT"))
+
+    # --- Cláusulas ---
 
     h("1. Objeto")
-    p(f"A CONTRATADA prestará à CONTRATANTE serviços de limpeza e manutenção de piscinas, incluindo: {servicos}")  # v6: objeto do contrato sem RT ajustado para limpeza/manutenção — BUG-D
-    p(f"Piscina(s)/local(is) atendido(s): {piscinas}")
+    p(f"A CONTRATADA prestará à CONTRATANTE serviços de limpeza e manutenção de piscinas, incluindo: {_html.escape(servicos)}")
+    p(f"Piscina(s)/local(is) atendido(s): {_html.escape(piscinas)}")
 
     h("2. Natureza do contrato — sem RT/ART")
     p("As partes declaram ciência de que este contrato não contempla emissão de ART, registro de Responsabilidade Técnica mensal, assunção de responsabilidade técnica perante o CRQ ou substituição de contrato específico de RT.")
     p("Quando houver necessidade legal, regulatória, sanitária, condominial ou documental de Responsabilidade Técnica formal, deverá ser celebrado instrumento próprio de RT, com escopo, valores e responsabilidades específicos.")
 
     h("3. Frequência e execução")
-    p(f"A frequência ajustada entre as partes é: {frequencia}. A execução dependerá de acesso ao local, disponibilidade operacional, condições mínimas de segurança e informações fornecidas pela CONTRATANTE.")
+    p(f"A frequência ajustada entre as partes é: {_html.escape(frequencia)}. A execução dependerá de acesso ao local, disponibilidade operacional, condições mínimas de segurança e informações fornecidas pela CONTRATANTE.")
 
     h("4. Obrigações da CONTRATANTE")
     p("A CONTRATANTE deverá permitir acesso ao local, informar ocorrências relevantes, manter condições mínimas de segurança, disponibilizar produtos/equipamentos quando não incluídos no serviço e executar as providências administrativas necessárias à rotina da piscina.")
-    p("Produtos químicos, peças, reparos, materiais, reagentes, equipamentos e serviços extraordinários somente estarão incluídos quando expressamente descritos neste contrato ou em proposta comercial vinculada.")
 
-    h("5. Valores e pagamento")
-    valor_com_extenso = f"R$ {valor}" + (f" ({valor_extenso})" if valor_extenso else "")
-    p(f"O valor mensal ajustado é de {valor_com_extenso}, com vencimento todo dia {vencimento}, mediante {forma_pagamento}.")
+    # [C2] Produtos químicos — explícito
+    h("5. Produtos químicos")
+    story.append(_raw(produtos_texto, "AquaBodySemRT"))
+    p("Peças, reparos, materiais, reagentes, equipamentos e serviços extraordinários somente estarão incluídos quando expressamente descritos neste contrato ou em proposta comercial vinculada.")
+
+    h("6. Valores e pagamento")
+    valor_com_extenso = f"R$ {valor}" + (f" ({_html.escape(valor_extenso)})" if valor_extenso else "")
+    p(f"O valor mensal ajustado é de {valor_com_extenso}, com vencimento todo dia {_html.escape(vencimento)}, mediante {_html.escape(forma_pagamento)}.")
     p("Atrasos, visitas extras, serviços não previstos, urgências, produtos ou deslocamentos adicionais poderão ser cobrados separadamente mediante comunicação prévia ou aceite da CONTRATANTE.")
 
-    h("6. Vigência")
-    p(f"O contrato inicia em {inicio} e encerra em {fim}, podendo ser renovado, rescindido ou ajustado por acordo entre as partes.")
+    # [C3] Reajuste anual
+    h("7. Reajuste")
+    p("Os valores ajustados neste contrato serão reajustados anualmente, no mês de aniversário do contrato, pelo IPCA/IBGE acumulado nos 12 meses anteriores ao reajuste, ou pelo índice que vier a substituí-lo oficialmente. Em caso de índice negativo no período, os valores permanecerão inalterados até o período seguinte.")
 
-    h("7. Limitação de responsabilidade")
+    h("8. Vigência")
+    p(f"O contrato inicia em {_html.escape(inicio)} e encerra em {_html.escape(fim)}, podendo ser renovado, rescindido ou ajustado por acordo entre as partes.")
+
+    # [C1] Rescisão com aviso prévio
+    h("9. Rescisão")
+    p("Este contrato poderá ser rescindido por mútuo acordo entre as partes; por qualquer das partes, mediante aviso prévio por escrito de 30 (trinta) dias; imediatamente, em caso de descumprimento contratual relevante não sanado em 15 dias após notificação formal; ou por inadimplência do CONTRATANTE superior a 30 dias. Permanecerão exigíveis os valores já vencidos e os serviços efetivamente prestados até a data da rescisão.")
+
+    h("10. Limitação de responsabilidade")
     p("A CONTRATADA não se responsabiliza por fatos decorrentes de uso inadequado da piscina, intervenções de terceiros, ausência de produtos/equipamentos, falhas estruturais, falta de energia, problemas hidráulicos, descumprimento de recomendações ou informações omitidas pela CONTRATANTE.")
     p("Este contrato é de prestação de serviços sem RT/ART, portanto não transfere à CONTRATADA a responsabilidade técnica integral pela operação, segurança, uso coletivo ou regularidade documental da piscina.")
 
-    h("8. Foro")
+    h("11. Foro")
     p("Fica eleito o foro da comarca de Uberlândia/MG para dirimir eventuais controvérsias, salvo disposição legal obrigatória em sentido diverso.")
 
+    # Bloco de assinatura
     story.append(Spacer(1, 6 * mm))
     story.append(HRFlowable(width="100%", thickness=0.45, color=BORDA))
     story.append(Spacer(1, 5 * mm))
-    story.append(_p(local_data, "AquaBodySemRT"))
+    story.append(_raw(_html.escape(local_data), "AquaBodySemRT"))
     story.append(Spacer(1, 13 * mm))
 
     ass = [[
@@ -13996,264 +14051,34 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     ]]
     t_ass = Table(ass, colWidths=[8.4 * cm, 8.4 * cm])
     t_ass.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
     ]))
     story.append(t_ass)
+
+    # [C4] Testemunhas
+    story.append(Spacer(1, 14 * mm))
+    story.append(_raw("Testemunhas:", "AquaSmallSemRT"))
+    story.append(Spacer(1, 10 * mm))
+    test = [[
+        _raw("_________________________________________<br/>1ª Testemunha<br/>Nome: ___________________________<br/>CPF: ____________________________", "AquaSmallSemRT"),
+        _raw("_________________________________________<br/>2ª Testemunha<br/>Nome: ___________________________<br/>CPF: ____________________________", "AquaSmallSemRT"),
+    ]]
+    t_test = Table(test, colWidths=[8.4 * cm, 8.4 * cm])
+    t_test.setStyle(TableStyle([
+        ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_test)
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
     pdf = buf.getvalue()
     buf.close()
     return pdf
-
-
-# v6: interface Aqua Gestão para contrato sem RT PF/PJ — BUG-D
-with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física ou jurídica", expanded=False):
-    st.caption("Gera contrato comercial da Aqua Gestão sem Responsabilidade Técnica mensal. Para RT/ART, use o botão 'Gerar contrato RT'.")
-
-    aq_sem_tipo = st.radio(
-        "Tipo de contratante",
-        ["Pessoa física", "Pessoa jurídica"],
-        horizontal=True,
-        key="aq_sem_rt_tipo_contratante",
-    )
-
-    aq_doc_label = "CPF" if aq_sem_tipo == "Pessoa física" else "CNPJ"
-    aq_doc_placeholder = "000.000.000-00" if aq_sem_tipo == "Pessoa física" else "00.000.000/0000-00"
-
-    # v6: máscaras automáticas CPF/CNPJ, telefone e CEP — BUG-D
-    def _formatar_cep_aq_sem(valor: str) -> str:
-        dig = re.sub(r"\D", "", str(valor or ""))[:8]
-        if len(dig) <= 5:
-            return dig
-        return f"{dig[:5]}-{dig[5:]}"
-
-    def _mask_aq_sem_documento():
-        valor = st.session_state.get("aq_sem_rt_documento", "")
-        if st.session_state.get("aq_sem_rt_tipo_contratante") == "Pessoa física":
-            st.session_state["aq_sem_rt_documento"] = formatar_cpf(valor)
-        else:
-            st.session_state["aq_sem_rt_documento"] = formatar_cnpj(valor)
-
-    def _mask_aq_sem_telefone():
-        st.session_state["aq_sem_rt_telefone"] = formatar_telefone(st.session_state.get("aq_sem_rt_telefone", ""))
-
-    def _mask_aq_sem_cep():
-        st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(st.session_state.get("aq_sem_rt_cep", ""))
-
-    if st.session_state.get("aq_sem_rt_documento"):
-        _mask_aq_sem_documento()
-    if st.session_state.get("aq_sem_rt_telefone"):
-        _mask_aq_sem_telefone()
-    if st.session_state.get("aq_sem_rt_cep"):
-        _mask_aq_sem_cep()
-
-    _aqs1, _aqs2 = st.columns(2)
-    with _aqs1:
-        aq_sem_nome = st.text_input(
-            "Nome completo / Razão social *",
-            key="aq_sem_rt_nome",
-            value=st.session_state.get("nome_condominio", ""),
-            placeholder="Nome do contratante",
-        )
-        _aq_cep_c1, _aq_cep_c2 = st.columns([3, 1])
-        with _aq_cep_c1:
-            aq_sem_cep = st.text_input(
-                "CEP",
-                key="aq_sem_rt_cep",
-                placeholder="00000-000",
-                on_change=_mask_aq_sem_cep,
-                help="Digite o CEP. Use a lupa para tentar preencher o endereço automaticamente.",
-            )
-        with _aq_cep_c2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _btn_aq_sem_cep = st.button("🔍", key="btn_buscar_cep_aq_sem_rt", help="Buscar CEP")
-        if _btn_aq_sem_cep:
-            _cep_limpo = re.sub(r"\D", "", st.session_state.get("aq_sem_rt_cep", ""))
-            if len(_cep_limpo) == 8:
-                with st.spinner("Buscando CEP..."):
-                    _dados_cep_aq = buscar_cep(_cep_limpo)
-                if _dados_cep_aq:
-                    st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(_cep_limpo)
-                    st.session_state["aq_sem_rt_endereco"] = ", ".join(
-                        p for p in [
-                            _dados_cep_aq.get("logradouro", ""),
-                            _dados_cep_aq.get("bairro", ""),
-                            f"{_dados_cep_aq.get('localidade', '')}/{_dados_cep_aq.get('uf', '')}",
-                        ] if p
-                    )
-                    st.rerun()
-                else:
-                    st.warning("CEP não encontrado.")
-            else:
-                st.warning("Digite um CEP válido com 8 dígitos.")
-
-        aq_sem_endereco = st.text_area(
-            "Endereço completo",
-            key="aq_sem_rt_endereco",
-            value=st.session_state.get("endereco_condominio", ""),
-            height=70,
-        )
-        aq_sem_piscinas = st.text_area(
-            "Piscinas/local atendido",
-            key="aq_sem_rt_piscinas",
-            value=st.session_state.get("volumes_piscinas", ""),
-            height=65,
-            placeholder="Ex.: Piscina residencial, adulto, infantil, spa, etc.",
-        )
-
-    with _aqs2:
-        _doc_padrao_aq_sem = st.session_state.get("cnpj_condominio", "")
-        if not st.session_state.get("aq_sem_rt_documento") and _doc_padrao_aq_sem:
-            st.session_state["aq_sem_rt_documento"] = formatar_cpf(_doc_padrao_aq_sem) if aq_sem_tipo == "Pessoa física" else formatar_cnpj(_doc_padrao_aq_sem)
-        aq_sem_doc = st.text_input(
-            f"{aq_doc_label} do contratante",
-            key="aq_sem_rt_documento",
-            placeholder=aq_doc_placeholder,
-            on_change=_mask_aq_sem_documento,
-        )
-        aq_sem_resp = st.text_input(
-            "Responsável / representante",
-            key="aq_sem_rt_responsavel",
-            value=(st.session_state.get("nome_sindico", "") if aq_sem_tipo == "Pessoa jurídica" else st.session_state.get("aq_sem_rt_nome", "")),
-        )
-        _tel_padrao_aq_sem = st.session_state.get("whatsapp_cliente", "") or st.session_state.get("telefone_cliente", "")
-        if not st.session_state.get("aq_sem_rt_telefone") and _tel_padrao_aq_sem:
-            st.session_state["aq_sem_rt_telefone"] = formatar_telefone(_tel_padrao_aq_sem)
-        aq_sem_tel = st.text_input(
-            "Telefone / WhatsApp",
-            key="aq_sem_rt_telefone",
-            placeholder="(00) 00000-0000",
-            on_change=_mask_aq_sem_telefone,
-        )
-
-    # v6: descrição automática de serviços por tipo de contratante — BUG-D
-    _aq_sem_servicos_pf = (
-        "Serviço residencial de limpeza e manutenção de piscina, incluindo aspiração, peneiração "
-        "e retirada de resíduos, escovação de bordas, paredes e fundo quando necessário, limpeza "
-        "de cestos, skimmer e pré-filtro quando aplicável, lavagem/retrolavagem do filtro quando "
-        "necessária, verificação visual da água e da casa de máquinas, medição e registro de "
-        "parâmetros quando contratado, aplicação de produtos químicos de rotina quando fornecidos "
-        "pelo contratante ou incluídos na proposta, recomendações de tratamento e orientação "
-        "operacional, sem emissão de RT/ART e sem assunção de Responsabilidade Técnica mensal."  # v6: descrição PF para limpeza e manutenção residencial — BUG-D
-    )
-    _aq_sem_servicos_pj = (
-        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de "
-        "tratamento, registro documental e apoio técnico sem emissão de RT/ART."
-    )
-    _aq_sem_servicos_antigos = {
-        "",
-        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de tratamento, registro documental e apoio técnico sem emissão de RT/ART.",
-        _aq_sem_servicos_pf,
-        _aq_sem_servicos_pj,
-    }
-    _aq_sem_tipo_prev = st.session_state.get("_aq_sem_rt_tipo_servicos_prev")
-    _aq_sem_default_servicos = _aq_sem_servicos_pf if aq_sem_tipo == "Pessoa física" else _aq_sem_servicos_pj
-    if _aq_sem_tipo_prev != aq_sem_tipo and st.session_state.get("aq_sem_rt_servicos", "") in _aq_sem_servicos_antigos:
-        st.session_state["aq_sem_rt_servicos"] = _aq_sem_default_servicos
-    st.session_state["_aq_sem_rt_tipo_servicos_prev"] = aq_sem_tipo
-    st.session_state.setdefault("aq_sem_rt_servicos", _aq_sem_default_servicos)
-
-    st.markdown("**Serviço sem RT/ART**")
-    aq_sem_servicos = st.text_area(
-        "Descrição dos serviços para pessoa física" if aq_sem_tipo == "Pessoa física" else "Descrição dos serviços para pessoa jurídica",
-        key="aq_sem_rt_servicos",
-        height=100,
-        help="Campo editável. Para pessoa física, o texto padrão fica direcionado à limpeza e manutenção de piscina residencial sem RT/ART.",  # v6: ajuda ajustada ao escopo de limpeza/manutenção — BUG-D
-    )
-
-    _aqv1, _aqv2, _aqv3, _aqv4 = st.columns(4)
-    with _aqv1:
-        aq_sem_freq = st.text_input("Frequência", key="aq_sem_rt_frequencia", value="Conforme agenda acordada")
-    with _aqv2:
-        aq_sem_valor = st.text_input("Valor mensal (R$) *", key="aq_sem_rt_valor", placeholder="Ex.: 350,00")
-    with _aqv3:
-        aq_sem_venc = st.text_input("Dia de vencimento", key="aq_sem_rt_vencimento", value="10")
-    with _aqv4:
-        aq_sem_pagamento = st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_sem_rt_pagamento")
-
-    _aqd1, _aqd2, _aqd3 = st.columns(3)
-    with _aqd1:
-        aq_sem_inicio = st.text_input("Data de início", key="aq_sem_rt_inicio", value=st.session_state.get("data_inicio", hoje_br()))
-    with _aqd2:
-        aq_sem_fim = st.text_input("Data de término", key="aq_sem_rt_fim", value="Indeterminado")
-    with _aqd3:
-        aq_sem_ass = st.text_input("Data de assinatura", key="aq_sem_rt_assinatura", value=hoje_br())
-
-    aq_sem_valor_extenso = st.text_input("Valor por extenso", key="aq_sem_rt_valor_extenso", placeholder="Ex.: trezentos e cinquenta reais")
-
-    if st.button("📄 Gerar contrato Aqua Gestão sem RT", type="primary", use_container_width=True, key="btn_aq_sem_rt_gerar"):
-        if not str(aq_sem_nome or "").strip():
-            st.error("Informe o nome do contratante.")
-        elif not str(aq_sem_valor or "").strip():
-            st.error("Informe o valor mensal.")
-        else:
-            try:
-                _dados_aq_sem = {
-                    "tipo_contratante": aq_sem_tipo,
-                    "nome_contratante": aq_sem_nome,
-                    "documento_contratante": aq_sem_doc,
-                    "endereco_contratante": aq_sem_endereco,
-                    "cep_contratante": aq_sem_cep,
-                    "responsavel_contratante": aq_sem_resp or aq_sem_nome,
-                    "telefone_contratante": aq_sem_tel,
-                    "piscinas": aq_sem_piscinas,
-                    "servicos": aq_sem_servicos,
-                    "frequencia": aq_sem_freq,
-                    "valor_mensal": valor_para_template(aq_sem_valor),
-                    "valor_extenso": aq_sem_valor_extenso,
-                    "dia_pagamento": aq_sem_venc,
-                    "forma_pagamento": aq_sem_pagamento,
-                    "data_inicio": aq_sem_inicio,
-                    "data_fim": aq_sem_fim,
-                    "local_data_assinatura": f"Uberlândia/MG, {aq_sem_ass}",
-                }
-                _pdf_aq_sem = gerar_contrato_aqua_sem_rt_pdf(_dados_aq_sem)
-                _nome_pasta_aq_sem = slugify_nome(aq_sem_nome)
-                _pasta_aq_sem = GENERATED_DIR / _nome_pasta_aq_sem
-                _pasta_aq_sem.mkdir(parents=True, exist_ok=True)
-                _ts_aq_sem = datetime.now().strftime("%Y%m%d_%H%M%S")
-                _nome_arq_aq_sem = limpar_nome_arquivo(f"Contrato_Aqua_Gestao_Sem_RT_{aq_sem_nome}_{_ts_aq_sem}.pdf")
-                _saida_aq_sem = _pasta_aq_sem / _nome_arq_aq_sem
-                _saida_aq_sem.write_bytes(_pdf_aq_sem)
-
-                try:
-                    registrar_documento_manifest(
-                        pasta_condominio=_pasta_aq_sem,
-                        nome_condominio=aq_sem_nome,
-                        tipo="Contrato sem RT — Aqua Gestão",
-                        arquivo_docx=None,
-                        arquivo_pdf=_saida_aq_sem,
-                        pdf_gerado=True,
-                        erro_pdf=None,
-                        dados_utilizados=_dados_aq_sem,
-                        extras={"sem_rt": True, "tipo_contratante": aq_sem_tipo},
-                    )
-                except Exception:
-                    pass
-
-                st.session_state.ultima_pasta_gerada = str(_pasta_aq_sem)
-                st.success("✅ Contrato Aqua Gestão sem RT gerado com sucesso.")
-                st.download_button(
-                    "⬇️ Baixar contrato PDF",
-                    data=_pdf_aq_sem,
-                    file_name=_saida_aq_sem.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                    key=f"dl_aq_sem_rt_{_ts_aq_sem}",
-                )
-            except Exception as _e_aq_sem:
-                st.error(f"Erro ao gerar contrato Aqua Gestão sem RT: {_e_aq_sem}")
-
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# =========================================
-# POPs ADAPTATIVOS — RT / ROTINA OPERACIONAL
-# =========================================
 
 def _dados_pops_rt_do_formulario() -> dict:
     """Coleta dados atuais do formulário para gerar o Caderno de POPs."""
