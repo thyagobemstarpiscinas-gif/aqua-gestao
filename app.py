@@ -9188,4 +9188,8428 @@ if st.session_state.get("modo_atual", "entrada") == "escritorio":
             st.markdown(
                 f"""
                 <div class="top-card">
-                    <d
+                    <div class="top-title">{APP_TITLE}</div>
+                    <div class="top-subtitle">
+                        Responsabilidade Técnica, controle documental, relatórios, POPs e ART
+                    </div>
+                    <div>
+                        <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
+                        <span class="info-badge">{CRQ}</span>
+                        <span class="info-badge">Windows + Word + DOCX/PDF</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+# =========================================
+# SIDEBAR – CONFIG + HISTÓRICO
+# =========================================
+
+with st.sidebar:
+    if st.session_state.get("modo_atual", "entrada") == "escritorio":
+        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — INÍCIO ===
+        # _SIDEBAR_EMPRESA_FIXA_PELO_LOGIN_V1_
+        st.markdown("### Painel administrativo")
+
+        _empresa_atual_admin = st.session_state.get("empresa_ativa", "aqua_gestao")
+        if _empresa_atual_admin not in ("aqua_gestao", "bem_star"):
+            _empresa_atual_admin = "aqua_gestao"
+            st.session_state["empresa_ativa"] = _empresa_atual_admin
+
+        _nome_painel_admin = "Bem Star Piscinas" if _empresa_atual_admin == "bem_star" else "Aqua Gestão"
+        _icone_painel_admin = "⭐" if _empresa_atual_admin == "bem_star" else "🔵"
+
+        st.info(f"{_icone_painel_admin} Empresa logada: **{_nome_painel_admin}**")
+
+        if st.button("🚪 Sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
+            _admin_sair_para_entrada(abrir_login=True)
+            st.rerun()
+
+        st.caption(f"Painel ativo: {_nome_painel_admin}")
+        st.divider()
+        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — FIM ===
+
+    if st.session_state.get("modo_atual", "entrada") != "operador":
+        st.header("Histórico recente")
+
+    st.number_input(
+        "Lembrete de vencimento (dias)",
+        min_value=1,
+        max_value=180,
+        step=1,
+        key="alerta_vencimento_dias",
+    )
+
+    st.text_input(
+        "Filtrar condomínio",
+        key="filtro_historico",
+        placeholder="Digite parte do nome...",
+    )
+
+    # v4 — no painel Bem Star, o histórico local completo fica sob demanda.
+    # Evita varredura pesada de GENERATED_DIR antes dos módulos Bem Star aparecerem.
+    _carregar_historico_sidebar = True
+    if st.session_state.get("empresa_ativa") == "bem_star":
+        _carregar_historico_sidebar = st.checkbox(
+            "Carregar histórico local",
+            value=False,
+            key="sidebar_carregar_historico_bemstar",
+            help="Carrega pastas/arquivos locais somente quando necessário.",
+        )
+
+    historico = listar_historico() if _carregar_historico_sidebar else []
+    filtro = st.session_state.filtro_historico.strip().lower()
+
+    if filtro:
+        historico = [h for h in historico if filtro in h["nome"].lower()]
+
+    if not historico:
+        st.caption("Histórico local não carregado." if not _carregar_historico_sidebar else "Nenhum histórico encontrado.")
+    else:
+        for item in historico:
+            nome_cond = item["nome"]
+            pasta = item["pasta"]
+            arquivos = item["arquivos"]
+            folder_key = chave_segura(str(pasta))
+            status = status_vencimento(item["data_fim"], st.session_state.alerta_vencimento_dias)
+
+            titulo = f"{nome_cond} ({item['total_arquivos']})"
+
+            with st.expander(titulo, expanded=False):
+                st.caption(str(pasta))
+                st.markdown(
+                    f"<span class='status-badge {status['css']}'>{status['rotulo']}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(status["mensagem"])
+
+                col_h1, col_h2 = st.columns(2)
+                with col_h1:
+                    if st.button(
+                        "Carregar dados",
+                        key=f"carregar_dados_{folder_key}",
+                        use_container_width=True,
+                    ):
+                        dados_salvos = carregar_dados_condominio(pasta)
+                        if dados_salvos:
+                            aplicar_dados_no_formulario(dados_salvos)
+                            st.success("Dados carregados no formulário.")
+                            st.rerun()
+                        else:
+                            st.warning("Nenhum cadastro salvo encontrado para este condomínio.")
+
+                with col_h2:
+                    if st.button(
+                        "Abrir pasta",
+                        key=f"abrir_pasta_{folder_key}",
+                        use_container_width=True,
+                    ):
+                        abrir_pasta_windows(pasta)
+
+                if st.session_state.confirm_delete_folder == folder_key:
+                    if st.button(
+                        "Confirmar pasta",
+                        key=f"confirmar_del_pasta_{folder_key}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        try:
+                            deletar_pasta_condominio(pasta)
+                            st.session_state.confirm_delete_folder = ""
+                            st.success(f"Pasta de '{nome_cond}' excluída.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao excluir pasta: {e}")
+                else:
+                    if st.button(
+                        "Excluir pasta",
+                        key=f"pedir_del_pasta_{folder_key}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.confirm_delete_folder = folder_key
+                        st.rerun()
+
+                if st.session_state.confirm_delete_folder == folder_key:
+                    st.markdown(
+                        "<div class='confirm-box'><strong>Confirma excluir toda a pasta deste condomínio?</strong></div>",
+                        unsafe_allow_html=True,
+                    )
+                    if st.button(
+                        "Cancelar exclusão da pasta",
+                        key=f"cancelar_del_pasta_{folder_key}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.confirm_delete_folder = ""
+                        st.rerun()
+
+                st.markdown("**Arquivos:**")
+                if not arquivos:
+                    st.caption("Sem arquivos.")
+                else:
+                    for arq in arquivos:
+                        caminho = arq["path"]
+                        nome = arq["name"]
+                        tipo_doc = arq["tipo_doc"]
+                        tipo_ext = arq["tipo_ext"]
+                        modificado = arq["modificado_em"]
+
+                        file_key = chave_segura(str(caminho))
+
+                        st.markdown(
+                            f"**{tipo_doc} • {tipo_ext}**\n\n"
+                            f"<div class='history-meta'>{nome}</div>"
+                            f"<div class='history-meta'>Atualizado em: {modificado}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                        col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
+
+                        with col_a1:
+                            if st.button(
+                                "Abrir arquivo",
+                                key=f"abrir_arq_{file_key}",
+                                use_container_width=True,
+                            ):
+                                abrir_arquivo_windows(caminho)
+
+                        with col_a2:
+                            if st.button(
+                                "Abrir pasta",
+                                key=f"abrir_pasta_arq_{file_key}",
+                                use_container_width=True,
+                            ):
+                                abrir_pasta_windows(caminho.parent)
+
+                        with col_a3:
+                            if st.session_state.confirm_delete_file == file_key:
+                                if st.button(
+                                    "OK",
+                                    key=f"confirmar_del_arq_{file_key}",
+                                    type="primary",
+                                    use_container_width=True,
+                                ):
+                                    try:
+                                        deletar_arquivo_individual(caminho)
+                                        st.session_state.confirm_delete_file = ""
+                                        st.success(f"Arquivo excluído: {nome}")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro ao excluir arquivo: {e}")
+                            else:
+                                if st.button(
+                                    "🗑️",
+                                    key=f"pedir_del_arq_{file_key}",
+                                    help="Excluir somente este arquivo",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state.confirm_delete_file = file_key
+                                    st.rerun()
+
+                        if st.session_state.confirm_delete_file == file_key:
+                            st.markdown(
+                                "<div class='confirm-box'>Excluir este arquivo?</div>",
+                                unsafe_allow_html=True,
+                            )
+                            if st.button(
+                                "Cancelar",
+                                key=f"cancelar_del_arq_{file_key}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.confirm_delete_file = ""
+                                st.rerun()
+
+                        st.markdown("---")
+
+# =========================================
+# MODO DE OPERAÇÃO — TELA DE ENTRADA
+# =========================================
+
+# PIN padrão — altere aqui para trocar o PIN do operador
+PIN_OPERADOR = "2940"
+
+# =========================================
+# v5 — BLINDAGEM DO SESSION STATE DO OPERADOR
+# Estas chaves são inicializadas uma única vez e NUNCA apagadas em reruns normais.
+# Isso impede que o operador perca sessão durante digitação de parâmetros.
+# =========================================
+st.session_state.setdefault("modo_atual", "entrada")
+st.session_state.setdefault("op_pin_ok", False)
+st.session_state.setdefault("op_dados_atual", {})
+st.session_state.setdefault("op_limpar_campos", False)
+st.session_state.setdefault("op_salvo_sucesso", None)
+st.session_state.setdefault("_op_ultimo_lancamento", None)
+
+# Inicializa o modo se não estiver definido (mantido para compatibilidade)
+if "modo_atual" not in st.session_state:
+    st.session_state["modo_atual"] = "entrada"
+
+# GUARD DUPLO v5: protege o modo operador.
+# O guard só redireciona para escritório se o operador NÃO estiver logado.
+# Antes, esse guard derrubava o operador durante preenchimento caso admin_logado
+# estivesse definido em memória de sessão anterior.
+if (st.session_state.get("admin_logado")
+        and st.session_state.get("modo_atual") != "escritorio"
+        and st.session_state.get("modo_atual") != "operador"):
+    st.session_state["modo_atual"] = "escritorio"
+    _empresa_fix = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
+    if _empresa_fix not in ("aqua_gestao", "bem_star"):
+        _empresa_fix = "aqua_gestao"
+    st.session_state["empresa_ativa"] = _empresa_fix
+    st.session_state["admin_empresa_fixa"] = _empresa_fix
+
+# Inicializa e preserva a empresa ativa entre reruns.
+# Isso evita o Modo Campo voltar para Aqua Gestão quando o operador escolheu Bem Star.
+if "empresa_ativa" not in st.session_state or st.session_state.get("empresa_ativa") not in ("aqua_gestao", "bem_star"):
+    st.session_state["empresa_ativa"] = "aqua_gestao"
+
+if "empresa_selecionada_admin" not in st.session_state:
+    st.session_state["empresa_selecionada_admin"] = (
+        "⭐ Bem Star Piscinas" if st.session_state.get("empresa_ativa") == "bem_star" else "🔵 Aqua Gestão"
+    )
+
+# Compatibilidade com seletor antigo (Modo Campo ainda usa st.radio internamente)
+_modo_interno = st.session_state.get("modo_atual", "entrada")
+
+# ---- TELA DE ENTRADA ----
+if _modo_interno == "entrada":
+    st.markdown("""
+    <style>
+    .entrada-card {
+        border: 1px solid rgba(20,85,160,0.12);
+        border-radius: 20px;
+        padding: 18px 22px 16px 22px;
+        background: linear-gradient(135deg, #ffffff 0%, #f7fbff 100%);
+        box-shadow: 0 6px 20px rgba(10,50,100,0.06);
+        margin: 4px 0 10px 0;
+        text-align: left;
+    }
+    .entrada-eyebrow { font-size: 0.76rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6f86a2; margin-bottom: 4px; }
+    .entrada-title { font-size: 1.28rem; font-weight: 700; color: #0d3d75; margin-bottom: 4px; }
+    .entrada-sub { font-size: 0.90rem; color: #5d7288; margin-bottom: 14px; line-height: 1.4; }
+    .entrada-admin-note { font-size: 0.76rem; color: #8ea0b5; margin-top: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    col_e1, col_e2, col_e3 = st.columns([1.2, 1.6, 1.2])
+    with col_e2:
+        st.markdown('<div class="entrada-eyebrow"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="entrada-title">Acesso do Operador</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="entrada-sub">Entre com seu PIN para acessar os condomínios liberados.<br>'
+            'O sistema identifica automaticamente os clientes vinculados.</div>',
+            unsafe_allow_html=True
+        )
+
+        # Modo Operador: empresa não é escolhida na entrada.
+        # O PIN define automaticamente os condomínios liberados ao operador,
+        # incluindo clientes Aqua Gestão, Bem Star Piscinas ou Ambas.
+        st.caption("O PIN direciona automaticamente para os condomínios vinculados ao operador.")
+
+        if st.button("📱 Acessar como Operador", type="primary", use_container_width=True):
+            # Operador entra por PIN; empresa não é escolhida pelo operador.
+            st.session_state["modo_atual"] = "operador"
+            st.session_state["mostrar_pin_admin"] = False
+            st.session_state["op_pin_ok"] = False
+            st.rerun()
+
+        if st.button("🔐 Acesso administrativo", use_container_width=True, key="btn_admin_limpo"):
+            st.session_state["mostrar_pin_admin"] = not st.session_state.get("mostrar_pin_admin", False)
+
+        st.markdown('<div class="entrada-admin-note">Uso interno do escritório</div>', unsafe_allow_html=True)
+
+        if st.session_state.get("mostrar_pin_admin"):
+            # _LOGIN_ADMIN_EMPRESA_DEFINITIVO_V3_
+            # Empresa é definida apenas no login administrativo. A sidebar não alterna mais empresa.
+            _admin_render_login_empresa()
+
+
+    st.stop()
+
+
+# CSS dinâmico: separa visualmente os módulos por empresa ativa.
+# Aqua Gestão vê somente RT/controle técnico; Bem Star vê somente limpeza/manutenção.
+_empresa_css_flag = st.session_state.get("empresa_ativa", "aqua_gestao")
+if _empresa_css_flag == "bem_star":
+    st.markdown("""
+    <style>
+    div.aq-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+    div.bs-only { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Alias para compatibilidade
+modo = "Modo Escritório" if _modo_interno == "escritorio" else (
+    "📱 Modo Operador (Campo / Celular)" if _modo_interno == "operador" else "Modo Escritório"
+)
+
+# Botão de saída controlada. No admin, só sai quando clicar explicitamente em sair.
+if _modo_interno in ("escritorio", "operador"):
+    if _modo_interno == "escritorio":
+        if st.button("🚪 Sair do admin", key="btn_voltar_inicio"):
+            _admin_sair_para_entrada(abrir_login=True)
+            st.rerun()
+    else:
+        if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+            st.session_state["modo_atual"] = "entrada"
+            st.session_state["op_pin_ok"] = False
+            st.session_state.pop("op_dados_atual", None)
+            st.rerun()
+
+# =========================================
+# MODO OPERADOR — LANÇAMENTO DE CAMPO
+# =========================================
+
+if modo == "📱 Modo Operador (Campo / Celular)":
+
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] { display: none !important; }
+    .main .block-container { padding: 0.35rem 0.7rem 1.2rem !important; max-width: 100% !important; }
+    .op-card {
+        border: 1px solid rgba(20,85,160,0.18);
+        border-radius: 16px;
+        padding: 12px 14px;
+        background: #ffffff;
+        margin-bottom: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .op-title { font-size: 1.02rem; font-weight: 700; color: #0d3d75; margin-bottom: 2px; line-height: 1.2; }
+    /* Campo oculto para captura de assinatura via canvas HTML */
+    div[data-testid="stTextInput"]:has(input[aria-label="assinatura_b64_hidden"]) { display: none !important; }
+    .op-sub { font-size: 0.78rem; color: #5d7288; margin-bottom: 6px; }
+    .op-salvo {
+        border: 1px solid rgba(30,140,70,0.3);
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: rgba(30,140,70,0.08);
+        color: #1a6e3a;
+        font-size: 0.95rem;
+        margin-top: 8px;
+    }
+    .stTextInput input, .stTextArea textarea {
+        font-size: 1rem !important;
+        min-height: 42px !important;
+        border-radius: 10px !important;
+    }
+    .stButton > button {
+        min-height: 46px !important;
+        font-size: 0.98rem !important;
+        border-radius: 12px !important;
+    }
+    .stTextInput label, .stSelectbox label, .stTextArea label {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #1a3a5c !important;
+    }
+    .element-container { margin-bottom: 4px !important; }
+    [data-testid="stExpander"] { border-radius: 12px !important; }
+    [data-testid="stExpander"] details summary p { font-size: 0.96rem !important; font-weight: 600 !important; }
+    .op-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#edf5ff; border:1px solid #d3e6ff; color:#134b8a; font-size:0.78rem; margin: 2px 6px 6px 0; }
+    .op-note-compact { font-size:0.86rem; color:#4f657c; margin: 2px 0 8px 0; }
+    
+    .pin-box {
+        padding: 20px 0;
+        text-align: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ---- TELA DE PIN ----
+    if not st.session_state.get("op_pin_ok"):
+        st.markdown('<div class="pin-box">', unsafe_allow_html=True)
+        st.markdown("### 🔐 Área do Operador")
+        st.markdown("**Acesso simplificado por PIN**")
+        st.markdown("Digite o PIN para acessar o lançamento de campo dos condomínios autorizados.")
+        pin_digitado = st.text_input("PIN", type="password", key="op_pin_input",
+            placeholder="Digite o PIN", label_visibility="collapsed", max_chars=20)
+        if st.button("Entrar", type="primary", use_container_width=True):
+            op_dados = validar_pin_operador(pin_digitado.strip())
+            if op_dados:
+                st.session_state["op_pin_ok"] = True
+                st.session_state["op_dados_atual"] = op_dados
+                st.rerun()
+            else:
+                st.error("PIN incorreto. Tente novamente.")
+        st.stop()
+
+    # Dados do operador logado
+    _op_atual = st.session_state.get("op_dados_atual", {"nome": "Operador", "acesso_total": True, "condomínios": []})
+    _op_nome_logado = _op_atual.get("nome", "Operador")
+    _op_acesso_total = _op_atual.get("acesso_total", False)
+    _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
+
+    if st.button("🔒 Sair / Trocar operador", use_container_width=False):
+        st.session_state["op_pin_ok"] = False
+        st.session_state.pop("op_dados_atual", None)
+        st.session_state.pop("op_sel_cond", None)
+        st.rerun()
+
+    # v5: diagnóstico discreto da sessão — ajuda a confirmar se a sessão continua viva
+    with st.expander("🔧 Diagnóstico da sessão (operador)", expanded=False):
+        st.write({
+            "modo_atual": st.session_state.get("modo_atual"),
+            "op_pin_ok": st.session_state.get("op_pin_ok"),
+            "operador": _op_nome_logado if "_op_nome_logado" in dir() else "—",
+            "condominio": st.session_state.get("op_sel_cond", "—"),
+            "tem_rascunho_local": bool(st.session_state.get("_rascunho_operador_pendente")),
+            "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
+        })
+
+    # v4 — operador não escolhe empresa.
+    # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
+    # condomínios vinculados ao operador, sejam Aqua Gestão, Bem Star ou ambos.
+    _empresa_op_codigo = "operador_multibase"
+    _empresa_op_nome = "Aqua Gestão / Bem Star"
+    _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
+
+    st.markdown('<div class="op-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
+    st.markdown('<span class="op-chip">Condomínios permitidos por PIN</span><span class="op-chip">Aqua/Bem Star conforme vínculo do cliente</span>', unsafe_allow_html=True)
+
+    _salvo = st.session_state.pop("op_salvo_sucesso", None)
+    if _salvo:
+        st.markdown(f"""
+        <div class="op-salvo">
+            ✅ <strong>Lançamento salvo!</strong><br>
+            Condomínio: {_salvo['nome']}<br>
+            Data: {_salvo['data']}<br>
+            Operador: {_salvo['operador']}<br>
+            Total este mês: {_salvo['total']}
+        </div>
+        """, unsafe_allow_html=True)
+        # Botão de relatório do lançamento recém salvo
+        _ult_lanc = st.session_state.get("_op_ultimo_lancamento")
+        if _ult_lanc:
+            nome_arq = limpar_nome_arquivo(f"Relatorio_Visita_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
+            with st.spinner("Gerando PDF..."):
+                try:
+                    pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
+                    st.download_button(
+                        "📄 Baixar PDF desta visita",
+                        data=pdf_bytes,
+                        file_name=f"{nome_arq}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_dl_relatorio_visita",
+                    )
+                    st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                    # Botao PDF Bem Star Premium
+                    if st.session_state.get("empresa_ativa") == "bem_star":
+                        try:
+                            pdf_bs = gerar_pdf_relatorio_visita_bem_star(_ult_lanc, _salvo["nome"])
+                            nome_bs = limpar_nome_arquivo(f"Relatorio_BemStar_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
+                            st.download_button(
+                                "⭐ Baixar PDF Bem Star (com capa premium)",
+                                data=pdf_bs,
+                                file_name=f"{nome_bs}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                                key="btn_dl_relatorio_visita_bs",
+                            )
+                        except Exception as _ebs:
+                            st.warning(f"PDF Bem Star nao gerado: {_ebs}")
+                except Exception as _e:
+                    import traceback
+                    _erro_pdf = str(_e)
+                    if "reportlab" in _erro_pdf.lower():
+                        st.error("Dependência ausente para gerar PDF: reportlab. Instale no ambiente e gere novamente.")
+                    st.warning(f"PDF não gerado: {_e}. Baixando versão HTML como alternativa.")
+                    st.code(traceback.format_exc(), language="text")
+                    html_rel = gerar_html_relatorio_visita(_ult_lanc, _salvo["nome"])
+                    st.download_button(
+                        "📄 Baixar relatório (HTML)",
+                        data=html_rel.encode("utf-8"),
+                        file_name=f"{nome_arq}.html",
+                        mime="text/html",
+                        use_container_width=True,
+                        key="btn_dl_relatorio_visita_html",
+                    )
+
+    # Busca TODOS os clientes no modo operador; o filtro é por PIN/condomínio, não por empresa.
+    @st.cache_data(ttl=60)
+    def _buscar_clientes_sheets_completo():
+        return sheets_listar_clientes_completo()
+
+    # v5: restauração protegida — falha não derruba o app
+    try:
+        if aplicar_restauracao_pendente_operador():
+            st.rerun()
+    except Exception as _e_rest:
+        st.warning(f"Aviso ao restaurar rascunho: {_e_rest}")
+
+    if st.session_state.pop("_rascunho_operador_restaurado_msg", False):
+        st.success("✅ Rascunho restaurado! Continue de onde parou.")
+
+    _clientes_todos_op_raw = _buscar_clientes_sheets_completo()
+
+    # v4 — modo operador multibase: não filtra por empresa administrativa.
+    # O acesso é determinado pelo PIN e pelos vínculos do cliente.
+    if _empresa_op_codigo == "operador_multibase":
+        _clientes_todos_op = list(_clientes_todos_op_raw or [])
+    else:
+        _clientes_todos_op = filtrar_clientes_por_empresa(_clientes_todos_op_raw, _empresa_op_codigo)
+    clientes_mapa_op = {c["nome"]: c for c in _clientes_todos_op if c.get("nome")}
+
+    # Combina clientes do Sheets com os locais, respeitando a empresa ativa
+    pastas_disponiveis = sorted([
+        p for p in GENERATED_DIR.iterdir() if p.is_dir()
+    ], key=lambda p: p.name) if GENERATED_DIR.exists() else []
+
+    for p in pastas_disponiveis:
+        dados_c = carregar_dados_condominio(p) or {}
+        nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
+        if not nome_ex:
+            continue
+        cliente_local = _enriquecer_cliente_com_dados_locais({
+            "nome": nome_ex,
+            "empresa": dados_c.get("empresa", "Aqua Gestão"),
+            "operadores_vinculados": dados_c.get("operadores_vinculados", []),
+            "servicos": dados_c.get("servicos", {}),
+        })
+        _serv_local = _normalizar_servicos_cliente(cliente_local)
+        if _empresa_op_codigo == "bem_star" and not _serv_local.get("limpeza"):
+            continue
+        if _empresa_op_codigo == "aqua_gestao" and not _serv_local.get("rt"):
+            continue
+        # operador_multibase mantém Aqua, Bem Star e clientes com ambos.
+        clientes_mapa_op.setdefault(nome_ex, cliente_local)
+
+    opcoes_cond_todas = list(clientes_mapa_op.keys())
+
+    _op_conds_vinculo_direto = []
+    _op_nome_norm = _normalizar_chave_acesso(_op_nome_logado)
+    if _op_nome_norm and not _op_acesso_total:
+        for _nome_cond, _cliente_cond in clientes_mapa_op.items():
+            _ops_vinc = _normalizar_lista_textos_unicos(_cliente_cond.get("operadores_vinculados", []))
+            if any(_normalizar_chave_acesso(_op) == _op_nome_norm for _op in _ops_vinc):
+                _op_conds_vinculo_direto.append(_nome_cond)
+
+    # Operador logado via PIN — nome vem do cadastro, não digitado
+    _op_nome_logado_disp = _op_nome_logado if _op_nome_logado != "Operador" else ""
+    op_operador = st.text_input(
+        "Operador identificado",
+        key="op_operador",
+        value=_op_nome_logado_disp,
+        placeholder="Ex.: João Silva",
+        help="Preenchido automaticamente pelo seu PIN de acesso.",
+        disabled=True
+    )
+
+    # ── FASE 2: Filtra condomínios combinando vínculo direto E permitidos pelo PIN ──
+    if _op_acesso_total or any(_normalizar_chave_acesso(c) == "todos" for c in _op_conds_permitidos):
+        opcoes_cond = opcoes_cond_todas
+    else:
+        # Une os dois conjuntos: condomínios vinculados diretamente + liberados pelo PIN
+        _todos_permitidos = list(dict.fromkeys(_op_conds_vinculo_direto + list(_op_conds_permitidos)))
+        if _todos_permitidos:
+            opcoes_cond = _resolver_condominios_permitidos_exatos(_todos_permitidos, opcoes_cond_todas)
+            if opcoes_cond:
+                st.markdown(
+                    f'<div class="op-note-compact">✅ {len(opcoes_cond)} condomínio(s) liberado(s) pelo seu PIN.</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.warning("Nenhum condomínio disponível para seu acesso. Contate o administrador.")
+        else:
+            opcoes_cond = []
+            st.warning("Seu PIN ainda não possui condomínios vinculados. Contate o administrador.")
+
+    op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
+    if op_usar_novo:
+        op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
+    else:
+        if opcoes_cond:
+            # Fase 2: card fixo APENAS quando o operador tem exatamente 1 condomínio
+            # registrado no seu cadastro (não conta acesso_total nem lista global)
+            _conds_cadastrados = _op_conds_vinculo_direto or (
+                [c for c in _op_conds_permitidos
+                 if _normalizar_chave_acesso(c) not in ("todos", "")]
+                if not _op_acesso_total else []
+            )
+            _total_permitidos = len(list(dict.fromkeys(
+                _op_conds_vinculo_direto + [c for c in _op_conds_permitidos
+                if _normalizar_chave_acesso(c) not in ("todos","")]
+            )))
+            if _total_permitidos == 1 and len(opcoes_cond) == 1 and not _op_acesso_total:
+                op_nome_cond = opcoes_cond[0]
+                st.markdown(
+                    f'<div class="op-card" style="background:#f0f7ff;border-color:#1565A8;">'
+                    f'<div class="op-title">📍 {op_nome_cond}</div>'
+                    f'<div class="op-sub">Condomínio selecionado automaticamente pelo PIN</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                op_nome_cond = st.selectbox("Condomínio", opcoes_cond, key="op_sel_cond")
+
+            # Badge de tipo de serviço vinculado ao condomínio selecionado
+            if op_nome_cond and op_nome_cond in clientes_mapa_op:
+                _cliente_sel = clientes_mapa_op[op_nome_cond]
+                _servs = _normalizar_servicos_cliente(_cliente_sel)
+                _badges = []
+                if _servs.get("rt"):
+                    _badges.append('<span class="op-chip" style="background:#e8f0fe;border-color:#1565A8;color:#1565A8;">🔬 RT — Aqua Gestão</span>')
+                if _servs.get("limpeza"):
+                    _badges.append('<span class="op-chip" style="background:#fff3e0;border-color:#e65100;color:#bf360c;">🧹 Limpeza/Manutenção</span>')
+                if _badges:
+                    st.markdown(" ".join(_badges), unsafe_allow_html=True)
+            
+            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
+            if op_nome_cond:
+                with st.expander("🕒 Histórico recente", expanded=False):
+                    with st.spinner("Buscando histórico..."):
+                        historico_v = sheets_listar_lancamentos(op_nome_cond)
+                        if not historico_v:
+                            st.caption("Nenhuma visita anterior registrada.")
+                        else:
+                            # Ordena por data decrescente
+                            try:
+                                historico_v = sorted(
+                                    historico_v, 
+                                    key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
+                                    reverse=True
+                                )
+                            except:
+                                pass
+                            
+                            for v in historico_v[:3]:
+                                st.markdown(f"**Data: {v['data']}** | Op: {v.get('operador','–')}")
+                                st.markdown(f"pH: `{v.get('ph','–')}` | CRL: `{v.get('cloro_livre','–')}` | Alc: `{v.get('alcalinidade','–')}`")
+                                if v.get('problemas'):
+                                    st.caption(f"⚠️ {v['problemas']}")
+                                st.markdown("---")
+        else:
+            st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
+            op_nome_cond = ""
+
+    def _fmt_data_op():
+        v = apenas_digitos(st.session_state.get("op_data_visita", ""))[:8]
+        if len(v) <= 2:
+            st.session_state["op_data_visita"] = v
+        elif len(v) <= 4:
+            st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:]}"
+        else:
+            st.session_state["op_data_visita"] = f"{v[:2]}/{v[2:4]}/{v[4:]}"
+        # v5: autosave na mudança de data — apenas local, nunca Sheets durante digitação
+        if op_nome_cond.strip():
+            try:
+                _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas if "piscinas_ativas" in dir() else ["Piscina Adulto"])
+                salvar_rascunho_operador(op_nome_cond, _d, salvar_sheets=False)
+            except Exception:
+                pass
+
+    st.text_input("Data da visita",
+        key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if op_nome_cond:
+
+        # ── Piscinas deste condomínio ─────────────────────────────────────────
+        # Carrega configuração de piscinas salva ou usa padrão
+        _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+        _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
+        _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
+
+        # Piscinas vem automaticamente do cadastro da ADM — operador nao configura
+        if _piscinas_config and _piscinas_config != ["Piscina Adulto"]:
+            # ADM ja cadastrou as piscinas — usa direto
+            _piscinas_ativas = _piscinas_config
+            st.info(f"🏊 {len(_piscinas_ativas)} piscina(s) deste local: {chr(10).join(f'  • {p}' for p in _piscinas_ativas)}")
+        else:
+            # Fallback: ADM ainda nao cadastrou — operador pode configurar
+            with st.expander("🏊 Piscinas (configure uma vez)", expanded=True):
+                st.caption("O administrador ainda nao cadastrou as piscinas deste local. Configure abaixo.")
+                _pisc_adulto  = st.checkbox("Piscina Adulto",   value="Piscina Adulto"   in _piscinas_config, key="op_pisc_adulto")
+                _pisc_infant  = st.checkbox("Piscina Infantil", value="Piscina Infantil" in _piscinas_config, key="op_pisc_infantil")
+                _pisc_family  = st.checkbox("Piscina Family",   value="Piscina Family"   in _piscinas_config, key="op_pisc_family")
+                _pisc_outra_check = st.checkbox("Outra piscina", value=any(p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"] for p in _piscinas_config), key="op_pisc_outra_check")
+                _pisc_outra_nome = ""
+                if _pisc_outra_check:
+                    _outra_default = next((p for p in _piscinas_config if p not in ["Piscina Adulto","Piscina Infantil","Piscina Family"]), "")
+                    _pisc_outra_nome = st.text_input("Nome da outra piscina", value=_outra_default, key="op_pisc_outra_nome", placeholder="Ex.: Piscina Olímpica")
+                _piscinas_ativas = []
+                if _pisc_adulto: _piscinas_ativas.append("Piscina Adulto")
+                if _pisc_infant: _piscinas_ativas.append("Piscina Infantil")
+                if _pisc_family: _piscinas_ativas.append("Piscina Family")
+                if _pisc_outra_check and _pisc_outra_nome.strip(): _piscinas_ativas.append(_pisc_outra_nome.strip())
+                if not _piscinas_ativas: _piscinas_ativas = ["Piscina Adulto"]
+                if st.button("💾 Salvar configuração de piscinas", key="btn_salvar_piscinas"):
+                    _pasta_cond_op.mkdir(parents=True, exist_ok=True)
+                    _dados_upd = carregar_dados_condominio(_pasta_cond_op) or {}
+                    _dados_upd["piscinas"] = _piscinas_ativas
+                    _dados_upd["nome_condominio"] = op_nome_cond.strip()
+                    salvar_dados_condominio(_pasta_cond_op, _dados_upd)
+                    st.success(f"✅ Piscinas salvas: {', '.join(_piscinas_ativas)}")
+                    st.rerun()
+        piscinas_ativas = _piscinas_ativas
+
+        # ── Indicador de autosave ────────────────────────────────────────────
+        _rasc_path = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json"
+        if _rasc_path.exists():
+            try:
+                import json as _json_rasc
+                with open(_rasc_path) as _rf:
+                    _rasc_info = _json_rasc.load(_rf)
+                _salvo_em_auto = _rasc_info.get("_rascunho_salvo_em", "")
+                st.markdown(
+                    f"<div style='text-align:right;font-size:0.75rem;color:#3a8a3a;padding:2px 8px;'>"
+                    f"💾 Salvo automaticamente às {_salvo_em_auto.split()[-1] if _salvo_em_auto else '—'}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            except Exception:
+                pass
+
+        # ── Verificar rascunho existente ─────────────────────────────────────
+        _rascunho_op = carregar_rascunho_operador(op_nome_cond)
+        _key_rascunho_visto = f"_rascunho_visto_{slugify_nome(op_nome_cond)}"
+        if _rascunho_op and not st.session_state.get(_key_rascunho_visto):
+            _salvo_em = _rascunho_op.get("_rascunho_salvo_em", "")
+            # Conta fotos salvas no rascunho
+            _fotos_rasc_info = _rascunho_op.get("fotos_rascunho", {})
+            _total_fotos_rasc_banner = sum(len(v) for v in _fotos_rasc_info.values())
+            _fotos_txt = f" • {_total_fotos_rasc_banner} foto(s) salva(s)" if _total_fotos_rasc_banner > 0 else ""
+            st.markdown(f"""
+            <div style="background:rgba(255,165,0,0.12);border:1px solid rgba(255,165,0,0.4);
+            border-radius:12px;padding:12px 16px;margin-bottom:8px;">
+            ⚠️ <strong>Rascunho encontrado</strong> — salvo em {_salvo_em}{_fotos_txt}<br>
+            <span style="font-size:0.85rem;color:#aaa;">Você pode restaurar e continuar de onde parou.</span>
+            </div>
+            """, unsafe_allow_html=True)
+            _rc1, _rc2 = st.columns(2)
+            with _rc1:
+                if st.button("📂 Restaurar rascunho", key="btn_restaurar_rasc",
+                        type="primary", use_container_width=True):
+                    st.session_state["_rascunho_operador_pendente"] = _rascunho_op
+                    st.session_state[_key_rascunho_visto] = True
+                    st.rerun()
+            with _rc2:
+                if st.button("🗑 Descartar rascunho", key="btn_descartar_rasc",
+                        use_container_width=True):
+                    deletar_rascunho_operador(op_nome_cond)
+                    st.session_state[_key_rascunho_visto] = True
+                    st.rerun()
+
+        # Limpa campos SE houver limpeza pendente
+        if st.session_state.pop("op_limpar_campos", False):
+            for pisc in ["adulto","infantil","family","outra"]:
+                for k in ["ph","crl","ct","alc","dc","cya"]:
+                    st.session_state[f"op_{pisc}_{k}"] = ""
+            for i in range(5):
+                for s in ["prod","qtd","un","fin"]:
+                    st.session_state[f"op_dos_{s}_{i}"] = ""
+            st.session_state["op_obs_campo"] = ""
+            st.session_state["op_problemas"] = ""
+            st.session_state["op_resp_local"] = ""
+            st.session_state["op_parecer_visita"] = "✅ Satisfatório"
+            st.session_state["op_assinatura_responsavel_b64"] = ""
+            st.session_state["op_assinatura_responsavel_data"] = ""
+            st.session_state["_op_ass_canvas_nonce"] = st.session_state.get("_op_ass_canvas_nonce", 0) + 1
+
+        # ── Autosave: função chamada a cada mudança de campo ─────────────────
+        def _autosave_rascunho():
+            """v5: salva rascunho APENAS localmente quando campo muda (on_change).
+            Nunca vai ao Google Sheets durante digitação — isso causava reruns pesados
+            e era a principal causa de instabilidade do modo operador.
+            """
+            if op_nome_cond.strip():
+                try:
+                    _d = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
+                    salvar_rascunho_operador(op_nome_cond, _d, salvar_sheets=False)
+                except Exception:
+                    pass  # autosave nunca pode derrubar o app
+
+        def _num_op(chave, label, placeholder, quinzenal=False):
+            lbl = f"{label} ⏱ 15d" if quinzenal else label
+            v = st.text_input(lbl, key=chave, placeholder=placeholder,
+                on_change=_autosave_rascunho,
+                help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
+            return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
+
+        with st.expander("📋 Faixas ideais", expanded=False):
+            st.markdown("""
+| Parâmetro | Faixa ideal |
+|---|---|
+| pH | 7,2 – 7,8 |
+| CRL mg/L | 0,5 – 3,0 |
+| Alcalinidade mg/L | 80 – 120 |
+| Dureza DC mg/L | 150 – 300 |
+| CYA mg/L | 30 – 50 |
+            """)
+
+        # ── Parâmetros por piscina ────────────────────────────────────────────
+        op_piscinas_dados = []
+        _slug_map = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
+
+        for pisc_nome in piscinas_ativas:
+            pisc_slug = _slug_map.get(pisc_nome, slugify_nome(pisc_nome)[:12])
+            st.markdown('<div class="op-card">', unsafe_allow_html=True)
+            st.markdown(f'<div class="op-title">🧪 {pisc_nome}</div>', unsafe_allow_html=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                p_ph  = _num_op(f"op_{pisc_slug}_ph",  "pH", "ex: 7.4")
+                p_alc = _num_op(f"op_{pisc_slug}_alc", "Alcalinidade mg/L", "ex: 95",  quinzenal=True)
+                p_dc  = _num_op(f"op_{pisc_slug}_dc",  "Dureza DC mg/L",   "ex: 200", quinzenal=True)
+            with c2:
+                p_crl = _num_op(f"op_{pisc_slug}_crl", "CRL mg/L",            "ex: 1.5")
+                p_ct  = _num_op(f"op_{pisc_slug}_ct",  "Cloro Total CT mg/L", "ex: 1.8")
+                p_cya = _num_op(f"op_{pisc_slug}_cya", "CYA mg/L",            "ex: 40",  quinzenal=True)
+
+            # Alertas em tempo real
+            for val, mn, mx, rot in [
+                (p_ph, 7.2, 7.8, "pH"), (p_crl, 0.5, 3.0, "CRL"),
+                (p_alc, 80, 120, "Alcalinidade"), (p_dc, 150, 300, "Dureza DC"),
+                (p_cya, 30, 50, "CYA"),
+            ]:
+                v = valor_float(val)
+                if v is not None:
+                    st.markdown(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
+
+            p_cloraminas = None
+            v_crl2 = valor_float(p_crl); v_ct2 = valor_float(p_ct)
+            if v_crl2 is not None and v_ct2 is not None:
+                p_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
+                st.markdown(f"{'⚠️' if p_cloraminas > 0.2 else '✅'} **Cloraminas: {p_cloraminas} mg/L**")
+
+            op_piscinas_dados.append({
+                "nome": pisc_nome,
+                "ph": p_ph, "cloro_livre": p_crl, "cloro_total": p_ct,
+                "cloraminas": str(p_cloraminas) if p_cloraminas is not None else "",
+                "alcalinidade": p_alc, "dureza": p_dc, "cianurico": p_cya,
+            })
+
+            # ── Sugestões de dosagem em tempo real ───────────────────────────
+            _v_ph  = valor_float(p_ph)
+            _v_crl = valor_float(p_crl)
+            _v_alc = valor_float(p_alc)
+            _v_dc  = valor_float(p_dc)
+            _v_cya = valor_float(p_cya)
+            _tem_params = any(v is not None for v in [_v_ph, _v_crl, _v_alc, _v_dc, _v_cya])
+
+            if _tem_params:
+                # Busca volume m³ do condomínio no Sheets
+                _vol_m3 = st.session_state.get(f"_vol_m3_{slugify_nome(op_nome_cond.strip())}", 0.0)
+                if not _vol_m3:
+                    try:
+                        _clientes_vol = sheets_listar_clientes_completo()
+                        for _cv in _clientes_vol:
+                            if _cv["nome"].lower().strip() == op_nome_cond.strip().lower():
+                                # Busca volume da planilha (col D = Volume_m3)
+                                _sh_vol = conectar_sheets()
+                                if _sh_vol:
+                                    _aba_vol = obter_aba_sheets("👥 Clientes")
+                                    _rows_vol = _aba_vol.get_all_values()
+                                    for _rv in _rows_vol:
+                                        if len(_rv) > 3 and _cv["nome"].lower() in str(_rv[2]).lower():
+                                            try:
+                                                _vol_m3 = float(str(_rv[3]).replace(",",".").strip() or 0)
+                                            except Exception:
+                                                _vol_m3 = 0.0
+                                            break
+                                break
+                        st.session_state[f"_vol_m3_{slugify_nome(op_nome_cond.strip())}"] = _vol_m3
+                    except Exception:
+                        _vol_m3 = 0.0
+
+                # Usa volume específico da piscina se disponível
+                _vol_pisc = 0.0
+                _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
+                _vol_key = _slug_map2.get(pisc_nome, "")
+                try:
+                    _clv = sheets_listar_clientes_completo()
+                    for _cv2 in _clv:
+                        if nomes_condominio_equivalentes(_cv2["nome"], op_nome_cond):
+                            if _vol_key:
+                                # Piscina padrão (adulto/infantil/family)
+                                _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
+                            else:
+                                # Piscina extra — busca no JSON local
+                                _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                                _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
+                                for _pe in _dados_extra_vol.get("piscinas_extras", []):
+                                    if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
+                                        _vol_pisc = float(_pe.get("vol", 0) or 0)
+                                        break
+                            break
+                except Exception:
+                    pass
+                _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
+
+                _sugestoes = []
+                if _vol_usar > 0:
+                    _sugestoes = calcular_sugestoes_dosagem(
+                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
+                        volume_m3=_vol_usar
+                    )
+                if _sugestoes:
+                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
+                    for _s in _sugestoes:
+                        _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
+                        if _s["quantidade"] and _s["quantidade"] > 0:
+                            st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
+                            st.caption(f"↳ {_s['acao']}")
+                        else:
+                            st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
+                        with st.expander("ℹ️ Base técnica", expanded=False):
+                            st.caption(_s["justificativa"])
+                            st.caption(f"📚 {_s.get('norma','')}")
+                    # Botão aplicar sugestões nas dosagens desta piscina
+                    if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
+                            key=f"btn_aplicar_sug_{pisc_slug}",
+                            use_container_width=True):
+                        # Salva sugestões no session_state para preencher dosagens
+                        _key_sug = f"_sug_pisc_{pisc_slug}"
+                        st.session_state[_key_sug] = [
+                            s for s in _sugestoes
+                            if s.get("quantidade") and s["quantidade"] > 0
+                        ]
+                        st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
+                        st.rerun()
+                else:
+                    st.success("✅ Todos os parâmetros dentro da faixa ideal.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Compatibilidade com código legado (usa dados da primeira piscina)
+        op_ph  = op_piscinas_dados[0]["ph"]        if op_piscinas_dados else ""
+        op_crl = op_piscinas_dados[0]["cloro_livre"] if op_piscinas_dados else ""
+        op_ct  = op_piscinas_dados[0]["cloro_total"] if op_piscinas_dados else ""
+        op_alc = op_piscinas_dados[0]["alcalinidade"] if op_piscinas_dados else ""
+        op_dc  = op_piscinas_dados[0]["dureza"]      if op_piscinas_dados else ""
+        op_cya = op_piscinas_dados[0]["cianurico"]   if op_piscinas_dados else ""
+        op_cloraminas = valor_float(op_piscinas_dados[0]["cloraminas"]) if op_piscinas_dados else None
+
+        # ── Dosagens por piscina ──────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">⚗️ Dosagens aplicadas</div>', unsafe_allow_html=True)
+        st.caption("Registre os produtos aplicados em cada piscina. Use as sugestões calculadas acima.")
+        op_dosagens = []  # lista global para compatibilidade (primeira piscina)
+
+        for _pisc_d in op_piscinas_dados:
+            _pn_d    = _pisc_d["nome"]
+            _slug_d  = _slug_map.get(_pn_d, slugify_nome(_pn_d)[:12])
+            _key_sug = f"_sug_pisc_{_slug_d}"
+
+            # Se há sugestões aplicadas para esta piscina, pré-preenche os campos
+            _sug_aplicadas = st.session_state.get(_key_sug, [])
+            if _sug_aplicadas:
+                for _idx_s, _s in enumerate(_sug_aplicadas[:5]):
+                    st.session_state[f"op_dos_{_slug_d}_prod_{_idx_s}"] = _s.get("produto","")
+                    st.session_state[f"op_dos_{_slug_d}_qtd_{_idx_s}"]  = str(round(_s.get("quantidade",0),1))
+                    st.session_state[f"op_dos_{_slug_d}_un_{_idx_s}"]   = _s.get("unidade","")
+                    st.session_state[f"op_dos_{_slug_d}_fin_{_idx_s}"]  = _s.get("acao","")
+                st.session_state.pop(_key_sug, None)  # limpa após aplicar
+
+            st.markdown(f"**🏊 {_pn_d}**")
+            _dos_pisc = []
+            for i in range(5):
+                _k_prod = f"op_dos_{_slug_d}_prod_{i}"
+                _k_qtd  = f"op_dos_{_slug_d}_qtd_{i}"
+                _k_un   = f"op_dos_{_slug_d}_un_{i}"
+                _k_fin  = f"op_dos_{_slug_d}_fin_{i}"
+                with st.expander(
+                    f"Produto {i+1}" + (f" — {st.session_state.get(_k_prod,'')}" if st.session_state.get(_k_prod) else ""),
+                    expanded=(i == 0 or bool(st.session_state.get(_k_prod)))
+                ):
+                    _dd1, _dd2 = st.columns([2, 1])
+                    _prod = _dd1.text_input("Produto", key=_k_prod,
+                        label_visibility="collapsed", placeholder="Nome do produto",
+                        on_change=_autosave_rascunho)
+                    _qtd  = _dd2.text_input("Qtd", key=_k_qtd,
+                        label_visibility="collapsed", placeholder="Qtd",
+                        on_change=_autosave_rascunho)
+                    _dd3, _dd4 = st.columns([1, 2])
+                    _un   = _dd3.text_input("Un", key=_k_un,
+                        label_visibility="collapsed", placeholder="kg/L/g",
+                        on_change=_autosave_rascunho)
+                    _fin  = _dd4.text_input("Finalidade", key=_k_fin,
+                        label_visibility="collapsed", placeholder="Finalidade / motivo",
+                        on_change=_autosave_rascunho)
+                    if _prod.strip():
+                        _dos_pisc.append({
+                            "produto":    _prod.strip(),
+                            "quantidade": _qtd.strip(),
+                            "unidade":    _un.strip(),
+                            "finalidade": _fin.strip(),
+                        })
+
+            # Armazena dosagens na piscina correspondente
+            _pisc_d["dosagens"] = _dos_pisc
+            # Compatibilidade legado (primeira piscina)
+            if not op_dosagens and _dos_pisc:
+                op_dosagens = _dos_pisc
+
+        # Fallback: se só tem uma piscina, op_dosagens = dosagens dela
+        if not op_dosagens and op_piscinas_dados:
+            op_dosagens = op_piscinas_dados[0].get("dosagens", [])
+
+
+        # ── Fotos categorizadas — com salvamento imediato ───────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">📸 Fotos da visita</div>', unsafe_allow_html=True)
+        st.caption("Fotos são salvas automaticamente ao fazer upload — não somem se o sinal cair.")
+
+        op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_antes")
+        op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_depois")
+        op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_cmaq")
+        op_fotos_extras = st.file_uploader("📋 Outras fotos (bordas, ralos, equipamentos...)", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_extras")
+
+        # ── Salvamento imediato ao upload ─────────────────────────────────────
+        # Pasta temporária de fotos do rascunho
+        _pasta_fotos_rasc = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "fotos_rascunho") if op_nome_cond.strip() else None
+
+        def _salvar_foto_imediato(lista_uploads, categoria):
+            """v5: Salva fotos na pasta de rascunho. Falha não derruba o app."""
+            if not _pasta_fotos_rasc or not lista_uploads:
+                return []
+            salvos = []
+            try:
+                _pasta_fotos_rasc.mkdir(parents=True, exist_ok=True)
+                for foto in lista_uploads:
+                    try:
+                        _nome_f = f"rasc_{categoria}_{limpar_nome_arquivo(foto.name)}"
+                        _path_f = _pasta_fotos_rasc / _nome_f
+                        if not _path_f.exists():
+                            with open(_path_f, "wb") as _ff:
+                                _ff.write(foto.getbuffer())
+                        salvos.append(_nome_f)
+                    except Exception:
+                        pass  # foto individual falhou — continua as demais
+            except Exception:
+                pass  # pasta inacessível — retorna lista vazia
+            return salvos
+
+        # Salva imediatamente ao fazer upload
+        _fotos_rasc_antes  = _salvar_foto_imediato(op_fotos_antes,  "antes")
+        _fotos_rasc_depois = _salvar_foto_imediato(op_fotos_depois, "depois")
+        _fotos_rasc_cmaq   = _salvar_foto_imediato(op_fotos_cmaq,   "cmaq")
+        op_fotos_extras = st.session_state.get("op_fotos_extras") or []
+        _fotos_rasc_extras = _salvar_foto_imediato(op_fotos_extras, "extras")
+
+        # Também mostra fotos já salvas do rascunho anterior (sessão anterior)
+        _fotos_rasc_existentes = {"antes": [], "depois": [], "cmaq": [], "extras": []}
+        if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
+            for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
+                for _cat in ["antes", "depois", "cmaq", "extras"]:
+                    if f"rasc_{_cat}_" in _fp.name:
+                        _fotos_rasc_existentes[_cat].append(_fp)
+
+        # Preview — fotos do upload atual + fotos salvas do rascunho
+        _todas_fotos_preview = [
+            ("🔵 Antes", "antes", op_fotos_antes, _fotos_rasc_existentes["antes"]),
+            ("🟢 Depois", "depois", op_fotos_depois, _fotos_rasc_existentes["depois"]),
+            ("🔧 Casa máq.", "cmaq", op_fotos_cmaq, _fotos_rasc_existentes["cmaq"]),
+            ("📋 Outras", "extras", op_fotos_extras, _fotos_rasc_existentes["extras"]),
+        ]
+        _total_fotos_rasc = sum(len(v) for v in _fotos_rasc_existentes.values())
+        if _total_fotos_rasc > 0:
+            st.caption(f"💾 {_total_fotos_rasc} foto(s) já salvas do rascunho anterior")
+
+        for _cat_label, _cat_cod, _flist_up, _flist_rasc in _todas_fotos_preview:
+            _nomes_up = {
+                limpar_nome_arquivo(getattr(f, "name", ""))
+                for f in (_flist_up or [])
+                if getattr(f, "name", "")
+            }
+
+            def _nome_original_rascunho(_arquivo_rasc):
+                _nome = limpar_nome_arquivo(getattr(_arquivo_rasc, "name", str(_arquivo_rasc)))
+                _prefixo = f"rasc_{_cat_cod}_"
+                if _nome.startswith(_prefixo):
+                    return _nome[len(_prefixo):]
+                return _nome
+
+            _rasc_extras = [
+                f for f in (_flist_rasc or [])
+                if _nome_original_rascunho(f) not in _nomes_up
+            ]
+            _all_show = deduplicar_fotos(list(_flist_up or []) + _rasc_extras)
+            if _all_show:
+                st.caption(f"**{_cat_label}:** {len(_all_show)} foto(s)")
+                _cols = st.columns(min(len(_all_show), 3))
+                for _i, _f in enumerate(_all_show):
+                    with _cols[_i % 3]:
+                        st.image(carregar_imagem_corrigida_orientacao(_f), use_container_width=True)
+
+        # Botão para limpar fotos do rascunho
+        if _total_fotos_rasc > 0:
+            if st.button("🗑 Limpar fotos do rascunho", key="btn_limpar_fotos_rasc"):
+                import shutil
+                if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
+                    shutil.rmtree(str(_pasta_fotos_rasc))
+                st.rerun()
+
+
+        # ── Problemas / Ocorrências ───────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">⚠️ Problemas / Ocorrências</div>', unsafe_allow_html=True)
+        op_problemas = st.text_area("Problemas", key="op_problemas", height=80,
+            label_visibility="collapsed",
+            placeholder="Ex.: Bomba com ruído, vazamento na casa de máquinas, pH instável, equipamento quebrado...",
+            on_change=_autosave_rascunho)
+
+        # ── Observação geral ──────────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">📝 Observação geral</div>', unsafe_allow_html=True)
+        op_obs = st.text_area("Obs", key="op_obs_campo", height=80,
+            label_visibility="collapsed", placeholder="Ex.: condições gerais da água, recomendações...",
+            on_change=_autosave_rascunho)
+
+        # ── Responsável no local ──────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">👤 Responsável no local</div>', unsafe_allow_html=True)
+        op_resp_local = st.text_input("Responsável no local", key="op_resp_local",
+            label_visibility="collapsed",
+            placeholder="Nome de quem recebeu o técnico (síndico, porteiro, zelador...)",
+            on_change=_autosave_rascunho)
+
+        # ── Parecer da visita ─────────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">✅ Parecer da visita</div>', unsafe_allow_html=True)
+        op_parecer = st.radio(
+            "Parecer",
+            ["✅ Satisfatório", "⚠️ Aceitável com ajustes pontuais", "❌ Insatisfatório"],
+            key="op_parecer_visita",
+            label_visibility="collapsed",
+            horizontal=True,
+            on_change=_autosave_rascunho,
+        )
+        # ── Assinatura do responsável ─────────────────────────────────────────
+        # Compatibilidade Streamlit 1.56: removido canvas HTML/iframe, que causava
+        # rerun infinito. Mantemos o módulo com captura nativa por upload/câmera.
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">✍️ Assinatura do responsável</div>', unsafe_allow_html=True)
+        st.caption(
+            "Para evitar travamentos nesta versão do Streamlit, a assinatura é anexada por imagem "
+            "(foto ou arquivo PNG/JPG) em vez do canvas desenhado na tela."
+        )
+
+        _canvas_nonce = st.session_state.get("_op_ass_canvas_nonce", 0)
+        _ass_exist_b64 = _normalizar_assinatura_b64(st.session_state.get("op_assinatura_responsavel_b64", ""))
+
+        _ass_col1, _ass_col2 = st.columns(2)
+        with _ass_col1:
+            _ass_upload = st.file_uploader(
+                "Enviar imagem da assinatura",
+                type=["png", "jpg", "jpeg"],
+                key=f"upload_assinatura_resp_{_canvas_nonce}",
+                help="Aceita foto tirada no celular ou imagem escaneada da assinatura.",
+            )
+        with _ass_col2:
+            _ass_camera = st.camera_input(
+                "Fotografar assinatura",
+                key=f"camera_assinatura_resp_{_canvas_nonce}",
+                help="Opcional: fotografe uma assinatura feita em papel.",
+            )
+
+        _ass_arquivo = _ass_upload or _ass_camera
+        if _ass_arquivo is not None:
+            try:
+                import base64 as _b64_ass
+                import io as _io_ass
+                _img_ass = Image.open(_io_ass.BytesIO(_ass_arquivo.getvalue()))
+                _img_ass = ImageOps.exif_transpose(_img_ass).convert("RGBA")
+                _buf_ass = _io_ass.BytesIO()
+                _img_ass.save(_buf_ass, format="PNG")
+                _ass_novo_b64 = _normalizar_assinatura_b64(_b64_ass.b64encode(_buf_ass.getvalue()).decode("utf-8"))
+                if _ass_novo_b64 and _ass_novo_b64 != _ass_exist_b64:
+                    st.session_state["op_assinatura_responsavel_b64"] = _ass_novo_b64
+                    st.session_state["op_assinatura_responsavel_data"] = (
+                        st.session_state.get("op_data_visita", "") or hoje_br()
+                    )
+                    _ass_exist_b64 = _ass_novo_b64
+                    _autosave_rascunho()
+                    st.success("✅ Assinatura anexada com sucesso.")
+            except Exception as e:
+                st.error(f"Não foi possível processar a assinatura enviada: {e}")
+
+        _acol1, _acol2 = st.columns([1, 1])
+        with _acol1:
+            if _ass_exist_b64:
+                _resp_ass = (st.session_state.get("op_resp_local") or "").strip()
+                st.success("✅ Assinatura capturada" + (f" — {_resp_ass}" if _resp_ass else ""))
+            else:
+                st.caption("Assine no quadro acima e toque em ✅ Confirmar assinatura.")
+        with _acol2:
+            if st.button("🧹 Limpar assinatura", key="btn_limpar_assinatura", use_container_width=True):
+                st.session_state["op_assinatura_responsavel_b64"] = ""
+                st.session_state["op_assinatura_responsavel_data"] = ""
+                st.session_state["_op_ass_canvas_nonce"] = _canvas_nonce + 1
+                _autosave_rascunho()
+                st.rerun()
+
+        if _ass_exist_b64:
+            try:
+                import base64 as _b64_ui
+                _resp_leg = (st.session_state.get("op_resp_local") or "").strip()
+                st.image(
+                    _b64_ui.b64decode(_ass_exist_b64),
+                    caption=f"Assinatura do responsável{(' — ' + _resp_leg) if _resp_leg else ''}",
+                    use_container_width=True,
+                )
+            except Exception:
+                pass
+
+        # ── Botão salvar rascunho ─────────────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        _rc_col1, _rc_col2 = st.columns([1, 1])
+        with _rc_col1:
+            if st.button("📋 Salvar rascunho", key="btn_salvar_rascunho",
+                    use_container_width=True,
+                    help="Salva o progresso atual. Você pode continuar depois."):
+                if op_nome_cond.strip():
+                    _dados_rasc = coletar_rascunho_operador(op_nome_cond, piscinas_ativas)
+                    # v5: salvar_sheets=True apenas no botão explícito (nunca em on_change)
+                    if salvar_rascunho_operador(op_nome_cond, _dados_rasc, salvar_sheets=True):
+                        st.success(f"✅ Rascunho salvo! Pode fechar e retomar depois.")
+                    else:
+                        st.error("Erro ao salvar rascunho.")
+                else:
+                    st.warning("Selecione o condomínio antes de salvar o rascunho.")
+        with _rc_col2:
+            _rasc_exists = (GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json").exists() if op_nome_cond.strip() else False
+            if _rasc_exists:
+                st.caption("📋 Rascunho salvo")
+
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        if st.button("💾 Salvar lançamento", type="primary", use_container_width=True):
+            data_vis = (st.session_state.get("op_data_visita") or "").strip()
+            if not op_nome_cond.strip():
+                st.error("Informe o condomínio.")
+            elif not data_vis:
+                st.error("Informe a data da visita.")
+            else:
+                pasta_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
+                pasta_op.mkdir(parents=True, exist_ok=True)
+                pasta_fotos_op = pasta_op / "fotos_campo"
+                pasta_fotos_op.mkdir(exist_ok=True)
+                ts_f = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mes_ano = datetime.now().strftime("%Y-%m")
+
+                import base64 as _b64
+
+                def _salvar_categoria(lista_uploads, categoria):
+                    """Salva fotos localmente, no Drive e retorna bytes para PDF."""
+                    nomes = []; ids = []; b64s = []
+                    for idx_ff, foto_ff in enumerate(lista_uploads or [], 1):
+                        nome_ff = limpar_nome_arquivo(f"{categoria}_{ts_f}_{idx_ff}_{foto_ff.name}")
+                        foto_bytes = bytes(foto_ff.getbuffer())
+                        # Salva localmente
+                        with open(pasta_fotos_op / nome_ff, "wb") as ff:
+                            ff.write(foto_bytes)
+                        nomes.append(nome_ff)
+                        # Guarda base64 para PDF — com rotação EXIF automática
+                        try:
+                            from PIL import Image as _PILImg, ImageOps as _IOps
+                            import io as _io
+                            _img = _PILImg.open(_io.BytesIO(foto_bytes))
+                            # Corrige rotação EXIF (fotos tiradas na vertical pelo celular)
+                            _img = _IOps.exif_transpose(_img)
+                            # Reduz para não pesar mas mantém qualidade
+                            _img.thumbnail((1200, 1200), _PILImg.LANCZOS)
+                            _buf = _io.BytesIO()
+                            _img.convert("RGB").save(_buf, format="JPEG", quality=82)
+                            b64s.append(_b64.b64encode(_buf.getvalue()).decode("utf-8"))
+                        except Exception:
+                            b64s.append(_b64.b64encode(foto_bytes).decode("utf-8"))
+                        # Upload para o Google Drive (async best-effort)
+                        try:
+                            drive_id = drive_upload_foto(
+                                arquivo_bytes=foto_bytes,
+                                nome_arquivo=f"{categoria}_{nome_ff}",
+                                nome_condominio=op_nome_cond.strip(),
+                                mes_ano=mes_ano,
+                            )
+                            if drive_id:
+                                ids.append(drive_id)
+                        except Exception:
+                            pass
+                    return nomes, ids, b64s
+
+                fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(deduplicar_fotos(op_fotos_antes),  "antes")
+                fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_depois), "depois")
+                fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(deduplicar_fotos(op_fotos_cmaq),   "cmaq")
+                op_fotos_extras_final = st.session_state.get("op_fotos_extras") or []
+                fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_extras_final), "extras")
+
+                # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
+                # Corrigido: quando a foto estava no upload atual e também no rascunho,
+                # ela era adicionada novamente no PDF. Agora comparamos pelo nome original
+                # e também pelo conteúdo (hash md5) antes de anexar.
+                _pasta_rasc_f = pasta_op / "fotos_rascunho"
+                if _pasta_rasc_f.exists():
+                    import shutil as _shutil
+                    import hashlib as _hashlib
+
+                    def _nome_original_upload(_nome: str, _cat: str) -> str:
+                        _n = limpar_nome_arquivo(str(_nome or ""))
+                        _prefixo_rasc = f"rasc_{_cat}_"
+                        if _n.startswith(_prefixo_rasc):
+                            _n = _n[len(_prefixo_rasc):]
+                        _n = re.sub(rf"^{_cat}_[0-9]{{8}}_[0-9]{{6}}_[0-9]+_", "", _n)
+                        return _n
+
+                    def _hash_arquivo(_path):
+                        try:
+                            return _hashlib.md5(Path(_path).read_bytes()).hexdigest()
+                        except Exception:
+                            return ""
+
+                    _uploads_originais_por_cat = {
+                        "antes":  {_nome_original_upload(getattr(f, "name", ""), "antes")  for f in (op_fotos_antes or [])},
+                        "depois": {_nome_original_upload(getattr(f, "name", ""), "depois") for f in (op_fotos_depois or [])},
+                        "cmaq":   {_nome_original_upload(getattr(f, "name", ""), "cmaq")   for f in (op_fotos_cmaq or [])},
+                        "extras": {_nome_original_upload(getattr(f, "name", ""), "extras") for f in (op_fotos_extras_final or [])},
+                    }
+
+                    _hashes_ja_salvos = set()
+                    for _foto_existente in pasta_fotos_op.glob("*"):
+                        if _foto_existente.is_file():
+                            _h = _hash_arquivo(_foto_existente)
+                            if _h:
+                                _hashes_ja_salvos.add(_h)
+
+                    for _fp_rasc in sorted(_pasta_rasc_f.glob("rasc_*")):
+                        if not _fp_rasc.is_file():
+                            continue
+                        for _cat, _nomes_cat, _b64s_cat in [
+                            ("antes",  fotos_antes_nomes,  fotos_antes_b64),
+                            ("depois", fotos_depois_nomes, fotos_depois_b64),
+                            ("cmaq",   fotos_cmaq_nomes,   fotos_cmaq_b64),
+                            ("extras", fotos_extras_nomes, fotos_extras_b64),
+                        ]:
+                            if f"rasc_{_cat}_" not in _fp_rasc.name:
+                                continue
+                            _orig_rasc = _nome_original_upload(_fp_rasc.name, _cat)
+                            if _orig_rasc and _orig_rasc in _uploads_originais_por_cat.get(_cat, set()):
+                                continue
+                            _hash_rasc = _hash_arquivo(_fp_rasc)
+                            if _hash_rasc and _hash_rasc in _hashes_ja_salvos:
+                                continue
+                            _nome_dest = _fp_rasc.name.replace(f"rasc_{_cat}_", f"{_cat}_{ts_f}_")
+                            _dest = pasta_fotos_op / _nome_dest
+                            if not _dest.exists():
+                                _shutil.copy2(str(_fp_rasc), str(_dest))
+                            if _hash_rasc:
+                                _hashes_ja_salvos.add(_hash_rasc)
+                            if _nome_dest not in _nomes_cat:
+                                _nomes_cat.append(_nome_dest)
+                                try:
+                                    from PIL import Image as _PI, ImageOps as _IO
+                                    import io as _io2
+                                    _img2 = _PI.open(str(_dest))
+                                    _img2 = _IO.exif_transpose(_img2)
+                                    _img2.thumbnail((1200, 1200), _PI.LANCZOS)
+                                    _buf2 = _io2.BytesIO()
+                                    _img2.convert("RGB").save(_buf2, format="JPEG", quality=82)
+                                    _b64s_cat.append(_b64.b64encode(_buf2.getvalue()).decode())
+                                except Exception:
+                                    pass
+                    _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
+
+                fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes + fotos_extras_nomes
+                fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids + fotos_extras_ids
+
+                assinatura_responsavel_b64 = _normalizar_assinatura_b64(st.session_state.get("op_assinatura_responsavel_b64", ""))
+                assinatura_responsavel_arquivo = ""
+                if assinatura_responsavel_b64:
+                    pasta_assinaturas = pasta_op / "assinaturas_visita"
+                    pasta_assinaturas.mkdir(exist_ok=True)
+                    assinatura_responsavel_arquivo = f"assinatura_responsavel_{ts_f}.png"
+                    _salvar_assinatura_local(assinatura_responsavel_b64, pasta_assinaturas / assinatura_responsavel_arquivo)
+
+                dados_ex = carregar_dados_condominio(pasta_op) or {}
+                lancamento = {
+                    "data": data_vis, "operador": op_operador.strip(),
+                    "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
+                    "cloraminas": str(op_cloraminas) if op_cloraminas is not None else "",
+                    "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
+                    "piscinas": op_piscinas_dados,
+                    "problemas": op_problemas.strip(),
+                    "servicos_executados": [
+                        s for s, k in [
+                            ("Aspiração de fundo",             "op_serv_aspiracao"),
+                            ("Escovação de paredes e bordas",  "op_serv_escovacao"),
+                            ("Peneiração / retirada de resíduos", "op_serv_peneiracao"),
+                            ("Limpeza de skimmer e pré-filtro","op_serv_skimmer"),
+                            ("Limpeza de borda (azulejo/deck)","op_serv_borda"),
+                            ("Retrolavagem do filtro",         "op_serv_retrolavagem"),
+                            ("Aplicação de produtos químicos", "op_serv_dosagem"),
+                            ("Verificação de equipamentos",    "op_serv_verificacao"),
+                            ("Circulação e filtração",         "op_serv_circulacao"),
+                        ] if st.session_state.get(k)
+                    ] + (
+                        [st.session_state.get("op_serv_outro_desc","").strip()]
+                        if st.session_state.get("op_serv_outro") and st.session_state.get("op_serv_outro_desc","").strip()
+                        else []
+                    ),
+                    "observacao": op_obs.strip(), "dosagens": op_dosagens,
+                    "resp_local": (st.session_state.get("op_resp_local") or "").strip(),
+                    "parecer": st.session_state.get("op_parecer_visita", "✅ Satisfatório"),
+                    "assinatura_responsavel_b64": assinatura_responsavel_b64,
+                    "assinatura_responsavel_nome": (st.session_state.get("op_resp_local") or "").strip(),
+                    "assinatura_responsavel_data": data_vis,
+                    "assinatura_responsavel_arquivo": assinatura_responsavel_arquivo,
+                    "fotos": fotos_salvas_op,
+                    "fotos_antes": fotos_antes_nomes,
+                    "fotos_depois": fotos_depois_nomes,
+                    "fotos_cmaq": fotos_cmaq_nomes,
+                    "fotos_drive_ids": fotos_drive_ids,
+                    "fotos_antes_ids": fotos_antes_ids,
+                    "fotos_depois_ids": fotos_depois_ids,
+                    "fotos_cmaq_ids": fotos_cmaq_ids,
+                    "fotos_antes_b64": fotos_antes_b64,
+                    "fotos_depois_b64": fotos_depois_b64,
+                    "fotos_cmaq_b64": fotos_cmaq_b64,
+                    "fotos_extras": fotos_extras_nomes,
+                    "fotos_extras_ids": fotos_extras_ids,
+                    "fotos_extras_b64": fotos_extras_b64,
+                    "condominio": op_nome_cond.strip(),
+                    "salvo_em": _agora_brasilia(),
+                }
+                pendentes = dados_ex.get("lancamentos_campo", [])
+                pendentes.append(lancamento)
+                dados_ex["lancamentos_campo"] = pendentes
+                dados_ex["nome_condominio"] = dados_ex.get("nome_condominio", op_nome_cond.strip())
+                if op_dosagens:
+                    dados_ex["dosagens_ultimas"] = (op_dosagens + [{"produto":"","fabricante_lote":"","quantidade":"","unidade":"","finalidade":""}]*7)[:7]
+                salvar_dados_condominio(pasta_op, dados_ex)
+
+                # v5: Sheets com proteção total — falha não derruba o app nem limpa sessão
+                try:
+                    ok_sheets = sheets_salvar_lancamento_campo(lancamento, op_nome_cond.strip())
+                except Exception as _e_sh:
+                    ok_sheets = False
+                    st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
+
+                if ok_sheets:
+                    st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
+                else:
+                    erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
+                    st.warning(
+                        "⚠️ A visita foi salva localmente e o PDF pode ser gerado normalmente. "
+                        "Houve falha ao gravar no Google Sheets — o relatório mensal pode não importar automaticamente."
+                    )
+                    if erro_sh:
+                        with st.expander("Detalhes do erro Sheets", expanded=False):
+                            st.code(erro_sh[:1500])
+                st.session_state["op_salvo_sucesso"] = {
+                    "nome": op_nome_cond, "data": data_vis,
+                    "operador": op_operador.strip() or "Não informado",
+                    "total": len(pendentes),
+                }
+                # Guarda último lançamento para gerar relatório
+                st.session_state["_op_ultimo_lancamento"] = lancamento
+                # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
+                st.session_state["op_limpar_campos"] = True
+                # Remove rascunho após salvar lançamento definitivo
+                deletar_rascunho_operador(op_nome_cond)
+                st.rerun()
+
+        pasta_hc = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) if op_nome_cond.strip() else None
+        if pasta_hc and pasta_hc.exists():
+            dados_hc = carregar_dados_condominio(pasta_hc)
+            pend_hc = (dados_hc or {}).get("lancamentos_campo", [])
+            if pend_hc:
+                st.markdown(f"**{len(pend_hc)} lançamento(s) registrado(s):**")
+                for lc in reversed(pend_hc[-3:]):
+                    ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
+                    st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
+
+    # Para o restante da página não renderizar no modo operador
+    st.stop()
+
+if modo == "Modo Campo":
+    st.info("Fluxo compacto habilitado para operação em campo no Windows / tablet Windows.")
+
+if st.session_state.origem_dados_carregados:
+    st.markdown(
+        f"""
+        <div class="quick-mode-box">
+            <strong>Dados carregados:</strong> {st.session_state.origem_dados_carregados}<br>
+            Agora você pode ajustar valor do aditivo, vigência ou renovar automaticamente.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+if st.session_state.painel_acao_msg:
+    st.success(st.session_state.painel_acao_msg)
+    st.session_state.painel_acao_msg = ""
+
+status_formulario = status_vencimento(
+    st.session_state.get("data_fim", ""),
+    st.session_state.alerta_vencimento_dias,
+)
+
+if st.session_state.get("data_fim", "").strip():
+    if status_formulario["codigo"] == "vencido":
+        st.markdown(
+            f"<div class='alert-vencido'><strong>Alerta de vencimento:</strong> {status_formulario['mensagem']}</div>",
+            unsafe_allow_html=True,
+        )
+    elif status_formulario["codigo"] == "vencendo":
+        st.markdown(
+            f"<div class='alert-vencendo'><strong>Atenção:</strong> {status_formulario['mensagem']}</div>",
+            unsafe_allow_html=True,
+        )
+    elif status_formulario["codigo"] == "vigente":
+        st.markdown(
+            f"<div class='alert-vigente'><strong>Status:</strong> {status_formulario['mensagem']}</div>",
+            unsafe_allow_html=True,
+        )
+
+# =========================================
+# DADOS DE PAINEL
+# =========================================
+
+def obter_metricas_bem_star():
+    """Coleta métricas para o Dashboard Bem Star.
+
+    Usa leitura única da aba de visitas (sheets_listar_todas_visitas) para
+    evitar loop por cliente que causava travamento e erro 429 de quota.
+    """
+    try:
+        todos_clientes = sheets_listar_clientes_completo()
+        clientes_bs = filtrar_clientes_por_empresa(todos_clientes, "bem_star")
+        total_ativos = len([c for c in clientes_bs if str(c.get("status", "Ativo")).strip().lower() != "inativo"])
+        nomes_bs = {str(c.get("nome", "")).strip().lower() for c in clientes_bs if c.get("nome")}
+
+        # Conta visitas do mês atual com leitura única da aba
+        mes_atual = datetime.now().strftime("%m/%Y")
+        visitas_mes = 0
+        try:
+            todas_visitas = sheets_listar_todas_visitas()
+            for v in todas_visitas:
+                cond = str(v.get("condominio", "")).strip().lower()
+                mes_v = str(v.get("mes_ano", "") or "").strip()
+                # Aceita tanto "MM/YYYY" no campo mes_ano quanto extrai da data
+                if not mes_v:
+                    data_v = str(v.get("data", ""))
+                    if len(data_v) >= 7:
+                        partes = data_v.split("/")
+                        mes_v = f"{partes[1]}/{partes[2]}" if len(partes) == 3 else ""
+                if mes_v == mes_atual and cond in nomes_bs:
+                    visitas_mes += 1
+        except Exception:
+            visitas_mes = 0
+
+        return {
+            "total_ativos": total_ativos,
+            "visitas_mes": visitas_mes,
+            "ultimos_pareceres": [],
+        }
+    except Exception as e:
+        _log_sheets_erro("obter_metricas_bem_star", e)
+        return {"total_ativos": 0, "visitas_mes": 0, "ultimos_pareceres": []}
+
+
+# v4 — carregamento cirúrgico por empresa:
+# O painel de vencimentos é exclusivo da Aqua Gestão/RT e faz varredura de pastas.
+# No login Bem Star ele atrasava ou interrompia a primeira pintura antes dos módulos
+# operacionais da Bem Star. Para Bem Star, inicializamos listas vazias e deixamos
+# os módulos próprios carregarem direto.
+if st.session_state.get("empresa_ativa") == "bem_star":
+    painel_vencimentos = []
+    painel_filtrado = []
+    total_monitorado = total_vencidos = total_vencendo = total_vigentes = total_indefinidos = total_com_json = 0
+    itens_vencidos = []
+    itens_vencendo = []
+    itens_indefinidos = []
+else:
+    painel_vencimentos = listar_painel_vencimentos(st.session_state.alerta_vencimento_dias)
+    painel_filtrado = filtrar_itens_painel(
+        painel_vencimentos,
+        st.session_state.busca_rapida,
+        st.session_state.filtro_status_central,
+    )
+
+    total_monitorado = len(painel_vencimentos)
+    total_vencidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencido"])
+    total_vencendo = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vencendo"])
+    total_vigentes = len([i for i in painel_vencimentos if i["status"]["codigo"] == "vigente"])
+    total_indefinidos = len([i for i in painel_vencimentos if i["status"]["codigo"] == "indefinido"])
+    total_com_json = len([i for i in painel_vencimentos if i["tem_json"]])
+
+    itens_vencidos = [i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]
+    itens_vencendo = [i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]
+    itens_indefinidos = [i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]
+
+# =========================================
+# DASHBOARD EXECUTIVO / BEM STAR
+# =========================================
+
+if st.session_state.get("empresa_ativa") == "bem_star":
+    # --- DASHBOARD BEM STAR ---
+    metricas_bs = obter_metricas_bem_star()
+    
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("⭐ Painel Bem Star Piscinas")
+    
+    db1, db2, db3 = st.columns(3)
+    with db1:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Clientes Ativos</div><div class='dash-value'>{metricas_bs['total_ativos']}</div><div class='dash-sub'>Carteira Bem Star</div></div>",
+            unsafe_allow_html=True,
+        )
+    with db2:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Visitas no Mês</div><div class='dash-value'>{metricas_bs['visitas_mes']}</div><div class='dash-sub'>Total de registros em {datetime.now().strftime('%m/%Y')}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with db3:
+        # Média de visitas por cliente ativo (exemplo de métrica extra)
+        media = (metricas_bs['visitas_mes'] / metricas_bs['total_ativos']) if metricas_bs['total_ativos'] > 0 else 0
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Média Visitas/Cli</div><div class='dash-value'>{media:.1f}</div><div class='dash-sub'>Frequência mensal média</div></div>",
+            unsafe_allow_html=True,
+        )
+    
+    st.markdown("**Últimos pareceres técnicos**")
+    if not metricas_bs['ultimos_pareceres']:
+        st.info("Nenhum parecer técnico recente encontrado.")
+    else:
+        for p in metricas_bs['ultimos_pareceres']:
+            st.markdown(f"- **{p['cliente']}** ({p['data']}): _{p['parecer']}_")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+else:
+    # --- DASHBOARD AQUA GESTÃO (ORIGINAL) ---
+    taxa_estrutura = (total_com_json / total_monitorado * 100) if total_monitorado else 0
+    criticos = [i for i in painel_vencimentos if i["status"]["codigo"] in ("vencido", "vencendo")][:5]
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Dashboard executivo")
+
+    d1, d2, d3, d4, d5 = st.columns(5)
+    with d1:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Total monitorado</div><div class='dash-value'>{total_monitorado}</div><div class='dash-sub'>Pastas acompanhadas pelo sistema</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d2:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vigentes</div><div class='dash-value'>{total_vigentes}</div><div class='dash-sub'>Dentro da vigência regular</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d3:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vencem em breve</div><div class='dash-value'>{total_vencendo}</div><div class='dash-sub'>Dentro da faixa de alerta</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d4:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Vencidos</div><div class='dash-value'>{total_vencidos}</div><div class='dash-sub'>Exigem ação imediata</div></div>",
+            unsafe_allow_html=True,
+        )
+    with d5:
+        st.markdown(
+            f"<div class='dash-mini'><div class='dash-title'>Cadastros estruturados</div><div class='dash-value'>{taxa_estrutura:.0f}%</div><div class='dash-sub'>{total_com_json} de {total_monitorado} com JSON salvo</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    cx1, cx2 = st.columns([1.15, 1])
+    with cx1:
+        st.markdown("**Resumo crítico**")
+        if not criticos:
+            st.success("Nenhum condomínio em faixa crítica no momento.")
+        else:
+            for item in criticos:
+                st.markdown(
+                    f"- **{item['nome_exibicao']}** — {item['status']['rotulo']} — {item['status']['mensagem']}"
+                )
+
+    with cx2:
+        st.markdown("**Leitura rápida**")
+        st.write(f"Sem vigência válida: **{total_indefinidos}**")
+        st.write(f"Com ação prioritária agora: **{total_vencidos + total_vencendo}**")
+        st.write(f"Faixa de lembrete atual: **{st.session_state.alerta_vencimento_dias} dias**")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# SAÚDE DO SISTEMA
+# =========================================
+
+diag = diagnostico_sistema()
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("Saúde do sistema")
+
+s1, s2, s3, s4, s5, s6 = st.columns(6)
+with s1:
+    st.markdown(f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    st.markdown(f"Template Bem Star<br><span class='{'health-ok' if diag['template_bem_star_ok'] else 'health-no'}'>{'OK' if diag['template_bem_star_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+with s2:
+    st.markdown(f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+with s3:
+    st.markdown(f"Template do relatório<br><span class='{'health-ok' if diag['template_relatorio_ok'] else 'health-no'}'>{'OK' if diag['template_relatorio_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+with s4:
+    st.markdown(f"Pasta de documentos<br><span class='{'health-ok' if diag['generated_ok'] else 'health-no'}'>{'OK' if diag['generated_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+with s5:
+    st.markdown(f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>", unsafe_allow_html=True)
+with s6:
+    st.markdown(f"Ambiente Windows<br><span class='{'health-ok' if diag['windows_ok'] else 'health-no'}'>{'OK' if diag['windows_ok'] else 'Fora do padrão'}</span>", unsafe_allow_html=True)
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# BUSCA RÁPIDA
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("Busca rápida profissional")
+
+b1, b2, b3 = st.columns([2.2, 1.2, 1])
+with b1:
+    st.text_input(
+        "Buscar por nome, CNPJ, síndico ou status",
+        key="busca_rapida",
+        placeholder="Ex.: terra nova, 12.345.678/0001-90, Marcelo, vencido...",
+    )
+with b2:
+    st.selectbox(
+        "Filtrar por status",
+        options=["Todos", "Vigente", "Vence em breve", "Vencido", "Sem vigência válida"],
+        key="filtro_status_central",
+    )
+with b3:
+    st.metric("Resultado da busca", len(painel_filtrado))
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# GESTÃO DE OPERADORES
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("👷 Gestão de Operadores")
+st.caption("Tela administrativa segura para cadastrar, editar, ativar/inativar operadores e definir exatamente quais condomínios cada PIN pode acessar.")
+st.info("🔐 PIN geral 2940 mantido como acesso mestre do sistema. Ele continua reservado e não pode ser usado no cadastro de operadores comuns.")
+
+_col_op_top1, _col_op_top2 = st.columns([1, 1.35])
+with _col_op_top1:
+    if st.button("🔧 Inicializar aba de Operadores no Sheets", key="btn_init_op_aba"):
+        ok_aba = sheets_criar_aba_operadores()
+        if ok_aba:
+            st.success("✅ Aba '👷 Operadores' criada/confirmada no Google Sheets!")
+        else:
+            st.error("❌ Erro ao criar aba. Verifique a conexão com o Sheets.")
+with _col_op_top2:
+    st.caption("Use este painel para centralizar o controle de PINs, status e permissões por condomínio, sem expor os PINs completos na tela.")
+
+if st.session_state.get("_operadores_erro"):
+    st.warning(st.session_state.get("_operadores_erro"))
+
+@st.cache_data(ttl=30)
+def _listar_ops():
+    return sheets_listar_operadores()
+
+ops_cadastrados = _listar_ops()
+
+@st.cache_data(ttl=60)
+def _clientes_para_painel_op():
+    return sheets_listar_clientes_completo()
+
+_todos_clientes_painel = _clientes_para_painel_op()
+_nomes_todos_clientes = _condominios_organizar([c.get("nome", "") for c in _todos_clientes_painel if c.get("nome")])
+
+
+def _mascarar_pin_admin(pin: str) -> str:
+    _pin = str(pin or "").strip()
+    if not _pin:
+        return "—"
+    if len(_pin) <= 2:
+        return "*" * len(_pin)
+    return f"{_pin[:2]}{'*' * (len(_pin) - 2)}"
+
+
+def _op_tem_acesso_total(op: dict) -> bool:
+    _conds = _condominios_organizar(op.get("condomínios", []))
+    return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds) or not _conds
+
+
+def _resumo_acesso_admin(op: dict) -> str:
+    _conds = _condominios_organizar(op.get("condomínios", []))
+    if _op_tem_acesso_total(op):
+        return f"Todos os {len(_nomes_todos_clientes)} condomínio(s) cadastrados"
+    _exatos = _resolver_condominios_permitidos_exatos(_conds, _nomes_todos_clientes)
+    _orfaos = [c for c in _conds if _normalizar_chave_acesso(c) not in {_normalizar_chave_acesso(x) for x in _exatos}]
+    _extra = f" | {len(_orfaos)} não localizado(s) exatamente" if _orfaos else ""
+    return f"{len(_exatos)} condomínio(s) vinculado(s){_extra}"
+
+
+def _ordenar_ops_admin(lista: list[dict]) -> list[dict]:
+    return sorted(
+        lista,
+        key=lambda op: (
+            0 if op.get("ativo") else 1,
+            _normalizar_chave_acesso(op.get("nome", "")),
+            _normalizar_chave_acesso(op.get("pin", "")),
+        ),
+    )
+
+
+def _filtrar_ops_admin(lista: list[dict], busca: str, status: str) -> list[dict]:
+    busca_norm = _normalizar_chave_acesso(busca)
+    resultado = []
+    for op in lista:
+        if status == "Ativos" and not op.get("ativo"):
+            continue
+        if status == "Inativos" and op.get("ativo"):
+            continue
+        if busca_norm:
+            alvo = " | ".join([
+                str(op.get("nome", "")),
+                str(op.get("pin", "")),
+                " | ".join(_condominios_organizar(op.get("condomínios", []))),
+            ])
+            if busca_norm not in _normalizar_chave_acesso(alvo):
+                continue
+        resultado.append(op)
+    return _ordenar_ops_admin(resultado)
+
+
+def _filtrar_condominios_por_busca(opcoes: list[str], busca: str, selecionados: list[str] | None = None) -> list[str]:
+    busca_norm = _normalizar_chave_acesso(busca)
+    selecionados_limpos = _condominios_organizar(selecionados or [])
+    if busca_norm:
+        filtrados = [c for c in opcoes if busca_norm in _normalizar_chave_acesso(c)]
+    else:
+        filtrados = list(opcoes)
+
+    combinados = []
+    vistos = set()
+    for nome in filtrados + selecionados_limpos:
+        chave = _normalizar_chave_acesso(nome)
+        if chave and chave not in vistos:
+            vistos.add(chave)
+            combinados.append(nome)
+    return combinados
+
+
+def _gerar_exportacao_operadores_csv(lista_ops: list[dict]) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow([
+        "Nome",
+        "PIN_mascarado",
+        "Status",
+        "Acesso_total",
+        "Qtd_condominios_permitidos",
+        "Condominios_permitidos",
+        "Condominios_localizados_exatamente",
+        "Permissoes_nao_localizadas",
+    ])
+
+    for op in _ordenar_ops_admin(lista_ops):
+        _conds = _condominios_organizar(op.get("condomínios", []))
+        _acesso_total_csv = _op_tem_acesso_total(op)
+        _exatos_csv = _resolver_condominios_permitidos_exatos(_conds, _nomes_todos_clientes)
+        _exatos_set_csv = {_normalizar_chave_acesso(c) for c in _exatos_csv}
+        _orfaos_csv = [c for c in _conds if _normalizar_chave_acesso(c) not in _exatos_set_csv and _normalizar_chave_acesso(c) != "todos"]
+        writer.writerow([
+            str(op.get("nome", "")).strip(),
+            _mascarar_pin_admin(op.get("pin", "")),
+            "Ativo" if op.get("ativo") else "Inativo",
+            "Sim" if _acesso_total_csv else "Não",
+            len(_exatos_csv) if not _acesso_total_csv else len(_nomes_todos_clientes),
+            " | ".join(_conds if not _acesso_total_csv else ["TODOS"]),
+            " | ".join(_exatos_csv),
+            " | ".join(_orfaos_csv),
+        ])
+    return buf.getvalue()
+
+
+def _filtrar_clientes_admin_por_empresa(clientes: list[dict], empresa_filtro: str) -> list[str]:
+    """Filtra nomes de clientes por painel/serviço sem misturar empresas.
+
+    Aqua Gestão: RT ativo ou empresa marcada como Aqua.
+    Bem Star: limpeza/manutenção ativa ou empresa marcada como Bem Star.
+    """
+    empresa_filtro = str(empresa_filtro or "Todas").strip()
+    nomes = []
+    for c in clientes or []:
+        nome = str(c.get("nome", "")).strip()
+        if not nome:
+            continue
+        serv = _normalizar_servicos_cliente(c)
+        emp = _normalizar_chave_acesso(str(c.get("empresa", "") or ""))
+        is_bem = "bem star" in emp or "bemstar" in emp
+        is_aqua = "aqua" in emp
+        tem_rt = bool(serv.get("rt"))
+        tem_limpeza = bool(serv.get("limpeza"))
+
+        if empresa_filtro == "Todas":
+            nomes.append(nome)
+        elif empresa_filtro == "Aqua Gestão" and (tem_rt or is_aqua):
+            nomes.append(nome)
+        elif empresa_filtro == "Bem Star Piscinas" and (tem_limpeza or is_bem):
+            nomes.append(nome)
+        elif empresa_filtro == "Ambas" and tem_rt and tem_limpeza:
+            nomes.append(nome)
+    return _condominios_organizar(nomes)
+
+
+_empresa_admin_nome = _empresa_ativa_nome()
+
+def _operador_tem_vinculo_no_painel(op: dict, clientes: list[dict], empresa_nome: str | None = None) -> bool:
+    """Confere se o operador tem ao menos um condomínio pertencente ao painel ativo."""
+    try:
+        empresa = str(empresa_nome or _empresa_ativa_nome() or "").strip()
+        if empresa not in ("Aqua Gestão", "Bem Star Piscinas"):
+            return True
+
+        nomes_painel = _filtrar_clientes_admin_por_empresa(clientes, empresa)
+        if not nomes_painel:
+            return False
+
+        if _op_tem_acesso_total(op):
+            return True
+
+        conds = _condominios_organizar(op.get("condomínios", []))
+        for cond in conds:
+            if any(nomes_condominio_equivalentes(cond, nome_painel) for nome_painel in nomes_painel):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+_total_ops = len(ops_cadastrados)
+_total_ativos = sum(1 for op in ops_cadastrados if op.get("ativo"))
+_total_inativos = _total_ops - _total_ativos
+_total_restritos = sum(1 for op in ops_cadastrados if not _op_tem_acesso_total(op))
+
+_mop1, _mop2, _mop3, _mop4 = st.columns(4)
+with _mop1:
+    st.metric("Operadores", _total_ops)
+with _mop2:
+    st.metric("Ativos", _total_ativos)
+with _mop3:
+    st.metric("Inativos", _total_inativos)
+with _mop4:
+    st.metric("Acesso restrito", _total_restritos)
+
+if ops_cadastrados:
+    _csv_operadores = _gerar_exportacao_operadores_csv(ops_cadastrados)
+    _exp1, _exp2 = st.columns([1.2, 2])
+    with _exp1:
+        st.download_button(
+            "📤 Exportar operadores e permissões",
+            data=_csv_operadores.encode("utf-8-sig"),
+            file_name=f"operadores_permissoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="btn_exportar_operadores_csv",
+        )
+    with _exp2:
+        st.caption("Exportação administrativa em CSV com status, PIN mascarado e condomínios permitidos/localizados para conferência.")
+
+if not ops_cadastrados:
+    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN 2940 continua funcionando como acesso geral.")
+
+_tab_ops1, _tab_ops2 = st.tabs(["🛡️ Administrar operadores", "➕ Cadastrar novo operador"])
+
+with _tab_ops1:
+    if not ops_cadastrados:
+        st.caption("Assim que houver operadores cadastrados, esta tela permitirá editar PIN, status e permissões com mais segurança.")
+    else:
+        _flt1, _flt2 = st.columns([1.1, 1.9])
+        with _flt1:
+            _status_ops = st.selectbox(
+                "Filtrar status",
+                ["Todos", "Ativos", "Inativos"],
+                key="ops_admin_status",
+            )
+        with _flt2:
+            _busca_ops = st.text_input(
+                "Buscar operador, PIN ou condomínio",
+                key="ops_admin_busca",
+                placeholder="Ex.: João, Terra Nova, 12",
+            )
+
+        _ops_visiveis = _filtrar_ops_admin(ops_cadastrados, _busca_ops, _status_ops)
+        _empresa_admin_nome = _empresa_ativa_nome()
+        _nomes_painel_admin = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_admin_nome)
+        _ops_visiveis = [
+            op for op in _ops_visiveis
+            if _operador_tem_vinculo_no_painel(op, _todos_clientes_painel, _empresa_admin_nome)
+        ]
+        st.caption(f"Painel ativo: {_empresa_admin_nome}. Exibindo apenas operadores com vínculo neste painel.")
+
+        if not _ops_visiveis:
+            st.warning("Nenhum operador encontrado com os filtros atuais.")
+        else:
+            _rotulos_ops = [
+                f"{'🟢' if op.get('ativo') else '🔴'} {op.get('nome', 'Sem nome')} | PIN {_mascarar_pin_admin(op.get('pin', ''))} | {_resumo_acesso_admin(op)}"
+                for op in _ops_visiveis
+            ]
+            _idx_op = st.selectbox(
+                "Selecione o operador para administrar",
+                options=list(range(len(_ops_visiveis))),
+                format_func=lambda i: _rotulos_ops[i],
+                key="ops_admin_selector",
+            )
+            _op_sel = _ops_visiveis[_idx_op]
+            _op_nome_sel = _op_sel.get("nome", "")
+            _op_pin_sel = str(_op_sel.get("pin", "")).strip()
+            _op_conds_sel = _condominios_organizar(_op_sel.get("condomínios", []))
+            _op_total_sel = _op_tem_acesso_total(_op_sel)
+            _op_exatos_sel = _resolver_condominios_permitidos_exatos(_op_conds_sel, _nomes_painel_admin)
+            _op_exatos_set = {_normalizar_chave_acesso(c) for c in _op_exatos_sel}
+            _op_orfaos_sel = [c for c in _op_conds_sel if _normalizar_chave_acesso(c) not in _op_exatos_set and _normalizar_chave_acesso(c) != "todos"]
+
+            st.markdown("### Painel do operador selecionado")
+            _sum1, _sum2, _sum3 = st.columns([1.1, 1, 1.4])
+            with _sum1:
+                st.caption("Operador")
+                st.markdown(f"**{_op_nome_sel}**")
+                st.caption(f"PIN mascarado: {_mascarar_pin_admin(_op_pin_sel)}")
+            with _sum2:
+                st.caption("Status")
+                st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
+                st.caption("PIN geral 2940 não aparece aqui por segurança.")
+            with _sum3:
+                st.caption("Escopo de acesso")
+                if _op_total_sel:
+                    st.markdown(f"**Acesso total** aos {len(_nomes_painel_admin)} condomínio(s) deste painel")
+                else:
+                    st.markdown(f"**{len(_op_exatos_sel)} condomínio(s)** com correspondência exata")
+                    if _op_orfaos_sel:
+                        st.caption(f"{len(_op_orfaos_sel)} permissão(ões) salva(s) sem cliente exato no cadastro atual")
+
+            with st.expander("🔎 Ver permissões atuais deste operador", expanded=False):
+                if _op_total_sel:
+                    st.success("Este operador está com acesso total liberado.")
+                else:
+                    if _op_exatos_sel:
+                        st.markdown("**Condomínios localizados exatamente no cadastro atual:**")
+                        for _c in _op_exatos_sel:
+                            st.caption(f"✅ {_c}")
+                    else:
+                        st.caption("Nenhum condomínio localizado exatamente no cadastro atual.")
+                    if _op_orfaos_sel:
+                        st.markdown("**Permissões salvas que não batem exatamente com o cadastro atual:**")
+                        for _c in _op_orfaos_sel:
+                            st.caption(f"⚠️ {_c}")
+
+            with st.expander("📋 Duplicar permissões de outro operador", expanded=False):
+                _ops_origem_dup = [
+                    op for op in _ordenar_ops_admin(ops_cadastrados)
+                    if _normalizar_chave_acesso(op.get("nome", "")) != _normalizar_chave_acesso(_op_nome_sel)
+                ]
+                if not _ops_origem_dup:
+                    st.caption("Cadastre pelo menos mais um operador para habilitar a duplicação de permissões.")
+                else:
+                    _idx_dup = st.selectbox(
+                        "Copiar permissões a partir de",
+                        options=list(range(len(_ops_origem_dup))),
+                        format_func=lambda i: f"{'🟢' if _ops_origem_dup[i].get('ativo') else '🔴'} {_ops_origem_dup[i].get('nome', 'Sem nome')} | {_resumo_acesso_admin(_ops_origem_dup[i])}",
+                        key=f"dup_perm_origem_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    )
+                    _op_origem_dup = _ops_origem_dup[_idx_dup]
+                    st.caption("Serão copiadas apenas as permissões de acesso. O PIN e o status do operador selecionado serão preservados.")
+                    if st.button(
+                        "📥 Duplicar permissões para este operador",
+                        key=f"btn_dup_perm_{_normalizar_chave_acesso(_op_nome_sel)}",
+                        use_container_width=True,
+                    ):
+                        _conds_dup = ["TODOS"] if _op_tem_acesso_total(_op_origem_dup) else _condominios_organizar(_op_origem_dup.get("condomínios", []))
+                        if sheets_salvar_operador(
+                            nome=_op_nome_sel,
+                            pin=_op_pin_sel,
+                            condomínios=_conds_dup,
+                            ativo=_op_sel.get("ativo", True),
+                        ):
+                            st.session_state.pop("_operadores_erro", None)
+                            st.success(f"✅ Permissões de '{_op_origem_dup.get('nome', 'origem')}' copiadas para '{_op_nome_sel}'.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(st.session_state.get("_operadores_erro") or "Erro ao duplicar permissões. Verifique a conexão com o Sheets.")
+
+            _fe1, _fe2 = st.columns([1.1, 1.9])
+            with _fe1:
+                _empresa_conds_edit = _empresa_ativa_nome()
+                st.text_input(
+                    "Permissões deste painel",
+                    value=_empresa_conds_edit,
+                    disabled=True,
+                    key=f"empresa_conds_edit_visivel_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    help="Para evitar mistura jurídica/visual, este formulário mostra apenas condomínios do painel administrativo ativo.",
+                )
+            with _fe2:
+                _busca_conds_edit = st.text_input(
+                    "Buscar condomínio dentro deste formulário",
+                    key=f"busca_conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    placeholder="Digite parte do nome para filtrar a lista de permissões",
+                )
+            _nomes_empresa_edit = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_conds_edit)
+            _opcoes_conds_edit = _filtrar_condominios_por_busca(_nomes_empresa_edit, _busca_conds_edit, _op_exatos_sel)
+            _set_painel_edit = {_normalizar_chave_acesso(n) for n in _nomes_empresa_edit}
+            _op_default_edit = [c for c in _op_exatos_sel if _normalizar_chave_acesso(c) in _set_painel_edit]
+            if not _op_total_sel:
+                st.caption(f"Exibindo {len(_opcoes_conds_edit)} de {len(_nomes_empresa_edit)} condomínio(s) para o filtro de empresa atual.")
+
+            _key_conds_edit = f"conds_edit_{_normalizar_chave_acesso(_op_nome_sel)}"
+            with st.container():
+                st.markdown("#### Editar operador com segurança")
+                _ed1, _ed2 = st.columns(2)
+                with _ed1:
+                    st.text_input("Nome do operador", value=_op_nome_sel, disabled=True, help="Para preservar o comportamento atual do sistema, o nome é tratado como chave de atualização.")
+                    _editar_pin = st.checkbox(
+                        "Redefinir PIN deste operador",
+                        value=False,
+                        key=f"edit_pin_toggle_{_normalizar_chave_acesso(_op_nome_sel)}",
+                        help="O PIN atual não é exibido em tela. Marque apenas se quiser trocar o PIN deste operador.",
+                    )
+                    _novo_pin_edit = st.text_input(
+                        "Novo PIN",
+                        value="",
+                        type="password",
+                        disabled=not _editar_pin,
+                        key=f"novo_pin_{_normalizar_chave_acesso(_op_nome_sel)}",
+                        placeholder="Digite um novo PIN exclusivo",
+                    )
+                with _ed2:
+                    _ativo_edit = st.checkbox(
+                        "Operador ativo",
+                        value=bool(_op_sel.get("ativo", True)),
+                        key=f"ativo_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    )
+                    _acesso_total_edit = st.checkbox(
+                        "Acesso total a todos os condomínios",
+                        value=_op_total_sel,
+                        key=f"total_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    )
+
+                if not _acesso_total_edit:
+                    _conds_edit = st.multiselect(
+                        "Condomínios permitidos para este PIN",
+                        options=_opcoes_conds_edit,
+                        default=_op_default_edit,
+                        key=_key_conds_edit,
+                        help="Seleção exata dos condomínios liberados para este operador.",
+                    )
+                    _selecionados_edit = _condominios_organizar(st.session_state.get(_key_conds_edit, _op_default_edit))
+                    _ced1, _ced2 = st.columns([1.1, 1.4])
+                    with _ced1:
+                        st.caption(f"Selecionados agora: {len(_selecionados_edit)} condomínio(s).")
+                    with _ced2:
+                        if st.button(
+                            "✅ Marcar todos os resultados da busca",
+                            key=f"btn_marcar_busca_{_normalizar_chave_acesso(_op_nome_sel)}",
+                            use_container_width=True,
+                            disabled=not bool(_opcoes_conds_edit),
+                        ):
+                            st.session_state[_key_conds_edit] = _condominios_organizar(_selecionados_edit + _opcoes_conds_edit)
+                            st.rerun()
+                else:
+                    st.caption("Com acesso total marcado, o operador continuará vendo todos os condomínios disponíveis.")
+                    _conds_edit = ["TODOS"]
+                    st.caption(f"Selecionados agora: {len(_nomes_todos_clientes)} condomínio(s) via acesso total.")
+
+                _salvar_edit = st.button(
+                    "💾 Salvar alterações do operador",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"btn_salvar_edit_{_normalizar_chave_acesso(_op_nome_sel)}",
+                )
+
+            if _salvar_edit:
+                _pin_final_edit = _novo_pin_edit.strip() if _editar_pin else _op_pin_sel
+                if _acesso_total_edit:
+                    _conds_final_edit = ["TODOS"]
+                else:
+                    # Edita somente as permissões do painel ativo e preserva vínculos de outro painel.
+                    _set_painel_salvar = {_normalizar_chave_acesso(n) for n in _nomes_empresa_edit}
+                    _conds_outros_paineis = [
+                        c for c in _op_conds_sel
+                        if _normalizar_chave_acesso(c) not in _set_painel_salvar
+                        and _normalizar_chave_acesso(c) != "todos"
+                    ]
+                    _conds_final_edit = _condominios_organizar(_conds_outros_paineis + _condominios_organizar(_conds_edit))
+
+                if not _pin_final_edit or len(_pin_final_edit) < 4:
+                    st.error("PIN deve ter pelo menos 4 caracteres.")
+                elif _pin_final_edit == "2940":
+                    st.error("O PIN 2940 é reservado para acesso geral. Escolha outro para este operador.")
+                elif _pin_operador_em_uso(_pin_final_edit, nome_ignorar=_op_nome_sel):
+                    st.error(f"O PIN {_pin_final_edit} já está em uso por outro operador.")
+                elif not _acesso_total_edit and not _conds_final_edit:
+                    st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
+                else:
+                    with st.spinner("Salvando alterações do operador..."):
+                        ok_edit = sheets_salvar_operador(
+                            nome=_op_nome_sel,
+                            pin=_pin_final_edit,
+                            condomínios=_conds_final_edit,
+                            ativo=_ativo_edit,
+                        )
+                    if ok_edit:
+                        st.session_state.pop("_operadores_erro", None)
+                        st.success(f"✅ Operador '{_op_nome_sel}' atualizado com sucesso.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(st.session_state.get("_operadores_erro") or "Erro ao salvar alterações do operador. Verifique a conexão com o Sheets.")
+
+            st.markdown("---")
+            st.markdown("**Ações administrativas adicionais**")
+            _rm_key = f"confirmar_remocao_{_normalizar_chave_acesso(_op_nome_sel)}"
+            _rm1, _rm2, _rm3 = st.columns([1.2, 1.1, 1.1])
+            with _rm1:
+                if st.button("🗑 Solicitar remoção deste operador", key=f"btn_solicitar_rm_{_normalizar_chave_acesso(_op_nome_sel)}", use_container_width=True):
+                    st.session_state[_rm_key] = True
+                    st.rerun()
+            if st.session_state.get(_rm_key):
+                st.warning(f"Confirme a remoção do operador '{_op_nome_sel}'. Esta ação apaga o cadastro da aba 👷 Operadores.")
+                with _rm2:
+                    if st.button("✅ Confirmar remoção", key=f"btn_confirma_rm_{_normalizar_chave_acesso(_op_nome_sel)}", use_container_width=True):
+                        if sheets_deletar_operador(_op_nome_sel):
+                            st.session_state.pop(_rm_key, None)
+                            st.session_state.pop("_operadores_erro", None)
+                            st.success(f"Operador '{_op_nome_sel}' removido.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error("Erro ao remover operador. Verifique a conexão com o Sheets.")
+                with _rm3:
+                    if st.button("Cancelar remoção", key=f"btn_cancela_rm_{_normalizar_chave_acesso(_op_nome_sel)}", use_container_width=True):
+                        st.session_state.pop(_rm_key, None)
+                        st.rerun()
+
+with _tab_ops2:
+    _fn1, _fn2 = st.columns([1.1, 1.9])
+    with _fn1:
+        _empresa_conds_novo = _empresa_ativa_nome()
+        st.text_input(
+            "Permissões deste painel",
+            value=_empresa_conds_novo,
+            disabled=True,
+            key=f"empresa_conds_novo_visivel_{_empresa_conds_novo}",
+            help="Novo operador será vinculado somente a condomínios do painel administrativo ativo.",
+        )
+    with _fn2:
+        _busca_conds_novo = st.text_input(
+            "Buscar condomínio para o novo operador",
+            key="busca_conds_novo",
+            placeholder="Digite parte do nome para filtrar a lista de permissões",
+        )
+    _nomes_empresa_novo = _filtrar_clientes_admin_por_empresa(_todos_clientes_painel, _empresa_conds_novo)
+    _opcoes_conds_novo = _filtrar_condominios_por_busca(
+        _nomes_empresa_novo,
+        _busca_conds_novo,
+        st.session_state.get("op_novo_conds", []),
+    )
+    if _nomes_empresa_novo:
+        st.caption(f"Exibindo {len(_opcoes_conds_novo)} de {len(_nomes_empresa_novo)} condomínio(s) para o filtro de empresa atual.")
+    else:
+        st.caption("Nenhum condomínio disponível para o filtro de empresa selecionado.")
+
+    with st.container():
+        st.markdown("#### Cadastro seguro de novo operador")
+        _novo1, _novo2 = st.columns(2)
+        with _novo1:
+            op_nome_novo = st.text_input("Nome do operador *", key="op_novo_nome", placeholder="Ex.: João Silva")
+            op_pin_novo = st.text_input(
+                "PIN exclusivo *",
+                key="op_novo_pin",
+                placeholder="Ex.: 1234",
+                max_chars=10,
+                type="password",
+                help="Mínimo 4 caracteres. Não use 2940, pois este PIN é reservado para o acesso geral do sistema.",
+            )
+        with _novo2:
+            op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
+            op_acesso_total_novo = st.checkbox("Acesso a todos os condomínios", value=False, key="op_novo_acesso_total")
+
+        if not op_acesso_total_novo:
+            op_conds_novo = st.multiselect(
+                "Condomínios permitidos para este novo PIN",
+                options=_opcoes_conds_novo,
+                key="op_novo_conds",
+                help="Seleção exata dos condomínios liberados para o novo operador.",
+            )
+            _selecionados_novo = _condominios_organizar(st.session_state.get("op_novo_conds", []))
+            _cn1, _cn2 = st.columns([1.1, 1.4])
+            with _cn1:
+                st.caption(f"Selecionados agora: {len(_selecionados_novo)} condomínio(s).")
+            with _cn2:
+                if st.button(
+                    "✅ Marcar todos os resultados da busca",
+                    key="btn_marcar_busca_novo_operador",
+                    use_container_width=True,
+                    disabled=not bool(_opcoes_conds_novo),
+                ):
+                    st.session_state["op_novo_conds"] = _condominios_organizar(_selecionados_novo + _opcoes_conds_novo)
+                    st.rerun()
+        else:
+            st.caption("Com acesso total marcado, o novo operador verá todos os condomínios disponíveis no sistema.")
+            op_conds_novo = ["TODOS"]
+            st.caption(f"Selecionados agora: {len(_nomes_todos_clientes)} condomínio(s) via acesso total.")
+
+        _salvar_novo = st.button(
+            "💾 Cadastrar operador",
+            type="primary",
+            use_container_width=True,
+            key="btn_cadastrar_novo_operador_seguro",
+        )
+
+    if _salvar_novo:
+        _nome_op_limpo = re.sub(r"\s+", " ", op_nome_novo.strip())
+        _pin_op_limpo = op_pin_novo.strip()
+        _conds_op_final = ["TODOS"] if op_acesso_total_novo else _condominios_organizar(op_conds_novo)
+
+        if not _nome_op_limpo:
+            st.error("Informe o nome do operador.")
+        elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
+            st.error("PIN deve ter pelo menos 4 caracteres.")
+        elif _pin_op_limpo == "2940":
+            st.error("O PIN 2940 é reservado para acesso geral. Escolha outro.")
+        elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
+            st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
+        elif not op_acesso_total_novo and not _conds_op_final:
+            st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
+        else:
+            with st.spinner("Salvando operador..."):
+                ok_op = sheets_salvar_operador(
+                    nome=_nome_op_limpo,
+                    pin=_pin_op_limpo,
+                    condomínios=_conds_op_final,
+                    ativo=op_ativo_novo,
+                )
+            if ok_op:
+                st.session_state.pop("_operadores_erro", None)
+                st.success(f"✅ Operador '{_nome_op_limpo}' cadastrado com sucesso.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error(st.session_state.get("_operadores_erro") or "❌ Erro ao salvar operador. Verifique a conexão com o Sheets.")
+                with st.expander("🔍 Ver detalhe técnico do erro", expanded=False):
+                    _det = st.session_state.get("_sheets_ultimo_erro", "Sem detalhes.")
+                    st.code(_det, language="text")
+                # _EXPANDER_ERRO_SHEETS_OK_
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# CADASTRO DE CLIENTES — GOOGLE SHEETS
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+_empresa_cadastro_nome = _empresa_ativa_nome()
+st.subheader(f"👥 Cadastro de Clientes — {_empresa_cadastro_nome}")
+if _empresa_ativa_codigo() == "aqua_gestao":
+    st.caption("Neste painel aparecem somente clientes de RT/controle técnico da Aqua Gestão.")
+else:
+    st.caption("Neste painel aparecem somente clientes de limpeza/manutenção da Bem Star Piscinas.")
+
+# ── Diagnóstico de conexão (visível para admin) ──────────────────────────────
+with st.expander("🔌 Testar conexão com Google Sheets", expanded=False):
+    if st.button("▶ Executar teste de conexão agora", key="btn_teste_sheets"):
+        with st.spinner("Testando conexão..."):
+            sh_teste = conectar_sheets()
+        if sh_teste is not None:
+            try:
+                abas_disponiveis = [w.title for w in sh_teste.worksheets()]
+                st.success("✅ Conexão estabelecida com sucesso!")
+                st.write(f"**Abas encontradas na planilha:** {abas_disponiveis}")
+                abas_esperadas = ["👥 Clientes", "🔬 Visitas"]
+                faltando = [a for a in abas_esperadas if a not in abas_disponiveis]
+                if faltando:
+                    st.warning(
+                        f"⚠️ Aba(s) esperada(s) não encontrada(s): {faltando}\n\n"
+                        "Verifique se os nomes das abas na planilha estão escritos **exatamente** assim, "
+                        "incluindo os emojis."
+                    )
+                else:
+                    st.success("✅ Todas as abas necessárias foram encontradas.")
+            except Exception as ex:
+                st.warning(f"Conexão ok, mas erro ao listar abas: {ex}")
+        else:
+            st.error("❌ Falha na conexão com o Google Sheets.")
+            erro_detalhado = st.session_state.get("_sheets_ultimo_erro", "Sem detalhes.")
+            st.code(erro_detalhado, language="text")
+            st.markdown(
+                "**Próximos passos para resolver:**\n"
+                "1. Confirme que `gspread` e `google-auth` estão no `requirements.txt`\n"
+                "2. No Streamlit Cloud → Settings → Secrets → verifique se `[gcp_service_account]` está presente\n"
+                "3. Force redeploy: no painel do Streamlit Cloud clique em **Reboot app**\n"
+                "4. Verifique se a conta de serviço `aqua-gestao-sheets@aqua-gestao-rt.iam.gserviceaccount.com` tem acesso **Editor** à planilha"
+            )
+    st.caption("Use este botão sempre que a conexão com o Sheets falhar para identificar a causa exata.")
+
+# Mostra clientes já cadastrados no Sheets
+@st.cache_data(ttl=30)
+def _clientes_cadastrados():
+    return sheets_listar_clientes_completo()
+
+clientes_cadastrados_todos = _clientes_cadastrados()
+clientes_cadastrados = _filtrar_clientes_painel_ativo(clientes_cadastrados_todos)
+
+if clientes_cadastrados:
+    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) para {_empresa_cadastro_nome} no Google Sheets:")
+    for c in clientes_cadastrados:
+        _serv = _normalizar_servicos_cliente(c)
+        _badges = []
+        if _serv.get("rt"):
+            _badges.append("🔵 RT")
+        if _serv.get("limpeza"):
+            _badges.append("⭐ Limpeza")
+        _ops = _normalizar_lista_textos_unicos(c.get("operadores_vinculados", []))
+        _ops_txt = f" • Operadores: {', '.join(_ops)}" if _ops else ""
+        st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
+else:
+    st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
+
+# Processa flag de limpeza ANTES de renderizar os widgets
+if st.session_state.pop("_cc_limpar", False):
+    for k in ["cc_nome","cc_cnpj","cc_cep","cc_endereco","cc_contato","cc_telefone",
+              "cc_vol_adulto","cc_vol_infantil","cc_vol_family",
+              "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
+              "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
+        st.session_state[k] = ""
+    # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
+    st.session_state["cc_verificacoes_semanais"] = 3
+    st.session_state["cc_srv_rt"] = False
+    st.session_state["cc_srv_limpeza"] = False
+    st.session_state["cc_operadores_vinculados"] = []
+
+# ── Seletor de edição ────────────────────────────────────────────────────────
+_cc_modo = st.radio("Ação", ["➕ Novo cliente", "✏️ Editar cliente existente"],
+    key="cc_modo_acao", horizontal=True, label_visibility="collapsed")
+
+_cc_cliente_editar = {}
+if _cc_modo == "✏️ Editar cliente existente":
+    @st.cache_data(ttl=30)
+    def _clientes_completos_edit():
+        return sheets_listar_clientes_completo()
+    _clientes_edit = _filtrar_clientes_painel_ativo(_clientes_completos_edit())
+    if _clientes_edit:
+        _nomes_edit = [c["nome"] for c in _clientes_edit]
+        _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
+        _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
+        if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
+            st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
+            st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
+            st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
+            st.session_state["cc_endereco"]     = _cc_cliente_editar.get("endereco","")
+            _servicos_cc = _servicos_padrao_empresa_ativa()
+            # No cadastro separado, o serviço é determinado pelo painel ativo.
+            st.session_state["cc_srv_rt"]       = bool(_servicos_cc.get("rt", False))
+            st.session_state["cc_srv_limpeza"]  = bool(_servicos_cc.get("limpeza", False))
+            st.session_state["cc_operadores_vinculados"] = _normalizar_lista_textos_unicos(_cc_cliente_editar.get("operadores_vinculados", []))
+            st.session_state["cc_contato"]      = _cc_cliente_editar.get("contato","")
+            st.session_state["cc_telefone"]     = _cc_cliente_editar.get("telefone","")
+            st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
+            st.session_state["cc_vol_infantil"] = str(_cc_cliente_editar.get("vol_infantil","") or "")
+            st.session_state["cc_vol_family"]   = str(_cc_cliente_editar.get("vol_family","") or "")
+            try:
+                st.session_state["cc_verificacoes_semanais"] = int(_cc_cliente_editar.get("verificacoes_semanais", 3) or 3)
+            except Exception:
+                st.session_state["cc_verificacoes_semanais"] = 3
+            _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
+            st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
+            st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
+            st.session_state["cc_pisc_extra2_nome"] = _piscs_extras[1]["nome"] if len(_piscs_extras) > 1 else ""
+            st.session_state["cc_pisc_extra2_vol"]  = str(_piscs_extras[1].get("vol","") or "") if len(_piscs_extras) > 1 else ""
+            st.rerun()
+    else:
+        st.info("Nenhum cliente para editar.")
+
+# ── Formulário ───────────────────────────────────────────────────────────────
+def _mask_cc_cnpj():
+    st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj",""))
+
+def _mask_cc_telefone():
+    st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
+
+# Serviço vinculado ao cadastro conforme painel ativo
+st.markdown("**🧩 Serviço vinculado ao cadastro**")
+_cc_servicos = _servicos_padrao_empresa_ativa()
+_cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+if _empresa_ativa_codigo() == "aqua_gestao":
+    st.info("🔵 Este cadastro será salvo como cliente de RT / Controle Técnico da Aqua Gestão.")
+else:
+    st.info("⭐ Este cadastro será salvo como cliente de Limpeza / Manutenção da Bem Star Piscinas.")
+# Mantém as chaves antigas coerentes para não quebrar edições/sessão.
+st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
+st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
+
+_operadores_disponiveis = []
+_ops_raw_cc = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
+for _op in _ops_raw_cc:
+    _nome_op = re.sub(r"\s+", " ", str(_op.get("nome", "") or "").strip())
+    if _nome_op and _nome_op not in _operadores_disponiveis:
+        _operadores_disponiveis.append(_nome_op)
+
+# Fallback: se o Sheets falhar em um rerun, mantém a última lista válida.
+if _operadores_disponiveis:
+    st.session_state["_cache_operadores_disponiveis"] = list(_operadores_disponiveis)
+else:
+    _operadores_disponiveis = list(st.session_state.get("_cache_operadores_disponiveis", []))
+
+# Evita que o Streamlit apague seleções já carregadas se a lista vier incompleta.
+for _nome_sel_op in st.session_state.get("cc_operadores_vinculados", []) or []:
+    if _nome_sel_op and _nome_sel_op not in _operadores_disponiveis:
+        _operadores_disponiveis.append(_nome_sel_op)
+
+cc_operadores_vinculados = st.multiselect(
+    "Operadores vinculados ao condomínio",
+    options=_operadores_disponiveis,
+    key="cc_operadores_vinculados",
+    help="Esses operadores verão este condomínio automaticamente ao entrar com o PIN."
+)
+if not _operadores_disponiveis:
+    st.caption("Cadastre operadores no módulo de operadores para depois vinculá-los aos condomínios.")
+
+cc1, cc2 = st.columns(2)
+with cc1:
+    cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+    # CEP com busca automática ViaCEP
+    # Aplica CEP formatado se acabou de buscar
+    if st.session_state.get("_cc_cep_fmt"):
+        st.session_state["cc_cep"] = st.session_state.pop("_cc_cep_fmt")
+    _cep_col1, _cep_col2 = st.columns([3, 1])
+    with _cep_col1:
+        cc_cep = st.text_input("CEP", key="cc_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _cep_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_cep = st.button("🔍", key="btn_buscar_cep", help="Buscar CEP")
+    if _btn_cep:
+        _cep_valor = re.sub(r"\D", "", st.session_state.get("cc_cep", ""))
+        if len(_cep_valor) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dados_cep = buscar_cep(_cep_valor)
+            if _dados_cep:
+                _logradouro = _dados_cep.get("logradouro", "")
+                _bairro     = _dados_cep.get("bairro", "")
+                _cidade     = _dados_cep.get("localidade", "")
+                _uf         = _dados_cep.get("uf", "")
+                _cep_fmt    = f"{_cep_valor[:5]}-{_cep_valor[5:]}"
+                _end_auto   = ", ".join(p for p in [_logradouro, _bairro, f"{_cidade}/{_uf}", _cep_fmt] if p)
+                st.session_state["cc_endereco"] = _end_auto
+                st.session_state["_cc_cep_fmt"] = _cep_fmt
+                st.rerun()
+            else:
+                st.error("CEP não encontrado. Verifique e tente novamente.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
+    cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+with cc2:
+    cc_cnpj     = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
+    cc_contato  = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
+    cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
+
+# ── Volumes das piscinas ─────────────────────────────────────────────────────
+st.markdown("**🏊 Volumes das piscinas (m³)**")
+st.caption("Preencha apenas as piscinas que este local possui. O volume é usado para calcular dosagens automaticamente.")
+
+cv1, cv2, cv3 = st.columns(3)
+with cv1:
+    cc_vol_adulto   = st.text_input("🏊 Adulto (m³)", key="cc_vol_adulto",
+        placeholder="ex: 150", help="Volume da piscina adulto em metros cúbicos")
+with cv2:
+    cc_vol_infantil = st.text_input("🐣 Infantil (m³)", key="cc_vol_infantil",
+        placeholder="ex: 30", help="Volume da piscina infantil em metros cúbicos")
+with cv3:
+    cc_vol_family   = st.text_input("👨‍👩‍👧 Family (m³)", key="cc_vol_family",
+        placeholder="ex: 50", help="Volume da piscina family em metros cúbicos")
+
+# Piscinas extras (outra, SPA, coberta, etc.)
+st.markdown("**Outras piscinas** (SPA, coberta, olímpica, etc.)")
+_cv_extra1, _cv_extra2 = st.columns(2)
+with _cv_extra1:
+    cc_pisc_extra1_nome = st.text_input("Nome da piscina extra 1", key="cc_pisc_extra1_nome",
+        placeholder="ex: SPA, Coberta, Olímpica")
+with _cv_extra2:
+    cc_pisc_extra1_vol  = st.text_input("Volume (m³)", key="cc_pisc_extra1_vol",
+        placeholder="ex: 80")
+_cv_extra3, _cv_extra4 = st.columns(2)
+with _cv_extra3:
+    cc_pisc_extra2_nome = st.text_input("Nome da piscina extra 2", key="cc_pisc_extra2_nome",
+        placeholder="ex: Aquecida, Semiolímpica")
+with _cv_extra4:
+    cc_pisc_extra2_vol  = st.text_input("Volume (m³) ", key="cc_pisc_extra2_vol",
+        placeholder="ex: 120")
+
+
+st.markdown("**🧪 Rotina de verificação técnica**")
+# Sanitiza a frequência antes de criar o widget. Isso evita erro visual do Streamlit
+# ao alternar entre Novo cliente / Editar cliente existente com estados antigos.
+try:
+    _cc_freq_atual = int(st.session_state.get("cc_verificacoes_semanais", 3) or 3)
+except Exception:
+    _cc_freq_atual = 3
+_cc_freq_atual = max(1, min(7, _cc_freq_atual))
+# v5: não atribui value= quando key já está em session_state (evita conflito Streamlit)
+if "cc_verificacoes_semanais" not in st.session_state:
+    st.session_state["cc_verificacoes_semanais"] = _cc_freq_atual
+
+_cc_freq_col1, _cc_freq_col2 = st.columns([1, 2.2])
+with _cc_freq_col1:
+    cc_verificacoes_semanais = st.number_input(
+        "Verificações por semana",
+        min_value=1, max_value=7,
+        step=1, key="cc_verificacoes_semanais",
+        help="Ex.: 3 verificações semanais geram 12 linhas padrão no relatório mensal."
+    )
+with _cc_freq_col2:
+    _linhas_previstas = calcular_linhas_analises_por_frequencia(int(cc_verificacoes_semanais or 3))
+    st.caption(f"Com {int(cc_verificacoes_semanais)}x por semana, o relatório mensal abrirá pelo menos {_linhas_previstas} linhas de análises. Se houver mais visitas importadas, o sistema expande automaticamente.")
+
+def _parse_vol(v):
+    try: return float(str(v).replace(",",".").strip() or 0)
+    except: return 0.0
+
+# ── Botão salvar ─────────────────────────────────────────────────────────────
+_btn_label = "💾 Salvar cliente no Google Sheets" if _cc_modo == "➕ Novo cliente" else "💾 Salvar alterações"
+if st.button(_btn_label, type="primary", use_container_width=True):
+    if not cc_nome.strip():
+        st.error("Informe o nome do condomínio.")
+    else:
+        _vol_a = _parse_vol(cc_vol_adulto)
+        _vol_i = _parse_vol(cc_vol_infantil)
+        _vol_f = _parse_vol(cc_vol_family)
+        with st.spinner("Salvando no Google Sheets..."):
+            _cc_servicos = _servicos_padrao_empresa_ativa()
+            _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+            _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
+            _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
+            _piscs_extras_form = []
+            for _en, _ev in [
+                (st.session_state.get("cc_pisc_extra1_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra1_vol","").strip()),
+                (st.session_state.get("cc_pisc_extra2_nome","").strip(),
+                 st.session_state.get("cc_pisc_extra2_vol","").strip()),
+            ]:
+                if _en:
+                    try:
+                        _ev_f = float(_ev.replace(",",".")) if _ev else 0
+                    except:
+                        _ev_f = 0
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
+
+            if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
+                ok = sheets_editar_cliente(
+                    id_cliente=_cc_cliente_editar["id"],
+                    nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
+                    endereco=cc_endereco.strip(), contato=cc_contato.strip(),
+                    telefone=cc_telefone.strip(),
+                    vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
+                    empresa=_cc_empresa_val,
+                )
+                msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
+            else:
+                ok = sheets_salvar_cliente(
+                    nome=cc_nome.strip(), cnpj=cc_cnpj.strip(),
+                    endereco=cc_endereco.strip(), contato=cc_contato.strip(),
+                    telefone=cc_telefone.strip(),
+                    vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
+                    empresa=_cc_empresa_val,
+                )
+                msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+
+            _pasta_cliente = GENERATED_DIR / slugify_nome(cc_nome.strip())
+            _pasta_cliente.mkdir(parents=True, exist_ok=True)
+            _dados_cliente_local = carregar_dados_condominio(_pasta_cliente) or {}
+            _dados_cliente_local.update({
+                "nome_condominio": cc_nome.strip(),
+                "cnpj_condominio": cc_cnpj.strip(),
+                "cnpj": cc_cnpj.strip(),
+                "cep": cc_cep.strip(),
+                "endereco_condominio": cc_endereco.strip(),
+                "endereco": cc_endereco.strip(),
+                "nome_sindico": cc_contato.strip(),
+                "contato": cc_contato.strip(),
+                "telefone": cc_telefone.strip(),
+                "vol_adulto": _vol_a,
+                "vol_infantil": _vol_i,
+                "vol_family": _vol_f,
+                "verificacoes_semanais": int(cc_verificacoes_semanais or 3),
+                "analises_mensais_padrao": calcular_linhas_analises_por_frequencia(int(cc_verificacoes_semanais or 3)),
+                "empresa": _cc_empresa_val,
+                "servicos": _cc_servicos_norm,
+                "operadores_vinculados": _cc_operadores_sel,
+                "piscinas_extras": _piscs_extras_form,
+            })
+            # Monta lista de piscinas ativas para o operador (sem precisar configurar)
+            _piscinas_adm = []
+            if _vol_a: _piscinas_adm.append("Piscina Adulto")
+            if _vol_i: _piscinas_adm.append("Piscina Infantil")
+            if _vol_f: _piscinas_adm.append("Piscina Family")
+            for _pe in _piscs_extras_form:
+                if _pe.get("nome"): _piscinas_adm.append(_pe["nome"])
+            if _piscinas_adm:
+                _dados_cliente_local["piscinas"] = _piscinas_adm
+            salvar_dados_condominio(_pasta_cliente, _dados_cliente_local)
+        if ok:
+            st.success(msg_ok)
+            st.cache_data.clear()
+            st.session_state["_cc_limpar"] = True
+            st.rerun()
+        else:
+            st.error("❌ Não foi possível salvar no Google Sheets.")
+            erro_detalhado = st.session_state.get("_sheets_ultimo_erro","")
+            if erro_detalhado:
+                with st.expander("🔍 Ver diagnóstico do erro", expanded=True):
+                    st.code(erro_detalhado, language="text")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+if _empresa_ativa_codigo() != "bem_star":
+    # =========================================
+    # CENTRAL DE ENVIO DE DOCUMENTOS — AQUA GESTÃO
+    # =========================================
+    # _CENTRAL_EMAIL_DOCUMENTOS_DEFINITIVA_V3_
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    st.subheader("📧 Central de Envio de Documentos")
+    st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
+
+    _pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
+    _nomes_pastas_envio = [humanizar_nome_pasta(p.name) for p in _pastas_envio]
+    _mapa_pastas_envio = dict(zip(_nomes_pastas_envio, _pastas_envio))
+
+    _nome_envio_padrao = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+    _idx_envio = 0
+    if _nome_envio_padrao and _nomes_pastas_envio:
+        for _i, _n in enumerate(_nomes_pastas_envio):
+            if nomes_condominio_equivalentes(_nome_envio_padrao, _n):
+                _idx_envio = _i
+                break
+
+    if _nomes_pastas_envio:
+        _nome_cond_envio = st.selectbox(
+            "Condomínio / cliente para buscar documentos",
+            options=_nomes_pastas_envio,
+            index=_idx_envio,
+            key="central_email_condominio",
+        )
+        _pasta_cond_envio = _mapa_pastas_envio.get(_nome_cond_envio)
+    else:
+        _nome_cond_envio = _nome_envio_padrao or "Condomínio"
+        _pasta_cond_envio = None
+        st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
+
+    _email_envio_padrao = (st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
+    try:
+        _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
+        _email_envio_padrao = _email_envio_padrao or str(_dados_cond_envio.get("email_cliente", "") or _dados_cond_envio.get("email", "") or "").strip()
+    except Exception:
+        _dados_cond_envio = {}
+
+    _docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio, st.session_state.get("ultimos_docs_gerados") or [])
+    _docs_por_tipo = {"Contrato": [], "Aditivo": [], "Termo de ciência": [], "POP": [], "Relatório": [], "Outros": []}
+    for _doc in _docs_envio:
+        _nm = _doc.name.lower()
+        if "contrato" in _nm:
+            _docs_por_tipo["Contrato"].append(_doc)
+        elif "aditivo" in _nm:
+            _docs_por_tipo["Aditivo"].append(_doc)
+        elif "termo" in _nm or "ciencia" in _nm or "ciência" in _nm:
+            _docs_por_tipo["Termo de ciência"].append(_doc)
+        elif "pop" in _nm:
+            _docs_por_tipo["POP"].append(_doc)
+        elif "relatorio" in _nm or "relatório" in _nm:
+            _docs_por_tipo["Relatório"].append(_doc)
+        else:
+            _docs_por_tipo["Outros"].append(_doc)
+
+    with st.expander("📤 Compor e enviar documentação", expanded=False):
+        _env_c1, _env_c2 = st.columns(2)
+        with _env_c1:
+            _dest_env = st.text_input("Destinatário *", value=_email_envio_padrao, key="central_email_destinatario", placeholder="email@condominio.com.br")
+            _assunto_env = st.text_input("Assunto *", value=f"Documentação técnica Aqua Gestão - {_nome_cond_envio}", key="central_email_assunto")
+        with _env_c2:
+            _cc_env = st.text_input("CC", value="", key="central_email_cc", placeholder="administradora@exemplo.com.br")
+            _bcc_env = st.text_input("CCO", value="", key="central_email_bcc")
+
+        _msg_env_padrao = (
+            f"Prezados,\n\n"
+            f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_cond_envio}.\n\n"
+            "Os documentos selecionados seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+            "Permaneço à disposição para qualquer esclarecimento."
+        )
+        _msg_env = st.text_area("Mensagem", value=_msg_env_padrao, height=180, key="central_email_mensagem")
+
+        st.markdown("**Selecionar documentos locais:**")
+        _selecionados_envio = []
+        for _tipo_doc, _lista_docs in _docs_por_tipo.items():
+            if not _lista_docs:
+                continue
+            _opcoes_tipo = [p.name for p in _lista_docs]
+            _default_tipo = _opcoes_tipo[:2] if _tipo_doc in ("Contrato", "Aditivo", "Termo de ciência", "Relatório") else []
+            _sel_tipo = st.multiselect(
+                _tipo_doc,
+                options=_opcoes_tipo,
+                default=_default_tipo,
+                key=f"central_email_tipo_{slugify_nome(_tipo_doc)}",
+            )
+            _mapa_tipo = {p.name: p for p in _lista_docs}
+            _selecionados_envio.extend([_mapa_tipo[n] for n in _sel_tipo if n in _mapa_tipo])
+
+        _uploads_env = st.file_uploader(
+            "📎 Adicionar anexos manuais (PDF/DOCX)",
+            type=["pdf", "docx"],
+            accept_multiple_files=True,
+            key="central_email_uploads",
+        )
+
+        _status_cfg_env, _erro_cfg_env = _email_aqua_configurado()
+        if not _status_cfg_env:
+            st.warning(f"⚠️ SMTP não configurado: {_erro_cfg_env}")
+
+        _qtd_upload_env = len(_uploads_env or [])
+        st.caption(f"{len(_selecionados_envio)} documento(s) local(is) + {_qtd_upload_env} upload(s) selecionado(s).")
+
+        if st.button("📨 Enviar documentos selecionados", type="primary", use_container_width=True, key="central_email_btn_enviar", disabled=not _status_cfg_env):
+            if not _dest_env.strip():
+                st.error("Informe o destinatário.")
+            elif not _assunto_env.strip():
+                st.error("Informe o assunto.")
+            elif not _selecionados_envio and not _uploads_env:
+                st.error("Selecione ou envie pelo menos um anexo.")
+            else:
+                import tempfile as _tmp_env
+                _tmp_dir_env = Path(_tmp_env.mkdtemp())
+                _anexos_env = list(_selecionados_envio)
+                for _uf_env in (_uploads_env or []):
+                    _p_env = _tmp_dir_env / _uf_env.name
+                    _p_env.write_bytes(_uf_env.getbuffer())
+                    _anexos_env.append(_p_env)
+                _ok_env, _msg_retorno_env = enviar_email_aqua_smtp(
+                    destinatario=_dest_env.strip(),
+                    assunto=_assunto_env.strip(),
+                    mensagem=_msg_env,
+                    anexos=_anexos_env,
+                    cc=_cc_env.strip(),
+                    bcc=_bcc_env.strip(),
+                )
+                if _ok_env:
+                    st.success(f"✅ {_msg_retorno_env}")
+                else:
+                    st.error(f"❌ {_msg_retorno_env}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================
+    # PAINEL DE VENCIMENTOS
+    # =========================================
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Painel de vencimentos")
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.metric("Total monitorado", len(painel_filtrado))
+    with m2:
+        st.metric("Vencidos", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencido"]))
+    with m3:
+        st.metric("Vencem em breve", len([i for i in painel_filtrado if i["status"]["codigo"] == "vencendo"]))
+    with m4:
+        st.metric("Vigentes", len([i for i in painel_filtrado if i["status"]["codigo"] == "vigente"]))
+    with m5:
+        st.metric("Sem vigência", len([i for i in painel_filtrado if i["status"]["codigo"] == "indefinido"]))
+
+    st.caption(
+        "Painel operacional separado do histórico comum, com filtro central, exportação de cadastro e visualização dos últimos documentos."
+    )
+
+    aba1, aba2, aba3 = st.tabs(
+        ["Condomínios vencidos", "Condomínios que vencem em breve", "Sem vigência válida"]
+    )
+
+    def render_exportacao_e_docs(item: dict, item_key: str):
+        dados = item["dados"]
+        ultimo_contrato = item["ultimo_contrato"]
+        ultimo_aditivo = item["ultimo_aditivo"]
+        ultimo_relatorio = item.get("ultimo_relatorio")
+
+        st.markdown("<div class='docs-note'><strong>Documentos mais recentes</strong></div>", unsafe_allow_html=True)
+
+        dc1, dc2, dc3, dc4, dc5 = st.columns(5)
+        with dc1:
+            if ultimo_contrato:
+                if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_contrato["path"])
+            else:
+                st.button("Sem contrato", key=f"sem_contrato_{item_key}", disabled=True, use_container_width=True)
+
+        with dc2:
+            if ultimo_aditivo:
+                if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_aditivo["path"])
+            else:
+                st.button("Sem aditivo", key=f"sem_aditivo_{item_key}", disabled=True, use_container_width=True)
+
+        with dc3:
+            if ultimo_relatorio:
+                if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
+                    abrir_arquivo_windows(ultimo_relatorio["path"])
+            else:
+                st.button("Sem relatório", key=f"sem_relatorio_{item_key}", disabled=True, use_container_width=True)
+
+        with dc4:
+            if dados:
+                json_bytes = json.dumps(dados, ensure_ascii=False, indent=2).encode("utf-8")
+                st.download_button(
+                    "Exportar JSON backup",
+                    data=json_bytes,
+                    file_name=f"{item['slug']}_cadastro.json",
+                    mime="application/json",
+                    key=f"download_json_{item_key}",
+                    use_container_width=True,
+                )
+            else:
+                st.button("Sem JSON", key=f"sem_json_{item_key}", disabled=True, use_container_width=True)
+
+        with dc5:
+            if dados:
+                html = gerar_html_resumo_cadastro(item).encode("utf-8")
+                st.download_button(
+                    "Exportar resumo HTML",
+                    data=html,
+                    file_name=f"{item['slug']}_resumo_cadastro.html",
+                    mime="text/html",
+                    key=f"download_html_{item_key}",
+                    use_container_width=True,
+                )
+            else:
+                st.button("Sem resumo", key=f"sem_resumo_{item_key}", disabled=True, use_container_width=True)
+
+
+    with aba1:
+        if not itens_vencidos:
+            st.markdown(
+                "<div class='venc-empty'>Nenhum condomínio vencido no momento.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            for item in itens_vencidos:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                data_fim = item["data_fim"] or "Não informada"
+                item_key = chave_segura(f"painel_vencido_{pasta}")
+
+                st.markdown(
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
+                        <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    if st.button("Editar cadastro", key=f"editar_vencido_{item_key}", use_container_width=True):
+                        aplicar_dados_no_formulario(dados_salvos)
+                        st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
+                        st.rerun()
+
+                with c2:
+                    if st.button("Abrir pasta", key=f"abrir_vencido_{item_key}", use_container_width=True):
+                        abrir_pasta_windows(pasta)
+
+                with c3:
+                    if st.button("Renovar no formulário", key=f"renovar_vencido_{item_key}", use_container_width=True):
+                        ok, msg = preparar_renovacao_no_formulario(dados_salvos)
+                        if ok:
+                            st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                with c4:
+                    if st.button("Gerar aditivo renovação", key=f"aditivo_vencido_{item_key}", use_container_width=True):
+                        ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
+                        if ok:
+                            st.session_state.painel_acao_msg = msg
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                render_exportacao_e_docs(item, item_key)
+
+    with aba2:
+        if not itens_vencendo:
+            st.markdown(
+                "<div class='venc-empty'>Nenhum condomínio dentro da faixa de alerta no momento.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            for item in itens_vencendo:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                data_fim = item["data_fim"] or "Não informada"
+                item_key = chave_segura(f"painel_vencendo_{pasta}")
+
+                st.markdown(
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Data final:</strong> {data_fim}</div>
+                        <div class="venc-meta"><strong>Situação:</strong> {texto_dias_restantes(status)}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    if st.button("Editar cadastro", key=f"editar_vencendo_{item_key}", use_container_width=True):
+                        aplicar_dados_no_formulario(dados_salvos)
+                        st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
+                        st.rerun()
+
+                with c2:
+                    if st.button("Abrir pasta", key=f"abrir_vencendo_{item_key}", use_container_width=True):
+                        abrir_pasta_windows(pasta)
+
+                with c3:
+                    if st.button("Renovar no formulário", key=f"renovar_vencendo_{item_key}", use_container_width=True):
+                        ok, msg = preparar_renovacao_no_formulario(dados_salvos)
+                        if ok:
+                            st.session_state.painel_acao_msg = f"{msg} Condomínio: {nome_exibicao}."
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                with c4:
+                    if st.button("Gerar aditivo renovação", key=f"aditivo_vencendo_{item_key}", use_container_width=True):
+                        ok, msg = gerar_aditivo_renovacao_por_painel(pasta, st.session_state.alerta_vencimento_dias)
+                        if ok:
+                            st.session_state.painel_acao_msg = msg
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+                render_exportacao_e_docs(item, item_key)
+
+    with aba3:
+        if not itens_indefinidos:
+            st.markdown(
+                "<div class='venc-empty'>Nenhum condomínio sem vigência válida encontrado.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            for item in itens_indefinidos:
+                nome_exibicao = item["nome_exibicao"]
+                pasta = item["pasta"]
+                dados_salvos = item["dados"]
+                status = item["status"]
+                origem = item["origem"]
+                total_arquivos = len(item["arquivos"])
+                item_key = chave_segura(f"painel_indefinido_{pasta}")
+
+                st.markdown(
+                    f"""
+                    <div class="venc-row">
+                        <div class="venc-nome">{nome_exibicao}</div>
+                        <div class="venc-meta"><strong>Status:</strong> {status['rotulo']}</div>
+                        <div class="venc-meta"><strong>Arquivos encontrados:</strong> {total_arquivos}</div>
+                        <span class="status-badge {status['css']}">{status['rotulo']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if origem == "legado_sem_json":
+                    st.markdown(
+                        "<div class='legacy-note'>Histórico antigo sem <strong>dados_condominio.json</strong>. "
+                        "Agora você pode criar um cadastro inicial diretamente a partir desta pasta.</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("Criar cadastro desta pasta", key=f"legado_{item_key}", use_container_width=True):
+                            preparar_cadastro_legado(pasta.name)
+                            st.session_state.painel_acao_msg = f"Cadastro inicial preparado a partir da pasta '{pasta.name}'."
+                            st.rerun()
+
+                    with c2:
+                        if st.button("Abrir pasta", key=f"abrir_legado_{item_key}", use_container_width=True):
+                            abrir_pasta_windows(pasta)
+
+                    with c3:
+                        st.button("Gerar aditivo renovação", key=f"aditivo_legado_{item_key}", disabled=True, use_container_width=True)
+                else:
+                    st.markdown(
+                        "<div class='legacy-note'>Existe cadastro salvo, porém sem data final válida. "
+                        "Carregue os dados no formulário e corrija a vigência.</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("Editar cadastro", key=f"editar_indefinido_{item_key}", use_container_width=True):
+                            aplicar_dados_no_formulario(dados_salvos)
+                            st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
+                            st.rerun()
+                    with c2:
+                        if st.button("Abrir pasta", key=f"abrir_indefinido_{item_key}", use_container_width=True):
+                            abrir_pasta_windows(pasta)
+                    with c3:
+                        st.button("Gerar aditivo renovação", key=f"aditivo_indefinido_{item_key}", disabled=True, use_container_width=True)
+
+                render_exportacao_e_docs(item, item_key)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================
+    # CLIENTES SEM RT — CADASTRO E RELATÓRIO TÉCNICO
+    # =========================================
+
+
+# =========================================
+# MÓDULOS EXCLUSIVOS BEM STAR — só renderizam no painel Bem Star
+# =========================================
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("Bem Star — Relatório Técnico Simples / Operacional")
+    st.caption("Módulo exclusivo da Bem Star Piscinas para limpeza, manutenção, visitas operacionais, análises básicas, dosagens e relatório sem RT.")
+    
+    with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
+    
+        # Lista clientes sem RT já cadastrados
+        CLIENTES_SEM_RT_JSON = GENERATED_DIR / "_clientes_sem_rt.json"
+    
+        def carregar_clientes_sem_rt() -> list:
+            if CLIENTES_SEM_RT_JSON.exists():
+                try:
+                    return json.loads(CLIENTES_SEM_RT_JSON.read_text(encoding="utf-8"))
+                except Exception:
+                    return []
+            return []
+    
+        def salvar_clientes_sem_rt(lista: list):
+            GENERATED_DIR.mkdir(exist_ok=True)
+            CLIENTES_SEM_RT_JSON.write_text(json.dumps(lista, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+        clientes_sem_rt = carregar_clientes_sem_rt()
+    
+        # ── Importar do Sheets ────────────────────────────────────────────────────
+        @st.cache_data(ttl=60)
+        def _clientes_sheets_csr():
+            return sheets_listar_clientes_completo()
+    
+        _cls_sheets = filtrar_clientes_por_empresa(_clientes_sheets_csr(), "bem_star")
+        if _cls_sheets:
+            _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
+            _sel_csr_imp = st.selectbox(
+                "🔗 Importar cliente do Google Sheets",
+                _opcoes_csr_imp,
+                key="sel_importar_csr",
+                help="Importa os dados do cadastro principal para o formulário abaixo."
+            )
+            if _sel_csr_imp and _sel_csr_imp != "— Importar do cadastro principal (Sheets) —":
+                if st.button("⬇️ Importar dados", key="btn_imp_csr", use_container_width=False):
+                    _d = next((c for c in _cls_sheets if c["nome"] == _sel_csr_imp), {})
+                    if _d:
+                        st.session_state["csr_nome"]     = _d.get("nome", "")
+                        st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
+                        st.session_state["csr_endereco"] = _d.get("endereco", "")
+                        st.session_state["csr_contato"]  = _d.get("contato", "")
+                        st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
+                        st.success(f"✅ Dados de '{_sel_csr_imp}' importados!")
+                        st.rerun()
+            st.markdown("---")
+    
+        st.markdown("**Novo cliente sem RT:**")
+    
+        def _mask_csr_cnpj():
+            st.session_state["csr_cnpj"] = formatar_cnpj(st.session_state.get("csr_cnpj", ""))
+    
+        def _mask_csr_telefone():
+            st.session_state["csr_telefone"] = formatar_telefone(st.session_state.get("csr_telefone", ""))
+    
+        csr1, csr2 = st.columns(2)
+        with csr1:
+            csr_nome = st.text_input("Nome do local / condomínio", key="csr_nome", placeholder="Ex.: Residencial Sol Nascente")
+            if st.session_state.get("_csr_cep_fmt"):
+                st.session_state["csr_cep"] = st.session_state.pop("_csr_cep_fmt")
+            _csr_cep_c1, _csr_cep_c2 = st.columns([3, 1])
+            with _csr_cep_c1:
+                st.text_input("CEP", key="csr_cep", placeholder="00000-000",
+                    help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+            with _csr_cep_c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                _btn_csr_cep = st.button("🔍", key="btn_buscar_cep_csr", help="Buscar CEP")
+            if _btn_csr_cep:
+                _cep_v = re.sub(r"\D", "", st.session_state.get("csr_cep", ""))
+                if len(_cep_v) == 8:
+                    with st.spinner("Buscando CEP..."):
+                        _dc = buscar_cep(_cep_v)
+                    if _dc:
+                        _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                        st.session_state["csr_endereco"] = _end
+                        st.session_state["_csr_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                        st.rerun()
+                    else:
+                        st.error("CEP não encontrado.")
+                else:
+                    st.warning("Digite um CEP válido com 8 dígitos.")
+            csr_endereco = st.text_area("Endereço", key="csr_endereco", height=70, placeholder="Rua, número, bairro, cidade")
+        with csr2:
+            csr_cnpj = st.text_input("CNPJ (opcional)", key="csr_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_csr_cnpj)
+            csr_contato = st.text_input("Responsável / contato", key="csr_contato", placeholder="Nome do responsável")
+            csr_telefone = st.text_input("Telefone (opcional)", key="csr_telefone", placeholder="(34) 99999-9999", on_change=_mask_csr_telefone)
+    
+        if st.button("➕ Salvar cliente (Bem Star)", use_container_width=True):
+            if not csr_nome.strip():
+                st.error("Informe o nome do local.")
+            else:
+                novo = {
+                    "nome": csr_nome.strip(),
+                    "cnpj": formatar_cnpj(csr_cnpj.strip()),
+                    "endereco": csr_endereco.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": formatar_telefone(csr_telefone.strip()),
+                    "cadastrado_em": _agora_brasilia(),
+                }
+                # Atualiza se já existe, senão adiciona
+                nomes_existentes = [c["nome"].lower() for c in clientes_sem_rt]
+                if csr_nome.strip().lower() in nomes_existentes:
+                    idx_ex = nomes_existentes.index(csr_nome.strip().lower())
+                    clientes_sem_rt[idx_ex] = novo
+                    st.success(f"Cliente '{csr_nome}' atualizado.")
+                else:
+                    clientes_sem_rt.append(novo)
+                    st.success(f"Cliente '{csr_nome}' cadastrado com sucesso.")
+                salvar_clientes_sem_rt(clientes_sem_rt)
+                # Salva também no Google Sheets (col M = Bem Star Piscinas)
+                with st.spinner("Sincronizando com Google Sheets..."):
+                    _cl_sheets = sheets_listar_clientes_completo()
+                    _existe_sheets = next((c for c in _cl_sheets
+                        if c["nome"].lower().strip() == csr_nome.strip().lower()), None)
+                    if _existe_sheets:
+                        sheets_editar_cliente(
+                            id_cliente=_existe_sheets["id"],
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                    else:
+                        sheets_salvar_cliente(
+                            nome=csr_nome.strip(),
+                            cnpj=formatar_cnpj(csr_cnpj.strip()),
+                            endereco=csr_endereco.strip(),
+                            contato=csr_contato.strip(),
+                            telefone=formatar_telefone(csr_telefone.strip()),
+                            empresa="Bem Star Piscinas",
+                        )
+                st.cache_data.clear()
+                # Cria pasta do cliente no generated
+                pasta_csr = GENERATED_DIR / slugify_nome(csr_nome.strip())
+                pasta_csr.mkdir(parents=True, exist_ok=True)
+                _dados_csr_local = carregar_dados_condominio(pasta_csr) or {}
+                _dados_csr_local.update({
+                    "nome_condominio": csr_nome.strip(),
+                    "cnpj_condominio": csr_cnpj.strip(),
+                    "cnpj": csr_cnpj.strip(),
+                    "endereco_condominio": csr_endereco.strip(),
+                    "endereco": csr_endereco.strip(),
+                    "nome_sindico": csr_contato.strip(),
+                    "contato": csr_contato.strip(),
+                    "telefone": csr_telefone.strip(),
+                    "empresa": "Bem Star Piscinas",
+                    "servicos": {"rt": False, "limpeza": True},
+                    "tipo": "sem_rt",
+                    "salvo_em": _agora_brasilia(),
+                })
+                salvar_dados_condominio(pasta_csr, _dados_csr_local)
+                st.rerun()
+    
+        if clientes_sem_rt:
+            st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
+            for c in clientes_sem_rt:
+                st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
+    
+    # ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
+    st.markdown("---")
+    st.markdown("**📊 Relatório técnico Bem Star Piscinas (sem RT)**")
+    
+    # Carrega clientes Bem Star do Sheets (fonte principal) + fallback JSON local
+    @st.cache_data(ttl=30)
+    def _clientes_bem_star_relatorio():
+        _todos = sheets_listar_clientes_completo()
+        _bs = filtrar_clientes_por_empresa(_todos, "bem_star")
+        # Fallback: também inclui clientes do JSON local
+        _json_local = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+        _nomes_sheets = {c["nome"].lower() for c in _bs}
+        for _cl in _json_local:
+            if _cl["nome"].lower() not in _nomes_sheets:
+                _bs.append(_cl)
+        return _bs
+    
+    clientes_sem_rt_reload = _clientes_bem_star_relatorio()
+    opcoes_csr = [c["nome"] for c in clientes_sem_rt_reload]
+    
+    if not opcoes_csr:
+        st.info("Cadastre um cliente Bem Star acima para gerar o relatório técnico.")
+    else:
+        rts1, rts2, rts3 = st.columns([2, 1, 1])
+        with rts1:
+            csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
+        with rts2:
+            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
+        with rts3:
+            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
+    
+        csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
+    
+        # ── Busca lançamentos: JSON local + Google Sheets ──────────────────────
+        pasta_csr_sel = GENERATED_DIR / slugify_nome(csr_sel) if csr_sel else None
+        _lanc_local_csr = []
+        if pasta_csr_sel and pasta_csr_sel.exists():
+            _dados_json_csr = carregar_dados_condominio(pasta_csr_sel)
+            _lanc_local_csr = (_dados_json_csr or {}).get("lancamentos_campo", [])
+    
+        _lanc_sheets_csr = []
+        if csr_sel:
+            try:
+                _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+            except Exception:
+                _lanc_sheets_csr = []
+    
+        # Deduplica local + Sheets
+        _vistos_csr = set()
+        _lanc_todos_csr = []
+        for _lc in _lanc_local_csr + _lanc_sheets_csr:
+            _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
+            if _ch not in _vistos_csr:
+                _vistos_csr.add(_ch)
+                _lanc_todos_csr.append(_lc)
+    
+        # Filtra por mês/ano
+        def _filtrar_mes_csr(lancamentos, mes, ano):
+            """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
+            if not mes or not ano:
+                return lancamentos
+            return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
+    
+        _mes_csr  = (csr_mes or "").strip()
+        _ano_csr  = (csr_ano or str(datetime.now().year)).strip()
+        lancamentos_csr = _filtrar_mes_csr(_lanc_todos_csr, _mes_csr, _ano_csr)
+    
+        # ── Painel de lançamentos disponíveis ────────────────────────────────
+        if lancamentos_csr:
+            _fonte_csr = "📱 local + Sheets" if _lanc_sheets_csr else "📱 local"
+            _periodo_csr = f"{lancamentos_csr[0].get('data','?')} → {lancamentos_csr[-1].get('data','?')}"
+            st.markdown(
+                f"<div style='border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;"
+                f"background:rgba(20,120,60,0.07);margin-bottom:12px;'>"
+                f"<strong>📱 {len(lancamentos_csr)} lançamento(s) encontrado(s) — {_fonte_csr}</strong><br>"
+                f"<span style='font-size:0.85rem;color:#3a6a3a;'>Período: {_periodo_csr}</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("👁 Ver lançamentos"):
+                for _lc in lancamentos_csr:
+                    st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
+        else:
+            st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
+    
+        csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
+        csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
+            placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+    
+        # ── Coleta fotos das visitas ─────────────────────────────────────────
+        pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
+        fotos_csr = []
+        if pasta_fotos_csr and pasta_fotos_csr.exists():
+            for _lc in lancamentos_csr:
+                for _nf in _lc.get("fotos", []):
+                    _pf = pasta_fotos_csr / _nf
+                    if _pf.exists():
+                        fotos_csr.append((_lc.get("data",""), _pf))
+    
+        if fotos_csr:
+            st.caption(f"📷 {len(fotos_csr)} foto(s) serão incluídas no relatório.")
+    
+        
+    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Gerando relatório Bem Star..."):
+                _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
+    
+            if not _resultado_bs.get("ok"):
+                st.error(_resultado_bs.get("mensagem", "Erro ao gerar relatório Bem Star."))
+            else:
+                docx_csr = Path(_resultado_bs["docx"])
+                pdf_csr = Path(_resultado_bs["pdf"])
+                ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
+                err_pdf_csr = _resultado_bs.get("erro_pdf")
+                _ctx_bs = _resultado_bs.get("dados", {})
+                st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
+                dl1, dl2 = st.columns(2)
+                with dl1:
+                    with open(docx_csr, "rb") as _f:
+                        st.download_button("⬇️ Baixar DOCX", data=_f, file_name=docx_csr.name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True)
+                with dl2:
+                    if ok_pdf_csr and pdf_csr.exists():
+                        with open(pdf_csr, "rb") as _f:
+                            st.download_button("⬇️ Baixar PDF", data=_f, file_name=pdf_csr.name,
+                                mime="application/pdf", use_container_width=True)
+                    else:
+                        st.warning(f"PDF não gerado: {err_pdf_csr}")
+    
+                _msg_rel = montar_mensagem_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
+                    tipo="relatorio",
+                    mes=_ctx_bs.get("mes", csr_mes),
+                    ano=_ctx_bs.get("ano", csr_ano),
+                )
+                exibir_bloco_envio_bem_star(
+                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    pasta=Path(_resultado_bs["pasta"]),
+                    telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
+                    email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
+                    mensagem=_msg_rel,
+                    key_suffix="relatorio",
+                )
+    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório Bem Star: {e}")
+            import traceback
+            st.code(traceback.format_exc(), language="text")
+    
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    
+
+    # =========================================
+    # PROPOSTA COMERCIAL — BEM STAR
+    # =========================================
+
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("📄 Proposta Comercial — Bem Star Piscinas")
+    st.caption("Gera proposta personalizada em PDF premium para o cliente.")
+
+    with st.expander("✏️ Preencher e gerar proposta", expanded=False):
+        _pb_col1, _pb_col2 = st.columns(2)
+        with _pb_col1:
+            _pb_cliente  = st.text_input("Cliente / Estabelecimento", key="pb_cliente")
+            _pb_cnpj     = st.text_input("CNPJ", key="pb_cnpj", placeholder="00.000.000/0001-00")
+            _pb_sindico  = st.text_input("Responsavel / Sindico", key="pb_sindico")
+            _pb_freq     = st.text_input("Frequencia de visitas", key="pb_freq", placeholder="ex: 2x por semana")
+        with _pb_col2:
+            _pb_endereco = st.text_input("Endereco", key="pb_endereco")
+            _pb_piscinas = st.text_input("Piscina(s) / Volume hidrico", key="pb_piscinas", placeholder="ex: Adulto 150m3, Infantil 40m3")
+            _pb_valor    = st.text_input("Valor mensal (R$)", key="pb_valor", placeholder="ex: 850,00")
+            _pb_venc     = st.text_input("Dia de vencimento", key="pb_venc", placeholder="ex: 10")
+        _pb_pgto  = st.selectbox("Forma de pagamento", ["PIX / Transferencia bancaria", "Boleto", "PIX", "Transferencia bancaria", "Cheque"], key="pb_pgto")
+        _pb_prods = st.radio("Produtos quimicos", ["Nao inclusos — por conta do contratante", "Inclusos no valor mensal"], key="pb_prods", horizontal=True)
+
+        if st.button("📄 Gerar Proposta Bem Star", type="primary", use_container_width=True, key="btn_gerar_prop_bs"):
+            with st.spinner("Gerando proposta..."):
+                _pb_dados = {
+                    "cliente": _pb_cliente, "cnpj": _pb_cnpj, "endereco": _pb_endereco,
+                    "sindico": _pb_sindico, "piscinas": _pb_piscinas, "frequencia": _pb_freq,
+                    "valor": _pb_valor, "vencimento": _pb_venc, "pagamento": _pb_pgto,
+                    "produtos_inclusos": _pb_prods,
+                }
+                try:
+                    _pb_bytes = gerar_proposta_pdf(_pb_dados, "Bem Star Piscinas")
+                    _pb_nome  = limpar_nome_arquivo(f"Proposta_Bem_Star_{_pb_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    st.success("✅ Proposta gerada com sucesso!")
+                    st.download_button("⬇️ Baixar Proposta PDF", data=_pb_bytes,
+                        file_name=_pb_nome, mime="application/pdf", use_container_width=True, key="dl_prop_bs")
+                except Exception as _e:
+                    st.error(f"Erro ao gerar proposta: {_e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================
+    # CONTRATO BEM STAR PISCINAS
+    # =========================================
+    
+    st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    st.subheader("📝 Contrato Bem Star Piscinas")
+    st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
+    
+    with st.expander("📋 Preencher e gerar contrato", expanded=False):
+    
+        # ── Seletor de cliente ────────────────────────────────────────────────────
+        # Correção definitiva:
+        # - evita que a lista suma em reruns;
+        # - mantém último carregamento válido em session_state;
+        # - permite atualizar manualmente a lista;
+        # - filtra clientes da Bem Star sem depender de rádio lateral.
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _clientes_bs_contrato():
+            _todos = sheets_listar_clientes_completo() or []
+            _locais = carregar_clientes_sem_rt() if CLIENTES_SEM_RT_JSON.exists() else []
+
+            # Junta clientes locais não encontrados no Sheets
+            _nomes_sheets = [str(c.get("nome", "")).strip() for c in _todos]
+            for _cl in _locais:
+                _nome_local = str(_cl.get("nome", "")).strip()
+                if _nome_local and _nome_local not in _nomes_sheets:
+                    _todos.append(_cl)
+
+            # Mantém apenas clientes Bem Star, mas preserva cadastros antigos sem empresa definida
+            _filtrados = []
+            for _c in _todos:
+                _nome = str(_c.get("nome", "")).strip()
+                if not _nome:
+                    continue
+                _empresa = str(_c.get("empresa", "")).strip().lower()
+                if ("bem star" in _empresa) or (_empresa == ""):
+                    _filtrados.append(_c)
+
+            # Deduplica por nome
+            _resultado = []
+            _vistos = set()
+            for _c in _filtrados:
+                _chave = str(_c.get("nome", "")).strip().lower()
+                if _chave and _chave not in _vistos:
+                    _vistos.add(_chave)
+                    _resultado.append(_c)
+
+            return sorted(_resultado, key=lambda x: str(x.get("nome", "")).lower())
+
+        col_atualizar_bs, col_info_bs = st.columns([1, 3])
+        with col_atualizar_bs:
+            if st.button("🔄 Atualizar clientes", key="btn_atualizar_clientes_bs_contrato"):
+                _clientes_bs_contrato.clear()
+                st.session_state.pop("_bs_clientes_contrato_ultimo_ok", None)
+                st.rerun()
+
+        _bs_clientes = _clientes_bs_contrato() or []
+
+        # Fallback: se o Sheets falhar em algum rerun, reaproveita a última lista boa da sessão
+        if _bs_clientes:
+            st.session_state["_bs_clientes_contrato_ultimo_ok"] = _bs_clientes
+        else:
+            _bs_clientes = st.session_state.get("_bs_clientes_contrato_ultimo_ok", [])
+
+        _bs_nomes = ["— selecione ou preencha manualmente —"] + [c.get("nome", "") for c in _bs_clientes if c.get("nome")]
+
+        if len(_bs_nomes) == 1:
+            st.warning("⚠️ Nenhum cliente Bem Star carregado no momento. Clique em **Atualizar clientes**. Se persistir, teste a conexão com o Google Sheets.")
+
+        _bs_sel = st.selectbox(
+            "Carregar dados de cliente cadastrado",
+            _bs_nomes,
+            key="bs_cont_cliente_sel"
+        )
+    
+        if st.button("📂 Carregar dados do cliente", key="btn_bs_cont_carregar"):
+            _bs_dado = next((c for c in _bs_clientes if c["nome"] == _bs_sel), {})
+            if _bs_dado:
+                st.session_state["bs_cont_nome"]     = _bs_dado.get("nome", "")
+                st.session_state["bs_cont_cnpj"]     = _bs_dado.get("cnpj", "")
+                st.session_state["bs_cont_endereco"] = _bs_dado.get("endereco", "")
+                st.session_state["bs_cont_contato"]  = _bs_dado.get("contato", "")
+                st.session_state["bs_cont_telefone"] = _bs_dado.get("telefone", "")
+                st.success(f"✅ Dados de '{_bs_dado['nome']}' carregados.")
+                st.rerun()
+    
+        st.markdown("---")
+        st.markdown("**Dados do Contratante**")
+    
+        _bc1, _bc2 = st.columns(2)
+        with _bc1:
+            bs_nome     = st.text_input("Nome / Razão social *", key="bs_cont_nome",
+                placeholder="Ex.: Condomínio Residencial Bella Vista")
+            bs_endereco = st.text_area("Endereço completo", key="bs_cont_endereco",
+                height=70, placeholder="Rua, número, bairro, cidade/UF, CEP")
+        with _bc2:
+            bs_cnpj     = st.text_input("CPF / CNPJ", key="bs_cont_cnpj",
+                placeholder="00.000.000/0000-00")
+            bs_contato  = st.text_input("Representante / síndico", key="bs_cont_contato",
+                placeholder="Nome completo do responsável")
+            bs_telefone = st.text_input("Telefone / WhatsApp", key="bs_cont_telefone",
+                placeholder="(34) 99999-9999")
+    
+        st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
+        bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
+            height=60,
+            placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
+    
+        st.markdown("**Condições do serviço**")
+        _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
+        with _bs_c1:
+            bs_frequencia = st.selectbox("Frequência de visitas", 
+                ["1 visita semanal", "2 visitas semanais", "3 visitas semanais", "Outra"],
+                key="bs_cont_frequencia")
+            if bs_frequencia == "Outra":
+                bs_frequencia = st.text_input("Especificar frequência", key="bs_cont_freq_outro",
+                    placeholder="Ex.: quinzenal")
+        with _bs_c2:
+            bs_produtos = st.radio("Produtos químicos", 
+                ["Incluídos no valor", "Não incluídos (por conta do contratante)"],
+                key="bs_cont_produtos")
+        with _bs_c3:
+            bs_prazo = st.text_input("Prazo de vigência (meses)", key="bs_cont_prazo",
+                placeholder="Ex.: 12")
+    
+        st.markdown("**Valores e pagamento**")
+        _bs_v1, _bs_v2, _bs_v3, _bs_v4 = st.columns(4)
+        with _bs_v1:
+            bs_valor = st.text_input("Valor mensal (R$) *", key="bs_cont_valor",
+                placeholder="Ex.: 350,00")
+        with _bs_v2:
+            bs_valor_extenso = st.text_input("Valor por extenso", key="bs_cont_valor_extenso",
+                placeholder="Ex.: trezentos e cinquenta reais")
+        with _bs_v3:
+            bs_vencimento = st.text_input("Dia de vencimento", key="bs_cont_vencimento",
+                placeholder="Ex.: 10")
+        with _bs_v4:
+            bs_pagamento = st.selectbox("Forma de pagamento",
+                ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"],
+                key="bs_cont_pagamento")
+    
+        st.markdown("**Duração do Contrato**")
+        bs_duracao = st.radio("Tipo de contrato", 
+            ["Por tempo indeterminado", "12 meses com prorrogação automática"],
+            key="bs_cont_duracao", horizontal=True)
+    
+        st.markdown("**Datas**")
+        _bs_d1, _bs_d2, _bs_d3 = st.columns(3)
+        with _bs_d1:
+            bs_data_inicio = st.text_input("Data de início", key="bs_cont_data_inicio",
+                placeholder="dd/mm/aaaa", value=hoje_br(), on_change=on_change_bs_cont_data_inicio)
+        with _bs_d2:
+            if "indeterminado" in bs_duracao:
+                st.text_input("Data de término", value="Indeterminado", disabled=True)
+            else:
+                bs_data_fim = st.text_input("Data de término", key="bs_cont_data_fim",
+                    placeholder="dd/mm/aaaa", on_change=on_change_bs_cont_data_fim)
+        with _bs_d3:
+            bs_local_ass = st.text_input("Local de assinatura", key="bs_cont_local",
+                placeholder="Ex.: Uberlândia/MG", value="Uberlândia/MG")
+        bs_data_ass = st.text_input("Data de assinatura", key="bs_cont_data_ass",
+            placeholder="dd/mm/aaaa", value=hoje_br())
+    
+        st.markdown("---")
+    
+        if st.button("📄 Gerar Contrato Bem Star (PDF)", type="primary", use_container_width=True,
+                key="btn_gerar_contrato_bs"):
+            if not (st.session_state.get("bs_cont_nome","")).strip():
+                st.error("Informe o nome do contratante.")
+            elif not (st.session_state.get("bs_cont_valor","")).strip():
+                st.error("Informe o valor mensal.")
+            else:
+                # ── Tenta gerar via template_bem_star.docx (preferencial) ──────
+                if TEMPLATE_BEM_STAR.exists():
+                    _duracao_bs  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                    _prazo_bs    = "indeterminado" if "indeterminado" in _duracao_bs else "12 meses"
+                    _fim_bs      = "Indeterminado" if "indeterminado" in _duracao_bs else (
+                        (st.session_state.get("bs_cont_data_fim","")).strip() or "—"
+                    )
+                    _freq_bs     = (st.session_state.get("bs_cont_freq_outro","").strip()
+                                    or st.session_state.get("bs_cont_frequencia",""))
+                    _prods_inc_bs = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                    gerar_contrato_bem_star_docx(
+                        nome_contratante    = (st.session_state.get("bs_cont_nome","")).strip(),
+                        cpf_cnpj            = (st.session_state.get("bs_cont_cnpj","")).strip(),
+                        endereco_contratante= (st.session_state.get("bs_cont_endereco","")).strip(),
+                        valor_mensal        = valor_para_template((st.session_state.get("bs_cont_valor","")).strip()),
+                        valor_extenso       = (st.session_state.get("bs_cont_valor_extenso","")).strip(),
+                        dia_pagamento       = (st.session_state.get("bs_cont_vencimento","")).strip() or "10",
+                        forma_pagamento     = st.session_state.get("bs_cont_pagamento","Pix"),
+                        prazo_contrato      = _prazo_bs,
+                        data_inicio         = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br(),
+                        data_fim            = _fim_bs,
+                        local_data_assinatura = f"{(st.session_state.get('bs_cont_local','Uberlândia/MG')).strip()}, {(st.session_state.get('bs_cont_data_ass','')).strip() or hoje_br()}",
+                        piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
+                        produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
+                                              else "Produtos não incluídos no valor mensal"),
+                    )
+                else:
+                    # ── Fallback ReportLab (mantido para compatibilidade) ──────
+                    try:
+                        from reportlab.lib.units import cm
+                        from reportlab.lib import colors
+                        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                            Table, TableStyle, HRFlowable)
+                        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+                        import io as _io
+    
+                        # ── Coleta valores ─────────────────────────────────────────
+                        _nome     = (st.session_state.get("bs_cont_nome","")).strip()
+                        _cnpj     = (st.session_state.get("bs_cont_cnpj","")).strip()
+                        _end      = (st.session_state.get("bs_cont_endereco","")).strip()
+                        _contato  = (st.session_state.get("bs_cont_contato","")).strip()
+                        _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
+                        _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
+                        _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
+                        _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
+                        _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
+                        _valor    = (st.session_state.get("bs_cont_valor","")).strip()
+                        _ext      = (st.session_state.get("bs_cont_valor_extenso","")).strip() or _valor
+                        _venc     = (st.session_state.get("bs_cont_vencimento","")).strip() or "10"
+                        _pgto     = st.session_state.get("bs_cont_pagamento","Pix")
+                        _inicio   = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br()
+                        _duracao  = st.session_state.get("bs_cont_duracao", "12 meses com prorrogação automática")
+                        _fim      = "Indeterminado" if "indeterminado" in _duracao else ((st.session_state.get("bs_cont_data_fim","")).strip() or "—")
+                        _local    = (st.session_state.get("bs_cont_local","")).strip() or "Uberlândia/MG"
+                        _data_ass = (st.session_state.get("bs_cont_data_ass","")).strip() or hoje_br()
+                        _qualif   = f"inscrito(a) no CPF/CNPJ sob nº {_cnpj}," if _cnpj else ""
+                        _piscinas_txt = _piscinas or "conforme descrição operacional acordada entre as partes"
+                        _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc                             else "não estão incluídos no valor mensal contratado"
+    
+                        # ── Estilos ReportLab ──────────────────────────────────────
+                        styles = getSampleStyleSheet()
+                        s_titulo = ParagraphStyle("titulo", parent=styles["Heading1"],
+                            fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0d3d75"))
+                        s_sub = ParagraphStyle("sub", parent=styles["Normal"],
+                            fontSize=11, alignment=TA_CENTER, spaceAfter=2, textColor=colors.HexColor("#0d3d75"))
+                        s_clausula = ParagraphStyle("clausula", parent=styles["Normal"],
+                            fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold",
+                            textColor=colors.HexColor("#0d3d75"),
+                            borderPad=4, borderColor=colors.HexColor("#0d3d75"),
+                            leftIndent=0)
+                        s_body = ParagraphStyle("body", parent=styles["Normal"],
+                            fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4,
+                            leading=14, leftIndent=8)
+                        s_center = ParagraphStyle("center", parent=styles["Normal"],
+                            fontSize=10, alignment=TA_CENTER, spaceBefore=4)
+                        s_small = ParagraphStyle("small", parent=styles["Normal"],
+                            fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+    
+                        # ── Monta story ────────────────────────────────────────────
+                        story = []
+    
+                        # Logo Bem Star se disponível
+                        _logo_bs = encontrar_logo_bem_star()
+                        if _logo_bs and _logo_bs.exists():
+                            from reportlab.platypus import Image as RLImage
+                            _img = RLImage(str(_logo_bs), width=7*cm, height=2.5*cm,
+                                kind="proportional")
+                            _img.hAlign = "CENTER"
+                            story.append(_img)
+                            story.append(Spacer(1, 0.4*cm))
+    
+                        story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", s_sub))
+                        story.append(Paragraph("Limpeza e Manutenção de Piscinas", ParagraphStyle(
+                            "sub2", parent=styles["Normal"], fontSize=10,
+                            alignment=TA_CENTER, textColor=colors.HexColor("#5d7288"), spaceAfter=4)))
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(HRFlowable(width="100%", thickness=2,
+                            color=colors.HexColor("#0d3d75")))
+                        story.append(Spacer(1, 0.3*cm))
+    
+                        # Tabela identificação
+                        id_data = [
+                            ["CONTRATADA", "BEM STAR PISCINAS LTDA., CNPJ 26.799.958/0001-88\nAv. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG, CEP 38.412-316"],
+                            ["CONTRATANTE", f"{_nome}{', ' + _qualif if _qualif else ''} com endereço em {_end or '—'}."],
+                        ]
+                        t_id = Table(id_data, colWidths=[3.5*cm, 14*cm])
+                        t_id.setStyle(TableStyle([
+                            ("FONTNAME",  (0,0), (0,-1), "Helvetica-Bold"),
+                            ("FONTSIZE",  (0,0), (-1,-1), 9),
+                            ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
+                            ("BOX",       (0,0), (-1,-1), 1, colors.HexColor("#0d3d75")),
+                            ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#c0c8d8")),
+                            ("BACKGROUND",(0,0), (0,-1), colors.HexColor("#0d3d75")),
+                            ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+                            ("TOPPADDING",(0,0),(-1,-1), 7),
+                            ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                            ("LEFTPADDING",(0,0),(-1,-1), 8),
+                            ("RIGHTPADDING",(0,0),(-1,-1), 8),
+                        ]))
+                        story.append(t_id)
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(Paragraph(
+                            "As partes acima identificadas têm entre si justo e contratado o presente "
+                            "instrumento, regido pelas cláusulas e condições seguintes.", s_body))
+    
+                        # Cláusulas
+                        clausulas = [
+                            ("CLÁUSULA 1 — DO OBJETO",
+                             "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
+                             "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no "
+                             f"endereço do CONTRATANTE. Piscina(s) atendida(s): {_piscinas_txt}. "
+                             "Os serviços abrangem: aspiração, escovação de paredes e bordas, peneiração e retirada "
+                             "de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento visual das "
+                             "condições da água e operações rotineiras de circulação e filtração. Este contrato "
+                             "não inclui obras civis, substituição estrutural de equipamentos, reformas hidráulicas, "
+                             "reparos elétricos, laudos, perícias ou outros serviços extraordinários não previstos."),
+    
+                            ("CLÁUSULA 2 — DA FREQUÊNCIA E EXECUÇÃO",
+                             f"Os serviços serão executados com a seguinte frequência: {_freq}. "
+                             "As visitas ocorrerão em dias e horários definidos conforme programação operacional "
+                             "da CONTRATADA, podendo haver ajustes por necessidade climática, operacional, "
+                             "feriados, caso fortuito ou força maior. Serviços extraordinários, emergenciais "
+                             "ou fora da rotina poderão ser cobrados à parte, mediante comunicação prévia."),
+    
+                            ("CLÁUSULA 3 — DOS PRODUTOS E MATERIAIS",
+                             f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
+                             + ("Quando não incluídos, caberá ao CONTRATANTE providenciar todos os produtos e "
+                                "materiais necessários em quantidade e qualidade suficientes para a execução dos serviços. "
+                                "A falta de produtos ou condições inadequadas poderá impactar a qualidade do resultado "
+                                "operacional, sem que isso caracterize inadimplemento da CONTRATADA."
+                                if not _prods_inc else "")),
+    
+                            ("CLÁUSULA 4 — DO PREÇO E DO PAGAMENTO",
+                             f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de "
+                             f"R$ {_valor} ({_ext}). O vencimento ocorrerá todo dia {_venc} de cada mês, "
+                             f"mediante {_pgto}. O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% "
+                             "ao mês pro rata die e correção monetária. Persistindo a inadimplência, a CONTRATADA "
+                             "poderá suspender os serviços após comunicação prévia."),
+    
+                            ("CLÁUSULA 5 — DO PRAZO DE VIGÊNCIA",
+                             f"O presente contrato vigorará pelo prazo de {_prazo} meses, com início em {_inicio} "
+                             f"e término em {_fim}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
+                             "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa. "
+                             "Em contratos superiores a 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE."),
+    
+                            ("CLÁUSULA 6 — DAS OBRIGAÇÕES DAS PARTES",
+                             "A CONTRATADA executará os serviços com zelo, técnica e boa-fé; informará o "
+                             "CONTRATANTE sobre irregularidades que interfiram na conservação da piscina; e "
+                             "manterá sigilo sobre informações não públicas. "
+                             "O CONTRATANTE garantirá livre acesso ao local; manterá os sistemas básicos em "
+                             "funcionamento; comunicará previamente alterações relevantes de uso, eventos ou reformas; "
+                             "e efetuará o pagamento na forma e prazo pactuados."),
+    
+                            ("CLÁUSULA 7 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+                             "A CONTRATADA responde pela execução dos serviços dentro do escopo previsto, "
+                             "não se responsabilizando por falhas estruturais preexistentes ou supervenientes; "
+                             "defeitos elétricos, hidráulicos ou mecânicos fora do escopo; danos decorrentes de "
+                             "mau uso, acesso indevido de terceiros, vandalismo, intempéries ou ausência de insumos."),
+    
+                            ("CLÁUSULA 8 — DA RESCISÃO",
+                             "Este contrato poderá ser rescindido por mútuo acordo; por qualquer das partes, "
+                             "mediante aviso prévio por escrito de 30 dias; imediatamente, em caso de "
+                             "descumprimento contratual relevante após notificação sem saneamento; ou por "
+                             "inadimplência do CONTRATANTE. Permanecerão exigíveis os valores já vencidos e "
+                             "serviços efetivamente prestados."),
+    
+                            ("CLÁUSULA 9 — DAS DISPOSIÇÕES GERAIS",
+                             "Os dados fornecidos serão utilizados exclusivamente para execução do contrato, "
+                             "comunicações operacionais e rotinas administrativas. Qualquer alteração de escopo, "
+                             "frequência, preço ou condição relevante deverá ser formalizada por escrito. "
+                             "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir quaisquer controvérsias "
+                             "oriundas deste contrato, com renúncia de qualquer outro, por mais privilegiado que seja."),
+                        ]
+    
+                        for titulo_cl, texto_cl in clausulas:
+                            story.append(Paragraph(titulo_cl, s_clausula))
+                            story.append(Paragraph(texto_cl, s_body))
+    
+                        story.append(Spacer(1, 0.5*cm))
+                        story.append(HRFlowable(width="100%", thickness=0.5,
+                            color=colors.HexColor("#c0c8d8")))
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(Paragraph(
+                            f"E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) "
+                            f"vias de igual teor e forma.", s_body))
+                        story.append(Spacer(1, 0.2*cm))
+                        story.append(Paragraph(f"{_local}, {_data_ass}.", s_center))
+                        story.append(Spacer(1, 1*cm))
+    
+                        # Tabela de assinaturas
+                        ass_data = [
+                            ["___________________________________",
+                             "___________________________________"],
+                            ["BEM STAR PISCINAS LTDA.\nCONTRATADA",
+                             f"{_nome}\nCONTRATANTE"],
+                            ["", ""],
+                            ["___________________________________",
+                             "___________________________________"],
+                            ["TESTEMUNHA 1\nNome:\nCPF:",
+                             "TESTEMUNHA 2\nNome:\nCPF:"],
+                        ]
+                        t_ass = Table(ass_data, colWidths=[9*cm, 9*cm])
+                        t_ass.setStyle(TableStyle([
+                            ("ALIGN",    (0,0), (-1,-1), "CENTER"),
+                            ("FONTSIZE", (0,0), (-1,-1), 9),
+                            ("VALIGN",   (0,0), (-1,-1), "TOP"),
+                            ("TOPPADDING", (0,0),(-1,-1), 4),
+                        ]))
+                        story.append(t_ass)
+                        story.append(Spacer(1, 0.3*cm))
+                        story.append(HRFlowable(width="100%", thickness=0.5,
+                            color=colors.HexColor("#0d3d75")))
+                        story.append(Spacer(1, 0.15*cm))
+                        story.append(Paragraph(
+                            "Bem Star Piscinas LTDA. | CNPJ 26.799.958/0001-88 | "
+                            "Av. Getúlio Vargas, 4411, Uberlândia/MG | Documento de uso operacional",
+                            s_small))
+    
+                        # ── Gera PDF ───────────────────────────────────────────────
+                        pasta_bs_cont = GENERATED_DIR / slugify_nome(_nome)
+                        pasta_bs_cont.mkdir(parents=True, exist_ok=True)
+                        _ts_bs = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        pdf_bs_path = pasta_bs_cont / f"{_ts_bs}_{slugify_nome(_nome)}_CONTRATO_BS.pdf"
+    
+                        _buf = _io.BytesIO()
+                        doc_rl = SimpleDocTemplate(
+                            _buf,
+                            pagesize=A4,
+                            topMargin=2*cm, bottomMargin=2*cm,
+                            leftMargin=2.5*cm, rightMargin=2.5*cm,
+                            title=f"Contrato Bem Star — {_nome}",
+                            author="Bem Star Piscinas",
+                        )
+                        doc_rl.build(story)
+                        _pdf_bytes = _buf.getvalue()
+    
+                        with open(pdf_bs_path, "wb") as _pf:
+                            _pf.write(_pdf_bytes)
+    
+                        st.success(f"✅ Contrato gerado para {_nome}!")
+                        st.download_button(
+                            "⬇️ Baixar Contrato PDF",
+                            data=_pdf_bytes,
+                            file_name=pdf_bs_path.name,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_contrato_bs",
+                        )
+    
+                        # ── Bloco de envio ────────────────────────────────────────
+                        _msg_cont = montar_mensagem_bem_star(
+                            nome_local   = _nome,
+                            responsavel  = _contato,
+                            tipo         = "contrato",
+                        )
+                        exibir_bloco_envio_bem_star(
+                            nome_local   = _nome,
+                            pasta        = pasta_bs_cont,
+                            telefone     = _tel,
+                            email        = "",
+                            mensagem     = _msg_cont,
+                            key_suffix   = "contrato",
+                        )
+    
+                    except Exception as _e:
+                            st.error(f"Erro ao gerar contrato: {_e}")
+                            import traceback as _tb
+                            st.code(_tb.format_exc(), language="text")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+
+    # =========================================
+    # PROPOSTA COMERCIAL — AQUA GESTAO
+    # =========================================
+
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    st.subheader("📄 Proposta Comercial — Aqua Gestao RT")
+    st.caption("Gera proposta personalizada em PDF premium para o cliente.")
+
+    with st.expander("✏️ Preencher e gerar proposta", expanded=False):
+        _pa_col1, _pa_col2 = st.columns(2)
+        with _pa_col1:
+            _pa_cliente  = st.text_input("Cliente / Estabelecimento", key="pa_cliente")
+            _pa_cnpj     = st.text_input("CNPJ", key="pa_cnpj", placeholder="00.000.000/0001-00")
+            _pa_sindico  = st.text_input("Responsavel / Sindico", key="pa_sindico")
+            _pa_freq     = st.text_input("Frequencia de visitas", key="pa_freq", placeholder="ex: 2x por semana")
+        with _pa_col2:
+            _pa_endereco = st.text_input("Endereco", key="pa_endereco")
+            _pa_piscinas = st.text_input("Piscina(s) / Volume hidrico", key="pa_piscinas", placeholder="ex: Adulto 150m3, Infantil 40m3")
+            _pa_valor    = st.text_input("Valor mensal (R$)", key="pa_valor", placeholder="ex: 450,00")
+            _pa_venc     = st.text_input("Dia de vencimento", key="pa_venc", placeholder="ex: 10")
+        _pa_pgto = st.selectbox("Forma de pagamento", ["PIX / Transferencia bancaria", "Boleto", "PIX", "Transferencia bancaria"], key="pa_pgto")
+
+        if st.button("📄 Gerar Proposta Aqua Gestao", type="primary", use_container_width=True, key="btn_gerar_prop_aq"):
+            with st.spinner("Gerando proposta..."):
+                _pa_dados = {
+                    "cliente": _pa_cliente, "cnpj": _pa_cnpj, "endereco": _pa_endereco,
+                    "sindico": _pa_sindico, "piscinas": _pa_piscinas, "frequencia": _pa_freq,
+                    "valor": _pa_valor, "vencimento": _pa_venc, "pagamento": _pa_pgto,
+                }
+                try:
+                    _pa_bytes = gerar_proposta_pdf(_pa_dados, "Aqua Gestao – Controle Tecnico de Piscinas")
+                    _pa_nome  = limpar_nome_arquivo(f"Proposta_Aqua_Gestao_{_pa_cliente or 'Cliente'}_{datetime.now().strftime('%Y%m')}.pdf")
+                    st.success("✅ Proposta gerada com sucesso!")
+                    st.download_button("⬇️ Baixar Proposta PDF", data=_pa_bytes,
+                        file_name=_pa_nome, mime="application/pdf", use_container_width=True, key="dl_prop_aq")
+                except Exception as _e:
+                    st.error(f"Erro ao gerar proposta: {_e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================
+    # FORMULÁRIO
+    # =========================================
+    
+    # Encerra aqui para impedir que módulos Aqua Gestão apareçam no painel Bem Star.
+    st.stop()
+
+st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_allow_html=True)
+st.subheader("Dados do contrato de Responsabilidade Técnica")
+
+# ── Seletor de cliente do Sheets ──────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def _clientes_completos_cache():
+    return sheets_listar_clientes_completo()
+
+_clientes_rt = filtrar_clientes_por_empresa(_clientes_completos_cache(), "aqua_gestao")
+if _clientes_rt:
+    _opcoes_rt = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rt]
+    _sel_rt = st.selectbox(
+        "🔗 Carregar dados de cliente cadastrado",
+        _opcoes_rt,
+        key="sel_cliente_rt",
+        help="Selecione um cliente para preencher automaticamente os campos abaixo."
+    )
+    if _sel_rt and _sel_rt != "— Selecionar cliente cadastrado —":
+        if st.button("⬇️ Preencher formulário com dados deste cliente", key="btn_carregar_cliente_rt", use_container_width=True):
+            _dados_rt = next((c for c in _clientes_rt if c["nome"] == _sel_rt), {})
+            if _dados_rt:
+                st.session_state["nome_condominio"]   = _dados_rt.get("nome", "")
+                st.session_state["cnpj_condominio"]   = formatar_cnpj(_dados_rt.get("cnpj", ""))
+                st.session_state["endereco_condominio"] = _dados_rt.get("endereco", "")
+                st.session_state["nome_sindico"]      = _dados_rt.get("contato", "")
+                st.session_state["whatsapp_cliente"]  = formatar_telefone(_dados_rt.get("telefone", ""))
+                st.session_state["email_cliente"]     = _dados_rt.get("email", "")
+                st.success(f"✅ Dados de '{_sel_rt}' carregados! Ajuste o que precisar antes de gerar.")
+                st.rerun()
+else:
+    st.info("💡 Cadastre clientes na seção acima para carregar os dados automaticamente aqui.")
+
+st.markdown("---")
+col1, col2 = st.columns(2)
+
+with col1:
+    st.text_input("Nome do condomínio", key="nome_condominio", on_change=on_change_nome_condominio)
+    st.text_input(
+        "CNPJ do condomínio",
+        key="cnpj_condominio",
+        on_change=on_change_cnpj,
+        placeholder="00.000.000/0000-00",
+    )
+    if st.session_state.get("_rt_cep_fmt"):
+        st.session_state["rt_cep"] = st.session_state.pop("_rt_cep_fmt")
+    _rt_cep_c1, _rt_cep_c2 = st.columns([3, 1])
+    with _rt_cep_c1:
+        st.text_input("CEP", key="rt_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _rt_cep_c2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_rt_cep = st.button("🔍", key="btn_buscar_cep_rt", help="Buscar CEP")
+    if _btn_rt_cep:
+        _cep_v = re.sub(r"\D", "", st.session_state.get("rt_cep", ""))
+        if len(_cep_v) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dc = buscar_cep(_cep_v)
+            if _dc:
+                _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                st.session_state["endereco_condominio"] = _end
+                st.session_state["_rt_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.rerun()
+            else:
+                st.error("CEP não encontrado.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
+    st.text_area("Endereço do condomínio", key="endereco_condominio", height=100)
+    st.text_input("Nome do síndico / representante", key="nome_sindico")
+    st.text_input(
+        "CPF do síndico / representante",
+        key="cpf_sindico",
+        on_change=on_change_cpf,
+        placeholder="000.000.000-00",
+    )
+    st.text_input(
+        "Cargo / qualificação do representante",
+        key="cargo_sindico",
+        placeholder="Ex.: Síndico, Presidente, Administrador",
+        value=st.session_state.get("cargo_sindico", "Síndico"),
+    )
+
+with col2:
+    st.text_input(
+        "Valor mensal",
+        key="valor_mensal",
+        on_change=on_change_valor_mensal,
+        placeholder="R$ 1.621,00",
+    )
+    st.text_input(
+        "Valor por extenso",
+        key="valor_mensal_extenso",
+        placeholder="um mil, seiscentos e vinte e um reais",
+    )
+    st.selectbox(
+        "Frequência de visitas",
+        options=["1 (uma)", "2 (duas)", "3 (três)", "4 (quatro)"],
+        key="frequencia_visitas",
+        help="Número de visitas técnicas semanais contratadas.",
+    )
+    _col_dia, _col_forma = st.columns(2)
+    with _col_dia:
+        st.text_input(
+            "Dia de vencimento",
+            key="dia_pagamento",
+            placeholder="10",
+            max_chars=2,
+        )
+    with _col_forma:
+        st.selectbox(
+            "Forma de pagamento",
+            options=["Pix", "Transferência bancária", "Boleto", "Outro"],
+            key="forma_pagamento",
+        )
+    st.text_input(
+        "Data de início",
+        key="data_inicio",
+        placeholder="01/04/2026",
+        on_change=on_change_data_inicio,
+    )
+    st.text_input(
+        "Data de fim",
+        key="data_fim",
+        placeholder="31/03/2027",
+        on_change=on_change_data_fim,
+    )
+    st.text_input(
+        "Data de assinatura",
+        key="data_assinatura",
+        placeholder="dd/mm/aaaa",
+        on_change=on_change_data_assinatura,
+    )
+
+if modo == "Modo Campo":
+    st.markdown("---")
+    col_campo1, col_campo2 = st.columns(2)
+    with col_campo1:
+        st.text_input(
+            "WhatsApp do cliente (opcional)",
+            key="whatsapp_cliente",
+            on_change=on_change_whatsapp,
+            placeholder="(34) 99999-9999",
+        )
+    with col_campo2:
+        st.text_input("E-mail do cliente (opcional)", key="email_cliente")
+else:
+    st.markdown("---")
+    col_cont1, col_cont2 = st.columns(2)
+    with col_cont1:
+        st.text_input(
+            "WhatsApp do cliente",
+            key="whatsapp_cliente",
+            on_change=on_change_whatsapp,
+            placeholder="(34) 99999-9999",
+        )
+    with col_cont2:
+        st.text_input("E-mail do cliente", key="email_cliente")
+
+st.text_area(
+    "Observações internas (não vai para o contrato)",
+    key="observacoes_internas",
+    height=100,
+    placeholder="Ex.: condição comercial específica, observação operacional, histórico jurídico...",
+)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# =========================================
+# AÇÕES DE CADASTRO / RENOVAÇÃO
+# =========================================
+
+# _SECAO_ADITIVO_CNPJ_ADICIONADA_
+# =========================================
+# GERAR ADITIVO PARA CONTRATO EXISTENTE
+# =========================================
+st.markdown('<div class="section-card aq-only" id="sec-aditivo-cnpj">', unsafe_allow_html=True)
+st.subheader("📄 Gerar aditivo para contrato existente")
+st.caption("Localize um contrato já gerado pelo CNPJ e gere o 1º Termo Aditivo de desconto comercial.")
+
+_adt_col1, _adt_col2 = st.columns([1.5, 2])
+with _adt_col1:
+    _adt_cnpj_input = st.text_input(
+        "CNPJ do condomínio",
+        key="adt_cnpj_busca",
+        placeholder="00.000.000/0000-00",
+        help="Digite o CNPJ do condomínio para localizar o contrato gerado.",
+    )
+    _adt_cnpj_digits = re.sub(r"\D", "", _adt_cnpj_input or "")
+
+# _BUSCA_CNPJ_VIA_SHEETS_
+# Busca pelo Sheets (persiste no Cloud) e enriquece com JSON local se disponivel.
+# _ADITIVO_CLOUD_CAMPOS_MANUAIS_
+_adt_dados_encontrados = None
+_adt_pasta_encontrada = None
+_adt_cliente_sheets = None
+_adt_tem_json_local = False
+
+if len(_adt_cnpj_digits) == 14:
+    # 1. Busca no Sheets pelo CNPJ.
+    for _cl in (_todos_clientes_painel or []):
+        _cl_cnpj = re.sub(r"\D", "", str(_cl.get("cnpj", "") or ""))
+        if _cl_cnpj == _adt_cnpj_digits:
+            _adt_cliente_sheets = _cl
+            break
+
+    # 2. Tenta enriquecer com JSON local.
+    # No Streamlit Cloud a pasta generated/ não é persistente, então o Sheets é a fonte principal.
+    if _adt_cliente_sheets:
+        _adt_nome_slug = slugify_nome(_adt_cliente_sheets.get("nome", ""))
+        _adt_pasta_candidata = GENERATED_DIR / _adt_nome_slug
+        _adt_json_local = carregar_dados_condominio(_adt_pasta_candidata) if _adt_pasta_candidata.exists() else None
+
+        if _adt_json_local:
+            _adt_tem_json_local = True
+            _adt_dados_encontrados = _adt_json_local
+            _adt_pasta_encontrada = _adt_pasta_candidata
+        else:
+            # Dados mínimos vindos do Sheets.
+            # Os campos contratuais que não existem no Sheets serão preenchidos manualmente na tela.
+            _adt_dados_encontrados = {
+                "nome_condominio":     _adt_cliente_sheets.get("nome", ""),
+                "cnpj_condominio":     _adt_cliente_sheets.get("cnpj", ""),
+                "endereco_condominio": _adt_cliente_sheets.get("endereco", ""),
+                "nome_sindico":        _adt_cliente_sheets.get("contato", ""),
+                "cpf_sindico":         "",
+                "cargo_sindico":       "Síndico",
+                "valor_mensal":        "",
+                "data_inicio":         "",
+                "data_fim":            "",
+            }
+            _adt_pasta_encontrada = _adt_pasta_candidata
+
+    # Segundo passe: enriquece campos contratuais ausentes a partir do JSON local,
+    # mesmo quando o primeiro passe (baseado no slug principal) não encontrou o arquivo.
+    # Cobre sessões novas no Cloud onde generated/ foi reiniciado mas o JSON ainda existe,
+    # ou onde o slug gravado difere levemente do calculado agora.
+    if _adt_dados_encontrados and not _adt_tem_json_local:
+        _slugs_candidatos = list(dict.fromkeys(filter(None, [
+            slugify_nome(_adt_dados_encontrados.get("nome_condominio", "")),
+            slugify_nome(_adt_cliente_sheets.get("nome", "")) if _adt_cliente_sheets else None,
+        ])))
+        for _slug_cand in _slugs_candidatos:
+            _pasta_cand2 = GENERATED_DIR / _slug_cand
+            _json_cand2 = carregar_dados_condominio(_pasta_cand2) if _pasta_cand2.exists() else None
+            if _json_cand2:
+                _adt_tem_json_local = True
+                # Preenche apenas campos em branco — não sobrescreve o que veio do Sheets
+                for _campo in [
+                    "valor_mensal", "data_inicio", "data_fim", "cpf_sindico",
+                    "cargo_sindico", "nome_sindico", "endereco_condominio",
+                    "cnpj_condominio", "dia_pagamento", "forma_pagamento",
+                    "prazo_contrato", "valor_mensal_extenso",
+                ]:
+                    _v = _json_cand2.get(_campo, "")
+                    if _v and not _adt_dados_encontrados.get(_campo):
+                        _adt_dados_encontrados[_campo] = _v
+                _adt_pasta_encontrada = _pasta_cand2
+                break
+
+if len(_adt_cnpj_digits) == 14 and _adt_dados_encontrados is None:
+    st.warning(
+        "Nenhum cliente encontrado com este CNPJ. "
+        "Certifique-se de que o cliente está cadastrado na aba Clientes do Sheets com o CNPJ preenchido na coluna N."
+    )
+
+if _adt_dados_encontrados:
+    _adt_nome = _adt_dados_encontrados.get("nome_condominio") or (_adt_pasta_encontrada.name if _adt_pasta_encontrada else "Condomínio")
+    _adt_sindico = _adt_dados_encontrados.get("nome_sindico", "")
+    _adt_cargo = _adt_dados_encontrados.get("cargo_sindico", "Síndico")
+
+    with _adt_col2:
+        st.success(f"✅ Cliente encontrado no Sheets: **{_adt_nome}**")
+        if _adt_tem_json_local:
+            st.caption("Cadastro enriquecido com dados locais do contrato.")
+        else:
+            st.caption("Sem JSON local no Cloud. Preencha os dados contratuais abaixo antes de gerar o aditivo.")
+
+    # Se não houver JSON local, esses campos são obrigatórios para não gerar aditivo em branco.
+    _adt_val_atual_base = str(_adt_dados_encontrados.get("valor_mensal", "") or "").strip()
+    _adt_inicio_base = str(_adt_dados_encontrados.get("data_inicio", "") or "").strip()
+    _adt_fim_base = str(_adt_dados_encontrados.get("data_fim", "") or "").strip()
+
+    # Injeta no session_state ANTES dos widgets — Streamlit só popula o session_state
+    # com o parâmetro value= após interação do usuário; sem isso a validação
+    # sempre falha na primeira renderização mesmo com os dados visíveis na tela.
+    if _adt_val_atual_base and not st.session_state.get("adt_valor_mensal_atual"):
+        st.session_state["adt_valor_mensal_atual"] = _adt_val_atual_base
+    if _adt_inicio_base and not st.session_state.get("adt_data_inicio_atual"):
+        st.session_state["adt_data_inicio_atual"] = _adt_inicio_base
+    if _adt_fim_base and not st.session_state.get("adt_data_fim_atual"):
+        st.session_state["adt_data_fim_atual"] = _adt_fim_base
+
+    st.markdown("#### Dados do contrato atual")
+    _adt_m1, _adt_m2, _adt_m3 = st.columns(3)
+    with _adt_m1:
+        _adt_valor_mensal_atual = st.text_input(
+            "Valor mensal atual do contrato *",
+            key="adt_valor_mensal_atual",
+            placeholder="R$ 1.621,00",
+            help="Valor original/atual do contrato antes do desconto.",
+        )
+    with _adt_m2:
+        _adt_data_inicio_atual = st.text_input(
+            "Data de início do contrato *",
+            key="adt_data_inicio_atual",
+            placeholder="01/04/2026",
+        )
+    with _adt_m3:
+        _adt_data_fim_atual = st.text_input(
+            "Data de fim do contrato *",
+            key="adt_data_fim_atual",
+            placeholder="31/03/2027",
+        )
+
+    # Lê do session_state (já injetado acima ou digitado pelo usuário)
+    # com fallback para o valor base — garante que a validação sempre encontre o dado
+    _adt_val_atual = (st.session_state.get("adt_valor_mensal_atual") or _adt_val_atual_base).strip()
+    _adt_inicio = (st.session_state.get("adt_data_inicio_atual") or _adt_inicio_base).strip()
+    _adt_fim = (st.session_state.get("adt_data_fim_atual") or _adt_fim_base).strip()
+
+    # Atualiza o dict antes da geração e antes do manifest.
+    _adt_dados_encontrados["valor_mensal"] = _adt_val_atual
+    _adt_dados_encontrados["data_inicio"] = _adt_inicio
+    _adt_dados_encontrados["data_fim"] = _adt_fim
+
+    st.markdown("#### Dados do aditivo")
+    _adt_c1, _adt_c2, _adt_c3 = st.columns([1.2, 1.2, 2])
+    with _adt_c1:
+        _adt_valor_desconto = st.text_input(
+            "Valor com desconto *",
+            key="adt_valor_desconto",
+            placeholder="R$ 810,50",
+            help="Valor mensal após o desconto comercial. Será inserido no aditivo.",
+        )
+    with _adt_c2:
+        _adt_data_ass = st.text_input(
+            "Data de assinatura",
+            key="adt_data_assinatura",
+            value=hoje_br(),
+            placeholder="dd/mm/aaaa",
+        )
+    with _adt_c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _adt_gerar = st.button(
+            "📄 Gerar aditivo",
+            key="btn_gerar_aditivo_cnpj",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if _adt_gerar:
+        _adt_val_limpo = (st.session_state.get("adt_valor_desconto") or "").strip()
+        _adt_data_limpa = (st.session_state.get("adt_data_assinatura") or "").strip()
+        _adt_erros = []
+
+        if not _adt_val_atual:
+            _adt_erros.append("Informe o valor mensal atual do contrato.")
+        if not _adt_inicio:
+            _adt_erros.append("Informe a data de início do contrato.")
+        if not _adt_fim:
+            _adt_erros.append("Informe a data de fim do contrato.")
+        if not _adt_val_limpo:
+            _adt_erros.append("Informe o valor com desconto.")
+
+        if _adt_erros:
+            for _erro in _adt_erros:
+                st.error(_erro)
+        else:
+            _adt_val_atual_fmt = moeda_br(_adt_val_atual) if not _adt_val_atual.startswith("R$") else _adt_val_atual
+            _adt_val_fmt = moeda_br(_adt_val_limpo) if not _adt_val_limpo.startswith("R$") else _adt_val_limpo
+
+            _adt_placeholders = {
+                "{{NOME_CONDOMINIO}}": _adt_nome,
+                "{{CNPJ_CONDOMINIO}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
+                "{{ENDERECO_CONDOMINIO}}": _adt_dados_encontrados.get("endereco_condominio", ""),
+                "{{NOME_SINDICO}}": _adt_sindico,
+                "{{CPF_SINDICO}}": _adt_dados_encontrados.get("cpf_sindico", ""),
+                "{{CARGO_SINDICO}}": _adt_cargo,
+                "{{VALOR_MENSAL}}": valor_para_template(_adt_val_atual_fmt),
+                "{{VALOR_ADITIVO}}": valor_para_template(_adt_val_fmt),
+                "{{DATA_INICIO}}": _adt_inicio,
+                "{{DATA_FIM}}": _adt_fim,
+                "{{DATA_INICIO_CONTRATO}}": _adt_inicio,
+                "{{DATA_FIM_CONTRATO}}": _adt_fim,
+                "{{DATA_ASSINATURA}}": _adt_data_limpa,
+                "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {_adt_data_limpa}",
+                "{{NOME_CONTRATANTE}}": _adt_nome,
+                "{{CPF_CNPJ_CONTRATANTE}}": _adt_dados_encontrados.get("cnpj_condominio", ""),
+                "{{ENDERECO_CONTRATANTE}}": _adt_dados_encontrados.get("endereco_condominio", ""),
+            }
+
+            _adt_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _adt_base = limpar_nome_arquivo(f"Aditivo_RT_{_adt_nome}_{_adt_ts}")
+
+            try:
+                _adt_pasta_encontrada.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            _adt_docx = _adt_pasta_encontrada / f"{_adt_base}.docx"
+            _adt_pdf  = _adt_pasta_encontrada / f"{_adt_base}.pdf"
+
+            with st.spinner("Gerando aditivo..."):
+                try:
+                    gerar_documento(
+                        template_path=TEMPLATE_ADITIVO,
+                        output_docx=_adt_docx,
+                        placeholders=_adt_placeholders,
+                        incluir_assinaturas=False,
+                    )
+                    _adt_ok_pdf, _adt_err_pdf = salvar_aditivo_rt_pdf_premium_reportlab(_adt_placeholders, _adt_pdf)
+
+                    _adt_dados_encontrados["valor_mensal"] = _adt_val_atual_fmt
+                    _adt_dados_encontrados["valor_aditivo"] = _adt_val_fmt
+                    _adt_dados_encontrados["data_inicio"] = _adt_inicio
+                    _adt_dados_encontrados["data_fim"] = _adt_fim
+                    _adt_dados_encontrados["data_assinatura"] = _adt_data_limpa
+                    salvar_dados_condominio(_adt_pasta_encontrada, _adt_dados_encontrados)
+
+                    registrar_documento_manifest(
+                        pasta_condominio=_adt_pasta_encontrada,
+                        nome_condominio=_adt_nome,
+                        tipo="Aditivo",
+                        arquivo_docx=_adt_docx,
+                        arquivo_pdf=_adt_pdf,
+                        pdf_gerado=_adt_ok_pdf,
+                        erro_pdf=_adt_err_pdf,
+                        dados_utilizados=_adt_dados_encontrados,
+                    )
+
+                    # _DOWNLOAD_ADITIVO_CNPJ_V2_
+                    if _adt_ok_pdf:
+                        st.success(f"✅ Aditivo gerado para {_adt_nome}. DOCX e PDF disponíveis para download.")
+                    else:
+                        st.warning(f"⚠️ DOCX gerado. PDF falhou: {_adt_err_pdf}. O DOCX está disponível para download.")
+
+                    st.markdown("### Arquivos do aditivo")
+                    _adt_col_docx, _adt_col_pdf, _adt_col_pasta = st.columns(3)
+
+                    with _adt_col_docx:
+                        if _adt_docx.exists():
+                            with open(_adt_docx, "rb") as _adt_f_docx:
+                                st.download_button(
+                                    "⬇️ Baixar aditivo DOCX",
+                                    data=_adt_f_docx.read(),
+                                    file_name=_adt_docx.name,
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    key=f"download_aditivo_docx_cnpj_{_adt_ts}",
+                                    use_container_width=True,
+                                )
+                        else:
+                            st.error("DOCX do aditivo não encontrado.")
+
+                    with _adt_col_pdf:
+                        if _adt_pdf.exists():
+                            with open(_adt_pdf, "rb") as _adt_f_pdf:
+                                st.download_button(
+                                    "⬇️ Baixar aditivo PDF",
+                                    data=_adt_f_pdf.read(),
+                                    file_name=_adt_pdf.name,
+                                    mime="application/pdf",
+                                    key=f"download_aditivo_pdf_cnpj_{_adt_ts}",
+                                    use_container_width=True,
+                                )
+                        elif not _adt_ok_pdf:
+                            st.warning("PDF não disponível. Baixe o DOCX.")
+
+                    with _adt_col_pasta:
+                        if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
+                            abrir_pasta_windows(_adt_pasta_encontrada)
+
+                    # _EMAIL_ADITIVO_CNPJ_AQUA_V1_
+                    _adt_email_msg = (
+                        f"Prezados,\n\n"
+                        f"Encaminho em anexo o termo aditivo referente ao {_adt_nome}, gerado pela Aqua Gestão - Controle Técnico de Piscinas.\n\n"
+                        "O documento segue para conferência, registro e arquivo interno do condomínio.\n\n"
+                        "Permaneço à disposição para qualquer ajuste ou esclarecimento."
+                    )
+                    exibir_envio_email_documentos_aqua(
+                        nome_condominio=_adt_nome,
+                        pasta_condominio=_adt_pasta_encontrada,
+                        email_cliente=_adt_dados_encontrados.get("email_cliente", ""),
+                        mensagem_padrao=_adt_email_msg,
+                        documentos_sugeridos=[_adt_docx, _adt_pdf],
+                        key_prefix=f"aditivo_cnpj_{_adt_ts}",
+                    )
+
+                except FileNotFoundError:
+                    st.error("Template aditivo.docx não encontrado. Verifique o diagnóstico de saúde do sistema.")
+                except Exception as _adt_ex:
+                    st.error(f"Erro ao gerar aditivo: {_adt_ex}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card aq-only" id="sec-cadastro-renovacao">', unsafe_allow_html=True)
+st.subheader("Cadastro e renovação")
+
+r1, r2, r3 = st.columns([1.15, 1.15, 2])
+
+with r1:
+    if st.button("Salvar cadastro / atualizar JSON", use_container_width=True):
+        ok, msg = salvar_cadastro_sem_gerar_documentos()
+        if ok:
+            st.success(msg)
+            st.rerun()
+        else:
+            st.error(msg)
+
+with r2:
+    if st.button("Renovação anual rápida", use_container_width=True):
+        novo_inicio, novo_fim = calcular_renovacao_anual(st.session_state.data_fim)
+        if not novo_inicio or not novo_fim:
+            st.error("Não foi possível renovar. Verifique se a data final atual está válida.")
+        else:
+            st.session_state.data_inicio = formatar_data_br(novo_inicio)
+            st.session_state.data_fim = formatar_data_br(novo_fim)
+            st.session_state.data_assinatura = hoje_br()
+            st.success("Nova vigência anual preenchida automaticamente.")
+            st.rerun()
+
+with r3:
+    st.caption(
+        "Salvar cadastro atualiza apenas o JSON do condomínio. "
+        "Renovação anual rápida ajusta datas no formulário sem gerar documento automaticamente."
+    )
+
+st.markdown("---")
+st.markdown("**Geração de documento contratual — RT/ART**")
+st.info(
+    "Fluxo ajustado para CRQ/ART: gera somente contrato único de Responsabilidade Técnica, "
+    "sem aditivo de desconto e sem valor reduzido. O contrato preserva remuneração técnica compatível "
+    "com as exigências documentais do CRQ-MG."
+)
+
+# _BOTAO_ADITIVO_LINHA_CORRETA_
+col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.6, 1.4, 1, 1])
+
+with col_btn1:
+    gerar = st.button(
+        "✅ Gerar contrato RT",
+        type="primary",
+        use_container_width=True,
+    )
+
+with col_btn2:
+    gerar_aditivo_rapido = st.button(
+        "📄 Gerar aditivo (desconto)",
+        use_container_width=True,
+        help="Gera o 1º Termo Aditivo de desconto comercial. "
+             "Documento privado — NÃO é registrado no CRQ. "
+             "Preencha o campo 'Valor aditivo' antes de gerar.",
+    )
+
+with col_btn3:
+    if st.button("🗑️ Limpar", use_container_width=True):
+        limpar_formulario()
+        st.rerun()
+
+with col_btn4:
+    if st.button("📁 Abrir pasta", use_container_width=True):
+        abrir_pasta_windows(GENERATED_DIR)
+
+
+# v6: contrato Aqua Gestão sem RT para PF/PJ — BUG-D
+def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
+    """Gera contrato Aqua Gestão sem RT/ART em PDF, para pessoa física ou jurídica."""
+    import io as _io
+    import html as _html
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+    def _v(chave: str, padrao: str = "") -> str:
+        valor = str(dados.get(chave, "") or "").strip()
+        return valor if valor else padrao
+
+    tipo = _v("tipo_contratante", "Pessoa física")
+    doc_label = "CPF" if tipo == "Pessoa física" else "CNPJ"
+    nome = _v("nome_contratante", "Contratante não informado")
+    documento = _v("documento_contratante", "não informado")
+    endereco = _v("endereco_contratante", "não informado")
+    cep = _v("cep_contratante", "")
+    telefone = _v("telefone_contratante", "não informado")
+    responsavel = _v("responsavel_contratante", nome if tipo == "Pessoa física" else "Representante não informado")
+    servicos = _v("servicos", "Limpeza e manutenção de piscinas residenciais, com rotina operacional, conservação, orientação de tratamento e registros básicos, sem emissão de RT/ART.")  # v6: contrato sem RT ajustado para limpeza e manutenção residencial — BUG-D
+    piscinas = _v("piscinas", "Conforme informado pela CONTRATANTE")
+    frequencia = _v("frequencia", "Conforme agenda acordada")
+    valor = _v("valor_mensal", "não informado")
+    valor_extenso = _v("valor_extenso", "")
+    vencimento = _v("dia_pagamento", "não informado")
+    forma_pagamento = _v("forma_pagamento", "Pix")
+    inicio = _v("data_inicio", hoje_br())
+    fim = _v("data_fim", "Indeterminado")
+    local_data = _v("local_data_assinatura", f"Uberlândia/MG, {hoje_br()}")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.55 * cm,
+        rightMargin=1.55 * cm,
+        topMargin=2.35 * cm,
+        bottomMargin=1.65 * cm,
+        title=f"Contrato Aqua Gestão sem RT — {nome}",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    CINZA = colors.HexColor("#2F3742")
+    CINZA_CLARO = colors.HexColor("#F4F7FA")
+    BORDA = colors.HexColor("#D9E2EC")
+    DOURADO = colors.HexColor("#C8960C")
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle("AquaTituloSemRT", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=15.5, leading=19, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=6))
+    styles.add(ParagraphStyle("AquaSubSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=8.8, leading=11.5, textColor=CINZA, alignment=TA_CENTER, spaceAfter=8))
+    styles.add(ParagraphStyle("AquaH2SemRT", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.2, leading=13, textColor=AZUL_ESCURO, spaceBefore=7, spaceAfter=4))
+    styles.add(ParagraphStyle("AquaBodySemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=8.8, leading=12.1, textColor=CINZA, alignment=TA_JUSTIFY, spaceAfter=5))
+    styles.add(ParagraphStyle("AquaSmallSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=10, textColor=CINZA, alignment=TA_LEFT))
+    styles.add(ParagraphStyle("AquaTableHeadSemRT", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=10, textColor=colors.white, alignment=TA_CENTER))
+    styles.add(ParagraphStyle("AquaTableSemRT", parent=styles["Normal"], fontName="Helvetica", fontSize=7.9, leading=10.2, textColor=CINZA, alignment=TA_LEFT))
+
+    def _p(txt: str, style="AquaBodySemRT"):
+        return Paragraph(_html.escape(str(txt or "")).replace("\n", "<br/>"), styles[style])
+
+    def _raw(txt: str, style="AquaBodySemRT"):
+        return Paragraph(str(txt or ""), styles[style])
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, h - 1.52 * cm, w, 1.52 * cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.58 * cm, w, 0.06 * cm, fill=1, stroke=0)
+
+        logo = encontrar_logo()
+        if logo:
+            try:
+                canvas.drawImage(str(logo), 1.25 * cm, h - 1.33 * cm, width=2.65 * cm, height=0.96 * cm, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 8.8)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.62 * cm, "AQUA GESTÃO — CONTRATO SEM RT/ART")
+        canvas.setFont("Helvetica", 7.1)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.99 * cm, "Prestação de serviços de limpeza e manutenção de piscinas")  # v6: subtítulo do contrato sem RT ajustado ao escopo real — BUG-D
+
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.35)
+        canvas.line(1.55 * cm, 1.14 * cm, w - 1.55 * cm, 1.14 * cm)
+        canvas.setFillColor(CINZA)
+        canvas.setFont("Helvetica", 6.8)
+        canvas.drawString(1.55 * cm, 0.78 * cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+        canvas.drawRightString(w - 1.55 * cm, 0.78 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
+    story = []
+    story.append(Spacer(1, 2 * mm))
+    story.append(_raw("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>LIMPEZA E MANUTENÇÃO DE PISCINAS", "AquaTituloSemRT"))  # v6: título do contrato sem RT ajustado para limpeza/manutenção — BUG-D
+    story.append(_raw("Documento comercial Aqua Gestão para limpeza e manutenção residencial sem RT/ART mensal. Não substitui contrato de Responsabilidade Técnica.", "AquaSubSemRT"))  # v6: aviso de natureza do contrato sem RT — BUG-D
+
+    linhas_id = [
+        [_raw("CONTRATADA", "AquaTableHeadSemRT"), _raw("CONTRATANTE", "AquaTableHeadSemRT")],
+        [
+            _raw("<b>AQUA GESTÃO CONTROLE TÉCNICO LTDA</b><br/>CNPJ: 66.008.795/0001-92<br/>Endereço: R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG<br/>Responsável: Thyago Fernando da Silveira", "AquaTableSemRT"),
+            _raw(f"<b>{_html.escape(nome)}</b><br/>{doc_label}: {_html.escape(documento)}<br/>Endereço: {_html.escape(endereco)}" + (f"<br/>CEP: {_html.escape(cep)}" if cep else "") + f"<br/>Responsável: {_html.escape(responsavel)}<br/>Telefone: {_html.escape(telefone)}", "AquaTableSemRT"),
+        ],
+    ]
+    tabela = Table(linhas_id, colWidths=[8.5 * cm, 8.5 * cm])
+    tabela.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+        ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(tabela)
+    story.append(Spacer(1, 4 * mm))
+
+    def h(t): story.append(_raw(t, "AquaH2SemRT"))
+    def p(t): story.append(_p(t, "AquaBodySemRT"))
+
+    h("1. Objeto")
+    p(f"A CONTRATADA prestará à CONTRATANTE serviços de limpeza e manutenção de piscinas, incluindo: {servicos}")  # v6: objeto do contrato sem RT ajustado para limpeza/manutenção — BUG-D
+    p(f"Piscina(s)/local(is) atendido(s): {piscinas}")
+
+    h("2. Natureza do contrato — sem RT/ART")
+    p("As partes declaram ciência de que este contrato não contempla emissão de ART, registro de Responsabilidade Técnica mensal, assunção de responsabilidade técnica perante o CRQ ou substituição de contrato específico de RT.")
+    p("Quando houver necessidade legal, regulatória, sanitária, condominial ou documental de Responsabilidade Técnica formal, deverá ser celebrado instrumento próprio de RT, com escopo, valores e responsabilidades específicos.")
+
+    h("3. Frequência e execução")
+    p(f"A frequência ajustada entre as partes é: {frequencia}. A execução dependerá de acesso ao local, disponibilidade operacional, condições mínimas de segurança e informações fornecidas pela CONTRATANTE.")
+
+    h("4. Obrigações da CONTRATANTE")
+    p("A CONTRATANTE deverá permitir acesso ao local, informar ocorrências relevantes, manter condições mínimas de segurança, disponibilizar produtos/equipamentos quando não incluídos no serviço e executar as providências administrativas necessárias à rotina da piscina.")
+    p("Produtos químicos, peças, reparos, materiais, reagentes, equipamentos e serviços extraordinários somente estarão incluídos quando expressamente descritos neste contrato ou em proposta comercial vinculada.")
+
+    h("5. Valores e pagamento")
+    valor_com_extenso = f"R$ {valor}" + (f" ({valor_extenso})" if valor_extenso else "")
+    p(f"O valor mensal ajustado é de {valor_com_extenso}, com vencimento todo dia {vencimento}, mediante {forma_pagamento}.")
+    p("Atrasos, visitas extras, serviços não previstos, urgências, produtos ou deslocamentos adicionais poderão ser cobrados separadamente mediante comunicação prévia ou aceite da CONTRATANTE.")
+
+    h("6. Vigência")
+    p(f"O contrato inicia em {inicio} e encerra em {fim}, podendo ser renovado, rescindido ou ajustado por acordo entre as partes.")
+
+    h("7. Limitação de responsabilidade")
+    p("A CONTRATADA não se responsabiliza por fatos decorrentes de uso inadequado da piscina, intervenções de terceiros, ausência de produtos/equipamentos, falhas estruturais, falta de energia, problemas hidráulicos, descumprimento de recomendações ou informações omitidas pela CONTRATANTE.")
+    p("Este contrato é de prestação de serviços sem RT/ART, portanto não transfere à CONTRATADA a responsabilidade técnica integral pela operação, segurança, uso coletivo ou regularidade documental da piscina.")
+
+    h("8. Foro")
+    p("Fica eleito o foro da comarca de Uberlândia/MG para dirimir eventuais controvérsias, salvo disposição legal obrigatória em sentido diverso.")
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.45, color=BORDA))
+    story.append(Spacer(1, 5 * mm))
+    story.append(_p(local_data, "AquaBodySemRT"))
+    story.append(Spacer(1, 13 * mm))
+
+    ass = [[
+        _raw("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>CNPJ 66.008.795/0001-92", "AquaTableSemRT"),
+        _raw(f"_________________________________________<br/>{_html.escape(nome)}<br/>{doc_label}: {_html.escape(documento)}", "AquaTableSemRT"),
+    ]]
+    t_ass = Table(ass, colWidths=[8.4 * cm, 8.4 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_ass)
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+# v6: interface Aqua Gestão para contrato sem RT PF/PJ — BUG-D
+with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física ou jurídica", expanded=False):
+    st.caption("Gera contrato comercial da Aqua Gestão sem Responsabilidade Técnica mensal. Para RT/ART, use o botão 'Gerar contrato RT'.")
+
+    aq_sem_tipo = st.radio(
+        "Tipo de contratante",
+        ["Pessoa física", "Pessoa jurídica"],
+        horizontal=True,
+        key="aq_sem_rt_tipo_contratante",
+    )
+
+    aq_doc_label = "CPF" if aq_sem_tipo == "Pessoa física" else "CNPJ"
+    aq_doc_placeholder = "000.000.000-00" if aq_sem_tipo == "Pessoa física" else "00.000.000/0000-00"
+
+    # v6: máscaras automáticas CPF/CNPJ, telefone e CEP — BUG-D
+    def _formatar_cep_aq_sem(valor: str) -> str:
+        dig = re.sub(r"\D", "", str(valor or ""))[:8]
+        if len(dig) <= 5:
+            return dig
+        return f"{dig[:5]}-{dig[5:]}"
+
+    def _mask_aq_sem_documento():
+        valor = st.session_state.get("aq_sem_rt_documento", "")
+        if st.session_state.get("aq_sem_rt_tipo_contratante") == "Pessoa física":
+            st.session_state["aq_sem_rt_documento"] = formatar_cpf(valor)
+        else:
+            st.session_state["aq_sem_rt_documento"] = formatar_cnpj(valor)
+
+    def _mask_aq_sem_telefone():
+        st.session_state["aq_sem_rt_telefone"] = formatar_telefone(st.session_state.get("aq_sem_rt_telefone", ""))
+
+    def _mask_aq_sem_cep():
+        st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(st.session_state.get("aq_sem_rt_cep", ""))
+
+    if st.session_state.get("aq_sem_rt_documento"):
+        _mask_aq_sem_documento()
+    if st.session_state.get("aq_sem_rt_telefone"):
+        _mask_aq_sem_telefone()
+    if st.session_state.get("aq_sem_rt_cep"):
+        _mask_aq_sem_cep()
+
+    _aqs1, _aqs2 = st.columns(2)
+    with _aqs1:
+        aq_sem_nome = st.text_input(
+            "Nome completo / Razão social *",
+            key="aq_sem_rt_nome",
+            value=st.session_state.get("nome_condominio", ""),
+            placeholder="Nome do contratante",
+        )
+        _aq_cep_c1, _aq_cep_c2 = st.columns([3, 1])
+        with _aq_cep_c1:
+            aq_sem_cep = st.text_input(
+                "CEP",
+                key="aq_sem_rt_cep",
+                placeholder="00000-000",
+                on_change=_mask_aq_sem_cep,
+                help="Digite o CEP. Use a lupa para tentar preencher o endereço automaticamente.",
+            )
+        with _aq_cep_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _btn_aq_sem_cep = st.button("🔍", key="btn_buscar_cep_aq_sem_rt", help="Buscar CEP")
+        if _btn_aq_sem_cep:
+            _cep_limpo = re.sub(r"\D", "", st.session_state.get("aq_sem_rt_cep", ""))
+            if len(_cep_limpo) == 8:
+                with st.spinner("Buscando CEP..."):
+                    _dados_cep_aq = buscar_cep(_cep_limpo)
+                if _dados_cep_aq:
+                    st.session_state["aq_sem_rt_cep"] = _formatar_cep_aq_sem(_cep_limpo)
+                    st.session_state["aq_sem_rt_endereco"] = ", ".join(
+                        p for p in [
+                            _dados_cep_aq.get("logradouro", ""),
+                            _dados_cep_aq.get("bairro", ""),
+                            f"{_dados_cep_aq.get('localidade', '')}/{_dados_cep_aq.get('uf', '')}",
+                        ] if p
+                    )
+                    st.rerun()
+                else:
+                    st.warning("CEP não encontrado.")
+            else:
+                st.warning("Digite um CEP válido com 8 dígitos.")
+
+        aq_sem_endereco = st.text_area(
+            "Endereço completo",
+            key="aq_sem_rt_endereco",
+            value=st.session_state.get("endereco_condominio", ""),
+            height=70,
+        )
+        aq_sem_piscinas = st.text_area(
+            "Piscinas/local atendido",
+            key="aq_sem_rt_piscinas",
+            value=st.session_state.get("volumes_piscinas", ""),
+            height=65,
+            placeholder="Ex.: Piscina residencial, adulto, infantil, spa, etc.",
+        )
+
+    with _aqs2:
+        _doc_padrao_aq_sem = st.session_state.get("cnpj_condominio", "")
+        if not st.session_state.get("aq_sem_rt_documento") and _doc_padrao_aq_sem:
+            st.session_state["aq_sem_rt_documento"] = formatar_cpf(_doc_padrao_aq_sem) if aq_sem_tipo == "Pessoa física" else formatar_cnpj(_doc_padrao_aq_sem)
+        aq_sem_doc = st.text_input(
+            f"{aq_doc_label} do contratante",
+            key="aq_sem_rt_documento",
+            placeholder=aq_doc_placeholder,
+            on_change=_mask_aq_sem_documento,
+        )
+        aq_sem_resp = st.text_input(
+            "Responsável / representante",
+            key="aq_sem_rt_responsavel",
+            value=(st.session_state.get("nome_sindico", "") if aq_sem_tipo == "Pessoa jurídica" else st.session_state.get("aq_sem_rt_nome", "")),
+        )
+        _tel_padrao_aq_sem = st.session_state.get("whatsapp_cliente", "") or st.session_state.get("telefone_cliente", "")
+        if not st.session_state.get("aq_sem_rt_telefone") and _tel_padrao_aq_sem:
+            st.session_state["aq_sem_rt_telefone"] = formatar_telefone(_tel_padrao_aq_sem)
+        aq_sem_tel = st.text_input(
+            "Telefone / WhatsApp",
+            key="aq_sem_rt_telefone",
+            placeholder="(00) 00000-0000",
+            on_change=_mask_aq_sem_telefone,
+        )
+
+    # v6: descrição automática de serviços por tipo de contratante — BUG-D
+    _aq_sem_servicos_pf = (
+        "Serviço residencial de limpeza e manutenção de piscina, incluindo aspiração, peneiração "
+        "e retirada de resíduos, escovação de bordas, paredes e fundo quando necessário, limpeza "
+        "de cestos, skimmer e pré-filtro quando aplicável, lavagem/retrolavagem do filtro quando "
+        "necessária, verificação visual da água e da casa de máquinas, medição e registro de "
+        "parâmetros quando contratado, aplicação de produtos químicos de rotina quando fornecidos "
+        "pelo contratante ou incluídos na proposta, recomendações de tratamento e orientação "
+        "operacional, sem emissão de RT/ART e sem assunção de Responsabilidade Técnica mensal."  # v6: descrição PF para limpeza e manutenção residencial — BUG-D
+    )
+    _aq_sem_servicos_pj = (
+        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de "
+        "tratamento, registro documental e apoio técnico sem emissão de RT/ART."
+    )
+    _aq_sem_servicos_antigos = {
+        "",
+        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de tratamento, registro documental e apoio técnico sem emissão de RT/ART.",
+        _aq_sem_servicos_pf,
+        _aq_sem_servicos_pj,
+    }
+    _aq_sem_tipo_prev = st.session_state.get("_aq_sem_rt_tipo_servicos_prev")
+    _aq_sem_default_servicos = _aq_sem_servicos_pf if aq_sem_tipo == "Pessoa física" else _aq_sem_servicos_pj
+    if _aq_sem_tipo_prev != aq_sem_tipo and st.session_state.get("aq_sem_rt_servicos", "") in _aq_sem_servicos_antigos:
+        st.session_state["aq_sem_rt_servicos"] = _aq_sem_default_servicos
+    st.session_state["_aq_sem_rt_tipo_servicos_prev"] = aq_sem_tipo
+    st.session_state.setdefault("aq_sem_rt_servicos", _aq_sem_default_servicos)
+
+    st.markdown("**Serviço sem RT/ART**")
+    aq_sem_servicos = st.text_area(
+        "Descrição dos serviços para pessoa física" if aq_sem_tipo == "Pessoa física" else "Descrição dos serviços para pessoa jurídica",
+        key="aq_sem_rt_servicos",
+        height=100,
+        help="Campo editável. Para pessoa física, o texto padrão fica direcionado à limpeza e manutenção de piscina residencial sem RT/ART.",  # v6: ajuda ajustada ao escopo de limpeza/manutenção — BUG-D
+    )
+
+    _aqv1, _aqv2, _aqv3, _aqv4 = st.columns(4)
+    with _aqv1:
+        aq_sem_freq = st.text_input("Frequência", key="aq_sem_rt_frequencia", value="Conforme agenda acordada")
+    with _aqv2:
+        aq_sem_valor = st.text_input("Valor mensal (R$) *", key="aq_sem_rt_valor", placeholder="Ex.: 350,00")
+    with _aqv3:
+        aq_sem_venc = st.text_input("Dia de vencimento", key="aq_sem_rt_vencimento", value="10")
+    with _aqv4:
+        aq_sem_pagamento = st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_sem_rt_pagamento")
+
+    _aqd1, _aqd2, _aqd3 = st.columns(3)
+    with _aqd1:
+        aq_sem_inicio = st.text_input("Data de início", key="aq_sem_rt_inicio", value=st.session_state.get("data_inicio", hoje_br()))
+    with _aqd2:
+        aq_sem_fim = st.text_input("Data de término", key="aq_sem_rt_fim", value="Indeterminado")
+    with _aqd3:
+        aq_sem_ass = st.text_input("Data de assinatura", key="aq_sem_rt_assinatura", value=hoje_br())
+
+    aq_sem_valor_extenso = st.text_input("Valor por extenso", key="aq_sem_rt_valor_extenso", placeholder="Ex.: trezentos e cinquenta reais")
+
+    if st.button("📄 Gerar contrato Aqua Gestão sem RT", type="primary", use_container_width=True, key="btn_aq_sem_rt_gerar"):
+        if not str(aq_sem_nome or "").strip():
+            st.error("Informe o nome do contratante.")
+        elif not str(aq_sem_valor or "").strip():
+            st.error("Informe o valor mensal.")
+        else:
+            try:
+                _dados_aq_sem = {
+                    "tipo_contratante": aq_sem_tipo,
+                    "nome_contratante": aq_sem_nome,
+                    "documento_contratante": aq_sem_doc,
+                    "endereco_contratante": aq_sem_endereco,
+                    "cep_contratante": aq_sem_cep,
+                    "responsavel_contratante": aq_sem_resp or aq_sem_nome,
+                    "telefone_contratante": aq_sem_tel,
+                    "piscinas": aq_sem_piscinas,
+                    "servicos": aq_sem_servicos,
+                    "frequencia": aq_sem_freq,
+                    "valor_mensal": valor_para_template(aq_sem_valor),
+                    "valor_extenso": aq_sem_valor_extenso,
+                    "dia_pagamento": aq_sem_venc,
+                    "forma_pagamento": aq_sem_pagamento,
+                    "data_inicio": aq_sem_inicio,
+                    "data_fim": aq_sem_fim,
+                    "local_data_assinatura": f"Uberlândia/MG, {aq_sem_ass}",
+                }
+                _pdf_aq_sem = gerar_contrato_aqua_sem_rt_pdf(_dados_aq_sem)
+                _nome_pasta_aq_sem = slugify_nome(aq_sem_nome)
+                _pasta_aq_sem = GENERATED_DIR / _nome_pasta_aq_sem
+                _pasta_aq_sem.mkdir(parents=True, exist_ok=True)
+                _ts_aq_sem = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _nome_arq_aq_sem = limpar_nome_arquivo(f"Contrato_Aqua_Gestao_Sem_RT_{aq_sem_nome}_{_ts_aq_sem}.pdf")
+                _saida_aq_sem = _pasta_aq_sem / _nome_arq_aq_sem
+                _saida_aq_sem.write_bytes(_pdf_aq_sem)
+
+                try:
+                    registrar_documento_manifest(
+                        pasta_condominio=_pasta_aq_sem,
+                        nome_condominio=aq_sem_nome,
+                        tipo="Contrato sem RT — Aqua Gestão",
+                        arquivo_docx=None,
+                        arquivo_pdf=_saida_aq_sem,
+                        pdf_gerado=True,
+                        erro_pdf=None,
+                        dados_utilizados=_dados_aq_sem,
+                        extras={"sem_rt": True, "tipo_contratante": aq_sem_tipo},
+                    )
+                except Exception:
+                    pass
+
+                st.session_state.ultima_pasta_gerada = str(_pasta_aq_sem)
+                st.success("✅ Contrato Aqua Gestão sem RT gerado com sucesso.")
+                st.download_button(
+                    "⬇️ Baixar contrato PDF",
+                    data=_pdf_aq_sem,
+                    file_name=_saida_aq_sem.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"dl_aq_sem_rt_{_ts_aq_sem}",
+                )
+            except Exception as _e_aq_sem:
+                st.error(f"Erro ao gerar contrato Aqua Gestão sem RT: {_e_aq_sem}")
+
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# POPs ADAPTATIVOS — RT / ROTINA OPERACIONAL
+# =========================================
+
+def _dados_pops_rt_do_formulario() -> dict:
+    """Coleta dados atuais do formulário para gerar o Caderno de POPs."""
+    return {
+        "nome_condominio": (st.session_state.get("nome_condominio") or "").strip(),
+        "cnpj_condominio": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "endereco_condominio": (st.session_state.get("endereco_condominio") or "").strip(),
+        "nome_sindico": (st.session_state.get("nome_sindico") or "").strip(),
+        "cpf_sindico": (st.session_state.get("cpf_sindico") or "").strip(),
+        "cargo_sindico": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+        "data_assinatura": (st.session_state.get("data_assinatura") or hoje_br()).strip(),
+        "volumes_piscinas": st.session_state.get("volumes_piscinas", ""),
+        "executor_operacional": st.session_state.get("pops_executor_operacional", "Prestador externo"),
+        "frequencia_operacional": st.session_state.get("pops_frequencia_operacional", "3 vezes por semana"),
+        "observacao_pops": (st.session_state.get("pops_observacao") or "").strip(),
+    }
+
+
+def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
+    """Retorna a lista base de POPs adaptada ao executor e à frequência operacional."""
+    executor_txt = executor or "equipe operacional designada pela CONTRATANTE"
+    frequencia_txt = frequencia or "conforme rotina definida pela CONTRATANTE"
+
+    responsavel_execucao = "Equipe operacional designada pela CONTRATANTE"
+    if "prestador" in executor_txt.lower():
+        responsavel_execucao = "Prestador externo indicado ou contratado pela CONTRATANTE"
+    elif "empresa" in executor_txt.lower():
+        responsavel_execucao = "Empresa contratada contratada pela CONTRATANTE"
+    elif "zelador" in executor_txt.lower():
+        responsavel_execucao = "Zelador ou responsável local designado pela CONTRATANTE"
+    elif "funcionário" in executor_txt.lower() or "funcionario" in executor_txt.lower():
+        responsavel_execucao = "Funcionário próprio designado pela CONTRATANTE"
+    elif "mista" in executor_txt.lower():
+        responsavel_execucao = "Equipe operacional mista designada pela CONTRATANTE"
+
+    freq_visita = frequencia_txt
+    if "sem rotina" in frequencia_txt.lower():
+        freq_visita = "sempre que houver visita operacional ou solicitação formal da CONTRATANTE"
+
+    return [
+        {
+            "codigo": "POP 01",
+            "titulo": "Chegada ao condomínio e inspeção inicial",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Estabelecer uma rotina mínima de conferência antes do início da manutenção operacional da piscina.",
+            "procedimento": [
+                "Identificar-se na chegada, quando houver controle de acesso.",
+                "Verificar visualmente a piscina antes de qualquer intervenção.",
+                "Observar transparência da água, presença de sujeira, espuma, odor forte, alteração de cor, reclamações de usuários e condições gerais da área.",
+                "Conferir a casa de máquinas, cestos, pré-filtro, pressão do filtro e disponibilidade dos produtos necessários.",
+            ],
+            "cuidados": [
+                "Não liberar uso da piscina quando houver suspeita de risco sanitário, ausência de cloro residual ou condição visual insegura.",
+                "Comunicar ao síndico/responsável local e ao RT situações críticas ou fora da rotina.",
+            ],
+            "registros": "Registrar data, horário, responsável pela visita e observações iniciais."
+        },
+        {
+            "codigo": "POP 02",
+            "titulo": "Medição de parâmetros físico-químicos",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Padronizar a medição dos parâmetros mínimos de controle da água.",
+            "procedimento": [
+                "Coletar amostra em ponto representativo da piscina, longe do retorno imediato de água tratada.",
+                "Medir pH e cloro livre em toda visita operacional.",
+                "Medir cloro total, alcalinidade, dureza, ácido cianúrico, temperatura e demais parâmetros conforme orientação do RT ou rotina definida.",
+                "Utilizar reagentes dentro da validade e equipamento limpo.",
+            ],
+            "cuidados": [
+                "Não registrar valores estimados ou aproximados sem medição real.",
+                "Quando houver dúvida no resultado, repetir a análise antes de dosar produto.",
+            ],
+            "registros": "Registrar todos os parâmetros na planilha, aplicativo ou formulário oficial do condomínio."
+        },
+        {
+            "codigo": "POP 03",
+            "titulo": "Registro obrigatório da visita",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Garantir rastreabilidade técnica das ações executadas na rotina operacional.",
+            "procedimento": [
+                "Registrar data, horário, nome do executante e piscinas atendidas.",
+                "Registrar parâmetros medidos antes das correções.",
+                "Registrar produtos aplicados, quantidade, unidade e finalidade.",
+                "Registrar lavagem de filtro, limpeza de cestos, observações e não conformidades.",
+            ],
+            "cuidados": [
+                "A ausência de registro compromete a rastreabilidade técnica e poderá ser apontada como não conformidade.",
+                "Não alterar registros anteriores sem justificativa formal.",
+            ],
+            "registros": "Planilha diária, ficha de visita, aplicativo ou outro meio definido pela CONTRATANTE e validado pelo RT."
+        },
+        {
+            "codigo": "POP 04",
+            "titulo": "Limpeza física da piscina",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Remover sujeiras físicas que prejudicam a qualidade visual e aumentam a demanda química da água.",
+            "procedimento": [
+                "Realizar peneiração da superfície quando necessário.",
+                "Escovar bordas, paredes, escadas, cantos e áreas com acúmulo visível.",
+                "Aspirar o fundo conforme necessidade operacional.",
+                "Remover sujidades grosseiras antes de realizar correções químicas mais intensas.",
+            ],
+            "cuidados": [
+                "Não realizar aspiração ou manobras hidráulicas sem conhecimento do sistema.",
+                "Comunicar excesso recorrente de sujeira, areia, folhas ou material orgânico.",
+            ],
+            "registros": "Registrar se houve peneiração, escovação, aspiração e qualquer anormalidade observada."
+        },
+        {
+            "codigo": "POP 05",
+            "titulo": "Limpeza de cestos e pré-filtro",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Evitar perda de vazão, esforço da motobomba e redução da eficiência de filtração.",
+            "procedimento": [
+                "Desligar a motobomba antes de abrir pré-filtro ou manusear cestos quando aplicável.",
+                "Limpar cestos de skimmer, coadeira, ralo de superfície e pré-filtro da bomba.",
+                "Reinstalar corretamente as tampas, vedações e cestos antes de religar o sistema.",
+                "Observar ruídos, entrada de ar, vazamentos ou dificuldade de escorva.",
+            ],
+            "cuidados": [
+                "Nunca abrir pré-filtro com sistema pressurizado ou bomba em funcionamento.",
+                "Comunicar vazamentos, tampa danificada, anel de vedação comprometido ou ruído anormal.",
+            ],
+            "registros": "Registrar limpeza realizada e anormalidades no conjunto hidráulico."
+        },
+        {
+            "codigo": "POP 06",
+            "titulo": "Retrolavagem e enxágue do filtro",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Conforme pressão do filtro, perda de vazão, orientação técnica ou rotina operacional definida.",
+            "objetivo": "Padronizar a limpeza do meio filtrante sem causar retorno de sujeira para a piscina.",
+            "procedimento": [
+                "Verificar pressão do filtro e condição visual da água.",
+                "Desligar a bomba antes de mudar a posição da válvula seletora.",
+                "Executar retrolavagem pelo tempo necessário até melhora visual da água de descarte.",
+                "Executar enxágue antes de retornar para a posição filtrar.",
+                "Religar o sistema e conferir vazamentos, pressão e funcionamento.",
+            ],
+            "cuidados": [
+                "Nunca mudar a válvula seletora com a bomba ligada.",
+                "Comunicar aumento recorrente de pressão, baixa vazão ou necessidade excessiva de retrolavagem.",
+            ],
+            "registros": "Registrar data, execução de retrolavagem, enxágue e qualquer observação do filtro."
+        },
+        {
+            "codigo": "POP 07",
+            "titulo": "Dosagem segura de produtos químicos",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Somente após medição e conforme orientação técnica, rótulo, FISPQ/FDS e POP aplicável.",
+            "objetivo": "Evitar dosagens aleatórias, incompatibilidades químicas e riscos à segurança dos usuários e operadores.",
+            "procedimento": [
+                "Medir os parâmetros antes da dosagem.",
+                "Selecionar o produto conforme orientação técnica e finalidade da correção.",
+                "Utilizar EPIs compatíveis antes de manusear produtos.",
+                "Aplicar o produto conforme rótulo, orientação técnica e condição operacional da piscina.",
+                "Registrar produto, quantidade, unidade, horário e finalidade.",
+            ],
+            "cuidados": [
+                "Não misturar produtos químicos entre si.",
+                "Não aplicar produto sem identificação, vencido, contaminado ou armazenado inadequadamente.",
+                "Não executar dosagem corretiva sem registro.",
+            ],
+            "registros": "Registro obrigatório de todos os produtos aplicados ou recomendados."
+        },
+        {
+            "codigo": "POP 08",
+            "titulo": "Uso de EPIs e segurança química",
+            "responsavel": responsavel_execucao,
+            "frequencia": "Sempre que houver manipulação, transporte, diluição, dosagem ou armazenamento de produtos químicos.",
+            "objetivo": "Reduzir risco de acidentes durante o manuseio de produtos químicos de piscina.",
+            "procedimento": [
+                "Utilizar luvas de proteção química, óculos de segurança, calçado fechado antiderrapante e vestimenta compatível.",
+                "Utilizar máscara ou respirador compatível quando houver produto volátil, pó, odor intenso ou recomendação em FISPQ/FDS.",
+                "Manter acesso à água corrente para lavagem em caso de contato acidental.",
+                "Ler rótulos e seguir FISPQ/FDS, POPs e orientações do RT.",
+            ],
+            "cuidados": [
+                "Interromper a atividade se não houver condição segura ou EPI mínimo disponível.",
+                "Comunicar vazamentos, derramamentos, produto sem rótulo, odor forte ou condição insegura.",
+            ],
+            "registros": "Registrar não conformidades de EPI ou segurança química quando identificadas."
+        },
+        {
+            "codigo": "POP 09",
+            "titulo": "Organização da casa de máquinas e produtos",
+            "responsavel": responsavel_execucao,
+            "frequencia": freq_visita,
+            "objetivo": "Manter ambiente técnico organizado, seguro e rastreável.",
+            "procedimento": [
+                "Manter produtos fechados, identificados e separados de acordo com compatibilidade.",
+                "Evitar armazenamento direto no piso quando houver risco de umidade ou contaminação.",
+                "Manter acesso livre aos equipamentos, registros, painéis e produtos de emergência.",
+                "Não deixar recipientes abertos, ferramentas soltas ou resíduos após a visita.",
+            ],
+            "cuidados": [
+                "Não armazenar produtos incompatíveis juntos.",
+                "Comunicar ausência de identificação, embalagem comprometida ou condição de risco.",
+            ],
+            "registros": "Registrar não conformidades na casa de máquinas, quando existentes."
+        },
+        {
+            "codigo": "POP 10",
+            "titulo": "Comunicação de não conformidades",
+            "responsavel": responsavel_execucao + " e responsável local da CONTRATANTE",
+            "frequencia": "Sempre que identificada anormalidade técnica, sanitária, operacional ou de segurança.",
+            "objetivo": "Garantir comunicação rápida de situações que exigem correção, registro ou decisão administrativa.",
+            "procedimento": [
+                "Identificar a não conformidade e registrar evidências quando possível.",
+                "Comunicar o síndico/responsável local e o RT quando houver risco relevante.",
+                "Informar parâmetros medidos, condição visual, produtos disponíveis e ação executada.",
+                "Aguardar orientação técnica em situações críticas ou fora da rotina.",
+            ],
+            "cuidados": [
+                "Não ocultar não conformidade operacional.",
+                "Não liberar uso da piscina quando houver recomendação técnica de restrição.",
+            ],
+            "registros": "Registrar comunicação por meio rastreável: aplicativo, mensagem, e-mail, ficha ou relatório."
+        },
+        {
+            "codigo": "POP 11",
+            "titulo": "Verificação visual nos dias sem visita operacional",
+            "responsavel": "Responsável local designado pela CONTRATANTE",
+            "frequencia": "Diariamente nos dias sem visita do prestador/operador, quando aplicável.",
+            "objetivo": "Criar rotina mínima de observação entre as visitas operacionais.",
+            "procedimento": [
+                "Observar transparência da água, odor forte, espuma, alteração de cor, sujeira excessiva e reclamações de usuários.",
+                "Verificar se há sinal evidente de equipamento parado, vazamento ou área insegura.",
+                "Comunicar imediatamente o síndico, prestador operacional e/ou RT em caso de anormalidade.",
+            ],
+            "cuidados": [
+                "Esta verificação não substitui análise técnica nem rotina operacional completa.",
+                "Em caso de suspeita de risco, evitar o uso até orientação do responsável técnico ou administrativo.",
+            ],
+            "registros": "Registrar a ocorrência e comunicação quando houver anormalidade."
+        },
+        {
+            "codigo": "POP 12",
+            "titulo": "Restrição preventiva de uso",
+            "responsavel": "CONTRATANTE, com orientação do RT quando aplicável",
+            "frequencia": "Sempre que houver suspeita de risco sanitário, químico, físico ou operacional.",
+            "objetivo": "Definir conduta mínima para reduzir risco aos usuários em situações críticas.",
+            "procedimento": [
+                "Identificar sinais de risco: água turva, ausência de cloro residual, odor forte, suspeita de contaminação, acidente, equipamento crítico parado ou orientação técnica expressa.",
+                "Comunicar imediatamente o síndico/responsável local e o RT.",
+                "Sinalizar a restrição de uso quando houver decisão administrativa ou recomendação técnica.",
+                "Registrar a ocorrência, horário, responsável pela decisão e medidas adotadas.",
+            ],
+            "cuidados": [
+                "Não priorizar liberação da piscina em detrimento da segurança sanitária.",
+                "A decisão administrativa cabe à CONTRATANTE, sem prejuízo da recomendação técnica do RT.",
+            ],
+            "registros": "Notificação, relatório, mensagem rastreável e/ou checklist de ocorrência."
+        },
+        {
+            "codigo": "POP 13",
+            "titulo": "Controle de acesso a produtos e casa de máquinas",
+            "responsavel": "CONTRATANTE e responsável local",
+            "frequencia": "Contínua.",
+            "objetivo": "Reduzir acesso indevido de usuários, crianças, visitantes ou pessoas não autorizadas aos produtos e equipamentos.",
+            "procedimento": [
+                "Manter casa de máquinas e armazenamento de produtos com acesso controlado.",
+                "Permitir acesso apenas a pessoas autorizadas e orientadas.",
+                "Manter produtos fora do alcance de usuários e devidamente identificados.",
+                "Comunicar imediatamente sinais de acesso indevido, violação, vazamento ou produto fora de local.",
+            ],
+            "cuidados": [
+                "Não armazenar produtos em áreas de circulação comum.",
+                "Não permitir que pessoa não orientada manipule produto químico.",
+            ],
+            "registros": "Registrar acesso indevido, ausência de identificação ou condição insegura."
+        },
+        {
+            "codigo": "POP 14",
+            "titulo": "Auditoria técnica dos registros pelo RT",
+            "responsavel": "Aqua Gestão — Responsável Técnico",
+            "frequencia": "Conforme periodicidade contratada e disponibilidade dos registros.",
+            "objetivo": "Verificar tecnicamente os registros operacionais e apontar tendências, falhas ou não conformidades.",
+            "procedimento": [
+                "Avaliar registros de parâmetros, dosagens, ocorrências e comunicações.",
+                "Confrontar resultados com histórico, condição da água e recomendações anteriores.",
+                "Registrar não conformidades documentais ou operacionais.",
+                "Emitir orientação técnica, relatório, notificação ou recomendação de correção quando necessário.",
+            ],
+            "cuidados": [
+                "A ausência de registro ou dado incompleto limita a análise técnica.",
+                "A auditoria técnica não substitui a execução operacional diária pela equipe designada pela CONTRATANTE.",
+            ],
+            "registros": "Relatório técnico, checklist, notificação ou observação em sistema."
+        },
+        {
+            "codigo": "POP 15",
+            "titulo": "Revisão técnica dos POPs",
+            "responsavel": "Aqua Gestão — Responsável Técnico",
+            "frequencia": "Sempre que houver alteração relevante na rotina, equipamento, risco, recorrência de falhas ou necessidade técnica.",
+            "objetivo": "Manter os procedimentos atualizados com a realidade operacional do condomínio.",
+            "procedimento": [
+                "Revisar POPs quando houver mudança de prestador, equipe, produto, equipamento, frequência operacional ou não conformidade recorrente.",
+                "Registrar versão, data e motivo da revisão.",
+                "Comunicar a versão atualizada à CONTRATANTE e à equipe operacional designada.",
+            ],
+            "cuidados": [
+                "POPs desatualizados podem gerar falhas de execução e rastreabilidade.",
+                "A CONTRATANTE deve garantir que a equipe operacional tenha acesso à versão vigente.",
+            ],
+            "registros": "Controle de versão do Caderno de POPs e termos de ciência relacionados."
+        },
+    ]
+
+
+def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
+    """Gera PDF Premium com Caderno de POPs adaptativo."""
+    import io as _io
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#2F3742")
+    CINZA_CLARO = colors.HexColor("#F4F7FA")
+    BORDA = colors.HexColor("#D9E2EC")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def val(chave, padrao="Dado não informado"):
+        v = str(dados.get(chave, "") or "").strip()
+        return v if v else padrao
+
+    nome_cond = val("nome_condominio")
+    cnpj = val("cnpj_condominio")
+    endereco = val("endereco_condominio")
+    sindico = val("nome_sindico")
+    cargo_sindico = val("cargo_sindico", "Síndico/Representante legal")
+    data_ass = val("data_assinatura", hoje_br())
+    volumes = val("volumes_piscinas", "Volumes não informados")
+    executor = val("executor_operacional", "Prestador externo")
+    frequencia = val("frequencia_operacional", "3 vezes por semana")
+    obs = val("observacao_pops", "")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.6 * cm,
+        rightMargin=1.6 * cm,
+        topMargin=2.4 * cm,
+        bottomMargin=1.8 * cm,
+        title=f"Caderno de POPs — {nome_cond}",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="PopsTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=16, leading=20, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=5))
+    styles.add(ParagraphStyle(name="PopsSub", parent=styles["Normal"], fontName="Helvetica", fontSize=9, leading=12, textColor=CINZA_TEXTO, alignment=TA_CENTER, spaceAfter=8))
+    styles.add(ParagraphStyle(name="PopsH", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13.5, textColor=AZUL_ESCURO, spaceBefore=8, spaceAfter=4))
+    styles.add(ParagraphStyle(name="PopsMiniH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.4, leading=10.5, textColor=AZUL_MEDIO, spaceBefore=3, spaceAfter=2))
+    styles.add(ParagraphStyle(name="PopsBody", parent=styles["Normal"], fontName="Helvetica", fontSize=8.45, leading=11.8, textColor=CINZA_TEXTO, alignment=TA_JUSTIFY, spaceAfter=4))
+    styles.add(ParagraphStyle(name="PopsTableHead", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=colors.white, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="PopsTable", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=9.7, textColor=CINZA_TEXTO, alignment=TA_LEFT))
+    styles.add(ParagraphStyle(name="PopsBullet", parent=styles["Normal"], fontName="Helvetica", fontSize=8.15, leading=10.6, textColor=CINZA_TEXTO, leftIndent=8, firstLineIndent=-6, spaceAfter=2))
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, h - 1.45 * cm, w, 1.45 * cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.50 * cm, w, 0.06 * cm, fill=1, stroke=0)
+
+        logo = encontrar_logo()
+        if logo:
+            try:
+                canvas.drawImage(str(logo), 1.35 * cm, h - 1.27 * cm, width=2.55 * cm, height=0.92 * cm, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.65 * cm, "AQUA GESTÃO — CONTROLE TÉCNICO DE PISCINAS")
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawRightString(w - 1.45 * cm, h - 1.02 * cm, "Caderno de POPs | Responsabilidade Técnica | Rotina Operacional")
+
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.4)
+        canvas.line(1.45 * cm, 1.22 * cm, w - 1.45 * cm, 1.22 * cm)
+        canvas.setFillColor(CINZA_TEXTO)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(1.45 * cm, 0.82 * cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+        canvas.drawRightString(w - 1.45 * cm, 0.82 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
+    story = []
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("CADERNO DE POPs DO CONDOMÍNIO", styles["PopsTitle"]))
+    story.append(Paragraph("Procedimentos Operacionais Padrão adaptados à rotina operacional informada pela CONTRATANTE.", styles["PopsSub"]))
+
+    dados_table = [
+        [Paragraph("<b>Condomínio</b>", styles["PopsTableHead"]), Paragraph("<b>Rotina operacional</b>", styles["PopsTableHead"])],
+        [
+            Paragraph(f"{nome_cond}<br/>CNPJ: {cnpj}<br/>Endereço: {endereco}<br/>Representante: {sindico} — {cargo_sindico}", styles["PopsTable"]),
+            Paragraph(f"Executor informado: {executor}<br/>Frequência operacional: {frequencia}<br/>Piscinas/volumes: {volumes}<br/>Data: {data_ass}", styles["PopsTable"]),
+        ],
+    ]
+    t = Table(dados_table, colWidths=[8.4 * cm, 8.6 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+        ("GRID", (0, 0), (-1, -1), 0.4, BORDA),
+        ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 6 * mm))
+
+    def p(txt):
+        story.append(Paragraph(txt, styles["PopsBody"]))
+
+    story.append(Paragraph("1. Finalidade e delimitação técnica", styles["PopsH"]))
+    p("Este caderno integra a documentação técnica de Responsabilidade Técnica do condomínio e estabelece procedimentos mínimos recomendados para a rotina operacional de piscinas de uso coletivo.")
+    p("A execução dos procedimentos caberá à equipe operacional designada pela CONTRATANTE, seja funcionário próprio, zelador, piscineiro, empresa terceirizada ou prestador de manutenção, competindo à Aqua Gestão a orientação técnica, supervisão documental e registro de não conformidades no âmbito da Responsabilidade Técnica contratada.")
+    p("A Aqua Gestão não assume, por este documento, a execução operacional diária da limpeza, dosagem, manutenção física ou operação contínua dos equipamentos, salvo contratação específica em instrumento próprio.")
+
+    if obs and obs != "Dado não informado":
+        story.append(Paragraph("Observação específica informada", styles["PopsMiniH"]))
+        p(obs)
+
+    box = Table([[Paragraph("A aplicação destes POPs deve respeitar rótulos, FISPQ/FDS, orientações do Responsável Técnico, condições reais da instalação e normas aplicáveis. Na dúvida, a atividade deve ser interrompida e comunicada ao responsável local e/ou ao RT.", styles["PopsBody"])]], colWidths=[17 * cm])
+    box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), ALERTA),
+        ("BOX", (0, 0), (-1, -1), 0.6, DOURADO),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(box)
+    story.append(PageBreak())
+
+    def bullet_list(items):
+        for item in items:
+            story.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+
+    pops = _lista_pops_adaptativos(executor, frequencia)
+    for pop in pops:
+        bloco = []
+        bloco.append(Paragraph(f"{pop['codigo']} — {pop['titulo']}", styles["PopsH"]))
+        meta = Table([
+            [
+                Paragraph("<b>Responsável</b>", styles["PopsTableHead"]),
+                Paragraph("<b>Frequência</b>", styles["PopsTableHead"]),
+            ],
+            [
+                Paragraph(pop["responsavel"], styles["PopsTable"]),
+                Paragraph(pop["frequencia"], styles["PopsTable"]),
+            ],
+        ], colWidths=[8.4 * cm, 8.4 * cm])
+        meta.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL_MEDIO),
+            ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+            ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        bloco.append(meta)
+        bloco.append(Spacer(1, 3 * mm))
+        bloco.append(Paragraph("<b>Objetivo</b>", styles["PopsMiniH"]))
+        bloco.append(Paragraph(pop["objetivo"], styles["PopsBody"]))
+        bloco.append(Paragraph("<b>Procedimento mínimo</b>", styles["PopsMiniH"]))
+        for item in pop["procedimento"]:
+            bloco.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+        bloco.append(Paragraph("<b>Cuidados críticos</b>", styles["PopsMiniH"]))
+        for item in pop["cuidados"]:
+            bloco.append(Paragraph(f"• {item}", styles["PopsBullet"]))
+        bloco.append(Paragraph("<b>Registro obrigatório</b>", styles["PopsMiniH"]))
+        bloco.append(Paragraph(pop["registros"], styles["PopsBody"]))
+        bloco.append(Spacer(1, 4 * mm))
+        story.append(KeepTogether(bloco))
+
+    story.append(PageBreak())
+    story.append(Paragraph("Termo de recebimento dos POPs", styles["PopsTitle"]))
+    p("A CONTRATANTE declara ciência de que recebeu este Caderno de Procedimentos Operacionais Padrão — POPs, comprometendo-se a disponibilizar seu conteúdo à equipe operacional própria ou terceirizada responsável pela rotina da piscina.")
+    p("A equipe operacional designada pela CONTRATANTE deverá seguir os procedimentos aqui descritos, registrar as ações executadas e comunicar não conformidades ao síndico/responsável local e/ou ao Responsável Técnico quando aplicável.")
+    story.append(Spacer(1, 12 * mm))
+    story.append(Paragraph(f"Uberlândia/MG, {data_ass}.", styles["PopsBody"]))
+    story.append(Spacer(1, 15 * mm))
+
+    ass = [[
+        Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["PopsTable"]),
+        Paragraph(f"_________________________________________<br/>{sindico}<br/>{cargo_sindico}<br/>{nome_cond}", styles["PopsTable"]),
+    ]]
+    t_ass = Table(ass, colWidths=[8.3 * cm, 8.3 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_ass)
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+def gerar_caderno_pops_pdf() -> tuple[bool, str | None, Path | None]:
+    """Gera e salva o Caderno de POPs adaptativo do condomínio."""
+    try:
+        dados = _dados_pops_rt_do_formulario()
+        nome_cond = dados.get("nome_condominio") or "condominio"
+        if not dados.get("nome_condominio"):
+            return False, "Informe o nome do condomínio antes de gerar os POPs.", None
+
+        pasta = GENERATED_DIR / slugify_nome(nome_cond)
+        pasta.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saida = pasta / f"{limpar_nome_arquivo('Caderno_POPs_' + nome_cond + '_' + timestamp)}.pdf"
+        pdf_bytes = _gerar_pdf_caderno_pops(dados)
+        saida.write_bytes(pdf_bytes)
+
+        ultimos = dict(st.session_state.get("ultimos_docs_gerados") or {})
+        ultimos["caderno_pops_pdf"] = str(saida)
+        st.session_state.ultimos_docs_gerados = ultimos
+        st.session_state.ultima_pasta_gerada = str(pasta)
+
+        try:
+            registrar_documento_manifest(
+                pasta_condominio=pasta,
+                nome_condominio=nome_cond,
+                tipo="Caderno de POPs — Procedimentos Operacionais Padrão",
+                arquivo_docx=None,
+                arquivo_pdf=saida,
+                pdf_gerado=True,
+                erro_pdf=None,
+                dados_utilizados=dados,
+                extras={
+                    "documento": "caderno_pops",
+                    "executor_operacional": dados.get("executor_operacional"),
+                    "frequencia_operacional": dados.get("frequencia_operacional"),
+                    "pops_adaptativos": True,
+                },
+            )
+        except Exception:
+            pass
+
+        return True, None, saida
+    except Exception as e:
+        return False, str(e), None
+
+
+# =========================================
+# TERMOS DE CIÊNCIA — RT / EPIs
+# =========================================
+# FUNÇÕES — TERMOS DE CIÊNCIA E SEGURANÇA OPERACIONAL
+# =========================================
+
+def _dados_termos_rt_do_formulario() -> dict:
+    """Coleta dados atuais do formulário para gerar Termos de Ciência.
+
+    Importante: os Termos usam chaves próprias (termo_*).
+    Isso evita erro do Streamlit ao tentar alterar st.session_state de widgets
+    do contrato RT depois que eles já foram instanciados na página.
+    Quando os campos próprios dos termos estiverem vazios, usa os dados do contrato
+    como fallback.
+    """
+    def _termo_ou_base(chave_termo: str, chave_base: str, padrao: str = "") -> str:
+        return str(st.session_state.get(chave_termo) or st.session_state.get(chave_base) or padrao or "").strip()
+
+    return {
+        "nome_condominio": _termo_ou_base("termo_nome_condominio", "nome_condominio"),
+        "cnpj_condominio": _termo_ou_base("termo_cnpj_condominio", "cnpj_condominio"),
+        "endereco_condominio": _termo_ou_base("termo_endereco_condominio", "endereco_condominio"),
+        "nome_sindico": _termo_ou_base("termo_nome_sindico", "nome_sindico"),
+        "cpf_sindico": _termo_ou_base("termo_cpf_sindico", "cpf_sindico"),
+        "cargo_sindico": _termo_ou_base("termo_cargo_sindico", "cargo_sindico", "Síndico"),
+        "nome_operador": (st.session_state.get("termo_nome_operador") or "").strip(),
+        "cpf_operador": (st.session_state.get("termo_cpf_operador") or "").strip(),
+        "funcao_operador": (st.session_state.get("termo_funcao_operador") or "Operador/Zelador").strip(),
+        "data_assinatura": (st.session_state.get("termo_data_assinatura") or st.session_state.get("data_assinatura") or hoje_br()).strip(),
+        "volumes_piscinas": _termo_ou_base("termo_volumes_piscinas", "volumes_piscinas"),
+    }
+
+
+def _gerar_pdf_termo_ciencia_base(dados: dict, tipo: str) -> bytes:
+    """Gera PDF Premium para Termo de Ciência do Síndico ou Operador."""
+    import io as _io
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#2F3742")
+    CINZA_CLARO = colors.HexColor("#F4F7FA")
+    BORDA = colors.HexColor("#D9E2EC")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def val(chave, padrao="Dado não informado"):
+        v = str(dados.get(chave, "") or "").strip()
+        return v if v else padrao
+
+    nome_cond = val("nome_condominio")
+    cnpj = val("cnpj_condominio")
+    endereco = val("endereco_condominio")
+    sindico = val("nome_sindico")
+    cpf_sindico = val("cpf_sindico")
+    cargo_sindico = val("cargo_sindico", "Síndico/Representante legal")
+    operador = val("nome_operador", "Operador/Zelador indicado pela CONTRATANTE")
+    cpf_operador = val("cpf_operador")
+    funcao_operador = val("funcao_operador", "Operador/Zelador")
+    data_ass = val("data_assinatura", hoje_br())
+    volumes = val("volumes_piscinas", "Volumes não informados")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.7 * cm,
+        rightMargin=1.7 * cm,
+        topMargin=2.4 * cm,
+        bottomMargin=1.8 * cm,
+        title=f"Termo de Ciência — {tipo} — Aqua Gestão",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="TermoTitulo", parent=styles["Title"], fontName="Helvetica-Bold",
+        fontSize=15.5, leading=19, textColor=AZUL_ESCURO, alignment=TA_CENTER, spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoSub", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=9, leading=12, textColor=CINZA_TEXTO, alignment=TA_CENTER, spaceAfter=9,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoH", parent=styles["Heading2"], fontName="Helvetica-Bold",
+        fontSize=10, leading=13, textColor=AZUL_ESCURO, spaceBefore=8, spaceAfter=3,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoBody", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=8.7, leading=12.2, textColor=CINZA_TEXTO, alignment=TA_JUSTIFY, spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoTableHead", parent=styles["Normal"], fontName="Helvetica-Bold",
+        fontSize=8.2, leading=10, textColor=colors.white, alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="TermoTable", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=7.8, leading=9.8, textColor=CINZA_TEXTO, alignment=TA_LEFT,
+    ))
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, h - 1.45 * cm, w, 1.45 * cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.50 * cm, w, 0.06 * cm, fill=1, stroke=0)
+
+        logo = encontrar_logo()
+        if logo:
+            try:
+                canvas.drawImage(str(logo), 1.35 * cm, h - 1.27 * cm, width=2.55 * cm, height=0.92 * cm, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                pass
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawRightString(w - 1.45 * cm, h - 0.65 * cm, "AQUA GESTÃO — CONTROLE TÉCNICO DE PISCINAS")
+        canvas.setFont("Helvetica", 7.3)
+        canvas.drawRightString(w - 1.45 * cm, h - 1.02 * cm, "Termo de Ciência | POPs | Segurança Química | EPIs")
+
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.35)
+        canvas.line(1.5 * cm, 1.23 * cm, w - 1.5 * cm, 1.23 * cm)
+        canvas.setFillColor(CINZA_TEXTO)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(1.5 * cm, 0.84 * cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+        canvas.drawRightString(w - 1.5 * cm, 0.84 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
+    story = []
+
+    titulo = "TERMO DE CIÊNCIA DO SÍNDICO / REPRESENTANTE" if tipo == "sindico" else "TERMO DE CIÊNCIA DO OPERADOR / ZELADOR"
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(titulo, styles["TermoTitulo"]))
+    story.append(Paragraph("Responsabilidade Técnica — Piscinas de Uso Coletivo", styles["TermoSub"]))
+
+    id_rows = [
+        [Paragraph("CONDOMÍNIO / CONTRATANTE", styles["TermoTableHead"]), Paragraph("DADOS DO RESPONSÁVEL", styles["TermoTableHead"])],
+        [
+            Paragraph(f"<b>{nome_cond}</b><br/>CNPJ/CPF: {cnpj}<br/>Endereço: {endereco}<br/>Piscinas/volumes: {volumes}", styles["TermoTable"]),
+            Paragraph(
+                (f"<b>{sindico}</b><br/>CPF: {cpf_sindico}<br/>Qualificação: {cargo_sindico}" if tipo == "sindico" else
+                 f"<b>{operador}</b><br/>CPF: {cpf_operador}<br/>Função: {funcao_operador}<br/>Responsável administrativo: {sindico}"),
+                styles["TermoTable"],
+            ),
+        ],
+    ]
+    t = Table(id_rows, colWidths=[8.6 * cm, 8.4 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+        ("BACKGROUND", (0, 1), (-1, 1), CINZA_CLARO),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 5 * mm))
+
+    def h(txt):
+        story.append(Paragraph(txt, styles["TermoH"]))
+    def p(txt):
+        story.append(Paragraph(txt, styles["TermoBody"]))
+    def bullets(items):
+        for item in items:
+            story.append(Paragraph(f"• {item}", styles["TermoBody"]))
+
+    if tipo == "sindico":
+        h("1. Ciência sobre a Responsabilidade Técnica")
+        p("A CONTRATANTE declara ciência de que a Aqua Gestão Controle Técnico Ltda atua no escopo de Responsabilidade Técnica, abrangendo supervisão, orientação, análise técnica, registros, relatórios técnicos, recomendações e comunicação de não conformidades relacionadas ao tratamento químico e ao controle da qualidade da água das piscinas de uso coletivo.")
+        p("A ciência firmada neste termo não substitui o contrato principal, mas complementa a documentação técnica do condomínio e reforça as obrigações operacionais, administrativas e de segurança necessárias para a execução adequada da RT.")
+
+        h("2. Obrigações operacionais da CONTRATANTE")
+        bullets([
+            "manter equipe, operador, zelador ou prestador responsável pela rotina operacional diária das piscinas;",
+            "garantir acesso do Responsável Técnico às piscinas, casa de máquinas, registros, produtos e informações necessárias;",
+            "executar ou fazer executar as orientações técnicas e POPs emitidos pela Aqua Gestão;",
+            "manter registros de parâmetros, dosagens, ocorrências, lavagens de filtro e intervenções realizadas;",
+            "comunicar imediatamente anormalidades, água turva, odor forte, suspeita de contaminação, acidente, reclamação de usuário ou risco sanitário;",
+            "providenciar produtos, reagentes, equipamentos, instrumentos de medição e condições mínimas de segurança compatíveis com o tratamento da água.",
+        ])
+
+        h("3. Ciência sobre EPIs e segurança química")
+        p("A CONTRATANTE declara ciência de que a manipulação, transporte, diluição, dosagem e armazenamento de produtos químicos para tratamento de piscinas exige o uso de Equipamentos de Proteção Individual — EPIs adequados ao risco da atividade.")
+        p("Compete à CONTRATANTE disponibilizar, fiscalizar e exigir o uso dos EPIs necessários pela equipe operacional própria ou terceirizada, incluindo, quando aplicável: luvas de proteção química, óculos de segurança, máscara ou respirador compatível com o produto utilizado, calçado fechado antiderrapante e vestimenta compatível com a atividade.")
+        p("A ausência, insuficiência ou não utilização dos EPIs pela equipe operacional será tratada como não conformidade de segurança, podendo ser registrada pela Responsabilidade Técnica em relatório técnico, checklist ou notificação de não conformidade.")
+
+        h("4. Ciência sobre POPs e não conformidades")
+        p("A CONTRATANTE declara ciência de que os Procedimentos Operacionais Padrão — POPs, checklists, relatórios técnicos e notificações emitidos pela Aqua Gestão compõem a rotina técnica mínima recomendada para controle da água e segurança operacional.")
+        p("O descumprimento de POPs, a ausência de registros, a falta de produtos, o impedimento de acesso ou a execução de rotinas contrárias à orientação técnica poderão ser registrados em relatório técnico e poderão limitar a responsabilidade da Aqua Gestão quanto aos efeitos decorrentes da conduta operacional da CONTRATANTE ou de seus prepostos.")
+
+        h("5. Restrição de uso ou interdição preventiva")
+        p("A CONTRATANTE declara ciência de que, diante de risco sanitário, químico, operacional ou de segurança, o Responsável Técnico poderá recomendar restrição de uso ou interdição técnica preventiva da piscina até a regularização das condições identificadas.")
+
+    else:
+        h("1. Ciência sobre a função operacional")
+        p("O OPERADOR/ZELADOR declara ciência de que sua atuação na rotina da piscina deve seguir as orientações técnicas, POPs, registros e recomendações fornecidas pela Aqua Gestão e/ou pelo responsável administrativo do condomínio.")
+        p("O operador reconhece que não deve alterar dosagens, misturar produtos, improvisar procedimentos ou executar intervenção fora de sua capacitação sem comunicação prévia ao responsável local e/ou ao Responsável Técnico, especialmente em situações de risco químico ou sanitário.")
+
+        h("2. Declaração de ciência sobre uso obrigatório de EPIs")
+        p("Declaro estar ciente de que é obrigatório o uso de Equipamentos de Proteção Individual — EPIs durante a manipulação, diluição, dosagem, transporte ou armazenamento de produtos químicos utilizados no tratamento da piscina.")
+        p("Declaro estar ciente de que não devo manipular produtos químicos sem os EPIs adequados, especialmente luvas de proteção química, óculos de segurança, máscara ou respirador quando aplicável, calçado fechado antiderrapante e vestimenta compatível com a atividade.")
+        p("Declaro estar ciente de que a não utilização de EPIs ou o uso inadequado de produtos químicos pode representar risco à saúde, à segurança operacional e à qualidade da água, devendo a atividade ser interrompida sempre que não houver condição segura para sua execução.")
+
+        h("3. Condutas obrigatórias de segurança química")
+        bullets([
+            "não misturar produtos químicos entre si;",
+            "não adicionar água sobre produto químico concentrado sem orientação técnica específica;",
+            "não inalar vapores, poeiras ou gases provenientes de produtos químicos;",
+            "não manipular produto sem rótulo, identificação ou orientação de uso;",
+            "não armazenar produtos incompatíveis juntos;",
+            "manter produtos fechados, identificados, organizados e fora do acesso de usuários;",
+            "seguir rótulos, FISPQ/FDS, POPs e recomendações do Responsável Técnico;",
+            "comunicar imediatamente vazamentos, derramamentos, odor forte, contato acidental, irritação, queimadura química, ausência de EPI ou condição insegura.",
+        ])
+
+        h("4. EPIs mínimos recomendados")
+        bullets([
+            "luvas de proteção química;",
+            "óculos de segurança;",
+            "máscara ou respirador compatível com o produto utilizado, quando aplicável;",
+            "calçado fechado antiderrapante;",
+            "vestimenta compatível com a atividade;",
+            "acesso à água corrente para lavagem em caso de contato acidental.",
+        ])
+
+        h("5. Registros e comunicação de ocorrências")
+        p("O operador declara ciência de que deve registrar os parâmetros avaliados, dosagens realizadas, lavagem/retrolavagem de filtro, anormalidades observadas e qualquer ocorrência que possa comprometer a qualidade da água ou a segurança dos usuários.")
+        p("Na presença de água turva, odor forte, cloro combinado elevado, ausência de cloro residual, contaminação fecal, acidente, suspeita de produto inadequado ou qualquer risco sanitário, o operador deverá comunicar imediatamente o síndico/responsável local e aguardar orientação técnica antes de liberar o uso da piscina, quando aplicável.")
+
+    story.append(Spacer(1, 4 * mm))
+    aviso = Table([[Paragraph("Este termo deve ser arquivado junto aos documentos de Responsabilidade Técnica do condomínio e apresentado quando solicitado em auditorias, fiscalizações, reuniões internas ou comprovações de ciência operacional.", styles["TermoBody"])]], colWidths=[17 * cm])
+    aviso.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), ALERTA),
+        ("BOX", (0, 0), (-1, -1), 0.6, DOURADO),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(aviso)
+    story.append(Spacer(1, 9 * mm))
+    story.append(Paragraph(f"Uberlândia/MG, {data_ass}.", styles["TermoBody"]))
+    story.append(Spacer(1, 15 * mm))
+
+    if tipo == "sindico":
+        ass = [[
+            Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["TermoTable"]),
+            Paragraph(f"_________________________________________<br/>{sindico}<br/>{cargo_sindico}<br/>{nome_cond}", styles["TermoTable"]),
+        ]]
+    else:
+        ass = [[
+            Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["TermoTable"]),
+            Paragraph(f"_________________________________________<br/>{operador}<br/>{funcao_operador}<br/>CPF: {cpf_operador}", styles["TermoTable"]),
+        ]]
+
+    t_ass = Table(ass, colWidths=[8.3 * cm, 8.3 * cm])
+    t_ass.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t_ass)
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+def gerar_termo_ciencia_pdf(tipo: str) -> tuple[bool, str | None, Path | None]:
+    """Gera e salva Termo de Ciência de síndico ou operador."""
+    try:
+        dados = _dados_termos_rt_do_formulario()
+        nome_cond = dados.get("nome_condominio") or "condominio"
+        if not dados.get("nome_condominio"):
+            return False, "Informe o nome do condomínio antes de gerar o termo.", None
+        if tipo == "operador" and not dados.get("nome_operador"):
+            return False, "Informe o nome do operador/zelador antes de gerar o termo.", None
+
+        pasta = GENERATED_DIR / slugify_nome(nome_cond)
+        pasta.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_tipo = "Termo_Ciencia_Sindico" if tipo == "sindico" else "Termo_Ciencia_Operador_EPI"
+        saida = pasta / f"{limpar_nome_arquivo(nome_tipo + '_' + nome_cond + '_' + timestamp)}.pdf"
+        pdf_bytes = _gerar_pdf_termo_ciencia_base(dados, tipo)
+        saida.write_bytes(pdf_bytes)
+
+        ultimos = dict(st.session_state.get("ultimos_docs_gerados") or {})
+        if tipo == "sindico":
+            ultimos["termo_sindico_pdf"] = str(saida)
+        else:
+            ultimos["termo_operador_pdf"] = str(saida)
+        st.session_state.ultimos_docs_gerados = ultimos
+        st.session_state.ultima_pasta_gerada = str(pasta)
+
+        try:
+            registrar_documento_manifest(
+                pasta_condominio=pasta,
+                nome_condominio=nome_cond,
+                tipo="Termo de Ciência — Síndico" if tipo == "sindico" else "Termo de Ciência — Operador/EPIs",
+                arquivo_docx=None,
+                arquivo_pdf=saida,
+                pdf_gerado=True,
+                erro_pdf=None,
+                dados_utilizados=dados,
+                extras={"documento": "termo_ciencia", "tipo": tipo, "epi_sem_avental_padrao": True},
+            )
+        except Exception:
+            pass
+
+        return True, None, saida
+    except Exception as e:
+        return False, str(e), None
+
+# =========================================
+
+st.markdown('<div class="section-card aq-only" id="sec-termos-ciencia">', unsafe_allow_html=True)
+st.subheader("Termos de ciência e segurança operacional")
+st.caption(
+    "Gere termos complementares para arquivar junto ao contrato de RT. "
+    "Os termos reforçam ciência sobre POPs, registros operacionais, comunicação de não conformidades, segurança química e uso de EPIs."
+)
+
+# ── Carregamento de dados do condomínio também nos Termos de Ciência ──────────
+# Os termos usam os mesmos campos-base do contrato RT. Este bloco evita digitação
+# duplicada quando o usuário acessa diretamente a seção de termos.
+_clientes_termos = filtrar_clientes_por_empresa((_clientes_completos_cache() if "_clientes_completos_cache" in globals() else sheets_listar_clientes_completo()), "aqua_gestao")
+if _clientes_termos:
+    _opcoes_termos = ["— Selecionar cliente cadastrado —"] + [c.get("nome", "") for c in _clientes_termos if c.get("nome")]
+    _sel_termos = st.selectbox(
+        "🔗 Carregar dados do condomínio cadastrado",
+        _opcoes_termos,
+        key="sel_cliente_termos_ciencia",
+        help="Preenche os dados do condomínio, CNPJ, endereço e representante para gerar os termos."
+    )
+    if _sel_termos and _sel_termos != "— Selecionar cliente cadastrado —":
+        if st.button("⬇️ Preencher termos com dados deste condomínio", key="btn_carregar_cliente_termos", use_container_width=True):
+            _dados_termos = next((c for c in _clientes_termos if c.get("nome") == _sel_termos), {})
+            if _dados_termos:
+                st.session_state["termo_nome_condominio"] = _dados_termos.get("nome", "")
+                st.session_state["termo_cnpj_condominio"] = formatar_cnpj(_dados_termos.get("cnpj", ""))
+                st.session_state["termo_endereco_condominio"] = _dados_termos.get("endereco", "")
+                st.session_state["termo_nome_sindico"] = _dados_termos.get("contato", "")
+                st.session_state["termo_whatsapp_cliente"] = formatar_telefone(_dados_termos.get("telefone", ""))
+                st.session_state["termo_email_cliente"] = _dados_termos.get("email", "")
+
+                _vols = []
+                try:
+                    if float(_dados_termos.get("vol_adulto") or 0) > 0:
+                        _vols.append(f"Piscina adulto: {_dados_termos.get('vol_adulto')} m³")
+                    if float(_dados_termos.get("vol_infantil") or 0) > 0:
+                        _vols.append(f"Piscina infantil: {_dados_termos.get('vol_infantil')} m³")
+                    if float(_dados_termos.get("vol_family") or 0) > 0:
+                        _vols.append(f"Piscina family: {_dados_termos.get('vol_family')} m³")
+                except Exception:
+                    _vols = []
+                if _vols:
+                    st.session_state["termo_volumes_piscinas"] = " | ".join(_vols)
+
+                st.success(f"✅ Dados de '{_sel_termos}' carregados para os termos.")
+                st.rerun()
+else:
+    st.info("💡 Cadastre o condomínio ou preencha os dados do contrato RT antes de gerar os termos.")
+
+with st.expander("📌 Dados do condomínio usados nos termos", expanded=False):
+    _dados_preview_termos = _dados_termos_rt_do_formulario()
+    st.write(f"**Condomínio:** {_dados_preview_termos.get('nome_condominio') or 'Não informado'}")
+    st.write(f"**CNPJ:** {_dados_preview_termos.get('cnpj_condominio') or 'Não informado'}")
+    st.write(f"**Endereço:** {_dados_preview_termos.get('endereco_condominio') or 'Não informado'}")
+    st.write(f"**Representante:** {_dados_preview_termos.get('nome_sindico') or 'Não informado'}")
+    st.write(f"**Volumes:** {_dados_preview_termos.get('volumes_piscinas') or 'Não informado'}")
+
+_tc1, _tc2, _tc3 = st.columns([1.25, 1.1, 1.1])
+with _tc1:
+    st.text_input(
+        "Nome do operador/zelador",
+        key="termo_nome_operador",
+        placeholder="Ex.: José da Silva",
+    )
+with _tc2:
+    st.text_input(
+        "CPF do operador/zelador",
+        key="termo_cpf_operador",
+        placeholder="000.000.000-00",
+    )
+with _tc3:
+    st.text_input(
+        "Função",
+        key="termo_funcao_operador",
+        value=st.session_state.get("termo_funcao_operador", "Operador/Zelador"),
+    )
+
+st.info(
+    "EPIs mínimos nos termos: luvas de proteção química, óculos de segurança, máscara ou respirador quando aplicável, "
+    "calçado fechado antiderrapante, vestimenta compatível e acesso à água corrente. O avental não foi incluído como item padrão."
+)
+
+_tbtn1, _tbtn2 = st.columns(2)
+with _tbtn1:
+    if st.button("📄 Gerar Termo de Ciência do Síndico", use_container_width=True):
+        with st.spinner("Gerando Termo de Ciência do Síndico..."):
+            ok, erro, caminho = gerar_termo_ciencia_pdf("sindico")
+        if ok and caminho and caminho.exists():
+            st.success("Termo de Ciência do Síndico gerado com sucesso.")
+            with open(caminho, "rb") as f:
+                st.download_button(
+                    "Baixar Termo do Síndico em PDF",
+                    data=f,
+                    file_name=caminho.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_termo_sindico_imediato",
+                )
+        else:
+            st.error(f"Não foi possível gerar o termo: {erro}")
+
+with _tbtn2:
+    if st.button("👷 Gerar Termo de Ciência do Operador — EPIs", use_container_width=True):
+        with st.spinner("Gerando Termo de Ciência do Operador..."):
+            ok, erro, caminho = gerar_termo_ciencia_pdf("operador")
+        if ok and caminho and caminho.exists():
+            st.success("Termo de Ciência do Operador gerado com sucesso.")
+            with open(caminho, "rb") as f:
+                st.download_button(
+                    "Baixar Termo do Operador em PDF",
+                    data=f,
+                    file_name=caminho.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_termo_operador_imediato",
+                )
+        else:
+            st.error(f"Não foi possível gerar o termo: {erro}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# POPs — PROCEDIMENTOS OPERACIONAIS PADRÃO
+# =========================================
+
+st.markdown('<div class="section-card aq-only" id="sec-pops-adaptativos">', unsafe_allow_html=True)
+st.subheader("POPs — Procedimentos Operacionais Padrão")
+st.caption(
+    "Gere um Caderno de POPs no padrão Aqua Gestão, adaptado ao tipo de operação do condomínio. "
+    "Indicado para condomínios com prestador externo, zelador do condomínio, funcionário próprio, empresa contratada ou rotina mista."
+)
+
+# Normaliza valores antigos/estranhos salvos no session_state para não manter textos quebrados na tela.
+_opcoes_executor_pops = [
+    "Prestador externo",
+    "Empresa contratada",
+    "Zelador do condomínio",
+    "Funcionário próprio do condomínio",
+    "Rotina mista",
+]
+_mapa_executor_pops_antigo = {
+    "Prestador externo": "Prestador externo",
+    "Prestador ado": "Prestador externo",
+    "Empresa contratada": "Empresa contratada",
+    "Zelador": "Zelador do condomínio",
+}
+_valor_executor_atual = st.session_state.get("pops_executor_operacional", "Prestador externo")
+st.session_state["pops_executor_operacional"] = _mapa_executor_pops_antigo.get(_valor_executor_atual, _valor_executor_atual)
+if st.session_state["pops_executor_operacional"] not in _opcoes_executor_pops:
+    st.session_state["pops_executor_operacional"] = "Prestador externo"
+
+_popc1, _popc2 = st.columns(2)
+with _popc1:
+    st.selectbox(
+        "Quem executa a rotina operacional da piscina?",
+        _opcoes_executor_pops,
+        key="pops_executor_operacional",
+        index=_opcoes_executor_pops.index(st.session_state["pops_executor_operacional"]),
+    )
+
+with _popc2:
+    st.selectbox(
+        "Frequência operacional informada",
+        [
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ],
+        key="pops_frequencia_operacional",
+        index=[
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ].index(st.session_state.get("pops_frequencia_operacional", "3 vezes por semana"))
+        if st.session_state.get("pops_frequencia_operacional", "3 vezes por semana") in [
+            "3 vezes por semana",
+            "Diária",
+            "2 vezes por semana",
+            "1 vez por semana",
+            "Sem rotina definida",
+        ] else 0,
+    )
+
+st.text_area(
+    "Observação específica para este caderno de POPs (opcional)",
+    key="pops_observacao",
+    placeholder="Ex.: O condomínio possui prestador externo 3 vezes por semana e responsável local para verificação visual nos demais dias.",
+    height=80,
+)
+
+st.info(
+    "O caderno deixa claro que a execução operacional cabe à equipe designada pela CONTRATANTE, "
+    "enquanto a equipe técnica da Aqua Gestão atua na orientação técnica, supervisão documental e registro de não conformidades no âmbito da RT."
+)
+
+if st.button("📘 Gerar Caderno de POPs do Condomínio", use_container_width=True):
+    with st.spinner("Gerando Caderno de POPs adaptativo..."):
+        ok, erro, caminho = gerar_caderno_pops_pdf()
+    if ok and caminho and caminho.exists():
+        st.success("Caderno de POPs gerado com sucesso.")
+        with open(caminho, "rb") as f:
+            st.download_button(
+                "Baixar Caderno de POPs em PDF",
+                data=f,
+                file_name=caminho.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_caderno_pops_imediato",
+            )
+    else:
+        st.error(f"Não foi possível gerar os POPs: {erro}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================
+# DOWNLOADS DOS ÚLTIMOS DOCUMENTOS GERADOS
+# =========================================
+# Exibe os downloads logo aqui, antes do relatório, independente de onde o botão foi clicado.
+
+_ultimos = st.session_state.get("ultimos_docs_gerados")
+if _ultimos:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("⬇️ Últimos documentos gerados")
+
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        st.markdown("**Contrato RT — Aqua Gestão**")
+        _p = _ultimos.get("contrato_docx")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button(
+                    "Baixar DOCX editável do contrato",
+                    data=_f,
+                    file_name=Path(_p).name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="dl_contrato_docx_top",
+                )
+    with _dc2:
+        st.markdown("**PDF para envio**")
+        _p = _ultimos.get("contrato_pdf_premium")
+        if _p and Path(_p).exists():
+            with open(_p, "rb") as _f:
+                st.download_button(
+                    "📄 Baixar PDF Premium Aqua Gestão",
+                    data=_f,
+                    file_name=Path(_p).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_contrato_pdf_premium_top",
+                )
+
+    _p_termo_sindico = _ultimos.get("termo_sindico_pdf")
+    _p_termo_operador = _ultimos.get("termo_operador_pdf")
+    if (_p_termo_sindico and Path(_p_termo_sindico).exists()) or (_p_termo_operador and Path(_p_termo_operador).exists()):
+        st.markdown("**Termos de ciência — RT / EPIs**")
+        _dt1, _dt2 = st.columns(2)
+        with _dt1:
+            if _p_termo_sindico and Path(_p_termo_sindico).exists():
+                with open(_p_termo_sindico, "rb") as _f:
+                    st.download_button(
+                        "Baixar Termo do Síndico",
+                        data=_f,
+                        file_name=Path(_p_termo_sindico).name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="dl_termo_sindico_top",
+                    )
+        with _dt2:
+            if _p_termo_operador and Path(_p_termo_operador).exists():
+                with open(_p_termo_operador, "rb") as _f:
+                    st.download_button(
+                        "Baixar Termo do Operador — EPIs",
+                        data=_f,
+                        file_name=Path(_p_termo_operador).name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="dl_termo_operador_top",
+                    )
+
+    _p_pops = _ultimos.get("caderno_pops_pdf")
+    if _p_pops and Path(_p_pops).exists():
+        st.markdown("**POPs — Procedimentos Operacionais Padrão**")
+        with open(_p_pops, "rb") as _f:
+            st.download_button(
+                "📘 Baixar Caderno de POPs",
+                data=_f,
+                file_name=Path(_p_pops).name,
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_caderno_pops_top",
+            )
+
+
+    _p_rel = _ultimos.get("relatorio_docx")
+    _p_rel_pdf = _ultimos.get("relatorio_pdf")
+    if (_p_rel and Path(_p_rel).exists()) or (_p_rel_pdf and Path(_p_rel_pdf).exists()):
+        st.markdown("**Relatório mensal**")
+        _dc3, _dc4 = st.columns(2)
+        with _dc3:
+            if _p_rel and Path(_p_rel).exists():
+                with open(_p_rel, "rb") as _f:
+                    st.download_button("Baixar DOCX do relatório", data=_f, file_name=Path(_p_rel).name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key="dl_relatorio_docx_top")
+        with _dc4:
+            if _p_rel_pdf and Path(_p_rel_pdf).exists():
+                with open(_p_rel_pdf, "rb") as _f:
+                    st.download_button("Baixar PDF do relatório", data=_f, file_name=Path(_p_rel_pdf).name,
+                        mime="application/pdf", use_container_width=True, key="dl_relatorio_pdf_top")
+
+    # _EMAIL_ULTIMOS_DOCUMENTOS_AQUA_V1_
+    _email_docs_pasta = None
+    try:
+        _pasta_tmp = st.session_state.get("ultima_pasta_gerada") or ""
+        if _pasta_tmp:
+            _email_docs_pasta = Path(_pasta_tmp)
+    except Exception:
+        _email_docs_pasta = None
+
+    try:
+        _dados_email_docs = _dados_termos_rt_do_formulario()
+    except Exception:
+        _dados_email_docs = {}
+
+    _nome_email_docs = (
+        _dados_email_docs.get("nome_condominio")
+        or st.session_state.get("nome_condominio")
+        or "Condomínio"
+    )
+    _email_cliente_docs = (
+        st.session_state.get("termo_email_cliente")
+        or st.session_state.get("email_cliente")
+        or ""
+    )
+    _msg_email_docs = (
+        f"Prezados,\n\n"
+        f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_email_docs}.\n\n"
+        "Incluí os documentos selecionados no sistema, podendo contemplar contrato, aditivo, termos de ciência, POPs e relatórios técnicos.\n\n"
+        "Os arquivos seguem para conferência, registro e arquivo interno do condomínio.\n\n"
+        "Permaneço à disposição para qualquer esclarecimento."
+    )
+    exibir_envio_email_documentos_aqua(
+        nome_condominio=_nome_email_docs,
+        pasta_condominio=_email_docs_pasta,
+        email_cliente=_email_cliente_docs,
+        mensagem_padrao=_msg_email_docs,
+        documentos_sugeridos=[v for v in (_ultimos or {}).values() if isinstance(v, str)],
+        key_prefix="ultimos_docs_aqua",
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# RELATÓRIO MENSAL DE RT
+# =========================================
+
+
+st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allow_html=True)
+st.subheader("👁️ Pré-visualizar relatório final")
+st.caption("A prévia usa a empresa ativa no acesso administrativo, mantendo Aqua Gestão e Bem Star separadas dentro do sistema.")
+
+# _PREVIEW_RELATORIO_SEMPRE_AQUA_V1_
+_prev_empresa_val = "Aqua Gestão"
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
+    st.warning("🛡️ Prévia de Relatório RT protegida: usando Aqua Gestão, mesmo que o painel lateral esteja em Bem Star.")
+st.info(f"Empresa ativa para esta prévia: {_prev_empresa_val}")
+_prev_usar_form = st.checkbox(
+    "Usar dados reais do formulário e fotos anexadas (prévia exata)",
+    value=True,
+    key="preview_rel_usar_form",
+    help="Quando marcado, a prévia usa o mesmo gerador DOCX/PDF do relatório final, aproveitando os dados atuais do formulário e as fotos anexadas disponíveis.",
+)
+
+_prev_tab1, _prev_tab2, _prev_tab3 = st.tabs(["📄 Prévia exata do relatório final", "🧩 Modelo visual de referência", "⬆️ Carregar Relatório"])
+
+with _prev_tab1:
+    if _prev_usar_form:
+        with st.spinner("Montando prévia exata com os dados atuais..."):
+            _prev_result = gerar_previa_exata_relatorio(_prev_empresa_val)
+
+        if _prev_result.get("ok"):
+            _pdf_ok = bool(_prev_result.get("pdf_ok")) and _prev_result.get("pdf") and Path(_prev_result["pdf"]).exists()
+            _docx_ok = _prev_result.get("docx") and Path(_prev_result["docx"]).exists()
+            st.success(f"✅ {_prev_result.get('mensagem', 'Prévia exata atualizada com sucesso.')}")
+            st.caption(f"Fotos usadas: {len(_prev_result.get('fotos', []))} · origem: {_prev_result.get('origem_fotos', 'não identificada')}")
+
+            if _pdf_ok:
+                exibir_pdf_previa_exata(Path(_prev_result["pdf"]), height=1220 if _prev_empresa_val == "Aqua Gestão" else 1320)
+            else:
+                st.warning(f"O DOCX da prévia foi gerado, mas o PDF não foi convertido automaticamente. Erro: {_prev_result.get('erro_pdf')}")
+
+            _col_prev_1, _col_prev_2 = st.columns(2)
+            with _col_prev_1:
+                if _docx_ok:
+                    with open(_prev_result["docx"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar DOCX da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["docx"]).name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_docx",
+                        )
+            with _col_prev_2:
+                if _pdf_ok:
+                    with open(_prev_result["pdf"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar PDF da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["pdf"]).name,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_pdf",
+                        )
+        else:
+            st.warning("Não foi possível montar a prévia exata com os dados atuais.")
+            for _erro_prev in _prev_result.get("erros", []) or [_prev_result.get("mensagem", "")]:
+                if _erro_prev:
+                    st.write(f"- {_erro_prev}")
+    else:
+        st.info("Ative a opção de prévia exata para usar o mesmo gerador DOCX/PDF do relatório final com os dados reais do formulário.")
+
+with _prev_tab2:
+    _prev_dados, _, _ = _obter_dados_preview_relatorio(_prev_empresa_val, False)
+    st.info("Exibindo o modelo visual de referência como apoio rápido de layout. A aba ao lado mostra a prévia exata do documento final.")
+    _prev_html = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="web", dados=_prev_dados)
+    _prev_print = gerar_mockup_relatorio_preview_html(_prev_empresa_val, visual="print", dados=_prev_dados)
+    _sub_tab1, _sub_tab2 = st.tabs(["🌐 Referência tela / HTML", "🖨️ Referência impressão / PDF"])
+    with _sub_tab1:
+        st.warning("Visualização HTML embutida desativada para evitar rerun infinito no Streamlit 1.56.")
+        st.code(_prev_html[:12000], language="html")
+        if len(_prev_html) > 12000:
+            st.caption("Prévia textual truncada no app. Use o download abaixo para abrir o HTML completo.")
+        st.download_button(
+            "⬇️ Baixar HTML de referência (tela)",
+            data=_prev_html.encode("utf-8"),
+            file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_tela.html",
+            mime="text/html",
+            use_container_width=True,
+            key="btn_dl_mockup_rel_tela",
+        )
+    with _sub_tab2:
+        st.warning("Visualização de impressão embutida desativada para evitar rerun infinito no Streamlit 1.56.")
+        st.code(_prev_print[:12000], language="html")
+        if len(_prev_print) > 12000:
+            st.caption("Prévia textual truncada no app. Use o download abaixo para abrir o HTML completo.")
+        st.download_button(
+            "⬇️ Baixar HTML de referência (impressão)",
+            data=_prev_print.encode("utf-8"),
+            file_name=f"mockup_relatorio_{slugify_nome(_prev_empresa_val)}_impressao.html",
+            mime="text/html",
+            use_container_width=True,
+            key="btn_dl_mockup_rel_print",
+        )
+
+with _prev_tab3:
+    st.markdown("### Carregar relatório para edição")
+    st.caption("Selecione um arquivo JSON de relatório salvo para preencher o formulário e editar.")
+    uploaded_file = st.file_uploader("Escolha um arquivo JSON", type=["json"], key="upload_relatorio_json")
+    if uploaded_file is not None:
+        try:
+            dados_relatorio = json.load(uploaded_file)
+            aplicar_snapshot_relatorio_independente(dados_relatorio)
+            st.success("✅ Relatório carregado com sucesso! Os campos do formulário foram preenchidos.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Erro ao carregar o arquivo JSON: {e}")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="section-card aq-only" id="sec-relatorio-rt">', unsafe_allow_html=True)
+st.subheader("Relatório mensal de responsabilidade técnica")
+
+
+st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
+
+# ── Seletor de cliente do Sheets ──────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def _clientes_completos_rel_cache():
+    return sheets_listar_clientes_completo()
+
+_clientes_rel = filtrar_clientes_por_empresa(_clientes_completos_rel_cache(), "aqua_gestao")
+if _clientes_rel:
+    _opcoes_rel = ["— Selecionar cliente cadastrado —"] + [c["nome"] for c in _clientes_rel]
+    _rel_col1, _rel_col2 = st.columns([3, 1])
+    with _rel_col1:
+        _sel_rel = st.selectbox(
+            "🔗 Carregar dados de cliente cadastrado",
+            _opcoes_rel,
+            key="sel_cliente_rel",
+            help="Selecione um cliente para preencher automaticamente os campos do relatório."
+        )
+    with _rel_col2:
+        st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
+        if st.button("⬇️ Carregar", key="btn_carregar_cliente_rel", use_container_width=True):
+            if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
+                _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
+                if _dados_rel:
+                    st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
+                    st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
+                    st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
+                    st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
+                    st.session_state["rel_cpf_cnpj_representante"] = ""
+                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
+                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
+                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
+                    st.session_state["_rel_auto_importar_cliente"] = True
+                    st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
+                    st.rerun()
+
+rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
+with rr0a:
+    st.selectbox("Tipo de atendimento", ["Contrato ativo", "Visita técnica avulsa", "Inspeção técnica", "Acompanhamento sem contrato"], key="rel_tipo_atendimento")
+with rr0b:
+    if st.button("Carregar dados do cadastro no relatório", use_container_width=True):
+        carregar_dados_cadastro_no_relatorio()
+        st.rerun()
+with rr0c:
+    st.checkbox("Salvar alterações deste relatório no cadastro principal", key="rel_salvar_alteracoes_cadastro")
+
+# ---- Importar lançamentos de campo (local + Google Sheets) ----
+nome_rel_atual = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+pasta_rel_atual = GENERATED_DIR / slugify_nome(nome_rel_atual) if nome_rel_atual else None
+
+# Busca lançamentos locais
+lancamentos_local = []
+if pasta_rel_atual and pasta_rel_atual.exists():
+    dados_rel_json = carregar_dados_condominio(pasta_rel_atual)
+    lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
+
+# Busca lançamentos do Google Sheets (aba Visitas)
+lancamentos_sheets = []
+if nome_rel_atual:
+    lancamentos_sheets = sheets_listar_lancamentos(nome_rel_atual)
+
+# Filtra pelo mês de referência
+mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
+ano_ref = (st.session_state.get("rel_ano_referencia") or str(datetime.now().year)).strip()
+
+# Diagnóstico de importação de visitas — ajuda a separar problema de filtro vs. problema de gravação no Sheets.
+with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
+    st.write("**Condomínio usado na busca:**", nome_rel_atual or "Não informado")
+    st.write("**Mês/Ano do relatório:**", f"{mes_ref or 'mês não informado'}/{ano_ref or 'ano não informado'}")
+    st.write("**Lançamentos locais encontrados:**", len(lancamentos_local))
+    st.write("**Lançamentos no Google Sheets encontrados para este condomínio:**", len(lancamentos_sheets))
+
+    if lancamentos_sheets:
+        st.write("**Últimas datas encontradas no Sheets:**")
+        for lc in lancamentos_sheets[-10:]:
+            st.write(
+                f"- {lc.get('data', '')} | "
+                f"{lc.get('condominio', '')} | "
+                f"Operador: {lc.get('operador', '')} | "
+                f"ID: {lc.get('id_visita', '')}"
+            )
+    else:
+        st.warning(
+            "Nenhuma visita foi encontrada na aba 🔬 Visitas para este condomínio. "
+            "Se existe apenas PDF, o relatório mensal não consegue importar automaticamente. "
+            "A visita precisa estar salva no Google Sheets."
+        )
+
+    erro_sheets = st.session_state.get("_sheets_ultimo_erro", "")
+    if erro_sheets:
+        st.code(erro_sheets[:1500])
+
+    st.markdown("---")
+    st.markdown("**📄 Recuperar visita antiga a partir de PDF**")
+    st.caption(
+        "Use isto quando o PDF da visita existe, mas a linha não foi gravada na aba 🔬 Visitas. "
+        "O sistema extrai os dados do PDF, salva no Google Sheets e libera a importação no relatório mensal."
+    )
+    pdf_visita_import = st.file_uploader(
+        "Enviar PDF do Relatório de Visita para recuperar lançamento",
+        type=["pdf"],
+        key="rel_pdf_visita_importador",
+    )
+
+    if pdf_visita_import is not None:
+        if st.button("📥 Importar este PDF para a aba 🔬 Visitas", key="btn_importar_pdf_visita_sheets"):
+            try:
+                pdf_bytes = pdf_visita_import.getvalue()
+                lanc_pdf = extrair_lancamento_de_pdf_visita(pdf_bytes, nome_rel_atual)
+                if not lanc_pdf:
+                    st.error("Não consegui extrair dados suficientes deste PDF. Confira se é um Relatório de Visita gerado pelo sistema.")
+                else:
+                    cond_pdf = lanc_pdf.get("condominio") or nome_rel_atual
+                    ok_pdf = sheets_salvar_lancamento_campo(lanc_pdf, cond_pdf)
+
+                    try:
+                        pasta_pdf = GENERATED_DIR / slugify_nome(cond_pdf)
+                        pasta_pdf.mkdir(exist_ok=True)
+                        dados_pdf = carregar_dados_condominio(pasta_pdf) or {}
+                        pend_pdf = dados_pdf.get("lancamentos_campo", [])
+                        pend_pdf.append(lanc_pdf)
+                        dados_pdf["lancamentos_campo"] = pend_pdf
+                        dados_pdf["nome_condominio"] = dados_pdf.get("nome_condominio", cond_pdf)
+                        salvar_dados_condominio(pasta_pdf, dados_pdf)
+                    except Exception as e:
+                        _log_sheets_erro("salvar_pdf_importado_json_local", e)
+
+                    if ok_pdf:
+                        st.success(
+                            f"✅ PDF importado e salvo como visita: {cond_pdf} — {lanc_pdf.get('data','data não identificada')}"
+                        )
+                        st.session_state["_rel_auto_importar_cliente"] = True
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "Consegui ler o PDF, mas não consegui salvar na aba 🔬 Visitas. "
+                            "Veja o erro técnico abaixo."
+                        )
+                        erro_pdf = st.session_state.get("_sheets_ultimo_erro", "")
+                        if erro_pdf:
+                            st.code(erro_pdf[:2000])
+            except Exception as e:
+                _log_sheets_erro("importar_pdf_visita_ui", e)
+                st.error("Erro ao importar o PDF de visita.")
+                st.code(st.session_state.get("_sheets_ultimo_erro", "")[:2000])
+
+def _filtrar_mes(lancamentos, mes, ano):
+    """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
+    if not mes or not ano:
+        return lancamentos
+    return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
+
+# Une local + Sheets sem duplicar (por data+operador)
+_vistos = set()
+lancamentos_disponiveis = []
+for lc in lancamentos_local + lancamentos_sheets:
+    _chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','')}"
+    if _chave not in _vistos:
+        _vistos.add(_chave)
+        lancamentos_disponiveis.append(lc)
+
+# Filtra por mês se informado
+lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+
+def _importar_lancamentos(lancamentos):
+    """Preenche o relatório com os lançamentos de campo."""
+    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
+    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
+        # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
+        piscinas = lc.get("piscinas", [])
+        if piscinas:
+            lc_dados = piscinas[0]  # primeira piscina para o relatório principal
+        else:
+            lc_dados = lc
+        st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
+        st.session_state[f"rel_analise_ph_{i}"]        = lc_dados.get("ph", lc.get("ph",""))
+        st.session_state[f"rel_analise_cl_{i}"]        = lc_dados.get("cloro_livre", lc.get("cloro_livre",""))
+        st.session_state[f"rel_analise_ct_{i}"]        = lc_dados.get("cloro_total", lc.get("cloro_total",""))
+        st.session_state[f"rel_analise_alc_{i}"]       = lc_dados.get("alcalinidade", lc.get("alcalinidade",""))
+        st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
+        st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
+        st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
+    # Preenche campo operador responsavel com o mais frequente dos lancamentos
+    _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
+    if _ops_import:
+        _op_mais_freq = max(set(_ops_import), key=_ops_import.count)
+        if not st.session_state.get("csr_operador_rel","").strip():
+            st.session_state["csr_operador_rel"] = _op_mais_freq
+
+    # Importa dosagens da última visita com dosagem registrada
+    for lc in reversed(lancamentos):
+        if lc.get("dosagens"):
+            aplicar_dosagens_ultimas_no_relatorio({"dosagens_ultimas": lc["dosagens"]})
+            break
+    # Concatena observações e problemas
+    obs_lista = []
+    for lc in lancamentos:
+        if lc.get("problemas","").strip():
+            obs_lista.append(f"[{lc.get('data','')}] ⚠️ {lc['problemas']}")
+        if lc.get("observacao","").strip():
+            obs_lista.append(f"[{lc.get('data','')}] {lc['observacao']}")
+    obs_txt = "\n".join(obs_lista[:10])
+    if obs_txt:
+        st.session_state["rel_observacoes_gerais"] = obs_txt
+
+# Autoimportação real para o relatório mensal.
+# Se houver lançamentos de campo no período, o relatório é alimentado automaticamente
+# uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
+if lancamentos_disponiveis:
+    try:
+        _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
+        _assinatura_auto = "|".join([
+            str(nome_rel_atual),
+            str(mes_ref),
+            str(ano_ref),
+            str(len(lancamentos_disponiveis)),
+            str(_ultimo_lc.get("id_visita", "")),
+            str(_ultimo_lc.get("data", "")),
+            str(_ultimo_lc.get("operador", "")),
+        ])
+
+        if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
+            st.session_state["_rel_autoimport_msg"] = (
+                f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
+                f"para o relatório {mes_ref}/{ano_ref}."
+            )
+            st.rerun()
+    except Exception as e:
+        _log_sheets_erro("autoimportar_lancamentos_relatorio_mensal", e)
+
+_auto_msg = st.session_state.pop("_rel_autoimport_msg", "")
+if _auto_msg:
+    st.success(_auto_msg)
+
+if lancamentos_disponiveis:
+    _total = len(lancamentos_disponiveis)
+    _fonte = "📱 local + Sheets" if lancamentos_sheets else "📱 local"
+    _periodo = f"{lancamentos_disponiveis[0].get('data','?')} → {lancamentos_disponiveis[-1].get('data','?')}"
+
+    st.markdown(f"""
+    <div style="border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;
+    background:rgba(20,120,60,0.07);margin-bottom:12px;">
+    <strong>📱 {_total} lançamento(s) de campo disponível(is) — {_fonte}</strong><br>
+    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    imp1, imp2, imp3 = st.columns([1.5, 1.5, 1])
+    with imp1:
+        if st.button("📥 Importar lançamentos para o relatório", use_container_width=True, type="primary"):
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.success(f"✅ {_total} lançamento(s) importado(s) com sucesso!")
+            st.rerun()
+
+    with imp2:
+        if st.button("🗑️ Limpar lançamentos locais após gerar", use_container_width=True):
+            if pasta_rel_atual and pasta_rel_atual.exists():
+                dados_limpar = carregar_dados_condominio(pasta_rel_atual) or {}
+                dados_limpar["lancamentos_campo"] = []
+                salvar_dados_condominio(pasta_rel_atual, dados_limpar)
+                st.success("Lançamentos locais limpos.")
+                st.rerun()
+
+    with imp3:
+        with st.expander("👁 Ver lançamentos"):
+            for lc in lancamentos_disponiveis:
+                piscinas = lc.get("piscinas",[])
+                if piscinas:
+                    for p in piscinas:
+                        st.caption(f"📅 {lc.get('data','?')} | {p.get('nome','Piscina')} | pH:{p.get('ph','–')} CRL:{p.get('cloro_livre','–')}")
+                else:
+                    st.caption(f"📅 {lc.get('data','?')} | Op:{lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}")
+                if lc.get("problemas","").strip():
+                    st.caption(f"   ⚠️ {lc['problemas']}")
+                if lc.get("observacao","").strip():
+                    st.caption(f"   📝 {lc['observacao']}")
+
+else:
+    if nome_rel_atual:
+        st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
+
+
+# Importação automática após carregar cliente cadastrado: evita depender do botão manual
+# e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
+if st.session_state.pop("_rel_auto_importar_cliente", False):
+    if lancamentos_disponiveis:
+        # Importa apenas se nao ha dados ja preenchidos na tabela — evita apagar trabalho manual
+        _tem_dados_tabela = any(
+            str(st.session_state.get(f"rel_analise_ph_{i}") or "").strip()
+            for i in range(int(st.session_state.get("rel_analises_total", 12) or 12))
+        )
+        if not _tem_dados_tabela:
+            _importar_lancamentos(lancamentos_disponiveis)
+            st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) importado(s) automaticamente.")
+            st.rerun()
+        else:
+            st.info(f"ℹ️ {len(lancamentos_disponiveis)} lançamento(s) disponível(is). Clique em Importar para carregar (irá substituir dados atuais).")
+    elif nome_rel_atual:
+        st.warning(f"Cliente carregado, mas nenhum lançamento de visita foi encontrado para {nome_rel_atual} no período informado.")
+
+st.markdown("**Dados do condomínio / local atendido**")
+rd1, rd2 = st.columns(2)
+with rd1:
+    st.text_input("Condomínio / estabelecimento", key="rel_nome_condominio")
+    if st.session_state.get("_rel_cep_fmt"):
+        st.session_state["rel_cep"] = st.session_state.pop("_rel_cep_fmt")
+    _rel_cep_c1, _rel_cep_c2 = st.columns([3, 1])
+    with _rel_cep_c1:
+        st.text_input("CEP", key="rel_cep", placeholder="00000-000",
+            help="Digite o CEP e clique em 🔍 para preencher o endereço automaticamente")
+    with _rel_cep_c2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _btn_rel_cep = st.button("🔍", key="btn_buscar_cep_rel", help="Buscar CEP")
+    if _btn_rel_cep:
+        _cep_v = re.sub(r"\D", "", st.session_state.get("rel_cep", ""))
+        if len(_cep_v) == 8:
+            with st.spinner("Buscando CEP..."):
+                _dc = buscar_cep(_cep_v)
+            if _dc:
+                _end = ", ".join(p for p in [_dc.get("logradouro",""), _dc.get("bairro",""), f"{_dc.get('localidade','')}/{_dc.get('uf','')}", f"{_cep_v[:5]}-{_cep_v[5:]}"] if p)
+                st.session_state["rel_endereco_condominio"] = _end
+                st.session_state["_rel_cep_fmt"] = f"{_cep_v[:5]}-{_cep_v[5:]}"
+                st.rerun()
+            else:
+                st.error("CEP não encontrado.")
+        else:
+            st.warning("Digite um CEP válido com 8 dígitos.")
+    st.text_area("Endereço do local", key="rel_endereco_condominio", height=90)
+    st.text_input("Representante / síndico / contato local", key="rel_representante")
+with rd2:
+    st.text_input(
+        "CNPJ do condomínio / estabelecimento",
+        key="rel_cnpj_condominio",
+        on_change=lambda: st.session_state.__setitem__("rel_cnpj_condominio", formatar_cnpj(st.session_state.get("rel_cnpj_condominio", "")))
+    )
+    st.text_input("CPF/CNPJ do representante", key="rel_cpf_cnpj_representante", on_change=lambda: on_change_rel_documento_representante())
+    st.file_uploader(
+        "Upload de fotos do relatório",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="rel_fotos_upload",
+        help="As fotos serão salvas na pasta do condomínio e inseridas no relatório."
+    )
+    st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
+
+r1, r2, r3, r4 = st.columns(4)
+with r1:
+    st.text_input("Mês de referência", key="rel_mes_referencia", placeholder="04")
+with r2:
+    st.text_input("Ano de referência", key="rel_ano_referencia", placeholder="2026")
+with r3:
+    opcoes_art = ["Emitida", "Não emitida", "Em tramitação"]
+    status_atual_art = (st.session_state.get("rel_art_status") or "Emitida").strip()
+    if status_atual_art not in opcoes_art:
+        status_atual_art = "Emitida"
+        st.session_state["rel_art_status"] = status_atual_art
+    if st.session_state.get("rel_art_status_widget") not in opcoes_art:
+        st.session_state["rel_art_status_widget"] = status_atual_art
+
+    status_selecionado_art = st.selectbox(
+        "Status da ART",
+        opcoes_art,
+        key="rel_art_status_widget",
+    )
+
+    if status_selecionado_art != st.session_state.get("rel_art_status"):
+        st.session_state["rel_art_status"] = status_selecionado_art
+        if status_selecionado_art != "Emitida":
+            st.session_state["rel_art_numero"] = ""
+            st.session_state["rel_art_inicio"] = ""
+            st.session_state["rel_art_fim"] = ""
+        st.rerun()
+with r4:
+    st.text_input("Data de emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_data_emissao"))
+
+r5, r6, r7, r8 = st.columns(4)
+with r5:
+    st.text_input("ART nº", key="rel_art_numero", on_change=on_change_rel_art_numero, disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r6:
+    st.text_input("Vigência da ART - início", key="rel_art_inicio", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_inicio"), disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r7:
+    st.text_input("Vigência da ART - fim", key="rel_art_fim", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_fim"), disabled=st.session_state.get("rel_art_status") != "Emitida")
+with r8:
+    opcoes_status_agua = ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO"]
+    status_atual = st.session_state.get("rel_status_agua", "CONFORME")
+    if status_atual not in opcoes_status_agua:
+        status_atual = "CONFORME"
+    opcao_status = st.selectbox(
+        "Status geral da água",
+        opcoes_status_agua,
+        index=opcoes_status_agua.index(status_atual),
+        key="rel_status_agua_select",
+    )
+    st.session_state["rel_status_agua"] = opcao_status
+
+if st.session_state.get("rel_art_status") != "Emitida":
+    st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
+
+st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
+_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
+with _freq_rel_col1:
+    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
+with _freq_rel_col2:
+    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
+if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
+    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+
+c_auto1, c_auto2 = st.columns([1,2])
+with c_auto1:
+    if st.button("Preencher parecer automático", use_container_width=True):
+        aplicar_textos_automaticos_relatorio()
+with c_auto2:
+    st.caption("O sistema calcula não conformidades e cloro combinado (cloraminas = CT - CL), preenche diagnóstico, observações e recomendações, e você ainda pode editar antes de gerar o relatório.")
+
+st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeholder="Será preenchido automaticamente conforme os parâmetros, mas permanece editável.")
+
+st.markdown("**Análises físico-químicas**")
+
+# _PAINEL_RASCUNHO_RELATORIO_RT_V1_
+_relatorio_rt_renderizar_painel_rascunho()
+_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
+ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
+with ctrl_a1:
+    if st.button("Adicionar análise extra", use_container_width=True):
+        adicionar_analise_extra()
+        st.rerun()
+with ctrl_a2:
+    if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
+        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+        if nome_rel:
+            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
+            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
+            aplicar_parametros_ultimos_no_relatorio(dados_rel_salvos)
+        else:
+            aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
+        st.rerun()
+with ctrl_a3:
+    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
+# Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
+cab_cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
+for _col, _label in zip(
+    cab_cols,
+    ["Data", "pH", "Cloro livre", "Cloro total", "Alcalinidade", "Dureza", "Ácido cianúrico", "Operador"],
+):
+    _col.caption(f"**{_label}**")
+
+for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
+    cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
+    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
+    cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
+    cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="Cloro livre")
+    cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="Cloro total")
+    cols[4].text_input(f"Alcalinidade {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alcalinidade")
+    cols[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="Dureza")
+    cols[6].text_input(f"Ácido cianúrico {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="Ácido cianúrico")
+    cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
+
+# _AUTOSAVE_RELATORIO_RT_APOS_LINHAS_V1_
+try:
+    _relatorio_rt_salvar_rascunho("autosave_apos_renderizar_linhas")
+except Exception as _e_autosave_rel:
+    st.caption(f"Autosave RT indisponível: {_e_autosave_rel}")
+
+st.markdown("**Dosagens de produtos químicos**")
+ctrl_d1, ctrl_d2 = st.columns([1.1, 2.4])
+with ctrl_d1:
+    if st.button("Carregar usados pela última vez", use_container_width=True):
+        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+        if nome_rel:
+            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
+            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
+            aplicar_dosagens_ultimas_no_relatorio(dados_rel_salvos)
+        else:
+            aplicar_dosagens_ultimas_no_relatorio(obter_snapshot_relatorio_independente())
+        st.rerun()
+with ctrl_d2:
+    st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usadas pela última vez.")
+for i in range(7):
+    cols = st.columns([1.4,1.1,0.7,0.7,1.3])
+    cols[0].text_input(f"Produto {i+1}", key=f"rel_dos_produto_{i}", label_visibility="collapsed", placeholder="Produto químico", on_change=_autosave_rascunho)
+    cols[1].text_input(f"Lote {i+1}", key=f"rel_dos_lote_{i}", label_visibility="collapsed", placeholder="Fabricante / Lote", on_change=_autosave_rascunho)
+    cols[2].text_input(f"Qtd {i+1}", key=f"rel_dos_qtd_{i}", label_visibility="collapsed", placeholder="Quantidade", on_change=_autosave_rascunho)
+    cols[3].text_input(f"Un {i+1}", key=f"rel_dos_un_{i}", label_visibility="collapsed", placeholder="Unidade", on_change=_autosave_rascunho)
+    cols[4].text_input(f"Finalidade {i+1}", key=f"rel_dos_finalidade_{i}", label_visibility="collapsed", placeholder="Finalidade técnica", on_change=_autosave_rascunho)
+st.markdown("**Observações automáticas / editáveis**")
+for i in range(5):
+    st.text_area(f"Observação {i+1}", key=f"rel_obs_{i}", height=70)
+
+st.markdown("**Recomendações técnicas**")
+for i in range(5):
+    cols = st.columns([2.0,0.8,1.0])
+    cols[0].text_input(f"Recomendação {i+1}", key=f"rel_rec_texto_{i}", label_visibility="collapsed", placeholder="Recomendação técnica")
+    cols[1].text_input(f"Prazo {i+1}", key=f"rel_rec_prazo_{i}", label_visibility="collapsed", placeholder="Prazo")
+    cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
+
+st.markdown("**NBR 11238 — Segurança e higiene operacional**")
+st.caption("Marque os requisitos verificados. Esses campos alimentam a coluna ‘Conforme?’ do relatório final.")
+_nbr_cols = st.columns([1.6, 1.2, 1.6, 1.6, 1.2])
+with _nbr_cols[0]:
+    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True)
+with _nbr_cols[1]:
+    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True)
+with _nbr_cols[2]:
+    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True)
+with _nbr_cols[3]:
+    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True)
+with _nbr_cols[4]:
+    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True)
+
+cx1, cx2, cx3 = st.columns(3)
+with cx1:
+    st.text_area("NBR 11238 — Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Ex.: sinalização visível, retrolavagem realizada, área antiderrapante preservada...")
+with cx2:
+    st.text_area("NR-26 / GHS – Checklist", key="rel_nr_26", height=90, placeholder="FISPQs/FDS, rótulos GHS, sinalização, incompatibilidade, emergência...")
+with cx3:
+    st.text_area("NR-06 / EPI – Checklist", key="rel_nr_06", height=90, placeholder="Fornecimento, fiscalização e uso dos EPIs...")
+
+st.markdown("**EPIs — preenchimento rápido**")
+status_epi_opcoes = ["Conforme", "Pendente", "Não informado", "N/A"]
+for rotulo, chave_base in [
+    ("Luvas", "luvas"),
+    ("Óculos", "oculos"),
+    ("Respirador", "respirador"),
+    ("Botas", "botas"),
+]:
+    c_status, c_ca = st.columns([1.2, 1])
+    with c_status:
+        st.selectbox(
+            f"{rotulo} — status",
+            options=status_epi_opcoes,
+            key=f"rel_epi_{chave_base}_status",
+        )
+    with c_ca:
+        st.text_input(f"{rotulo} — CA nº (opcional)", key=f"rel_epi_{chave_base}_ca")
+
+st.caption("O relatório mensal pode ser gerado independentemente de contrato. Basta preencher os dados do local neste próprio módulo.")
+
+# ---- Barra de rascunho ----
+_nome_rasc = (st.session_state.get("rel_nome_condominio") or "").strip()
+_pasta_rasc = GENERATED_DIR / slugify_nome(_nome_rasc) if _nome_rasc else None
+_rasc_existente = carregar_rascunho_relatorio(_pasta_rasc) if _pasta_rasc and _pasta_rasc.exists() else None
+
+col_rasc1, col_rasc2, col_rasc3 = st.columns([1.2, 1.2, 1.6])
+with col_rasc1:
+    if st.button("💾 Salvar rascunho", use_container_width=True):
+        if _nome_rasc:
+            _pasta_rasc.mkdir(parents=True, exist_ok=True)
+            salvar_rascunho_relatorio(_pasta_rasc)
+            st.success("Rascunho salvo! Os dados serão restaurados mesmo após reiniciar o sistema.")
+        else:
+            st.warning("Informe o nome do condomínio antes de salvar o rascunho.")
+
+with col_rasc2:
+    if _rasc_existente:
+        if st.button(f"↩️ Restaurar rascunho ({_rasc_existente.get('salvo_em','?')})", use_container_width=True):
+            aplicar_rascunho_no_formulario(_rasc_existente)
+            st.success("Rascunho restaurado!")
+            st.rerun()
+    else:
+        st.button("↩️ Sem rascunho salvo", disabled=True, use_container_width=True)
+
+with col_rasc3:
+    if _rasc_existente:
+        st.markdown(
+            f"<div style='font-size:0.82rem;color:#3a7a3a;padding:8px 0;'>"
+            f"✅ Rascunho disponível — salvo em {_rasc_existente.get('salvo_em','?')}</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.caption("Salve o rascunho para não perder dados ao reiniciar o sistema.")
+
+st.markdown("---")
+btn_col1, btn_col2 = st.columns([2, 1])
+with btn_col1:
+    rel_gerar = st.button("🚀 Gerar relatório mensal", use_container_width=True, type="primary")
+with btn_col2:
+    if st.button("🗑️ Limpar rascunho", use_container_width=True):
+        if _pasta_rasc and _pasta_rasc.exists():
+            excluir_rascunho_relatorio(_pasta_rasc)
+            st.success("Rascunho excluído.")
+            st.rerun()
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+# =========================================
+# =========================================
+# FUNÇÕES DE PROCESSAMENTO DE DOCUMENTOS
+# =========================================
+
+
+# =========================================
+# E-MAIL SMTP — AQUA GESTÃO
+# =========================================
+
+def _email_secrets_aqua() -> dict:
+    """Lê configurações de e-mail do st.secrets sem expor senha no app."""
+    try:
+        cfg = dict(st.secrets.get("email", {}))
+    except Exception:
+        cfg = {}
+    return {
+        "smtp_host": str(cfg.get("smtp_host", "")).strip(),
+        "smtp_port": int(cfg.get("smtp_port", 587) or 587),
+        "smtp_user": str(cfg.get("smtp_user", "")).strip(),
+        "smtp_password": str(cfg.get("smtp_password", "")).strip(),
+        "remetente_nome": str(cfg.get("remetente_nome", "Aqua Gestão – Controle Técnico de Piscinas")).strip(),
+        "logo_url": str(cfg.get("logo_url", "")).strip(),
+        "reply_to": str(cfg.get("reply_to", cfg.get("smtp_user", ""))).strip(),
+    }
+
+
+def email_smtp_configurado() -> bool:
+    cfg = _email_secrets_aqua()
+    return bool(cfg["smtp_host"] and cfg["smtp_user"] and cfg["smtp_password"])
+
+
+def assinatura_email_aqua_gestao() -> str:
+    """Assinatura premium em HTML para todos os e-mails enviados pelo sistema."""
+    import html as _html
+
+    cfg = _email_secrets_aqua()
+    logo_url = cfg.get("logo_url", "")
+    if logo_url:
+        logo_html = f"""
+            <img src="{_html.escape(logo_url)}"
+                 alt="Aqua Gestão"
+                 style="width:112px; height:auto; display:block; border:0; outline:none; text-decoration:none;">
+        """
+    else:
+        logo_html = """
+            <div style="width:112px; height:86px; border-radius:18px; background:#EAF3FF; border:1px solid #D8E2EF;
+                        display:flex; align-items:center; justify-content:center; text-align:center; color:#0B2E59;
+                        font-size:15px; font-weight:800; line-height:1.15;">
+                Aqua<br>Gestão
+            </div>
+        """
+
+    return f"""
+    <br><br>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+           style="width:100%; max-width:760px; border-collapse:collapse; font-family:Arial, Helvetica, sans-serif; color:#1f2937;">
+      <tr>
+        <td style="border-top:4px solid #0B2E59; padding-top:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                 style="width:100%; border-collapse:collapse; background:#ffffff;">
+            <tr>
+              <td style="width:132px; vertical-align:top; padding-right:18px;">
+                {logo_html}
+              </td>
+              <td style="vertical-align:top; border-left:3px solid #C9A227; padding-left:16px;">
+                <div style="font-size:18px; font-weight:800; color:#0B2E59; line-height:1.25;">
+                  Thyago Fernando da Silveira
+                </div>
+                <div style="font-size:14px; color:#374151; margin-top:3px;">
+                  Técnico em Química | Responsável Técnico
+                </div>
+                <div style="font-size:13px; color:#374151; margin-top:3px;">
+                  CRQ-MG 2ª Região | CRQ 024025748
+                </div>
+                <div style="height:1px; background:#D8E2EF; margin:10px 0;"></div>
+                <div style="font-size:15px; font-weight:800; color:#145DA0;">
+                  Aqua Gestão – Controle Técnico de Piscinas
+                </div>
+                <div style="font-size:13px; color:#4b5563; margin-top:4px; line-height:1.5;">
+                  Responsabilidade Técnica • ART • Relatórios Técnicos • Controle de Piscinas Coletivas
+                </div>
+                <div style="font-size:13px; color:#4b5563; margin-top:8px; line-height:1.5;">
+                  Uberlândia/MG<br>
+                  WhatsApp: (34) 99291-3171<br>
+                  E-mail: thyagosilveira@bemstarpiscinas.com.br
+                </div>
+                <div style="font-size:11px; color:#6b7280; margin-top:12px; line-height:1.4;">
+                  Esta mensagem e seus anexos podem conter informações técnicas, contratuais e/ou confidenciais
+                  destinadas exclusivamente ao(s) destinatário(s).
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """
+
+
+def montar_email_html_aqua(mensagem_texto: str) -> str:
+    """Converte texto digitado em HTML e acrescenta assinatura premium."""
+    import html as _html
+    corpo = _html.escape(mensagem_texto or "").replace("\n", "<br>")
+    return f"""
+    <html>
+      <body style="margin:0; padding:0; background:#ffffff;">
+        <div style="font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:1.6; color:#1f2937;">
+          {corpo}
+          {assinatura_email_aqua_gestao()}
+        </div>
+      </body>
+    </html>
+    """
+
+
+def listar_anexos_pasta_condominio(pasta_condominio: Path) -> list[Path]:
+    """Lista anexos PDF/DOCX gerados para o condomínio, priorizando os mais recentes."""
+    try:
+        pasta = Path(pasta_condominio)
+        if not pasta.exists():
+            return []
+        permitidos = {".pdf", ".docx"}
+        arquivos = [p for p in pasta.iterdir() if p.is_file() and p.suffix.lower() in permitidos]
+        arquivos.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        return arquivos[:30]
+    except Exception:
+        return []
+
+
+def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str, anexos: list[Path] | None = None, cc: str = "", bcc: str = "") -> tuple[bool, str]:
+    """Envia e-mail HTML com anexos usando SMTP configurado no Streamlit Secrets."""
+    try:
+        import smtplib
+        import mimetypes
+        from email.message import EmailMessage
+        from email.utils import formataddr
+
+        destinatario = (destinatario or "").strip()
+        assunto = (assunto or "").strip()
+        cc = (cc or "").strip()
+        bcc = (bcc or "").strip()
+        anexos = anexos or []
+
+        if not destinatario:
+            return False, "Informe o e-mail do destinatário."
+        if not validar_email(destinatario):
+            return False, "E-mail do destinatário inválido."
+        if not assunto:
+            return False, "Informe o assunto do e-mail."
+
+        cfg = _email_secrets_aqua()
+        if not email_smtp_configurado():
+            return False, "SMTP não configurado. Configure [email] no Streamlit Secrets."
+
+        msg = EmailMessage()
+        msg["Subject"] = assunto
+        msg["From"] = formataddr((cfg["remetente_nome"], cfg["smtp_user"]))
+        msg["To"] = destinatario
+        if cc:
+            msg["Cc"] = cc
+        if cfg.get("reply_to"):
+            msg["Reply-To"] = cfg["reply_to"]
+
+        texto_plano = (mensagem_texto or "").strip()
+        texto_plano += "\n\n--\nThyago Fernando da Silveira\nTécnico em Química | CRQ-MG 2ª Região | CRQ 024025748\nAqua Gestão – Controle Técnico de Piscinas"
+        msg.set_content(texto_plano)
+        msg.add_alternative(montar_email_html_aqua(mensagem_texto), subtype="html")
+
+        for anexo in anexos:
+            caminho = Path(anexo)
+            if not caminho.exists() or not caminho.is_file():
+                continue
+            ctype, encoding = mimetypes.guess_type(str(caminho))
+            if ctype is None or encoding is not None:
+                ctype = "application/octet-stream"
+            maintype, subtype = ctype.split("/", 1)
+            with open(caminho, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=caminho.name,
+                )
+
+        destinatarios_reais = [e.strip() for e in ([destinatario] + cc.split(",") + bcc.split(",")) if e.strip()]
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(cfg["smtp_user"], cfg["smtp_password"])
+            smtp.send_message(msg, from_addr=cfg["smtp_user"], to_addrs=destinatarios_reais)
+
+        return True, "E-mail enviado com sucesso."
+    except Exception as e:
+        return False, f"Erro ao enviar e-mail: {type(e).__name__}: {e}"
+
+
+def exibir_bloco_envio(
+    nome_condominio: str,
+    pasta_condominio: Path,
+    whatsapp_cliente: str,
+    email_cliente: str,
+    mensagem: str,
+):
+    """Bloco de envio unificado para Aqua Gestão: WhatsApp, mailto e envio direto SMTP com assinatura premium."""
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("📤 Enviar para o cliente")
+
+    _slug_envio = slugify_nome(nome_condominio)
+
+    msg_editada = st.text_area(
+        "Mensagem",
+        value=mensagem,
+        height=220,
+        key=f"aq_msg_envio_{_slug_envio}",
+        label_visibility="collapsed",
+    )
+    componente_copiar(msg_editada)
+
+    col_env1, col_env2, col_env3 = st.columns(3)
+
+    with col_env1:
+        _tel = (whatsapp_cliente or "").strip()
+        if _tel:
+            url_wa = link_whatsapp(_tel, msg_editada)
+            st.link_button("💬 Abrir WhatsApp", url_wa, use_container_width=True)
+        else:
+            st.text_input("WhatsApp", placeholder="(34) 99999-9999", key=f"aq_tel_envio_{_slug_envio}")
+            _tel2 = st.session_state.get(f"aq_tel_envio_{_slug_envio}", "").strip()
+            if _tel2:
+                st.link_button("💬 Abrir WhatsApp", link_whatsapp(_tel2, msg_editada), use_container_width=True)
+
+    with col_env2:
+        _eml = (email_cliente or "").strip()
+        if _eml:
+            assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
+            url_mail = link_email(_eml, assunto_mailto, msg_editada)
+            st.link_button("✉️ Abrir e-mail", url_mail, use_container_width=True)
+        else:
+            st.text_input("E-mail", placeholder="email@cliente.com.br", key=f"aq_email_envio_{_slug_envio}")
+            _eml2 = st.session_state.get(f"aq_email_envio_{_slug_envio}", "").strip()
+            if _eml2:
+                assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
+                st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto_mailto, msg_editada), use_container_width=True)
+
+    with col_env3:
+        if st.button("📂 Abrir pasta", use_container_width=True, key=f"aq_abrir_pasta_{_slug_envio}"):
+            abrir_pasta_windows(pasta_condominio)
+
+    with st.expander("📧 Enviar direto pelo sistema com assinatura premium Aqua Gestão", expanded=False):
+        cfg_ok = email_smtp_configurado()
+        if not cfg_ok:
+            st.warning("SMTP ainda não está configurado. Configure o bloco [email] no Streamlit Secrets antes de enviar direto pelo sistema.")
+            st.code(
+                '[email]\n'
+                'smtp_host = "smtp.gmail.com"\n'
+                'smtp_port = 587\n'
+                'smtp_user = "seuemail@gmail.com"\n'
+                'smtp_password = "SENHA_DE_APP_DO_GMAIL"\n'
+                'remetente_nome = "Aqua Gestão – Controle Técnico de Piscinas"\n'
+                'logo_url = "https://link-publico-da-logo.png"\n'
+                'reply_to = "seuemail@gmail.com"',
+                language="toml",
+            )
+        else:
+            st.success("SMTP configurado. Os e-mails sairão com assinatura premium Aqua Gestão.")
+
+        email_padrao = (email_cliente or st.session_state.get(f"aq_email_envio_{_slug_envio}", "") or "").strip()
+        dest = st.text_input("Destinatário", value=email_padrao, placeholder="email@condominio.com.br", key=f"aq_smtp_dest_{_slug_envio}")
+        cc = st.text_input("CC opcional", value="", placeholder="administradora@exemplo.com.br", key=f"aq_smtp_cc_{_slug_envio}")
+        bcc = st.text_input("BCC opcional", value="", placeholder="", key=f"aq_smtp_bcc_{_slug_envio}")
+        assunto = st.text_input(
+            "Assunto",
+            value=f"Documentação Aqua Gestão – {nome_condominio}",
+            key=f"aq_smtp_assunto_{_slug_envio}",
+        )
+
+        anexos_disponiveis = listar_anexos_pasta_condominio(pasta_condominio)
+        if anexos_disponiveis:
+            opcoes = [a.name for a in anexos_disponiveis]
+            padrao = [a.name for a in anexos_disponiveis if a.suffix.lower() == ".pdf"][:8]
+            selecionados = st.multiselect(
+                "Anexos",
+                options=opcoes,
+                default=padrao,
+                key=f"aq_smtp_anexos_{_slug_envio}",
+                help="Por padrão o sistema seleciona PDFs. DOCX também pode ser anexado se necessário.",
+            )
+            anexos_final = [a for a in anexos_disponiveis if a.name in selecionados]
+        else:
+            st.info("Nenhum PDF/DOCX encontrado na pasta deste condomínio.")
+            anexos_final = []
+
+        st.caption("A assinatura premium será adicionada automaticamente no final do e-mail. A senha SMTP não fica no app.py; fica somente no Streamlit Secrets.")
+
+        if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"aq_smtp_enviar_{_slug_envio}", disabled=not cfg_ok):
+            ok, retorno = enviar_email_smtp_aqua(dest, assunto, msg_editada, anexos_final, cc=cc, bcc=bcc)
+            if ok:
+                st.success(f"✅ {retorno}")
+            else:
+                st.error(retorno)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def gerar_contrato_bem_star_docx(
+    nome_contratante: str,
+    cpf_cnpj: str,
+    endereco_contratante: str,
+    valor_mensal: str,
+    valor_extenso: str,
+    dia_pagamento: str,
+    forma_pagamento: str,
+    prazo_contrato: str,
+    data_inicio: str,
+    data_fim: str,
+    local_data_assinatura: str,
+    piscinas_atendidas: str = "",
+    produtos_incluidos: str = "",
+) -> Path | None:
+    """Gera contrato Bem Star usando template_bem_star.docx.
+    Retorna o Path do arquivo gerado, ou None se o template estiver ausente."""
+    if not TEMPLATE_BEM_STAR.exists():
+        st.warning(
+            "Template do contrato Bem Star não encontrado. "
+            "Certifique-se de que `template_bem_star.docx` está na pasta do projeto."
+        )
+        return None
+
+    placeholders = {
+        "{{CNPJ_CONTRATADA}}": CNPJ_BEM_STAR,
+        "{{ENDERECO_CONTRATADA}}": ENDERECO_BEM_STAR,
+        "{{NOME_CONTRATANTE}}": nome_contratante,
+        "{{CPF_CNPJ_CONTRATANTE}}": cpf_cnpj,
+        "{{ENDERECO_CONTRATANTE}}": endereco_contratante,
+        "{{VALOR_MENSAL}}": valor_mensal,
+        "{{VALOR_MENSAL_EXTENSO}}": valor_extenso,
+        "{{DIA_PAGAMENTO}}": dia_pagamento,
+        "{{FORMA_PAGAMENTO}}": forma_pagamento,
+        "{{PRAZO_CONTRATO}}": prazo_contrato,
+        "{{DATA_INICIO_CONTRATO}}": data_inicio,
+        "{{DATA_FIM_CONTRATO}}": data_fim,
+        "{{LOCAL_DATA_ASSINATURA}}": local_data_assinatura,
+        "{{PISCINAS_ATENDIDAS}}": piscinas_atendidas or "Conforme acordado entre as partes",
+        "{{PRODUTOS_INCLUIDOS}}": produtos_incluidos or "Conforme proposta comercial",
+    }
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nome_pasta = slugify_nome(nome_contratante)
+    pasta = GENERATED_DIR / nome_pasta
+    pasta.mkdir(parents=True, exist_ok=True)
+    base_nome = limpar_nome_arquivo(f"Contrato_Limpeza_{nome_contratante}_{timestamp}")
+    output_docx = pasta / f"{base_nome}.docx"
+    output_pdf  = pasta / f"{base_nome}.pdf"
+
+    gerar_documento(
+        template_path=TEMPLATE_BEM_STAR,
+        output_docx=output_docx,
+        placeholders=placeholders,
+        incluir_assinaturas=False,
+    )
+
+    ok_pdf, erro_pdf = converter_docx_para_pdf(output_docx, output_pdf)
+
+    st.success("✅ Contrato Bem Star gerado com sucesso!")
+    col1, col2 = st.columns(2)
+    with col1:
+        if output_docx.exists():
+            with open(output_docx, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar DOCX",
+                    data=f,
+                    file_name=output_docx.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+    with col2:
+        if ok_pdf and output_pdf.exists():
+            with open(output_pdf, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar PDF",
+                    data=f,
+                    file_name=output_pdf.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+        elif erro_pdf:
+            st.warning(f"PDF não gerado: {erro_pdf}")
+
+    return output_docx
+
+
+# =========================================
+# CONTRATO RT — PDF PREMIUM REPORTLAB V12
+# =========================================
+
+def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
+    """Gera o contrato RT da Aqua Gestão em PDF premium, sem LibreOffice.
+
+    Objetivo:
+    - evitar o PDF sem logo/cores gerado pela conversão DOCX -> PDF;
+    - manter layout institucional da Aqua Gestão;
+    - gerar arquivo pronto para envio ao condomínio/jurídico.
+    """
+    import io
+    import html
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+        PageBreak,
+        KeepTogether,
+        HRFlowable,
+    )
+
+    buffer = io.BytesIO()
+
+    # Identidade Aqua Gestão
+    AZUL_ESCURO = colors.HexColor("#0D2A4A")
+    AZUL_MEDIO = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#EAF4FF")
+    AZUL_SUAVE = colors.HexColor("#F4FAFF")
+    DOURADO = colors.HexColor("#C8960C")
+    CINZA_TEXTO = colors.HexColor("#263442")
+    CINZA_MEDIO = colors.HexColor("#5E6F82")
+    CINZA_CLARO = colors.HexColor("#F5F7FA")
+    BORDA = colors.HexColor("#D7E1EA")
+    ALERTA = colors.HexColor("#FFF8E6")
+
+    def _valor(*nomes, padrao=""):
+        for nome in nomes:
+            chaves = [nome, f"{{{{{nome}}}}}"]
+            for chave in chaves:
+                if chave in dados:
+                    valor = dados.get(chave)
+                    if valor is not None and str(valor).strip():
+                        return str(valor).strip()
+        return padrao
+
+    def _esc(valor):
+        return html.escape(str(valor or ""), quote=False).replace("\n", "<br/>")
+
+    def _p(texto, estilo):
+        return Paragraph(_esc(texto), estilo)
+
+    def _pb(texto, estilo):
+        # Texto controlado internamente. Permite <b>, <br/> e <font>.
+        return Paragraph(str(texto or ""), estilo)
+
+    nome_contratante = _valor("NOME_CONTRATANTE", "NOME_CONDOMINIO", padrao="Dado não informado")
+    cpf_cnpj_contratante = _valor("CPF_CNPJ_CONTRATANTE", "CNPJ_CONDOMINIO", padrao="Dado não informado")
+    endereco_contratante = _valor("ENDERECO_CONTRATANTE", "ENDERECO_CONDOMINIO", padrao="Dado não informado")
+    representante = _valor("REPRESENTANTE_CONTRATANTE", "NOME_SINDICO", padrao="Dado não informado")
+    cpf_sindico = _valor("CPF_SINDICO", padrao="Dado não informado")
+    qualificacao_representante = _valor("QUALIFICACAO_REPRESENTANTE", padrao="Síndico")
+    valor_mensal = _valor("VALOR_MENSAL", padrao="Dado não informado")
+    valor_mensal_extenso = _valor("VALOR_MENSAL_EXTENSO", padrao="")
+    dia_pagamento = _valor("DIA_PAGAMENTO", padrao="Dado não informado")
+    forma_pagamento = _valor("FORMA_PAGAMENTO", padrao="Pix")
+    frequencia_visitas = _valor("FREQUENCIA_VISITAS", padrao="1")
+    data_inicio = _valor("DATA_INICIO_CONTRATO", "DATA_INICIO", padrao="Dado não informado")
+    data_fim = _valor("DATA_FIM_CONTRATO", "DATA_FIM", padrao="")
+    local_data_assinatura = _valor("LOCAL_DATA_ASSINATURA", "DATA_ASSINATURA", padrao="Uberlândia/MG")
+    volumes_piscinas = _valor("VOLUMES_PISCINAS", padrao="Dado não informado")
+
+    # Normalização visual de frequência para não repetir "(s)" de forma estranha.
+    freq_txt = frequencia_visitas
+    if freq_txt.strip() == "1":
+        freq_frase = "1 (uma) visita técnica semanal"
+    else:
+        freq_frase = f"{freq_txt} visitas técnicas semanais"
+
+    # Prepara logo. Se o PNG não existir, o PDF ainda sai bonito com marca textual.
+    logo_path = encontrar_logo()
+    logo_temp = None
+    if logo_path and logo_path.exists():
+        try:
+            logo_temp = GENERATED_DIR / "_logo_aqua_reportlab.png"
+            with Image.open(logo_path) as im:
+                im = ImageOps.exif_transpose(im)
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGBA")
+                im.thumbnail((900, 360))
+                # Mantém transparência quando possível.
+                im.save(logo_temp, format="PNG")
+        except Exception:
+            logo_temp = logo_path
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.65 * cm,
+        leftMargin=1.65 * cm,
+        topMargin=2.35 * cm,
+        bottomMargin=1.75 * cm,
+        title="Contrato de Responsabilidade Técnica - Aqua Gestão",
+        author="Aqua Gestão Controle Técnico Ltda",
+    )
+
+    styles = getSampleStyleSheet()
+    s_title = ParagraphStyle(
+        "AquaTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=19,
+        textColor=AZUL_ESCURO,
+        alignment=TA_CENTER,
+        spaceAfter=5,
+    )
+    s_subtitle = ParagraphStyle(
+        "AquaSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.7,
+        leading=11,
+        textColor=CINZA_MEDIO,
+        alignment=TA_CENTER,
+        spaceAfter=10,
+    )
+    s_h = ParagraphStyle(
+        "AquaClauseTitle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=9.6,
+        leading=12,
+        textColor=AZUL_ESCURO,
+        spaceBefore=7,
+        spaceAfter=3,
+        keepWithNext=True,
+    )
+    s_body = ParagraphStyle(
+        "AquaBody",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.15,
+        leading=11.2,
+        textColor=CINZA_TEXTO,
+        alignment=TA_JUSTIFY,
+        spaceAfter=4.4,
+    )
+    s_body_left = ParagraphStyle(
+        "AquaBodyLeft",
+        parent=s_body,
+        alignment=TA_LEFT,
+    )
+    s_small = ParagraphStyle(
+        "AquaSmall",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.3,
+        leading=9.1,
+        textColor=CINZA_TEXTO,
+        alignment=TA_LEFT,
+    )
+    s_small_center = ParagraphStyle(
+        "AquaSmallCenter",
+        parent=s_small,
+        alignment=TA_CENTER,
+    )
+    s_table_header = ParagraphStyle(
+        "AquaTableHeader",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+    )
+    s_table_cell = ParagraphStyle(
+        "AquaTableCell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.25,
+        leading=8.9,
+        textColor=CINZA_TEXTO,
+        alignment=TA_LEFT,
+    )
+    s_box_title = ParagraphStyle(
+        "AquaBoxTitle",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8.1,
+        leading=10,
+        textColor=AZUL_ESCURO,
+        alignment=TA_LEFT,
+        spaceAfter=2,
+    )
+    s_box = ParagraphStyle(
+        "AquaBox",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.55,
+        leading=9.8,
+        textColor=CINZA_TEXTO,
+        alignment=TA_JUSTIFY,
+    )
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        width, height = A4
+
+        # Cabeçalho premium
+        canvas.setFillColor(AZUL_ESCURO)
+        canvas.rect(0, height - 1.55 * cm, width, 1.55 * cm, fill=1, stroke=0)
+
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, height - 1.61 * cm, width, 0.06 * cm, fill=1, stroke=0)
+
+        # Logo ou marca textual
+        if logo_temp and Path(logo_temp).exists():
+            try:
+                canvas.drawImage(
+                    str(logo_temp),
+                    1.30 * cm,
+                    height - 1.28 * cm,
+                    width=2.70 * cm,
+                    height=0.92 * cm,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 11)
+                canvas.drawString(1.35 * cm, height - 0.92 * cm, "AQUA GESTÃO")
+        else:
+            # Fallback com aparência de logo textual
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica-Bold", 11)
+            canvas.drawString(1.35 * cm, height - 0.92 * cm, "AQUA GESTÃO")
+            canvas.setFillColor(DOURADO)
+            canvas.circle(1.10 * cm, height - 0.90 * cm, 0.12 * cm, fill=1, stroke=0)
+
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 8.6)
+        canvas.drawRightString(
+            width - 1.45 * cm,
+            height - 0.58 * cm,
+            "CONTRATO DE RESPONSABILIDADE TÉCNICA",
+        )
+        canvas.setFont("Helvetica", 7.1)
+        canvas.drawRightString(
+            width - 1.45 * cm,
+            height - 0.96 * cm,
+            "Aqua Gestão Controle Técnico Ltda | CRQ-MG 2ª Região | CRQ 024025748",
+        )
+
+        # Rodapé
+        canvas.setStrokeColor(BORDA)
+        canvas.setLineWidth(0.4)
+        canvas.line(1.45 * cm, 1.13 * cm, width - 1.45 * cm, 1.13 * cm)
+
+        canvas.setFillColor(CINZA_MEDIO)
+        canvas.setFont("Helvetica", 6.6)
+        canvas.drawString(
+            1.45 * cm,
+            0.74 * cm,
+            "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG | (34) 9777-7227",
+        )
+        canvas.drawRightString(width - 1.45 * cm, 0.74 * cm, f"Página {doc_obj.page}")
+
+        canvas.restoreState()
+
+    story = []
+
+    # Capa resumida
+    story.append(Spacer(1, 2 * mm))
+    story.append(_pb("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>RESPONSABILIDADE TÉCNICA", s_title))
+    story.append(_pb("Controle técnico de piscinas de uso coletivo · Instrumento particular de natureza civil e empresarial · Obrigação de meio", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=7))
+
+    partes = [
+        [_pb("<b>CONTRATADA</b>", s_table_header), _pb("<b>CONTRATANTE</b>", s_table_header)],
+        [
+            _pb(
+                "AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>"
+                "CNPJ: 66.008.795/0001-92<br/>"
+                "R. Benito Segatto, 201, Casa 02, Jardim Europa<br/>"
+                "Uberlândia/MG — CEP 38.414-680<br/>"
+                "Responsável Técnico: Thyago Fernando da Silveira<br/>"
+                "CRQ-MG 2ª Região | CRQ 024025748",
+                s_table_cell,
+            ),
+            _pb(
+                f"{_esc(nome_contratante)}<br/>"
+                f"CPF/CNPJ: {_esc(cpf_cnpj_contratante)}<br/>"
+                f"Endereço: {_esc(endereco_contratante)}<br/>"
+                f"Representante: {_esc(representante)}<br/>"
+                f"CPF: {_esc(cpf_sindico)}<br/>"
+                f"Qualificação: {_esc(qualificacao_representante)}",
+                s_table_cell,
+            ),
+        ],
+    ]
+    t_partes = Table(partes, colWidths=[8.45 * cm, 8.45 * cm], repeatRows=1)
+    t_partes.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("BACKGROUND", (0, 1), (-1, 1), AZUL_SUAVE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(t_partes)
+    story.append(Spacer(1, 5 * mm))
+
+    resumo = Table(
+        [
+            [_pb("<b>Frequência</b>", s_table_header), _pb("<b>Valor mensal</b>", s_table_header), _pb("<b>Vencimento</b>", s_table_header), _pb("<b>Forma</b>", s_table_header)],
+            [_p(freq_frase, s_table_cell), _p(f"{valor_mensal} ({valor_mensal_extenso})", s_table_cell), _p(f"Dia {dia_pagamento}", s_table_cell), _p(forma_pagamento, s_table_cell)],
+        ],
+        colWidths=[4.8 * cm, 5.2 * cm, 3.0 * cm, 3.9 * cm],
+    )
+    resumo.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_MEDIO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(resumo)
+    story.append(Spacer(1, 5 * mm))
+
+    def box_info(titulo, texto, cor_fundo=AZUL_CLARO, cor_borda=AZUL_MEDIO):
+        t = Table(
+            [[_pb(f"<b>{_esc(titulo)}</b>", s_box_title)], [_p(texto, s_box)]],
+            colWidths=[16.9 * cm],
+        )
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), cor_fundo),
+                    ("BOX", (0, 0), (-1, -1), 0.65, cor_borda),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story.append(t)
+        story.append(Spacer(1, 4 * mm))
+
+    box_info(
+        "Natureza técnica do contrato",
+        "O presente instrumento trata de Responsabilidade Técnica para supervisão, orientação, controle documental, emissão de relatórios técnicos e conformidade operacional das piscinas de uso coletivo. Não substitui a execução operacional diária, salvo contratação específica em separado.",
+    )
+
+    box_info(
+        "Finalidade perante o CRQ-MG",
+        "Este instrumento também se destina à comprovação formal do vínculo técnico-profissional perante o Conselho Regional de Química de Minas Gerais — CRQ-MG, para fins de obtenção, renovação ou manutenção da Anotação/Certificado de Responsabilidade Técnica, sem prejuízo das obrigações civis e comerciais aqui pactuadas.",
+        cor_fundo=colors.HexColor("#FFF8E6"),
+        cor_borda=DOURADO,
+    )
+
+    def clausula(titulo, paragrafos):
+        if isinstance(paragrafos, str):
+            paragrafos = [paragrafos]
+        bloco = [_pb(f"<b>{_esc(titulo)}</b>", s_h)]
+        for ptxt in paragrafos:
+            bloco.append(_p(ptxt, s_body))
+        story.append(KeepTogether(bloco))
+
+    clausula(
+        "1. DAS PARTES",
+        f"Pelo presente instrumento particular, de um lado AQUA GESTÃO CONTROLE TÉCNICO LTDA, pessoa jurídica de direito privado inscrita no CNPJ sob nº 66.008.795/0001-92, com atuação técnica vinculada ao Responsável Técnico Thyago Fernando da Silveira, CRQ-MG 2ª Região, CRQ 024025748, doravante denominada CONTRATADA; e, de outro lado, {nome_contratante}, inscrita no CPF/CNPJ sob nº {cpf_cnpj_contratante}, situada em {endereco_contratante}, representada por {representante}, CPF nº {cpf_sindico}, na qualidade de {qualificacao_representante}, doravante denominada CONTRATANTE, resolvem celebrar o presente Contrato de Responsabilidade Técnica.",
+    )
+
+    clausula(
+        "2. DO OBJETO",
+        [
+            "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços técnicos especializados de Responsabilidade Técnica voltados ao controle técnico da qualidade da água das piscinas de uso coletivo mantidas pela CONTRATANTE, mediante atuação técnica, consultiva, orientativa e fiscalizatória, nos limites deste instrumento.",
+            f"Integram o objeto contratual: realização de {freq_frase}; análise técnica das condições gerais das piscinas, casa de máquinas, rotinas operacionais e aspectos relacionados ao tratamento químico; emissão de relatórios técnicos, notificações de não conformidade, orientações técnicas e pareceres; avaliação dos procedimentos adotados pela equipe operacional; elaboração ou revisão de POPs; recomendação de medidas corretivas, preventivas ou emergenciais; e acompanhamento documental para conformidade com normas aplicáveis, incluindo ABNT NBR 10818:2025 e ABNT NBR 10339.",
+            "Fica expressamente ajustado que o contrato não inclui execução operacional diária ou extraordinária do tratamento da água; limpeza física; aspiração; escovação; peneiração; retrolavagem; operação rotineira de equipamentos; fornecimento de mão de obra operacional; fornecimento de produtos, insumos, reagentes, materiais, peças ou EPIs; manutenção corretiva ou preventiva de equipamentos; ou garantia de resultado contínuo dos parâmetros entre as visitas técnicas.",
+            f"Piscina(s) objeto deste contrato: {volumes_piscinas}.",
+        ],
+    )
+
+    clausula(
+        "3. DA PERIODICIDADE E FORMA DE EXECUÇÃO",
+        [
+            f"A prestação dos serviços ocorrerá mediante {freq_frase}, sem caráter de plantão permanente, sem disponibilidade irrestrita e sem permanência contínua nas dependências da CONTRATANTE.",
+            "As visitas poderão sofrer alteração por necessidade técnica, operacional, caso fortuito, força maior ou impedimento justificado, sem que isso configure inadimplemento, desde que haja remarcação em prazo razoável.",
+        ],
+    )
+
+    clausula(
+        "4. DOS PROCEDIMENTOS OPERACIONAIS PADRÃO — POPs",
+        [
+            "Os POPs, checklists, relatórios, notificações de não conformidade, orientações técnicas e demais documentos técnicos emitidos pela CONTRATADA passam a integrar o presente contrato para fins de rastreabilidade e comprovação técnica.",
+            "A CONTRATANTE reconhece que o cumprimento integral e contínuo dos POPs e das orientações técnicas constitui obrigação contratual essencial. A inobservância, execução incompleta, tardia, inadequada ou recusa de cumprimento afastará a responsabilidade da CONTRATADA pelos efeitos daí decorrentes.",
+        ],
+    )
+
+    clausula(
+        "5. DAS OBRIGAÇÕES DA CONTRATADA",
+        [
+            "Prestar os serviços com zelo técnico, diligência profissional e observância das normas aplicáveis ao escopo contratado; manter sua regularidade técnica; manter profissional habilitado vinculado ao serviço; emitir documentos técnicos compatíveis; registrar orientações, recomendações e não conformidades; comunicar risco relevante, irregularidade sanitária, operacional ou documental; responder por erros técnicos, relatórios incorretos e omissões relevantes decorrentes de negligência, imprudência ou imperícia própria; e guardar sigilo sobre informações técnicas, operacionais, comerciais e internas da CONTRATANTE.",
+        ],
+    )
+
+    clausula(
+        "6. DAS OBRIGAÇÕES DA CONTRATANTE",
+        [
+            "Efetuar os pagamentos nos prazos ajustados; garantir acesso às piscinas, casa de máquinas, áreas técnicas, documentos e informações; manter equipe operacional própria ou terceiros habilitados para execução material das rotinas diárias; cumprir e fazer cumprir os POPs, relatórios e orientações técnicas; fornecer informações verdadeiras e atualizadas; comunicar ocorrência anormal, interdição, acidente, falha operacional, suspeita de contaminação ou evento com potencial impacto sanitário; e providenciar produtos, equipamentos, materiais, EPIs, peças, reagentes, acessórios e recursos humanos necessários à operação diária.",
+        ],
+    )
+
+    clausula(
+        "7. DOS HONORÁRIOS, REMUNERAÇÃO TÉCNICA E REGULARIDADE PERANTE O CRQ-MG",
+        [
+            f"Pelos serviços ordinários objeto deste contrato, a CONTRATANTE pagará à CONTRATADA o valor mensal de {valor_mensal} ({valor_mensal_extenso}).",
+            "O valor previsto nesta cláusula corresponde à remuneração técnica mensal pela prestação dos serviços de Responsabilidade Técnica, abrangendo acompanhamento técnico, orientação especializada, registros, relatórios técnicos ordinários e demais obrigações previstas neste instrumento.",
+            "As partes reconhecem que o presente contrato será utilizado para comprovação do vínculo técnico-profissional perante o Conselho Regional de Química de Minas Gerais — CRQ-MG, para fins de obtenção, renovação ou manutenção da Anotação/Certificado de Responsabilidade Técnica, conforme exigências documentais aplicáveis.",
+            "Em razão da exigência documental do CRQ-MG para contratos de Responsabilidade Técnica firmados com profissional autônomo, a remuneração técnica prevista neste instrumento não poderá ser inferior ao salário mínimo vigente, devendo o contrato observar vigência mínima de 12 meses e conter remuneração expressa pelo serviço técnico prestado.",
+            f"O vencimento ocorrerá no dia {dia_pagamento} de cada mês, mediante emissão de nota fiscal, recibo ou documento equivalente pela CONTRATADA. O pagamento será realizado por {forma_pagamento}.",
+            "Eventual revisão de valores somente poderá ocorrer por instrumento formal entre as partes, desde que preservadas as exigências mínimas necessárias à regularidade do vínculo técnico perante o CRQ-MG e sem prejuízo das obrigações técnicas assumidas pela CONTRATADA.",
+            "O atraso no pagamento sujeitará a CONTRATANTE à incidência de multa moratória de 2% sobre o valor em atraso, juros de mora de 1% ao mês pro rata die e correção monetária pelo IPCA, ou índice oficial que o substitua.",
+        ],
+    )
+
+    clausula(
+        "8. DOS ATENDIMENTOS, RESPOSTAS TÉCNICAS E SERVIÇOS EXTRAORDINÁRIOS",
+        [
+            "Estão incluídos no valor mensal os relatórios técnicos ordinários decorrentes das visitas contratadas, as orientações técnicas diretamente relacionadas aos parâmetros avaliados e as comunicações de não conformidade identificadas durante a execução regular do serviço.",
+            "A CONTRATADA responderá às solicitações técnicas ordinárias da CONTRATANTE em até 2 dias úteis, desde que relacionadas ao escopo contratado e que não caracterizem atendimento emergencial, reunião extraordinária, elaboração de documento adicional ou deslocamento presencial fora da periodicidade contratada.",
+            "Situações de risco sanitário imediato, água imprópria para uso, suspeita de contaminação, acidente, interdição ou condição crítica deverão ser comunicadas pela CONTRATANTE imediatamente. Nesses casos, a CONTRATADA deverá emitir orientação inicial ou comunicação técnica em até 24 horas após ciência da ocorrência, sem prejuízo da necessidade de atendimento extraordinário quando aplicável.",
+            "Serão considerados serviços extraordinários, sujeitos a orçamento prévio: visitas adicionais, atendimentos emergenciais presenciais, reuniões com síndico, conselho, administradora ou jurídico, acompanhamento de fiscalização, treinamentos, elaboração de parecer técnico complementar, relatórios adicionais fora da rotina contratada e deslocamentos fora do cronograma.",
+            "O orçamento dos serviços extraordinários será apresentado em até 48 horas úteis após a solicitação, contendo descrição do serviço, prazo estimado e valor aplicável. A execução dependerá de aprovação prévia da CONTRATANTE, salvo situação emergencial de risco sanitário relevante, devidamente registrada.",
+        ],
+    )
+
+    clausula(
+        "9. DO REAJUSTE",
+        "Os honorários contratuais serão reajustados anualmente, no mês de aniversário do contrato, pelo IPCA/IBGE acumulado nos 12 meses anteriores ao reajuste, ou pelo índice que vier a substituí-lo. Na hipótese de índice negativo, os valores permanecerão inalterados até o período seguinte.",
+    )
+
+    clausula(
+        "10. DA RESPONSABILIDADE TÉCNICA, LIMITES E CORRESPONSABILIDADE OPERACIONAL",
+        [
+            "A CONTRATADA responderá pelos atos técnicos praticados no âmbito do serviço contratado, incluindo erros técnicos, omissões relevantes, orientações inadequadas, relatórios técnicos incorretos ou falhas diretamente atribuíveis à sua atuação profissional, quando comprovado nexo causal entre a conduta técnica e o dano verificado.",
+            "A Responsabilidade Técnica assumida pela CONTRATADA abrange a supervisão, orientação, avaliação, registro e comunicação técnica referentes ao tratamento químico e ao controle da qualidade da água das piscinas objeto deste contrato, nos limites da periodicidade contratada, das informações fornecidas e do acesso efetivamente disponibilizado pela CONTRATANTE.",
+            "A CONTRATANTE permanece responsável pela execução operacional diária das rotinas recomendadas, pela disponibilização de equipe, produtos, equipamentos, EPIs, acesso às instalações, registros operacionais e cumprimento das orientações técnicas formalmente emitidas pela CONTRATADA.",
+            "A responsabilidade da CONTRATADA não será afastada por cláusula contratual quando houver erro técnico próprio, negligência, imprudência, imperícia ou omissão relevante comprovada. Por outro lado, a CONTRATADA não responderá por danos decorrentes de descumprimento das orientações técnicas, omissão de informações, impedimento de acesso, falta de produtos, falhas de operação por terceiros ou decisões administrativas da CONTRATANTE contrárias às recomendações técnicas registradas.",
+            "Havendo divergência técnica ou situação de risco sanitário, a CONTRATADA deverá comunicar formalmente a CONTRATANTE, indicando a não conformidade, o risco identificado e as medidas corretivas recomendadas.",
+        ],
+    )
+
+    clausula(
+        "11. DAS NÃO CONFORMIDADES, RISCO SANITÁRIO E INTERDIÇÃO TÉCNICA",
+        [
+            "Verificada situação que represente risco sanitário, operacional, normativo ou de segurança, a CONTRATADA poderá emitir notificação formal de não conformidade, com indicação das providências cabíveis e do prazo recomendado para correção.",
+            "Quando a situação exigir, poderá recomendar restrição de uso ou interdição técnica parcial ou total da piscina até regularização das não conformidades identificadas. A decisão administrativa e a efetiva execução das medidas caberão à CONTRATANTE.",
+        ],
+    )
+
+    clausula(
+        "12. DA IMPOSSIBILIDADE DE EXECUÇÃO POR FATO ATRIBUÍVEL À CONTRATANTE",
+        [
+            "Caso a execução do serviço técnico seja impedida ou substancialmente prejudicada por fato atribuível à CONTRATANTE, incluindo ausência de acesso, falta de informações indispensáveis, inexistência de registros operacionais, ausência de produtos mínimos, impedimento de vistoria ou descumprimento reiterado das orientações técnicas, a CONTRATADA deverá registrar formalmente a ocorrência e comunicar a necessidade de regularização.",
+            "Enquanto o impedimento for pontual ou parcial, a CONTRATADA continuará responsável pelas atividades que ainda puder executar dentro do escopo contratado, registrando no relatório técnico as limitações encontradas.",
+            "Se o impedimento inviabilizar de forma relevante a prestação do serviço por mais de 15 dias, sem regularização pela CONTRATANTE após comunicação formal, a CONTRATADA poderá suspender proporcionalmente as atividades afetadas ou rescindir o contrato por justa causa, permanecendo devidos apenas os valores correspondentes aos serviços já prestados, documentos emitidos, deslocamentos realizados e obrigações técnicas efetivamente executadas até a data da suspensão ou rescisão.",
+            "A suspensão integral da cobrança mensal somente será discutida quando houver impossibilidade total de execução do serviço não atribuível à CONTRATANTE ou por acordo formal entre as partes.",
+        ],
+    )
+
+    clausula(
+        "13. DA AUSÊNCIA DE VÍNCULO TRABALHISTA, OPERACIONAL OU SOCIETÁRIO",
+        "O presente contrato possui natureza estritamente civil e empresarial, inexistindo vínculo empregatício, societário, associativo, de subordinação hierárquica ou de exclusividade entre a CONTRATANTE e os sócios, empregados, prepostos ou profissionais vinculados à CONTRATADA.",
+    )
+
+    clausula(
+        "14. DA CONFIDENCIALIDADE",
+        "As partes obrigam-se a manter sigilo sobre dados, documentos, informações técnicas, operacionais, comerciais, financeiras e estratégicas a que tiverem acesso em razão deste contrato. A obrigação permanecerá vigente por 2 anos após o término do contrato, ressalvadas exigências legais, judiciais, regulatórias ou administrativas.",
+    )
+
+    clausula(
+        "15. DO PRAZO E DA RESCISÃO",
+        [
+            f"O presente contrato terá vigência mínima de 12 meses, iniciando-se em {data_inicio}{f' e com previsão informada até {data_fim}' if data_fim else ''}, em observância às exigências documentais do CRQ-MG para comprovação do vínculo de Responsabilidade Técnica.",
+            "Após o prazo mínimo inicial, o contrato poderá ser renovado, prorrogado, ajustado ou rescindido conforme acordo entre as partes, preservadas as obrigações vencidas e os documentos técnicos já emitidos.",
+            "O contrato poderá ser rescindido por mútuo acordo; por qualquer das partes mediante aviso prévio escrito de 30 dias; por inadimplemento; por descumprimento contratual relevante não sanado em 15 dias após notificação; por recusa reiterada da CONTRATANTE em cumprir POPs, orientações técnicas ou medidas sanitárias essenciais; por perda de confiança objetiva comprovada, obstrução de acesso ou ocultação de informações.",
+        ],
+    )
+
+    clausula(
+        "16. DA PROVA DOCUMENTAL E DAS COMUNICAÇÕES",
+        "Serão considerados meios válidos de prova e comunicação: contratos, aditivos e anexos assinados física ou eletronicamente; relatórios, POPs e notificações técnicas; e-mails; mensagens eletrônicas; registros fotográficos, vídeos e protocolos. A ausência de assinatura da CONTRATANTE em relatório ou notificação técnica não afastará sua validade quando houver prova de envio, entrega ou ciência.",
+    )
+
+    clausula(
+        "17. DA INTEGRALIDADE E HIERARQUIA DOS DOCUMENTOS",
+        "Este contrato representa a integralidade do acordo entre as partes quanto ao seu objeto. Integram este instrumento, para todos os fins, os aditivos contratuais, POPs, checklists, relatórios técnicos, notificações de não conformidade e os Anexos I e II. Em caso de divergência interpretativa, prevalecerá: contrato principal; aditivos; notificações formais; POPs e Anexos; relatórios e checklists.",
+    )
+
+    clausula(
+        "18. DO FORO",
+        "Fica eleito o foro da Comarca de Uberlândia/MG, com renúncia expressa a qualquer outro, por mais privilegiado que seja, para dirimir controvérsias oriundas deste contrato.",
+    )
+
+    story.append(Spacer(1, 7 * mm))
+    story.append(_p(local_data_assinatura, s_body_left))
+    story.append(Spacer(1, 14 * mm))
+
+    assinaturas = Table(
+        [
+            [
+                _pb(
+                    "_________________________________________<br/>"
+                    "AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>"
+                    "Thyago Fernando da Silveira<br/>"
+                    "CRQ-MG 2ª Região | CRQ 024025748",
+                    s_small_center,
+                ),
+                _pb(
+                    f"_________________________________________<br/>"
+                    f"{_esc(nome_contratante)}<br/>"
+                    f"{_esc(representante)}<br/>"
+                    f"{_esc(qualificacao_representante)}",
+                    s_small_center,
+                ),
+            ]
+        ],
+        colWidths=[8.3 * cm, 8.3 * cm],
+    )
+    assinaturas.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(assinaturas)
+
+    story.append(PageBreak())
+
+    # Anexos
+    story.append(_pb("ANEXO I — PARÂMETROS MÍNIMOS DE QUALIDADE DO SERVIÇO TÉCNICO", s_title))
+    story.append(_pb("Relatórios técnicos ordinários emitidos no escopo da Responsabilidade Técnica.", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=8))
+
+    anexo_i_linhas = [
+        ["Parâmetro mínimo", "Critério objetivo"],
+        ["Visitas técnicas", "Realização das visitas técnicas conforme periodicidade contratada, com registro de data, horário, local avaliado e responsável técnico."],
+        ["Parâmetros físico-químicos", "Registro dos parâmetros avaliados, incluindo, quando aplicável: pH, cloro livre, cloro total, alcalinidade total, temperatura, turbidez, ácido cianúrico e demais parâmetros pertinentes."],
+        ["Relatório técnico ordinário", "Emissão em até 48 horas após a visita ou após o recebimento completo das informações necessárias à consolidação técnica."],
+        ["Não conformidade crítica", "Comunicação formal em até 24 horas após sua constatação, quando houver risco sanitário, operacional ou de segurança relevante."],
+        ["Medidas corretivas", "Indicação objetiva das medidas corretivas recomendadas, com prazo sugerido quando aplicável."],
+        ["Limitações de avaliação", "Registro de ausência de dados, falta de acesso, ausência de produtos, limitação operacional, impossibilidade de avaliação completa ou impedimentos verificados."],
+        ["Respostas técnicas", "Resposta às solicitações técnicas ordinárias em até 2 dias úteis, desde que estejam dentro do escopo contratado."],
+        ["POPs", "Revisão ou emissão de POPs quando houver alteração relevante na rotina operacional ou identificação de falha recorrente."],
+    ]
+    t_anexo_i = Table(
+        [[_pb(f"<b>{_esc(c)}</b>" if i == 0 else _esc(c), s_table_header if i == 0 else s_table_cell) for c in row] for i, row in enumerate(anexo_i_linhas)],
+        colWidths=[4.2 * cm, 12.7 * cm],
+        repeatRows=1,
+    )
+    t_anexo_i.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+                ("BACKGROUND", (0, 2), (-1, 2), CINZA_CLARO),
+                ("BACKGROUND", (0, 3), (-1, 3), colors.white),
+                ("BACKGROUND", (0, 4), (-1, 4), CINZA_CLARO),
+                ("BACKGROUND", (0, 5), (-1, 5), colors.white),
+                ("BACKGROUND", (0, 6), (-1, 6), CINZA_CLARO),
+                ("BACKGROUND", (0, 7), (-1, 7), colors.white),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(t_anexo_i)
+    story.append(Spacer(1, 8 * mm))
+
+    story.append(_pb("ANEXO II — TABELA DE SERVIÇOS EXTRAORDINÁRIOS", s_title))
+    story.append(_pb("Serviços fora do escopo ordinário mensal, mediante orçamento prévio.", s_subtitle))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=DOURADO, spaceBefore=2, spaceAfter=8))
+
+    anexo_ii = [
+        ["Serviço extraordinário", "Critério", "Observação"],
+        ["Visita técnica extraordinária", "Orçamento prévio em até 48 horas úteis", "Aplicável fora da periodicidade regular contratada."],
+        ["Atendimento emergencial presencial", "Conforme urgência, deslocamento e complexidade", "Aplicável em risco sanitário, água imprópria, acidente ou demanda crítica."],
+        ["Reunião técnica com síndico, conselho, administradora ou jurídico", "Conforme duração e preparação técnica", "Pode envolver histórico de parâmetros, orientação normativa e alinhamento documental."],
+        ["Treinamento de operador ou equipe local", "Conforme carga horária", "Pode envolver POPs, GHS, EPIs, medição de parâmetros e segurança química."],
+        ["Relatório técnico complementar", "Conforme escopo solicitado", "Documento adicional fora do relatório técnico mensal ordinário."],
+        ["Acompanhamento de fiscalização oficial", "Conforme demanda e urgência", "Apoio técnico documental em fiscalização, notificação ou exigência formal."],
+    ]
+    t_anexo_ii = Table(
+        [[_pb(f"<b>{_esc(c)}</b>" if i == 0 else _esc(c), s_table_header if i == 0 else s_table_cell) for c in row] for i, row in enumerate(anexo_ii)],
+        colWidths=[5.2 * cm, 5.4 * cm, 6.3 * cm],
+        repeatRows=1,
+    )
+    t_anexo_ii.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), AZUL_ESCURO),
+                ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CINZA_CLARO]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ]
+        )
+    )
+    story.append(t_anexo_ii)
+    story.append(Spacer(1, 5 * mm))
+
+    box_info(
+        "Regra de execução",
+        "Os serviços extraordinários somente serão executados mediante solicitação da CONTRATANTE e aprovação prévia do orçamento, salvo situações emergenciais em que houver risco sanitário ou operacional relevante e necessidade de comunicação técnica imediata.",
+        cor_fundo=ALERTA,
+        cor_borda=DOURADO,
+    )
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
+
+
+def salvar_contrato_rt_pdf_premium_reportlab(dados: dict, output_pdf: Path) -> tuple[bool, str | None]:
+    """Salva o PDF premium do contrato RT e retorna status/erro."""
+    try:
+        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf_bytes = gerar_contrato_rt_pdf_reportlab(dados)
+        output_pdf.write_bytes(pdf_bytes)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+# =========================================
+# TERMOS DE CIÊNCIA — RT / EPIs
+# =========================================
+
+def gerar_contrato_e_aditivo():
+    """Gera somente o contrato RT/ART da Aqua Gestão.
+
+    Fluxo v15: removida a geração de aditivo de desconto da tela principal de RT,
+    para manter o contrato limpo para CRQ/ART e alinhado ao item 3.2.
+    """
+    email_cliente = st.session_state.email_cliente.strip()
+    dados = {
+        "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
+        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
+        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
+        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
+        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
+        "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
+        "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
+    }
+    erros = validar_para_geracao(dados, email_cliente)
+
+    if erros:
+        st.error("Corrija os campos antes de gerar o contrato:")
+        for erro in erros:
+            st.write(f"- {erro}")
+        return
+
+    try:
+        nome_condominio = st.session_state.nome_condominio.strip()
+        nome_sindico = st.session_state.nome_sindico.strip()
+        whatsapp_cliente = st.session_state.whatsapp_cliente.strip()
+
+        nome_pasta = slugify_nome(nome_condominio)
+        pasta_condominio = GENERATED_DIR / nome_pasta
+        pasta_condominio.mkdir(parents=True, exist_ok=True)
+
+        salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_nome_contrato = limpar_nome_arquivo(f"Contrato_RT_{nome_condominio}_{timestamp}")
+
+        contrato_docx = pasta_condominio / f"{base_nome_contrato}.docx"
+        contrato_pdf_premium = pasta_condominio / f"{base_nome_contrato}_PDF_PREMIUM_AQUA_GESTAO.pdf"
+
+        placeholders = {
+            "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
+            "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
+            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
+            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
+            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+            "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
+            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
+            "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
+            "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
+            "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
+            "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
+            "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
+            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
+        }
+
+        with st.spinner("Gerando contrato DOCX editável..."):
+            gerar_documento(
+                template_path=TEMPLATE_CONTRATO,
+                output_docx=contrato_docx,
+                placeholders=placeholders,
+                incluir_assinaturas=False,
+            )
+
+        with st.spinner("Gerando PDF Premium Aqua Gestão..."):
+            ok_contrato_premium, erro_contrato_premium = salvar_contrato_rt_pdf_premium_reportlab(
+                placeholders,
+                contrato_pdf_premium,
+            )
+
+        registrar_documento_manifest(
+            pasta_condominio=pasta_condominio,
+            nome_condominio=nome_condominio,
+            tipo="Contrato RT — Aqua Gestão",
+            arquivo_docx=contrato_docx,
+            arquivo_pdf=contrato_pdf_premium,
+            pdf_gerado=ok_contrato_premium,
+            erro_pdf=erro_contrato_premium,
+            dados_utilizados=dados,
+            extras={"fluxo": "contrato_unico_sem_aditivo", "crq_item_3_2": True},
+        )
+
+        st.session_state.ultima_pasta_gerada = str(pasta_condominio)
+        st.session_state.ultimos_docs_gerados = {
+            "contrato_docx": str(contrato_docx) if contrato_docx.exists() else None,
+            "contrato_pdf_premium": str(contrato_pdf_premium) if ok_contrato_premium and contrato_pdf_premium.exists() else None,
+        }
+
+        st.success("Contrato RT gerado com sucesso.")
+
+        if not encontrar_logo():
+            st.warning(
+                "Atenção: não encontrei o arquivo de logo da Aqua Gestão na pasta do app. "
+                "O PDF Premium foi gerado com marca textual. Para sair com a logo oficial, mantenha o arquivo "
+                "`aqua_gestao_logo.png` na mesma pasta do app.py ou na pasta assets."
+            )
+
+        st.info(
+            "Fluxo CRQ/ART: foi gerado somente o contrato único de Responsabilidade Técnica, "
+            "sem aditivo de desconto e sem valor reduzido."
+        )
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("Arquivos gerados")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("**Contrato RT — Aqua Gestão**")
+            if contrato_docx.exists():
+                with open(contrato_docx, "rb") as f:
+                    st.download_button(
+                        "Baixar DOCX editável do contrato",
+                        data=f,
+                        file_name=contrato_docx.name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True,
+                    )
+
+        with c2:
+            st.markdown("**PDF para envio**")
+            if ok_contrato_premium and contrato_pdf_premium.exists():
+                with open(contrato_pdf_premium, "rb") as f:
+                    st.download_button(
+                        "📄 Baixar PDF Premium Aqua Gestão",
+                        data=f,
+                        file_name=contrato_pdf_premium.name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+            else:
+                st.error(f"PDF Premium Aqua Gestão não gerado. Erro: {erro_contrato_premium}")
+
+        mensagem = montar_mensagem_envio(
+            nome_condominio=nome_condominio,
+            nome_sindico=nome_sindico,
+            caminho_contrato_pdf=contrato_pdf_premium if contrato_pdf_premium.exists() else None,
+            caminho_aditivo_pdf=None,
+        )
+
+        exibir_bloco_envio(
+            nome_condominio=nome_condominio,
+            pasta_condominio=pasta_condominio,
+            whatsapp_cliente=whatsapp_cliente,
+            email_cliente=email_cliente,
+            mensagem=mensagem,
+        )
+
+    except Exception as e:
+        st.error(f"Erro na geração do contrato: {e}")
+
+
+def gerar_somente_aditivo_rapido():
+    email_cliente = st.session_state.email_cliente.strip()
+    dados = {
+        "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
+        "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
+        "CNPJ_CONDOMINIO": (st.session_state.get("cnpj_condominio") or "").strip(),
+        "ENDERECO_CONDOMINIO": (st.session_state.get("endereco_condominio") or "").strip(),
+        "NOME_SINDICO": (st.session_state.get("nome_sindico") or "").strip(),
+        "CPF_SINDICO": (st.session_state.get("cpf_sindico") or "").strip(),
+        "VALOR_MENSAL": valor_para_template((st.session_state.get("valor_mensal") or "").strip()),
+        "VALOR_ADITIVO": valor_para_template((st.session_state.get("valor_aditivo") or "").strip()),
+        "DATA_INICIO": (st.session_state.get("data_inicio") or "").strip(),
+        "DATA_FIM": (st.session_state.get("data_fim") or "").strip(),
+    }
+    erros = validar_para_geracao(dados, email_cliente)
+
+    if erros:
+        st.error("Corrija os campos antes de gerar o aditivo rápido:")
+        for erro in erros:
+            st.write(f"- {erro}")
+        return
+
+    try:
+        nome_condominio = st.session_state.nome_condominio.strip()
+        nome_sindico = st.session_state.nome_sindico.strip()
+        whatsapp_cliente = st.session_state.whatsapp_cliente.strip()
+
+        nome_pasta = slugify_nome(nome_condominio)
+        pasta_condominio = GENERATED_DIR / nome_pasta
+        pasta_condominio.mkdir(parents=True, exist_ok=True)
+
+        salvar_dados_condominio(pasta_condominio, salvar_snapshot_formulario())
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_nome_aditivo = limpar_nome_arquivo(f"Aditivo_RT_{nome_condominio}_{timestamp}")
+
+        aditivo_docx = pasta_condominio / f"{base_nome_aditivo}.docx"
+        aditivo_pdf = pasta_condominio / f"{base_nome_aditivo}.pdf"
+
+        placeholders = {
+            "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
+            "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
+            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
+            "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
+            "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
+            "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
+            "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
+            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
+            "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
+            "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
+            "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
+            "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
+            "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
+            "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
+            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
+        }
+
+        with st.spinner("Gerando aditivo rápido..."):
+            gerar_documento(
+                template_path=TEMPLATE_ADITIVO,
+                output_docx=aditivo_docx,
+                placeholders=placeholders,
+                incluir_assinaturas=False,
+            )
+
+        # PDF Premium ReportLab — padrão visual Aqua Gestão (sem LibreOffice)
+        ok_aditivo, erro_aditivo = salvar_aditivo_rt_pdf_premium_reportlab(placeholders, aditivo_pdf)
+
+        registrar_documento_manifest(
+            pasta_condominio=pasta_condominio,
+            nome_condominio=nome_condominio,
+            tipo="Aditivo",
+            arquivo_docx=aditivo_docx,
+            arquivo_pdf=aditivo_pdf,
+            pdf_gerado=ok_aditivo,
+            erro_pdf=erro_aditivo,
+            dados_utilizados=dados,
+        )
+
+        st.session_state.ultima_pasta_gerada = str(pasta_condominio)
+        st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
+        st.session_state.ultimos_docs_gerados.update({
+            "aditivo_docx": str(aditivo_docx) if aditivo_docx.exists() else None,
+            "aditivo_pdf": str(aditivo_pdf) if ok_aditivo and aditivo_pdf.exists() else None,
+        })
+
+        st.success("Aditivo rápido gerado com sucesso.")
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("Arquivo gerado")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            if aditivo_docx.exists():
+                with open(aditivo_docx, "rb") as f:
+                    st.download_button(
+                        "Baixar DOCX do aditivo",
+                        data=f,
+                        file_name=aditivo_docx.name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True,
+                    )
+
+        with c2:
+            if ok_aditivo and aditivo_pdf.exists():
+                with open(aditivo_pdf, "rb") as f:
+                    st.download_button(
+                        "📄 Baixar PDF Premium Aqua Gestão",
+                        data=f,
+                        file_name=aditivo_pdf.name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+            else:
+                st.warning(f"PDF do aditivo não gerado. Erro: {erro_aditivo}")
+
+
+        mensagem = montar_mensagem_envio(
+            nome_condominio=nome_condominio,
+            nome_sindico=nome_sindico,
+            caminho_contrato_pdf=None,
+            caminho_aditivo_pdf=aditivo_pdf if aditivo_pdf.exists() else None,
+        )
+
+        exibir_bloco_envio(
+            nome_condominio=nome_condominio,
+            pasta_condominio=pasta_condominio,
+            whatsapp_cliente=whatsapp_cliente,
+            email_cliente=email_cliente,
+            mensagem=mensagem,
+        )
+
+    except Exception as e:
+        st.error(f"Erro na geração do aditivo rápido: {e}")
+
+
+# =========================================
+# PROCESSAMENTO
+# =========================================
+
+if gerar:
+    gerar_contrato_e_aditivo()
+
+if gerar_aditivo_rapido:
+    gerar_somente_aditivo_rapido()
+
+if rel_gerar:
+    ok_rel, msg_rel = gerar_relatorio_mensal()
+    if ok_rel:
+        st.success(msg_rel)
+    else:
+        st.error(msg_rel)
+
+# =========================================
+# RODAPÉ
+# =========================================
+
+st.markdown("---")
+st.caption(
+    f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
+)
+
+
+
