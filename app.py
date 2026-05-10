@@ -33,6 +33,7 @@ SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
 DRIVE_FOTOS_FOLDER_ID = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
 
 
+@st.cache_resource(ttl=3600, show_spinner=False)
 def conectar_drive():
     """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
     try:
