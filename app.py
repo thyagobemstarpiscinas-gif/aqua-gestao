@@ -13891,7 +13891,7 @@ with col_btn4:
 
 # v6: contrato Aqua Gestão sem RT para PF/PJ — BUG-D
 def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
-    """Gera contrato Aqua Gestão sem RT/ART em PDF — v2.
+    """Gera contrato Aqua Gestão de limpeza e manutenção em PDF — v7.1.
 
     Melhorias v2 (2026-05-10):
     - [C1] Cláusula de rescisão com aviso prévio de 30 dias
@@ -13921,7 +13921,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     cep = _v("cep_contratante", "")
     telefone = _v("telefone_contratante", "não informado")
     responsavel = _v("responsavel_contratante", nome if tipo == "Pessoa física" else "Representante não informado")
-    servicos = _v("servicos", "Limpeza e manutenção de piscinas residenciais, com rotina operacional, conservação, orientação de tratamento e registros básicos, sem emissão de RT/ART.")
+    servicos = _v("servicos", "Limpeza e manutenção de piscinas residenciais, com rotina operacional, conservação, orientação de tratamento e registros básicos.")
     piscinas = _v("piscinas", "Conforme informado pela CONTRATANTE")
     frequencia = _v("frequencia", "Conforme agenda acordada")
     valor = _v("valor_mensal", "não informado")
@@ -13952,7 +13952,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
         rightMargin=1.55 * cm,
         topMargin=2.35 * cm,
         bottomMargin=1.65 * cm,
-        title=f"Contrato Aqua Gestão sem RT — {nome}",
+        title=f"Contrato Aqua Gestão — {nome}",
         author="Aqua Gestão Controle Técnico Ltda",
     )
 
@@ -13996,7 +13996,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
 
         canvas.setFillColor(colors.white)
         canvas.setFont("Helvetica-Bold", 8.8)
-        canvas.drawRightString(w - 1.45 * cm, h - 0.62 * cm, "AQUA GESTÃO — CONTRATO SEM RT/ART")
+        canvas.drawRightString(w - 1.45 * cm, h - 0.62 * cm, "AQUA GESTÃO — CONTRATO RESIDENCIAL")
         canvas.setFont("Helvetica", 7.1)
         canvas.drawRightString(w - 1.45 * cm, h - 0.99 * cm, "Prestação de serviços de limpeza e manutenção de piscinas")
 
@@ -14012,7 +14012,7 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     story = []
     story.append(Spacer(1, 2 * mm))
     story.append(_raw("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE<br/>LIMPEZA E MANUTENÇÃO DE PISCINAS", "AquaTituloSemRT"))
-    story.append(_raw("Documento comercial Aqua Gestão para limpeza e manutenção residencial sem RT/ART mensal. Não substitui contrato de Responsabilidade Técnica.", "AquaSubSemRT"))
+    story.append(_raw("Documento comercial Aqua Gestão para limpeza e manutenção de piscinas residenciais.", "AquaSubSemRT"))
 
     # Tabela de identificação
     linhas_id = [
@@ -14050,9 +14050,10 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     p(f"A CONTRATADA prestará à CONTRATANTE serviços de limpeza e manutenção de piscinas, incluindo: {_html.escape(servicos)}")
     p(f"Piscina(s)/local(is) atendido(s): {_html.escape(piscinas)}")
 
-    h("2. Natureza do contrato — sem RT/ART")
-    p("As partes declaram ciência de que este contrato não contempla emissão de ART, registro de Responsabilidade Técnica mensal, assunção de responsabilidade técnica perante o CRQ ou substituição de contrato específico de RT.")
-    p("Quando houver necessidade legal, regulatória, sanitária, condominial ou documental de Responsabilidade Técnica formal, deverá ser celebrado instrumento próprio de RT, com escopo, valores e responsabilidades específicos.")
+    # v6: contrato PF/PJ residencial sem menção a RT/ART — BUG-CONTRATO-PF-RT
+    h("2. Escopo do contrato")
+    p("Este contrato tem natureza comercial e operacional, voltado à limpeza, conservação e manutenção de piscina residencial ou privativa, conforme condições ajustadas entre as partes.")
+    p("Serviços não descritos neste instrumento, como obras civis, reformas, reparos elétricos, reparos hidráulicos, substituição de equipamentos, laudos, perícias ou atendimentos extraordinários, dependerão de orçamento e aprovação prévia.")
 
     h("3. Frequência e execução")
     p(f"A frequência ajustada entre as partes é: {_html.escape(frequencia)}. A execução dependerá de acesso ao local, disponibilidade operacional, condições mínimas de segurança e informações fornecidas pela CONTRATANTE.")
@@ -14130,10 +14131,10 @@ def gerar_contrato_aqua_sem_rt_pdf(dados: dict) -> bytes:
     buf.close()
     return pdf
 
-with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física ou jurídica", expanded=False):
-    st.caption("Gera contrato comercial da Aqua Gestão sem Responsabilidade Técnica mensal. Para RT/ART, use o botão 'Gerar contrato RT'.")
+with st.expander("🧾 Contrato Aqua Gestão — Pessoa física ou jurídica", expanded=False):
+    st.caption("Gera contrato comercial da Aqua Gestão para limpeza e manutenção de piscinas residenciais.")
 
-    # v6: carregar dados de cliente PF/PJ cadastrado no contrato Aqua sem RT — BUG-CLIENTE-PF-CONTRATO
+    # v6: carregar dados de cliente PF/PJ cadastrado no contrato Aqua — BUG-CLIENTE-PF-CONTRATO
     try:
         _aq_sem_clientes = filtrar_clientes_por_empresa(sheets_listar_clientes_completo(), "aqua_gestao")
     except Exception:
@@ -14314,15 +14315,15 @@ with st.expander("🧾 Contrato Aqua Gestão sem RT / sem ART — Pessoa física
         "necessária, verificação visual da água e da casa de máquinas, medição e registro de "
         "parâmetros quando contratado, aplicação de produtos químicos de rotina quando fornecidos "
         "pelo contratante ou incluídos na proposta, recomendações de tratamento e orientação "
-        "operacional, sem emissão de RT/ART e sem assunção de Responsabilidade Técnica mensal."  # v6: descrição PF para limpeza e manutenção residencial — BUG-D
+        "operacional, e sem assunção de Responsabilidade Técnica mensal."  # v6: descrição PF para limpeza e manutenção residencial — BUG-D
     )
     _aq_sem_servicos_pj = (
         "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de "
-        "tratamento, registro documental e apoio técnico sem emissão de RT/ART."
+        "tratamento, registro documental e apoio técnico."
     )
     _aq_sem_servicos_antigos = {
         "",
-        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de tratamento, registro documental e apoio técnico sem emissão de RT/ART.",
+        "Acompanhamento operacional, inspeção visual, orientação de rotina, recomendações de tratamento, registro documental e apoio técnico.",
         _aq_sem_servicos_pf,
         _aq_sem_servicos_pj,
     }
