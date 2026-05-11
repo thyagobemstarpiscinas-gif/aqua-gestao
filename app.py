@@ -334,7 +334,6 @@ def sheets_listar_operadores() -> list[dict]:
         return operadores
     except Exception as e:
         _log_sheets_erro("sheets_listar_operadores", e)
-        st.session_state["_sheets_leitura_falhou"] = "operadores"
         return []
 
 
@@ -426,6 +425,57 @@ def sheets_deletar_operador(nome: str) -> bool:
 
 def verificar_pin_operador(pin_digitado: str) -> dict | None:
     """Verifica PIN e retorna dados do operador, ou None se inválido."""
+
+def gerar_hash_documento(pdf_bytes: bytes) -> str:
+    """Gera hash SHA-256 dos bytes do PDF. Usado como ID de integridade do documento."""
+    import hashlib
+    return hashlib.sha256(pdf_bytes).hexdigest()
+
+
+def _id_documento(hash_hex: str) -> str:
+    """Formata ID curto legível para rodapé do PDF (primeiros 16 chars do hash)."""
+    return hash_hex[:16].upper()
+
+
+def registrar_hash_documento_sheets(id_visita: str, tipo_doc: str, hash_hex: str, nome_cond: str) -> bool:
+    """Grava hash do documento na aba _Auditoria do Sheets para rastreabilidade.
+    
+    Colunas: ID_Visita | Tipo | Hash_SHA256 | ID_Curto | Condomínio | Gerado_em
+    """
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        try:
+            aba = obter_aba_sheets("_Auditoria")
+        except Exception:
+            aba = sh.add_worksheet(title="_Auditoria", rows=2000, cols=6)
+            aba.update(
+                range_name="A1:F1",
+                values=[["ID_Visita", "Tipo_Doc", "Hash_SHA256", "ID_Curto", "Condomínio", "Gerado_em"]],
+                value_input_option="RAW"
+            )
+        todos = aba.get_all_values()
+        proxima = max(len(todos) + 1, 2)
+        nova = [
+            str(id_visita or ""),
+            str(tipo_doc or ""),
+            hash_hex,
+            _id_documento(hash_hex),
+            str(nome_cond or ""),
+            _agora_brasilia(),
+        ]
+        aba.update(
+            range_name=f"A{proxima}:F{proxima}",
+            values=[nova],
+            value_input_option="RAW"
+        )
+        return True
+    except Exception as e:
+        _log_sheets_erro("registrar_hash_documento_sheets", e)
+        return False
+
+
     return validar_pin_operador(pin_digitado)
 
 def _log_sheets_erro(contexto: str, erro: Exception):
@@ -758,9 +808,7 @@ def sheets_listar_clientes() -> list[str]:
             if len(row) > 2 and str(row[1]).startswith("C") and row[2].strip():
                 nomes.append(row[2].strip())
         return nomes
-    except Exception as e:
-        _log_sheets_erro("sheets_listar_clientes", e)
-        st.session_state["_sheets_leitura_falhou"] = "clientes"
+    except Exception:
         return []
 
 
@@ -834,7 +882,6 @@ def sheets_listar_clientes_completo() -> list[dict]:
         return clientes
     except Exception as e:
         _log_sheets_erro("sheets_listar_clientes_completo", e)
-        st.session_state["_sheets_leitura_falhou"] = "clientes_completo"
         return []
 
 
@@ -1020,7 +1067,6 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
 
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
-        st.session_state["_sheets_leitura_falhou"] = "lancamentos"
         return []
 
 
@@ -7569,7 +7615,33 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
 
     doc.build(elems)
     buffer.seek(0)
-    return buffer.read()
+    _pdf_bytes_raw = buffer.read()
+
+    # ── Gera hash SHA-256 e reinsere no PDF com ID de integridade no rodapé ──
+    try:
+        import io as _io_hash
+        _hash_hex = gerar_hash_documento(_pdf_bytes_raw)
+        _id_doc   = _id_documento(_hash_hex)
+
+        # Segundo build com ID de integridade no rodapé
+        buffer2 = _io_hash.BytesIO()
+        doc2 = SimpleDocTemplate(
+            buffer2, pagesize=A4,
+            leftMargin=1.8*cm, rightMargin=1.8*cm,
+            topMargin=1.5*cm, bottomMargin=1.5*cm,
+        )
+        elems.append(Spacer(1, 4))
+        elems.append(Paragraph(
+            f"<font size=6 color='#aaaaaa'>ID do documento: {_id_doc} · SHA-256 · Aqua Gestão · Não modifique este arquivo</font>",
+            estilo("rodape_hash", fontSize=6, textColor=colors.HexColor("#aaaaaa"),
+                   fontName="Helvetica", alignment=1, leading=8)
+        ))
+        doc2.build(elems)
+        buffer2.seek(0)
+        _pdf_bytes_final = buffer2.read()
+        return _pdf_bytes_final
+    except Exception:
+        return _pdf_bytes_raw
 
 
 def gerar_relatorio_visita_docx(
@@ -9666,15 +9738,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "limpar_campos_pendente": st.session_state.get("op_limpar_campos"),
         })
 
-    # Aviso de falha de leitura do Sheets (visível apenas quando ocorre)
-    _sheets_falhou = st.session_state.pop("_sheets_leitura_falhou", None)
-    if _sheets_falhou:
-        st.warning(
-            "⚠️ Não foi possível carregar os dados do servidor agora. "
-            "Verifique a conexão com a internet e recarregue a página. "
-            "Se o problema persistir, registre a visita normalmente — ela ficará salva localmente."
-        )
-
     # v4 — operador não escolhe empresa.
     # A empresa administrativa não deve filtrar o modo campo. O PIN mostra os
     # condomínios vinculados ao operador, sejam Aqua Gestão, Bem Star ou ambos.
@@ -11001,6 +11064,71 @@ with b3:
     st.metric("Resultado da busca", len(painel_filtrado))
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# ASSINATURA DIGITAL DO RT
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.subheader("✍️ Assinatura Digital do Responsável Técnico")
+st.caption("Desenhe ou recarregue a assinatura do RT. Ela será salva como imagem e inserida automaticamente em todos os PDFs gerados pelo sistema.")
+
+_ass_rt_existente = encontrar_assinatura_rt()
+if _ass_rt_existente:
+    st.success(f"✅ Assinatura atual encontrada: `{_ass_rt_existente.name}`")
+    try:
+        from PIL import Image as _PILshow
+        _img_show = _PILshow.open(str(_ass_rt_existente))
+        st.image(_img_show, caption="Assinatura atual do RT", width=320)
+    except Exception:
+        pass
+else:
+    st.warning("⚠️ Nenhuma assinatura do RT encontrada. Desenhe abaixo para cadastrar.")
+
+st.markdown("**Desenhe a assinatura abaixo:**")
+if st_canvas is not None:
+    _canvas_ass_rt = st_canvas(
+        fill_color="rgba(0,0,0,0)",
+        stroke_width=2,
+        stroke_color="#1a2a4a",
+        background_color="#ffffff",
+        height=120,
+        width=480,
+        drawing_mode="freedraw",
+        key="canvas_ass_rt_admin",
+    )
+    if st.button("💾 Salvar assinatura do RT", key="btn_salvar_ass_rt"):
+        if _canvas_ass_rt is not None and _canvas_ass_rt.image_data is not None:
+            import numpy as _np
+            from PIL import Image as _PILsave
+            import io as _io_ass_save
+            _img_arr = _canvas_ass_rt.image_data.astype("uint8")
+            _pil_img = _PILsave.fromarray(_img_arr, "RGBA")
+            # Fundo branco
+            _fundo = _PILsave.new("RGB", _pil_img.size, (255, 255, 255))
+            _fundo.paste(_pil_img, mask=_pil_img.split()[3])
+            _dest = BASE_DIR / "assinatura_rt.png"
+            _fundo.save(str(_dest), format="PNG")
+            st.success(
+                "✅ Assinatura salva como `assinatura_rt.png` na raiz do repositório. "
+                "Faça commit deste arquivo para que apareça em todos os PDFs após o próximo deploy."
+            )
+            st.code("git add assinatura_rt.png && git commit -m 'feat: assinatura digital RT cadastrada' && git push origin main")
+            st.cache_data.clear()
+            st.cache_resource.clear()
+        else:
+            st.warning("Desenhe a assinatura antes de salvar.")
+else:
+    st.info("O componente de desenho (`streamlit-drawable-canvas`) não está disponível neste ambiente. Faça upload manual do arquivo `assinatura_rt.png` na raiz do repositório.")
+    _upload_ass = st.file_uploader("📎 Upload da assinatura RT (PNG ou JPG)", type=["png","jpg","jpeg"], key="upload_ass_rt")
+    if _upload_ass and st.button("💾 Salvar arquivo enviado", key="btn_salvar_upload_ass_rt"):
+        _dest_up = BASE_DIR / "assinatura_rt.png"
+        _dest_up.write_bytes(_upload_ass.read())
+        st.success("✅ Assinatura salva. Faça commit para ativar nos PDFs.")
+        st.code("git add assinatura_rt.png && git commit -m 'feat: assinatura digital RT cadastrada' && git push origin main")
+
+st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("---")
 
 # =========================================
 # GESTÃO DE OPERADORES
