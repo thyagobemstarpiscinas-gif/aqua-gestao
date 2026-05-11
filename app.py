@@ -478,6 +478,58 @@ def registrar_hash_documento_sheets(id_visita: str, tipo_doc: str, hash_hex: str
 
     return validar_pin_operador(pin_digitado)
 
+
+def gerar_numero_sequencial_relatorio(tipo: str = "V", nome_cond: str = "") -> str:
+    """Gera número sequencial do relatório no formato R{ANO}-{SEQ:04d}.
+
+    Tipos:
+      V = Relatório de Visita (campo)
+      M = Relatório Mensal RT
+    Exemplos: R2026-0001, R2026-0042
+    Registra na aba _Auditoria do Sheets para rastreabilidade.
+    Fallback local: usa timestamp se Sheets indisponível.
+    """
+    try:
+        from datetime import datetime as _dt
+        _ano = _dt.now().strftime("%Y")
+        sh = conectar_sheets()
+        if sh is None:
+            raise Exception("Sheets indisponível")
+        try:
+            aba = obter_aba_sheets("_Auditoria")
+        except Exception:
+            aba = sh.add_worksheet(title="_Auditoria", rows=2000, cols=8)
+            aba.update(
+                range_name="A1:H1",
+                values=[["Num_Relatorio", "Tipo_Doc", "ID_Visita", "Hash_SHA256",
+                         "ID_Curto", "Condomínio", "Gerado_em", "Ano"]],
+                value_input_option="RAW"
+            )
+        todos = aba.get_all_values()
+        # Conta relatórios do mesmo ano
+        nums_ano = []
+        for row in todos[1:]:
+            if len(row) >= 8 and str(row[7]).strip() == _ano:
+                try:
+                    nums_ano.append(int(str(row[0]).split("-")[-1]))
+                except Exception:
+                    pass
+        proximo = (max(nums_ano) + 1) if nums_ano else 1
+        num_rel = f"R{_ano}-{proximo:04d}"
+        # Grava pré-registro na _Auditoria
+        proxima_linha = max(len(todos) + 1, 2)
+        nova = [num_rel, tipo, "", "", "", str(nome_cond or ""), _agora_brasilia(), _ano]
+        aba.update(
+            range_name=f"A{proxima_linha}:H{proxima_linha}",
+            values=[nova],
+            value_input_option="RAW"
+        )
+        return num_rel
+    except Exception:
+        # Fallback: número baseado em timestamp
+        from datetime import datetime as _dt2
+        return "R" + _dt2.now().strftime("%Y%m%d%H%M%S")
+
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
     import traceback
@@ -7597,15 +7649,53 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         except Exception:
             pass
 
-    # ── ASSINATURA RT ─────────────────────────────────────────────────────────
+    # ── ASSINATURA DIGITAL DO RT ──────────────────────────────────────────────
     elems.append(HRFlowable(width="100%", thickness=0.5, color=BORDA, spaceAfter=8))
-    ass_data = [[
-        Paragraph("<b>Thyago Fernando da Silveira</b><br/>Técnico em Química · NR-26 · NR-6<br/><font size=7 color='#1e4d8c'>CRQ-MG 2ª Região · CRQ 024025748</font>", s_body),
-        Paragraph("<br/><br/>___________________________<br/><font size=7 color='#8a9ab0'>Assinatura / carimbo RT</font>", s_center),
-    ]]
-    t_ass = Table(ass_data, colWidths=["60%","40%"])
+
+    _ass_rt_path = preparar_assinatura_rt_para_relatorio()
+    _ass_rt_col  = Paragraph("_______________<br/><font size=7 color='#8a9ab0'>Assinatura digital do RT</font>", s_center)
+
+    if _ass_rt_path and _ass_rt_path.exists():
+        try:
+            import io as _io_ass
+            from reportlab.platypus import Image as _RLImg
+            from PIL import Image as _PILAss
+            _ass_img = _PILAss.open(str(_ass_rt_path)).convert("RGB")
+            _aw, _ah = _ass_img.size
+            _max_aw, _max_ah = 3.2 * cm, 1.1 * cm
+            _aratio = (_aw / _ah) if _ah else 3.0
+            _final_aw = min(_max_aw, _max_ah * _aratio)
+            _final_ah = _final_aw / _aratio if _aratio else _max_ah
+            if _final_ah > _max_ah:
+                _final_ah = _max_ah
+                _final_aw = _final_ah * _aratio
+            _buf_a = _io_ass.BytesIO()
+            _ass_img.save(_buf_a, format="PNG", dpi=(300, 300))
+            _buf_a.seek(0)
+            _rl_ass_rt = _RLImg(_buf_a, width=_final_aw, height=_final_ah)
+            _ass_rt_col = Table(
+                [[_rl_ass_rt], [Paragraph("<font size=6 color='#aaaaaa'>Assinatura digital do RT</font>", s_center)]],
+                colWidths=["100%"]
+            )
+            _ass_rt_col.setStyle(TableStyle([
+                ("ALIGN",  (0,0), (-1,-1), "CENTER"),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("PADDING",(0,0), (-1,-1), 1),
+            ]))
+        except Exception:
+            pass
+
+    t_ass = Table([[
+        Paragraph(
+            "<b>Thyago Fernando da Silveira</b><br/>"
+            "Técnico em Química · NR-26 · NR-6<br/>"
+            "<font size=7 color='#1e4d8c'>CRQ-MG 2ª Região · CRQ 024025748</font>",
+            s_body
+        ),
+        _ass_rt_col,
+    ]], colWidths=["65%", "35%"])
     t_ass.setStyle(TableStyle([
-        ("VALIGN", (0,0), (-1,-1), "BOTTOM"),
+        ("VALIGN",  (0,0), (-1,-1), "MIDDLE"),
         ("PADDING", (0,0), (-1,-1), 4),
     ]))
     elems.append(t_ass)
@@ -7617,13 +7707,13 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     buffer.seek(0)
     _pdf_bytes_raw = buffer.read()
 
-    # ── Gera hash SHA-256 e reinsere no PDF com ID de integridade no rodapé ──
+    # ── Número sequencial + Hash SHA-256 no rodapé do relatório ──────────────
     try:
         import io as _io_hash
-        _hash_hex = gerar_hash_documento(_pdf_bytes_raw)
-        _id_doc   = _id_documento(_hash_hex)
+        _hash_hex  = gerar_hash_documento(_pdf_bytes_raw)
+        _id_doc    = _id_documento(_hash_hex)
+        _num_rel   = gerar_numero_sequencial_relatorio("V", nome_condominio)
 
-        # Segundo build com ID de integridade no rodapé
         buffer2 = _io_hash.BytesIO()
         doc2 = SimpleDocTemplate(
             buffer2, pagesize=A4,
@@ -7632,14 +7722,17 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         )
         elems.append(Spacer(1, 4))
         elems.append(Paragraph(
-            f"<font size=6 color='#aaaaaa'>ID do documento: {_id_doc} · SHA-256 · Aqua Gestão · Não modifique este arquivo</font>",
-            estilo("rodape_hash", fontSize=6, textColor=colors.HexColor("#aaaaaa"),
+            f"<font size=6 color='#aaaaaa'>"
+            f"Nº do Relatório: {_num_rel} · "
+            f"ID de integridade: {_id_doc} · "
+            f"SHA-256 · Aqua Gestão · Não modifique este arquivo"
+            f"</font>",
+            estilo("rodape_num", fontSize=6, textColor=colors.HexColor("#aaaaaa"),
                    fontName="Helvetica", alignment=1, leading=8)
         ))
         doc2.build(elems)
         buffer2.seek(0)
-        _pdf_bytes_final = buffer2.read()
-        return _pdf_bytes_final
+        return buffer2.read()
     except Exception:
         return _pdf_bytes_raw
 
