@@ -1,4 +1,4 @@
-import os
+cp "app (13).py" app.py && git add app.py && git commit -m "feat: indicador Sheets online/offline no modo operador" && git push origin mainimport os
 import re
 import json
 import shutil
@@ -9837,6 +9837,30 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_codigo = "operador_multibase"
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
+
+    # ── Indicador Sheets online/offline ──────────────────────────────────────
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _testar_conexao_sheets_op() -> bool:
+        """Testa conexão com Sheets. Cache de 60s para não bater a API a cada rerun."""
+        try:
+            sh = conectar_sheets()
+            return sh is not None
+        except Exception:
+            return False
+
+    _sheets_online = _testar_conexao_sheets_op()
+    _indicador_cor  = "#2e7d32" if _sheets_online else "#c62828"
+    _indicador_icon = "🟢" if _sheets_online else "🔴"
+    _indicador_txt  = "Sheets online — dados sincronizados" if _sheets_online else "Sheets offline — salvamento local ativo"
+
+    st.markdown(
+        f'<div style="display:inline-block;padding:3px 10px;border-radius:20px;'
+        f'background:{"#f1f8f1" if _sheets_online else "#fff5f5"};'
+        f'border:1px solid {"#c8e6c9" if _sheets_online else "#ffcdd2"};'
+        f'font-size:0.75rem;color:{_indicador_cor};margin-bottom:8px;">'
+        f'{_indicador_icon} {_indicador_txt}</div>',
+        unsafe_allow_html=True
+    )
 
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
