@@ -1,3 +1,4 @@
+
 import os
 import re
 import json
@@ -5531,6 +5532,33 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
         doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+        # ── Hash SHA-256 + Nº Relatório no rodapé ─────────────────────────
+        try:
+            if pdf_path.exists():
+                _rt_bytes = pdf_path.read_bytes()
+                _hash_rt  = gerar_hash_documento(_rt_bytes)
+                _id_rt    = _id_documento(_hash_rt)
+                _num_rt   = gerar_numero_sequencial_relatorio("M", str(pdf_path.stem))
+                from reportlab.platypus import SimpleDocTemplate as _SDTRT, Paragraph as _PRT, Spacer as _SpRT
+                from reportlab.lib.styles import ParagraphStyle as _PSRT
+                from reportlab.lib.pagesizes import A4 as _A4RT
+                from reportlab.lib import colors as _cRT
+                import io as _ioRT
+                _buf_rt = _ioRT.BytesIO()
+                _doc_rt = _SDTRT(_buf_rt, pagesize=_A4RT,
+                    leftMargin=doc.leftMargin, rightMargin=doc.rightMargin,
+                    topMargin=doc.topMargin, bottomMargin=doc.bottomMargin)
+                story.append(_SpRT(1, 4))
+                story.append(_PRT(
+                    f"Nº do Relatório: <b>{_num_rt}</b> · ID de integridade: <b>{_id_rt}</b> · SHA-256 · Aqua Gestão",
+                    _PSRT("rod_rt", fontSize=6, textColor=_cRT.HexColor("#aaaaaa"),
+                          fontName="Helvetica", alignment=1, leading=8)
+                ))
+                _doc_rt.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+                _buf_rt.seek(0)
+                pdf_path.write_bytes(_buf_rt.read())
+        except Exception:
+            pass  # fallback: mantém PDF original sem hash
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
     except Exception as e:
         _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab", e)
@@ -7304,7 +7332,30 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     doc = SimpleDocTemplate(buf, pagesize=A4,
         leftMargin=M, rightMargin=M, topMargin=15*mm, bottomMargin=13*mm)
     doc.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
-    return buf.getvalue()
+    _bs_bytes = buf.getvalue()
+    # ── Hash SHA-256 + Nº Relatório no rodapé ─────────────────────────────
+    try:
+        import io as _io_bs
+        from reportlab.platypus import SimpleDocTemplate as _SDT, Paragraph as _P, Spacer as _Sp
+        from reportlab.lib.styles import ParagraphStyle as _PS
+        from reportlab.lib.pagesizes import A4 as _A4
+        _hash_bs  = gerar_hash_documento(_bs_bytes)
+        _id_bs    = _id_documento(_hash_bs)
+        _num_bs   = gerar_numero_sequencial_relatorio("V", nome_condominio)
+        _buf2 = _io_bs.BytesIO()
+        _doc2 = _SDT(_buf2, pagesize=_A4,
+            leftMargin=M, rightMargin=M, topMargin=15*mm, bottomMargin=13*mm)
+        story.append(_Sp(1, 4))
+        story.append(_P(
+            f"Nº do Relatório: <b>{_num_bs}</b> · ID de integridade: <b>{_id_bs}</b> · SHA-256 · Bem Star / Aqua Gestão",
+            _PS("rod_bs", fontSize=6, textColor=__import__("reportlab.lib.colors", fromlist=["HexColor"]).HexColor("#aaaaaa"),
+                fontName="Helvetica", alignment=1, leading=8)
+        ))
+        _doc2.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
+        _buf2.seek(0)
+        return _buf2.read()
+    except Exception:
+        return _bs_bytes
 
 def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF do relatório de visita usando ReportLab. Retorna bytes do PDF."""
@@ -10152,6 +10203,56 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Barra de progresso por etapas ────────────────────────────────────────
+    def _barra_progresso_op():
+        """Calcula etapa atual e renderiza barra HTML inline sem dependências."""
+        _cond_ok  = bool(st.session_state.get("op_nome_livre") or st.session_state.get("op_sel_cond"))
+        _data_ok  = len(str(st.session_state.get("op_data_visita","")).strip()) >= 8
+        # Verifica se há ao menos um parâmetro preenchido em qualquer piscina
+        _params_keys = [f"op_{p}_{k}" for p in ["adulto","infantil","family","outra"] for k in ["ph","crl","ct"]]
+        _params_ok = any(str(st.session_state.get(k,"")).strip() for k in _params_keys)
+        # Verifica se há fotos
+        _fotos_ok  = bool(
+            st.session_state.get("op_fotos_antes") or
+            st.session_state.get("op_fotos_depois") or
+            st.session_state.get("op_fotos_cmaq")
+        )
+
+        _etapas = [
+            ("1 Local",       _cond_ok),
+            ("2 Parâmetros",  _params_ok),
+            ("3 Fotos",       _fotos_ok),
+            ("4 Salvar",      False),
+        ]
+        _total = len(_etapas)
+        _concluidas = sum(1 for _, ok in _etapas if ok)
+
+        _html_etapas = ""
+        for _label, _ok in _etapas:
+            _bg   = "#1e4d8c" if _ok else "#e8f0fb"
+            _cor  = "#ffffff" if _ok else "#8a9ab0"
+            _icone = "✅ " if _ok else ""
+            _html_etapas += (
+                f'<div style="flex:1;text-align:center;padding:5px 2px;border-radius:8px;'
+                f'background:{_bg};color:{_cor};font-size:0.7rem;font-weight:600;margin:0 2px;">'
+                f'{_icone}{_label}</div>'
+            )
+
+        _progresso = int((_concluidas / _total) * 100)
+        st.markdown(
+            f'<div style="margin:8px 0 4px 0;">'
+            f'<div style="display:flex;gap:4px;margin-bottom:4px;">{_html_etapas}</div>'
+            f'<div style="background:#e8f0fb;border-radius:10px;height:5px;">'
+            f'<div style="background:#1e4d8c;width:{_progresso}%;height:5px;border-radius:10px;'
+            f'transition:width 0.3s ease;"></div></div>'
+            f'<div style="text-align:right;font-size:0.65rem;color:#8a9ab0;margin-top:2px;">'
+            f'{_concluidas}/{_total} etapas</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+    _barra_progresso_op()
 
     if op_nome_cond:
 
