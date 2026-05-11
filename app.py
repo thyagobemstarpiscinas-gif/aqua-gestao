@@ -1,4 +1,4 @@
-cp "app (13).py" app.py && git add app.py && git commit -m "feat: indicador Sheets online/offline no modo operador" && git push origin mainimport os
+import os
 import re
 import json
 import shutil
@@ -10055,30 +10055,79 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if _badges:
                     st.markdown(" ".join(_badges), unsafe_allow_html=True)
             
-            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
+            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) com tabela de parâmetros ---
             if op_nome_cond:
-                with st.expander("🕒 Histórico recente", expanded=False):
+                with st.expander("🕒 Últimas visitas — referência de parâmetros", expanded=True):
                     with st.spinner("Buscando histórico..."):
                         historico_v = sheets_listar_lancamentos(op_nome_cond)
                         if not historico_v:
-                            st.caption("Nenhuma visita anterior registrada.")
+                            st.caption("Nenhuma visita anterior registrada para este condomínio.")
                         else:
-                            # Ordena por data decrescente
                             try:
                                 historico_v = sorted(
-                                    historico_v, 
-                                    key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
+                                    historico_v,
+                                    key=lambda x: datetime.strptime(
+                                        normalizar_data_visita(x.get("data", "")), "%d/%m/%Y"
+                                    ) if normalizar_data_visita(x.get("data","")) else datetime.min,
                                     reverse=True
                                 )
-                            except:
+                            except Exception:
                                 pass
-                            
-                            for v in historico_v[:3]:
-                                st.markdown(f"**Data: {v['data']}** | Op: {v.get('operador','–')}")
-                                st.markdown(f"pH: `{v.get('ph','–')}` | CRL: `{v.get('cloro_livre','–')}` | Alc: `{v.get('alcalinidade','–')}`")
-                                if v.get('problemas'):
-                                    st.caption(f"⚠️ {v['problemas']}")
-                                st.markdown("---")
+
+                            _ultimas = historico_v[:3]
+
+                            # Cabeçalho da tabela
+                            _cols = st.columns([2, 1, 1, 1, 1, 1, 1])
+                            for _col, _label in zip(_cols, ["📅 Data", "pH", "CRL", "Alc", "Dur", "CYA", "Parecer"]):
+                                _col.markdown(f"<span style='font-size:0.7rem;color:#8a9ab0;font-weight:600'>{_label}</span>", unsafe_allow_html=True)
+
+                            st.markdown("<hr style='margin:2px 0 6px 0;border-color:#e0e8f0'>", unsafe_allow_html=True)
+
+                            def _cor_param(val, minv, maxv):
+                                """Retorna cor baseada na faixa de conformidade."""
+                                try:
+                                    v = float(str(val).replace(",","."))
+                                    if minv <= v <= maxv:
+                                        return "#2e7d32"  # verde
+                                    return "#c62828"      # vermelho
+                                except Exception:
+                                    return "#8a9ab0"      # cinza
+
+                            for _v in _ultimas:
+                                _ph  = _v.get("ph", "–")
+                                _crl = _v.get("cloro_livre", "–")
+                                _alc = _v.get("alcalinidade", "–")
+                                _dur = _v.get("dureza", "–")
+                                _cya = _v.get("cianurico", "–")
+                                _par = _v.get("parecer_visita", _v.get("status", "–"))
+                                _par_icon = "✅" if "satisf" in str(_par).lower() else ("⚠️" if _par and _par != "–" else "–")
+
+                                _cols2 = st.columns([2, 1, 1, 1, 1, 1, 1])
+                                _cols2[0].markdown(f"<span style='font-size:0.75rem;color:#1a2a4a'><b>{_v.get('data','–')}</b></span>", unsafe_allow_html=True)
+
+                                for _col2, _val, _min, _max in [
+                                    (_cols2[1], _ph,  7.2, 7.8),
+                                    (_cols2[2], _crl, 0.5, 3.0),
+                                    (_cols2[3], _alc, 80,  120),
+                                    (_cols2[4], _dur, 150, 300),
+                                    (_cols2[5], _cya, 30,  50),
+                                ]:
+                                    _c = _cor_param(_val, _min, _max)
+                                    _col2.markdown(
+                                        f"<span style='font-size:0.75rem;color:{_c};font-weight:600'>{_val}</span>",
+                                        unsafe_allow_html=True
+                                    )
+                                _cols2[6].markdown(f"<span style='font-size:0.75rem'>{_par_icon}</span>", unsafe_allow_html=True)
+
+                                if _v.get("problemas"):
+                                    st.caption(f"⚠️ {_v['problemas']}")
+
+                            st.markdown(
+                                "<span style='font-size:0.65rem;color:#aaaaaa'>"
+                                "🟢 dentro da faixa · 🔴 fora da faixa · Faixas: pH 7,2–7,8 | CRL 0,5–3,0 | Alc 80–120 | Dur 150–300 | CYA 30–50"
+                                "</span>",
+                                unsafe_allow_html=True
+                            )
         else:
             st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
             op_nome_cond = ""
