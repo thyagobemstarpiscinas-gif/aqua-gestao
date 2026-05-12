@@ -7561,29 +7561,9 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     elems.append(Spacer(1, 4))
     elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento de uso operacional", s_center))
 
-    # _PDF_VISITA_GUARD_V6_
-    # Proteção contra PDF "em branco": se a montagem do corpo falhar, não entrega
-    # um arquivo só com rodapé/selo como se fosse relatório válido.
-    if not elems or len(elems) < 8:
-        raise RuntimeError(
-            "PDF de visita abortado: conteúdo principal vazio. "
-            "Verifique os dados do lançamento, piscinas e montagem do relatório."
-        )
-
-    try:
-        doc.build(elems)
-    except Exception as e:
-        raise RuntimeError(f"Falha ao montar o PDF de visita: {type(e).__name__}: {e}") from e
-
-    pdf_bytes = buffer.getvalue()
-    if len(pdf_bytes) < 5000:
-        raise RuntimeError(
-            f"PDF de visita gerado com tamanho inválido ({len(pdf_bytes)} bytes). "
-            "O relatório provavelmente sairia vazio, por isso o download foi bloqueado."
-        )
-
+    doc.build(elems)
     buffer.seek(0)
-    return pdf_bytes
+    return buffer.read()
 
 
 def gerar_relatorio_visita_docx(
@@ -9710,26 +9690,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             with st.spinner("Gerando PDF..."):
                 try:
                     pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
-                    if not pdf_bytes or len(pdf_bytes) < 5000:
-                        st.error("PDF bloqueado: o arquivo ficou pequeno demais e poderia sair vazio.")
-                        with st.expander("Diagnóstico do lançamento usado no PDF", expanded=False):
-                            st.json({
-                                "condominio": _salvo.get("nome"),
-                                "data": _salvo.get("data"),
-                                "operador": (_ult_lanc or {}).get("operador", ""),
-                                "qtd_piscinas": len((_ult_lanc or {}).get("piscinas", []) or []),
-                                "chaves_payload": sorted(list((_ult_lanc or {}).keys()))[:80],
-                            })
-                    else:
-                        st.download_button(
-                            "📄 Baixar PDF desta visita",
-                            data=pdf_bytes,
-                            file_name=f"{nome_arq}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                            key="btn_dl_relatorio_visita",
-                        )
-                        st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                    st.download_button(
+                        "📄 Baixar PDF desta visita",
+                        data=pdf_bytes,
+                        file_name=f"{nome_arq}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_dl_relatorio_visita",
+                    )
+                    st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
                     # Botao PDF Bem Star Premium
                     if st.session_state.get("empresa_ativa") == "bem_star":
                         try:
@@ -10755,8 +10724,237 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
                     st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
 
+
     # Para o restante da página não renderizar no modo operador
     st.stop()
+
+# =========================================
+# ADMIN — PDF DE VISITAS DOS OPERADORES (AQUA GESTÃO + BEM STAR)
+# =========================================
+def _admin_empresa_codigo_atual() -> str:
+    """Retorna a empresa administrativa ativa travada pelo login."""
+    empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
+    if empresa not in ("aqua_gestao", "bem_star"):
+        empresa = "aqua_gestao"
+    return empresa
+
+
+def _admin_nome_empresa_por_codigo(empresa_codigo: str) -> str:
+    return "Bem Star Piscinas" if empresa_codigo == "bem_star" else "Aqua Gestão"
+
+
+def _admin_montar_lancamento_pdf_visita(v: dict) -> dict:
+    """Monta payload completo da visita sem perder campos legados da linha do Sheets."""
+    base = dict(v or {})
+    payload = base.get("_payload") if isinstance(base.get("_payload"), dict) else {}
+    lanc = dict(base)
+    if payload:
+        lanc.update(payload)
+
+    # Normaliza campos usados pelos geradores de PDF.
+    lanc["id_visita"] = lanc.get("id_visita") or base.get("id_visita", "")
+    lanc["data"] = normalizar_data_visita(lanc.get("data") or base.get("data", ""))
+    lanc["condominio"] = lanc.get("condominio") or base.get("condominio", "")
+    lanc["operador"] = lanc.get("operador") or base.get("operador", "")
+    lanc["observacao"] = lanc.get("observacao") or base.get("observacao", "")
+    lanc["problemas"] = lanc.get("problemas") or base.get("problemas", "")
+
+    # Compatibilidade com nomes usados em telas/linhas antigas.
+    if not lanc.get("cloro_livre") and base.get("crl"):
+        lanc["cloro_livre"] = base.get("crl")
+    if not lanc.get("cloro_total") and base.get("ct"):
+        lanc["cloro_total"] = base.get("ct")
+    if not lanc.get("cianurico") and base.get("cya"):
+        lanc["cianurico"] = base.get("cya")
+
+    return lanc
+
+
+def _admin_visita_pertence_empresa(v: dict, clientes_empresa: list[dict]) -> bool:
+    """Filtra visita pelo condomínio da empresa ativa. Se cadastro estiver vazio, não bloqueia."""
+    if not clientes_empresa:
+        return True
+    cond = str((v or {}).get("condominio", "") or "").strip()
+    if not cond:
+        return False
+    for c in clientes_empresa:
+        nome = str(c.get("nome", "") or "").strip()
+        if nome and nomes_condominio_equivalentes(cond, nome):
+            return True
+    return False
+
+
+def _admin_nome_arquivo_pdf_visita(lanc: dict, empresa_codigo: str) -> str:
+    empresa_nome = _admin_nome_empresa_por_codigo(empresa_codigo)
+    cond = str(lanc.get("condominio", "Visita") or "Visita").strip()
+    data = normalizar_data_visita(lanc.get("data", "")) or datetime.now().strftime("%d/%m/%Y")
+    data_arq = re.sub(r"\D", "", data) or datetime.now().strftime("%Y%m%d")
+    prefixo = "Relatorio_Visita_Bem_Star" if empresa_codigo == "bem_star" else "Relatorio_Visita_Aqua_Gestao"
+    nome = f"{prefixo}_{cond}_{data_arq}.pdf"
+    if "limpar_nome_arquivo" in globals():
+        try:
+            return limpar_nome_arquivo(nome)
+        except Exception:
+            pass
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", nome)
+
+
+def _admin_gerar_pdf_visita_por_empresa(lanc: dict, empresa_codigo: str) -> bytes:
+    """Gera o PDF correto conforme o painel administrativo ativo."""
+    nome_cond = str(lanc.get("condominio", "") or "Visita").strip()
+
+    if empresa_codigo == "bem_star":
+        if "gerar_pdf_relatorio_visita_bem_star" not in globals():
+            raise RuntimeError("Gerador de PDF da Bem Star não encontrado no app.py.")
+        pdf = gerar_pdf_relatorio_visita_bem_star(lanc, nome_cond)
+    else:
+        if "gerar_pdf_relatorio_visita" not in globals():
+            raise RuntimeError("Gerador de PDF da Aqua Gestão não encontrado no app.py.")
+        pdf = gerar_pdf_relatorio_visita(lanc, nome_cond)
+
+    if not pdf or len(pdf) < 5000:
+        raise RuntimeError(
+            "PDF gerado pequeno demais ou sem conteúdo técnico. "
+            "Verifique se a visita tem payload, parâmetros e condomínio preenchidos."
+        )
+    return pdf
+
+
+def exibir_admin_download_pdf_visitas_operadores():
+    """Exibe a mesma opção nos dois acessos administrativos: Aqua Gestão e Bem Star."""
+    if st.session_state.get("modo_atual") != "escritorio":
+        return
+
+    empresa_codigo = _admin_empresa_codigo_atual()
+    empresa_nome = _admin_nome_empresa_por_codigo(empresa_codigo)
+    key_prefix = f"admin_pdf_visita_{empresa_codigo}"
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("📄 PDF de visita dos operadores")
+    st.caption(
+        f"Opção disponível no painel {empresa_nome}. "
+        "A lista abaixo usa as visitas salvas pelo modo operador e gera o PDF conforme a empresa logada."
+    )
+
+    try:
+        visitas = sheets_listar_todas_visitas()
+    except Exception as e:
+        visitas = []
+        _log_sheets_erro("admin_pdf_visitas_operadores/listar", e)
+
+    try:
+        clientes_todos = sheets_listar_clientes_completo()
+        clientes_empresa = filtrar_clientes_por_empresa(clientes_todos, empresa_codigo)
+    except Exception:
+        clientes_empresa = []
+
+    visitas_empresa = []
+    for v in visitas or []:
+        lanc = _admin_montar_lancamento_pdf_visita(v)
+        if _admin_visita_pertence_empresa(lanc, clientes_empresa):
+            visitas_empresa.append(lanc)
+
+    def _dt_ord(v):
+        try:
+            return datetime.strptime(normalizar_data_visita(v.get("data", "")), "%d/%m/%Y")
+        except Exception:
+            return datetime.min
+
+    visitas_empresa = sorted(visitas_empresa, key=_dt_ord, reverse=True)
+
+    if not visitas_empresa:
+        st.info("Nenhuma visita de operador encontrada para esta empresa.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    operadores = sorted({str(v.get("operador", "") or "Não informado").strip() for v in visitas_empresa})
+    condominios = _condominios_organizar([str(v.get("condominio", "") or "").strip() for v in visitas_empresa])
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtro_cond = st.selectbox(
+            "Filtrar por condomínio",
+            ["Todos"] + condominios,
+            key=f"{key_prefix}_filtro_cond",
+        )
+    with col_f2:
+        filtro_op = st.selectbox(
+            "Filtrar por operador",
+            ["Todos"] + operadores,
+            key=f"{key_prefix}_filtro_op",
+        )
+
+    visitas_filtradas = []
+    for v in visitas_empresa:
+        cond_ok = filtro_cond == "Todos" or nomes_condominio_equivalentes(v.get("condominio", ""), filtro_cond)
+        op_ok = filtro_op == "Todos" or str(v.get("operador", "") or "Não informado").strip() == filtro_op
+        if cond_ok and op_ok:
+            visitas_filtradas.append(v)
+
+    if not visitas_filtradas:
+        st.warning("Nenhuma visita encontrada com os filtros selecionados.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    opcoes = []
+    mapa = {}
+    for i, v in enumerate(visitas_filtradas):
+        data = normalizar_data_visita(v.get("data", "")) or "sem data"
+        cond = str(v.get("condominio", "") or "sem condomínio").strip()
+        operador = str(v.get("operador", "") or "Não informado").strip()
+        id_visita = str(v.get("id_visita", "") or f"visita_{i+1}").strip()
+        rotulo = f"{data} | {cond} | {operador} | {id_visita}"
+        opcoes.append(rotulo)
+        mapa[rotulo] = v
+
+    escolha = st.selectbox(
+        "Selecione a visita para baixar",
+        opcoes,
+        key=f"{key_prefix}_select_visita",
+    )
+
+    col_g1, col_g2 = st.columns([1, 1])
+    with col_g1:
+        gerar = st.button(
+            "Gerar PDF da visita",
+            type="primary",
+            use_container_width=True,
+            key=f"{key_prefix}_btn_gerar",
+        )
+    with col_g2:
+        st.caption(f"{len(visitas_filtradas)} visita(s) encontrada(s) para {empresa_nome}.")
+
+    if gerar and escolha:
+        lanc = mapa.get(escolha, {})
+        try:
+            pdf_bytes = _admin_gerar_pdf_visita_por_empresa(lanc, empresa_codigo)
+            st.session_state[f"{key_prefix}_pdf_bytes"] = pdf_bytes
+            st.session_state[f"{key_prefix}_pdf_nome"] = _admin_nome_arquivo_pdf_visita(lanc, empresa_codigo)
+            st.session_state[f"{key_prefix}_pdf_escolha"] = escolha
+            st.success("PDF gerado. Use o botão abaixo para baixar.")
+        except Exception as e:
+            st.session_state.pop(f"{key_prefix}_pdf_bytes", None)
+            st.error(f"Não foi possível gerar o PDF da visita: {e}")
+            with st.expander("Diagnóstico da visita selecionada", expanded=False):
+                st.json({k: str(v)[:500] for k, v in (lanc or {}).items() if k != "_payload"})
+
+    pdf_bytes = st.session_state.get(f"{key_prefix}_pdf_bytes")
+    pdf_nome = st.session_state.get(f"{key_prefix}_pdf_nome")
+    pdf_escolha = st.session_state.get(f"{key_prefix}_pdf_escolha")
+    if pdf_bytes and pdf_nome and pdf_escolha == escolha:
+        st.download_button(
+            "⬇️ Baixar PDF da visita",
+            data=pdf_bytes,
+            file_name=pdf_nome,
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"{key_prefix}_download",
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+exibir_admin_download_pdf_visitas_operadores()
 
 if modo == "Modo Campo":
     st.info("Fluxo compacto habilitado para operação em campo no Windows / tablet Windows.")
