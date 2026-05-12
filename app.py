@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -34,7 +33,6 @@ SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
 DRIVE_FOTOS_FOLDER_ID = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
 
 
-@st.cache_resource(ttl=3600, show_spinner=False)
 def conectar_drive():
     """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
     try:
@@ -426,110 +424,7 @@ def sheets_deletar_operador(nome: str) -> bool:
 
 def verificar_pin_operador(pin_digitado: str) -> dict | None:
     """Verifica PIN e retorna dados do operador, ou None se inválido."""
-
-def gerar_hash_documento(pdf_bytes: bytes) -> str:
-    """Gera hash SHA-256 dos bytes do PDF. Usado como ID de integridade do documento."""
-    import hashlib
-    return hashlib.sha256(pdf_bytes).hexdigest()
-
-
-def _id_documento(hash_hex: str) -> str:
-    """Formata ID curto legível para rodapé do PDF (primeiros 16 chars do hash)."""
-    return hash_hex[:16].upper()
-
-
-def registrar_hash_documento_sheets(id_visita: str, tipo_doc: str, hash_hex: str, nome_cond: str) -> bool:
-    """Grava hash do documento na aba _Auditoria do Sheets para rastreabilidade.
-    
-    Colunas: ID_Visita | Tipo | Hash_SHA256 | ID_Curto | Condomínio | Gerado_em
-    """
-    try:
-        sh = conectar_sheets()
-        if sh is None:
-            return False
-        try:
-            aba = obter_aba_sheets("_Auditoria")
-        except Exception:
-            aba = sh.add_worksheet(title="_Auditoria", rows=2000, cols=6)
-            aba.update(
-                range_name="A1:F1",
-                values=[["ID_Visita", "Tipo_Doc", "Hash_SHA256", "ID_Curto", "Condomínio", "Gerado_em"]],
-                value_input_option="RAW"
-            )
-        todos = aba.get_all_values()
-        proxima = max(len(todos) + 1, 2)
-        nova = [
-            str(id_visita or ""),
-            str(tipo_doc or ""),
-            hash_hex,
-            _id_documento(hash_hex),
-            str(nome_cond or ""),
-            _agora_brasilia(),
-        ]
-        aba.update(
-            range_name=f"A{proxima}:F{proxima}",
-            values=[nova],
-            value_input_option="RAW"
-        )
-        return True
-    except Exception as e:
-        _log_sheets_erro("registrar_hash_documento_sheets", e)
-        return False
-
-
     return validar_pin_operador(pin_digitado)
-
-
-def gerar_numero_sequencial_relatorio(tipo: str = "V", nome_cond: str = "") -> str:
-    """Gera número sequencial do relatório no formato R{ANO}-{SEQ:04d}.
-
-    Tipos:
-      V = Relatório de Visita (campo)
-      M = Relatório Mensal RT
-    Exemplos: R2026-0001, R2026-0042
-    Registra na aba _Auditoria do Sheets para rastreabilidade.
-    Fallback local: usa timestamp se Sheets indisponível.
-    """
-    try:
-        from datetime import datetime as _dt
-        _ano = _dt.now().strftime("%Y")
-        sh = conectar_sheets()
-        if sh is None:
-            raise Exception("Sheets indisponível")
-        try:
-            aba = obter_aba_sheets("_Auditoria")
-        except Exception:
-            aba = sh.add_worksheet(title="_Auditoria", rows=2000, cols=8)
-            aba.update(
-                range_name="A1:H1",
-                values=[["Num_Relatorio", "Tipo_Doc", "ID_Visita", "Hash_SHA256",
-                         "ID_Curto", "Condomínio", "Gerado_em", "Ano"]],
-                value_input_option="RAW"
-            )
-        todos = aba.get_all_values()
-        # Conta relatórios do mesmo ano
-        nums_ano = []
-        for row in todos[1:]:
-            if len(row) >= 8 and str(row[7]).strip() == _ano:
-                try:
-                    nums_ano.append(int(str(row[0]).split("-")[-1]))
-                except Exception:
-                    pass
-        proximo = (max(nums_ano) + 1) if nums_ano else 1
-        num_rel = f"R{_ano}-{proximo:04d}"
-        # Grava pré-registro na _Auditoria
-        proxima_linha = max(len(todos) + 1, 2)
-        nova = [num_rel, tipo, "", "", "", str(nome_cond or ""), _agora_brasilia(), _ano]
-        aba.update(
-            range_name=f"A{proxima_linha}:H{proxima_linha}",
-            values=[nova],
-            value_input_option="RAW"
-        )
-        return num_rel
-    except Exception:
-        # Fallback: número baseado em timestamp
-        from datetime import datetime as _dt2
-        return "R" + _dt2.now().strftime("%Y%m%d%H%M%S")
 
 def _log_sheets_erro(contexto: str, erro: Exception):
     """Armazena o último erro do Google Sheets no session_state para diagnóstico."""
@@ -5532,33 +5427,6 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
         doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
-        # ── Hash SHA-256 + Nº Relatório no rodapé ─────────────────────────
-        try:
-            if pdf_path.exists():
-                _rt_bytes = pdf_path.read_bytes()
-                _hash_rt  = gerar_hash_documento(_rt_bytes)
-                _id_rt    = _id_documento(_hash_rt)
-                _num_rt   = gerar_numero_sequencial_relatorio("M", str(pdf_path.stem))
-                from reportlab.platypus import SimpleDocTemplate as _SDTRT, Paragraph as _PRT, Spacer as _SpRT
-                from reportlab.lib.styles import ParagraphStyle as _PSRT
-                from reportlab.lib.pagesizes import A4 as _A4RT
-                from reportlab.lib import colors as _cRT
-                import io as _ioRT
-                _buf_rt = _ioRT.BytesIO()
-                _doc_rt = _SDTRT(_buf_rt, pagesize=_A4RT,
-                    leftMargin=doc.leftMargin, rightMargin=doc.rightMargin,
-                    topMargin=doc.topMargin, bottomMargin=doc.bottomMargin)
-                story.append(_SpRT(1, 4))
-                story.append(_PRT(
-                    f"Nº do Relatório: <b>{_num_rt}</b> · ID de integridade: <b>{_id_rt}</b> · SHA-256 · Aqua Gestão",
-                    _PSRT("rod_rt", fontSize=6, textColor=_cRT.HexColor("#aaaaaa"),
-                          fontName="Helvetica", alignment=1, leading=8)
-                ))
-                _doc_rt.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
-                _buf_rt.seek(0)
-                pdf_path.write_bytes(_buf_rt.read())
-        except Exception:
-            pass  # fallback: mantém PDF original sem hash
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
     except Exception as e:
         _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab", e)
@@ -7332,30 +7200,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     doc = SimpleDocTemplate(buf, pagesize=A4,
         leftMargin=M, rightMargin=M, topMargin=15*mm, bottomMargin=13*mm)
     doc.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
-    _bs_bytes = buf.getvalue()
-    # ── Hash SHA-256 + Nº Relatório no rodapé ─────────────────────────────
-    try:
-        import io as _io_bs
-        from reportlab.platypus import SimpleDocTemplate as _SDT, Paragraph as _P, Spacer as _Sp
-        from reportlab.lib.styles import ParagraphStyle as _PS
-        from reportlab.lib.pagesizes import A4 as _A4
-        _hash_bs  = gerar_hash_documento(_bs_bytes)
-        _id_bs    = _id_documento(_hash_bs)
-        _num_bs   = gerar_numero_sequencial_relatorio("V", nome_condominio)
-        _buf2 = _io_bs.BytesIO()
-        _doc2 = _SDT(_buf2, pagesize=_A4,
-            leftMargin=M, rightMargin=M, topMargin=15*mm, bottomMargin=13*mm)
-        story.append(_Sp(1, 4))
-        story.append(_P(
-            f"Nº do Relatório: <b>{_num_bs}</b> · ID de integridade: <b>{_id_bs}</b> · SHA-256 · Bem Star / Aqua Gestão",
-            _PS("rod_bs", fontSize=6, textColor=__import__("reportlab.lib.colors", fromlist=["HexColor"]).HexColor("#aaaaaa"),
-                fontName="Helvetica", alignment=1, leading=8)
-        ))
-        _doc2.build(story, onFirstPage=capa_fn, onLaterPages=hf_fn)
-        _buf2.seek(0)
-        return _buf2.read()
-    except Exception:
-        return _bs_bytes
+    return buf.getvalue()
 
 def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF do relatório de visita usando ReportLab. Retorna bytes do PDF."""
@@ -7700,53 +7545,15 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         except Exception:
             pass
 
-    # ── ASSINATURA DIGITAL DO RT ──────────────────────────────────────────────
+    # ── ASSINATURA RT ─────────────────────────────────────────────────────────
     elems.append(HRFlowable(width="100%", thickness=0.5, color=BORDA, spaceAfter=8))
-
-    _ass_rt_path = preparar_assinatura_rt_para_relatorio()
-    _ass_rt_col  = Paragraph("_______________<br/><font size=7 color='#8a9ab0'>Assinatura digital do RT</font>", s_center)
-
-    if _ass_rt_path and _ass_rt_path.exists():
-        try:
-            import io as _io_ass
-            from reportlab.platypus import Image as _RLImg
-            from PIL import Image as _PILAss
-            _ass_img = _PILAss.open(str(_ass_rt_path)).convert("RGB")
-            _aw, _ah = _ass_img.size
-            _max_aw, _max_ah = 3.2 * cm, 1.1 * cm
-            _aratio = (_aw / _ah) if _ah else 3.0
-            _final_aw = min(_max_aw, _max_ah * _aratio)
-            _final_ah = _final_aw / _aratio if _aratio else _max_ah
-            if _final_ah > _max_ah:
-                _final_ah = _max_ah
-                _final_aw = _final_ah * _aratio
-            _buf_a = _io_ass.BytesIO()
-            _ass_img.save(_buf_a, format="PNG", dpi=(300, 300))
-            _buf_a.seek(0)
-            _rl_ass_rt = _RLImg(_buf_a, width=_final_aw, height=_final_ah)
-            _ass_rt_col = Table(
-                [[_rl_ass_rt], [Paragraph("<font size=6 color='#aaaaaa'>Assinatura digital do RT</font>", s_center)]],
-                colWidths=["100%"]
-            )
-            _ass_rt_col.setStyle(TableStyle([
-                ("ALIGN",  (0,0), (-1,-1), "CENTER"),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-                ("PADDING",(0,0), (-1,-1), 1),
-            ]))
-        except Exception:
-            pass
-
-    t_ass = Table([[
-        Paragraph(
-            "<b>Thyago Fernando da Silveira</b><br/>"
-            "Técnico em Química · NR-26 · NR-6<br/>"
-            "<font size=7 color='#1e4d8c'>CRQ-MG 2ª Região · CRQ 024025748</font>",
-            s_body
-        ),
-        _ass_rt_col,
-    ]], colWidths=["65%", "35%"])
+    ass_data = [[
+        Paragraph("<b>Thyago Fernando da Silveira</b><br/>Técnico em Química · NR-26 · NR-6<br/><font size=7 color='#1e4d8c'>CRQ-MG 2ª Região · CRQ 024025748</font>", s_body),
+        Paragraph("<br/><br/>___________________________<br/><font size=7 color='#8a9ab0'>Assinatura / carimbo RT</font>", s_center),
+    ]]
+    t_ass = Table(ass_data, colWidths=["60%","40%"])
     t_ass.setStyle(TableStyle([
-        ("VALIGN",  (0,0), (-1,-1), "MIDDLE"),
+        ("VALIGN", (0,0), (-1,-1), "BOTTOM"),
         ("PADDING", (0,0), (-1,-1), 4),
     ]))
     elems.append(t_ass)
@@ -7754,38 +7561,29 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     elems.append(Spacer(1, 4))
     elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento de uso operacional", s_center))
 
-    doc.build(elems)
-    buffer.seek(0)
-    _pdf_bytes_raw = buffer.read()
-
-    # ── Número sequencial + Hash SHA-256 no rodapé do relatório ──────────────
-    try:
-        import io as _io_hash
-        _hash_hex  = gerar_hash_documento(_pdf_bytes_raw)
-        _id_doc    = _id_documento(_hash_hex)
-        _num_rel   = gerar_numero_sequencial_relatorio("V", nome_condominio)
-
-        buffer2 = _io_hash.BytesIO()
-        doc2 = SimpleDocTemplate(
-            buffer2, pagesize=A4,
-            leftMargin=1.8*cm, rightMargin=1.8*cm,
-            topMargin=1.5*cm, bottomMargin=1.5*cm,
+    # _PDF_VISITA_GUARD_V6_
+    # Proteção contra PDF "em branco": se a montagem do corpo falhar, não entrega
+    # um arquivo só com rodapé/selo como se fosse relatório válido.
+    if not elems or len(elems) < 8:
+        raise RuntimeError(
+            "PDF de visita abortado: conteúdo principal vazio. "
+            "Verifique os dados do lançamento, piscinas e montagem do relatório."
         )
-        elems.append(Spacer(1, 4))
-        elems.append(Paragraph(
-            f"<font size=6 color='#aaaaaa'>"
-            f"Nº do Relatório: {_num_rel} · "
-            f"ID de integridade: {_id_doc} · "
-            f"SHA-256 · Aqua Gestão · Não modifique este arquivo"
-            f"</font>",
-            estilo("rodape_num", fontSize=6, textColor=colors.HexColor("#aaaaaa"),
-                   fontName="Helvetica", alignment=1, leading=8)
-        ))
-        doc2.build(elems)
-        buffer2.seek(0)
-        return buffer2.read()
-    except Exception:
-        return _pdf_bytes_raw
+
+    try:
+        doc.build(elems)
+    except Exception as e:
+        raise RuntimeError(f"Falha ao montar o PDF de visita: {type(e).__name__}: {e}") from e
+
+    pdf_bytes = buffer.getvalue()
+    if len(pdf_bytes) < 5000:
+        raise RuntimeError(
+            f"PDF de visita gerado com tamanho inválido ({len(pdf_bytes)} bytes). "
+            "O relatório provavelmente sairia vazio, por isso o download foi bloqueado."
+        )
+
+    buffer.seek(0)
+    return pdf_bytes
 
 
 def gerar_relatorio_visita_docx(
@@ -9889,30 +9687,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _empresa_op_nome = "Aqua Gestão / Bem Star"
     _empresa_op_titulo = "📱 Modo Campo — condomínios vinculados ao PIN"
 
-    # ── Indicador Sheets online/offline ──────────────────────────────────────
-    @st.cache_data(ttl=60, show_spinner=False)
-    def _testar_conexao_sheets_op() -> bool:
-        """Testa conexão com Sheets. Cache de 60s para não bater a API a cada rerun."""
-        try:
-            sh = conectar_sheets()
-            return sh is not None
-        except Exception:
-            return False
-
-    _sheets_online = _testar_conexao_sheets_op()
-    _indicador_cor  = "#2e7d32" if _sheets_online else "#c62828"
-    _indicador_icon = "🟢" if _sheets_online else "🔴"
-    _indicador_txt  = "Sheets online — dados sincronizados" if _sheets_online else "Sheets offline — salvamento local ativo"
-
-    st.markdown(
-        f'<div style="display:inline-block;padding:3px 10px;border-radius:20px;'
-        f'background:{"#f1f8f1" if _sheets_online else "#fff5f5"};'
-        f'border:1px solid {"#c8e6c9" if _sheets_online else "#ffcdd2"};'
-        f'font-size:0.75rem;color:{_indicador_cor};margin-bottom:8px;">'
-        f'{_indicador_icon} {_indicador_txt}</div>',
-        unsafe_allow_html=True
-    )
-
     st.markdown('<div class="op-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="op-title">📱 {_empresa_op_titulo}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="op-sub">Operador identificado: <strong>{_op_nome_logado}</strong> • Empresa ativa: <strong>{_empresa_op_nome}</strong></div>', unsafe_allow_html=True)
@@ -9936,15 +9710,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             with st.spinner("Gerando PDF..."):
                 try:
                     pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
-                    st.download_button(
-                        "📄 Baixar PDF desta visita",
-                        data=pdf_bytes,
-                        file_name=f"{nome_arq}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key="btn_dl_relatorio_visita",
-                    )
-                    st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
+                    if not pdf_bytes or len(pdf_bytes) < 5000:
+                        st.error("PDF bloqueado: o arquivo ficou pequeno demais e poderia sair vazio.")
+                        with st.expander("Diagnóstico do lançamento usado no PDF", expanded=False):
+                            st.json({
+                                "condominio": _salvo.get("nome"),
+                                "data": _salvo.get("data"),
+                                "operador": (_ult_lanc or {}).get("operador", ""),
+                                "qtd_piscinas": len((_ult_lanc or {}).get("piscinas", []) or []),
+                                "chaves_payload": sorted(list((_ult_lanc or {}).keys()))[:80],
+                            })
+                    else:
+                        st.download_button(
+                            "📄 Baixar PDF desta visita",
+                            data=pdf_bytes,
+                            file_name=f"{nome_arq}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_relatorio_visita",
+                        )
+                        st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
                     # Botao PDF Bem Star Premium
                     if st.session_state.get("empresa_ativa") == "bem_star":
                         try:
@@ -10106,79 +9891,30 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 if _badges:
                     st.markdown(" ".join(_badges), unsafe_allow_html=True)
             
-            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) com tabela de parâmetros ---
+            # --- HISTÓRICO DE VISITAS (ÚLTIMAS 3) ---
             if op_nome_cond:
-                with st.expander("🕒 Últimas visitas — referência de parâmetros", expanded=True):
+                with st.expander("🕒 Histórico recente", expanded=False):
                     with st.spinner("Buscando histórico..."):
                         historico_v = sheets_listar_lancamentos(op_nome_cond)
                         if not historico_v:
-                            st.caption("Nenhuma visita anterior registrada para este condomínio.")
+                            st.caption("Nenhuma visita anterior registrada.")
                         else:
+                            # Ordena por data decrescente
                             try:
                                 historico_v = sorted(
-                                    historico_v,
-                                    key=lambda x: datetime.strptime(
-                                        normalizar_data_visita(x.get("data", "")), "%d/%m/%Y"
-                                    ) if normalizar_data_visita(x.get("data","")) else datetime.min,
+                                    historico_v, 
+                                    key=lambda x: datetime.strptime(x["data"], "%d/%m/%Y") if "/" in x["data"] else datetime.strptime(x["data"], "%Y-%m-%d"),
                                     reverse=True
                                 )
-                            except Exception:
+                            except:
                                 pass
-
-                            _ultimas = historico_v[:3]
-
-                            # Cabeçalho da tabela
-                            _cols = st.columns([2, 1, 1, 1, 1, 1, 1])
-                            for _col, _label in zip(_cols, ["📅 Data", "pH", "CRL", "Alc", "Dur", "CYA", "Parecer"]):
-                                _col.markdown(f"<span style='font-size:0.7rem;color:#8a9ab0;font-weight:600'>{_label}</span>", unsafe_allow_html=True)
-
-                            st.markdown("<hr style='margin:2px 0 6px 0;border-color:#e0e8f0'>", unsafe_allow_html=True)
-
-                            def _cor_param(val, minv, maxv):
-                                """Retorna cor baseada na faixa de conformidade."""
-                                try:
-                                    v = float(str(val).replace(",","."))
-                                    if minv <= v <= maxv:
-                                        return "#2e7d32"  # verde
-                                    return "#c62828"      # vermelho
-                                except Exception:
-                                    return "#8a9ab0"      # cinza
-
-                            for _v in _ultimas:
-                                _ph  = _v.get("ph", "–")
-                                _crl = _v.get("cloro_livre", "–")
-                                _alc = _v.get("alcalinidade", "–")
-                                _dur = _v.get("dureza", "–")
-                                _cya = _v.get("cianurico", "–")
-                                _par = _v.get("parecer_visita", _v.get("status", "–"))
-                                _par_icon = "✅" if "satisf" in str(_par).lower() else ("⚠️" if _par and _par != "–" else "–")
-
-                                _cols2 = st.columns([2, 1, 1, 1, 1, 1, 1])
-                                _cols2[0].markdown(f"<span style='font-size:0.75rem;color:#1a2a4a'><b>{_v.get('data','–')}</b></span>", unsafe_allow_html=True)
-
-                                for _col2, _val, _min, _max in [
-                                    (_cols2[1], _ph,  7.2, 7.8),
-                                    (_cols2[2], _crl, 0.5, 3.0),
-                                    (_cols2[3], _alc, 80,  120),
-                                    (_cols2[4], _dur, 150, 300),
-                                    (_cols2[5], _cya, 30,  50),
-                                ]:
-                                    _c = _cor_param(_val, _min, _max)
-                                    _col2.markdown(
-                                        f"<span style='font-size:0.75rem;color:{_c};font-weight:600'>{_val}</span>",
-                                        unsafe_allow_html=True
-                                    )
-                                _cols2[6].markdown(f"<span style='font-size:0.75rem'>{_par_icon}</span>", unsafe_allow_html=True)
-
-                                if _v.get("problemas"):
-                                    st.caption(f"⚠️ {_v['problemas']}")
-
-                            st.markdown(
-                                "<span style='font-size:0.65rem;color:#aaaaaa'>"
-                                "🟢 dentro da faixa · 🔴 fora da faixa · Faixas: pH 7,2–7,8 | CRL 0,5–3,0 | Alc 80–120 | Dur 150–300 | CYA 30–50"
-                                "</span>",
-                                unsafe_allow_html=True
-                            )
+                            
+                            for v in historico_v[:3]:
+                                st.markdown(f"**Data: {v['data']}** | Op: {v.get('operador','–')}")
+                                st.markdown(f"pH: `{v.get('ph','–')}` | CRL: `{v.get('cloro_livre','–')}` | Alc: `{v.get('alcalinidade','–')}`")
+                                if v.get('problemas'):
+                                    st.caption(f"⚠️ {v['problemas']}")
+                                st.markdown("---")
         else:
             st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
             op_nome_cond = ""
@@ -10203,56 +9939,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         key="op_data_visita", placeholder="06/04/2026", on_change=_fmt_data_op)
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── Barra de progresso por etapas ────────────────────────────────────────
-    def _barra_progresso_op():
-        """Calcula etapa atual e renderiza barra HTML inline sem dependências."""
-        _cond_ok  = bool(st.session_state.get("op_nome_livre") or st.session_state.get("op_sel_cond"))
-        _data_ok  = len(str(st.session_state.get("op_data_visita","")).strip()) >= 8
-        # Verifica se há ao menos um parâmetro preenchido em qualquer piscina
-        _params_keys = [f"op_{p}_{k}" for p in ["adulto","infantil","family","outra"] for k in ["ph","crl","ct"]]
-        _params_ok = any(str(st.session_state.get(k,"")).strip() for k in _params_keys)
-        # Verifica se há fotos
-        _fotos_ok  = bool(
-            st.session_state.get("op_fotos_antes") or
-            st.session_state.get("op_fotos_depois") or
-            st.session_state.get("op_fotos_cmaq")
-        )
-
-        _etapas = [
-            ("1 Local",       _cond_ok),
-            ("2 Parâmetros",  _params_ok),
-            ("3 Fotos",       _fotos_ok),
-            ("4 Salvar",      False),
-        ]
-        _total = len(_etapas)
-        _concluidas = sum(1 for _, ok in _etapas if ok)
-
-        _html_etapas = ""
-        for _label, _ok in _etapas:
-            _bg   = "#1e4d8c" if _ok else "#e8f0fb"
-            _cor  = "#ffffff" if _ok else "#8a9ab0"
-            _icone = "✅ " if _ok else ""
-            _html_etapas += (
-                f'<div style="flex:1;text-align:center;padding:5px 2px;border-radius:8px;'
-                f'background:{_bg};color:{_cor};font-size:0.7rem;font-weight:600;margin:0 2px;">'
-                f'{_icone}{_label}</div>'
-            )
-
-        _progresso = int((_concluidas / _total) * 100)
-        st.markdown(
-            f'<div style="margin:8px 0 4px 0;">'
-            f'<div style="display:flex;gap:4px;margin-bottom:4px;">{_html_etapas}</div>'
-            f'<div style="background:#e8f0fb;border-radius:10px;height:5px;">'
-            f'<div style="background:#1e4d8c;width:{_progresso}%;height:5px;border-radius:10px;'
-            f'transition:width 0.3s ease;"></div></div>'
-            f'<div style="text-align:right;font-size:0.65rem;color:#8a9ab0;margin-top:2px;">'
-            f'{_concluidas}/{_total} etapas</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    _barra_progresso_op()
 
     if op_nome_cond:
 
@@ -11331,71 +11017,6 @@ with b3:
     st.metric("Resultado da busca", len(painel_filtrado))
 
 st.markdown("</div>", unsafe_allow_html=True)
-
-# =========================================
-# ASSINATURA DIGITAL DO RT
-# =========================================
-
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("✍️ Assinatura Digital do Responsável Técnico")
-st.caption("Desenhe ou recarregue a assinatura do RT. Ela será salva como imagem e inserida automaticamente em todos os PDFs gerados pelo sistema.")
-
-_ass_rt_existente = encontrar_assinatura_rt()
-if _ass_rt_existente:
-    st.success(f"✅ Assinatura atual encontrada: `{_ass_rt_existente.name}`")
-    try:
-        from PIL import Image as _PILshow
-        _img_show = _PILshow.open(str(_ass_rt_existente))
-        st.image(_img_show, caption="Assinatura atual do RT", width=320)
-    except Exception:
-        pass
-else:
-    st.warning("⚠️ Nenhuma assinatura do RT encontrada. Desenhe abaixo para cadastrar.")
-
-st.markdown("**Desenhe a assinatura abaixo:**")
-if st_canvas is not None:
-    _canvas_ass_rt = st_canvas(
-        fill_color="rgba(0,0,0,0)",
-        stroke_width=2,
-        stroke_color="#1a2a4a",
-        background_color="#ffffff",
-        height=120,
-        width=480,
-        drawing_mode="freedraw",
-        key="canvas_ass_rt_admin",
-    )
-    if st.button("💾 Salvar assinatura do RT", key="btn_salvar_ass_rt"):
-        if _canvas_ass_rt is not None and _canvas_ass_rt.image_data is not None:
-            import numpy as _np
-            from PIL import Image as _PILsave
-            import io as _io_ass_save
-            _img_arr = _canvas_ass_rt.image_data.astype("uint8")
-            _pil_img = _PILsave.fromarray(_img_arr, "RGBA")
-            # Fundo branco
-            _fundo = _PILsave.new("RGB", _pil_img.size, (255, 255, 255))
-            _fundo.paste(_pil_img, mask=_pil_img.split()[3])
-            _dest = BASE_DIR / "assinatura_rt.png"
-            _fundo.save(str(_dest), format="PNG")
-            st.success(
-                "✅ Assinatura salva como `assinatura_rt.png` na raiz do repositório. "
-                "Faça commit deste arquivo para que apareça em todos os PDFs após o próximo deploy."
-            )
-            st.code("git add assinatura_rt.png && git commit -m 'feat: assinatura digital RT cadastrada' && git push origin main")
-            st.cache_data.clear()
-            st.cache_resource.clear()
-        else:
-            st.warning("Desenhe a assinatura antes de salvar.")
-else:
-    st.info("O componente de desenho (`streamlit-drawable-canvas`) não está disponível neste ambiente. Faça upload manual do arquivo `assinatura_rt.png` na raiz do repositório.")
-    _upload_ass = st.file_uploader("📎 Upload da assinatura RT (PNG ou JPG)", type=["png","jpg","jpeg"], key="upload_ass_rt")
-    if _upload_ass and st.button("💾 Salvar arquivo enviado", key="btn_salvar_upload_ass_rt"):
-        _dest_up = BASE_DIR / "assinatura_rt.png"
-        _dest_up.write_bytes(_upload_ass.read())
-        st.success("✅ Assinatura salva. Faça commit para ativar nos PDFs.")
-        st.code("git add assinatura_rt.png && git commit -m 'feat: assinatura digital RT cadastrada' && git push origin main")
-
-st.markdown('</div>', unsafe_allow_html=True)
-st.markdown("---")
 
 # =========================================
 # GESTÃO DE OPERADORES
@@ -13160,93 +12781,6 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     st.error(f"Erro ao gerar proposta: {_e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-    # v6: definição antecipada do gerador Bem Star para evitar NameError no clique do contrato — BUG-BS-DOCX-NAMEERROR
-    def gerar_contrato_bem_star_docx(
-        nome_contratante: str,
-        cpf_cnpj: str,
-        endereco_contratante: str,
-        valor_mensal: str,
-        valor_extenso: str,
-        dia_pagamento: str,
-        forma_pagamento: str,
-        prazo_contrato: str,
-        data_inicio: str,
-        data_fim: str,
-        local_data_assinatura: str,
-        piscinas_atendidas: str = "",
-        produtos_incluidos: str = "",
-    ) -> Path | None:
-        """Gera contrato Bem Star usando template_bem_star.docx.
-        Retorna o Path do arquivo gerado, ou None se o template estiver ausente."""
-        if not TEMPLATE_BEM_STAR.exists():
-            st.warning(
-                "Template do contrato Bem Star não encontrado. "
-                "Certifique-se de que `template_bem_star.docx` está na pasta do projeto."
-            )
-            return None
-
-        placeholders = {
-            "{{CNPJ_CONTRATADA}}": CNPJ_BEM_STAR,
-            "{{ENDERECO_CONTRATADA}}": ENDERECO_BEM_STAR,
-            "{{NOME_CONTRATANTE}}": nome_contratante,
-            "{{CPF_CNPJ_CONTRATANTE}}": cpf_cnpj,
-            "{{ENDERECO_CONTRATANTE}}": endereco_contratante,
-            "{{VALOR_MENSAL}}": valor_mensal,
-            "{{VALOR_MENSAL_EXTENSO}}": valor_extenso,
-            "{{DIA_PAGAMENTO}}": dia_pagamento,
-            "{{FORMA_PAGAMENTO}}": forma_pagamento,
-            "{{PRAZO_CONTRATO}}": prazo_contrato,
-            "{{DATA_INICIO_CONTRATO}}": data_inicio,
-            "{{DATA_FIM_CONTRATO}}": data_fim,
-            "{{LOCAL_DATA_ASSINATURA}}": local_data_assinatura,
-            "{{PISCINAS_ATENDIDAS}}": piscinas_atendidas or "Conforme acordado entre as partes",
-            "{{PRODUTOS_INCLUIDOS}}": produtos_incluidos or "Conforme proposta comercial",
-        }
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        nome_pasta = slugify_nome(nome_contratante)
-        pasta = GENERATED_DIR / nome_pasta
-        pasta.mkdir(parents=True, exist_ok=True)
-        base_nome = limpar_nome_arquivo(f"Contrato_Limpeza_{nome_contratante}_{timestamp}")
-        output_docx = pasta / f"{base_nome}.docx"
-        output_pdf  = pasta / f"{base_nome}.pdf"
-
-        gerar_documento(
-            template_path=TEMPLATE_BEM_STAR,
-            output_docx=output_docx,
-            placeholders=placeholders,
-            incluir_assinaturas=False,
-        )
-
-        ok_pdf, erro_pdf = converter_docx_para_pdf(output_docx, output_pdf)
-
-        st.success("✅ Contrato Bem Star gerado com sucesso!")
-        col1, col2 = st.columns(2)
-        with col1:
-            if output_docx.exists():
-                with open(output_docx, "rb") as f:
-                    st.download_button(
-                        "⬇️ Baixar DOCX",
-                        data=f,
-                        file_name=output_docx.name,
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True,
-                    )
-        with col2:
-            if ok_pdf and output_pdf.exists():
-                with open(output_pdf, "rb") as f:
-                    st.download_button(
-                        "⬇️ Baixar PDF",
-                        data=f,
-                        file_name=output_pdf.name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-            elif erro_pdf:
-                st.warning(f"PDF não gerado: {erro_pdf}")
-
-        return output_docx
 
     # =========================================
     # CONTRATO BEM STAR PISCINAS
