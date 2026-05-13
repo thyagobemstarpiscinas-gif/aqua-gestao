@@ -13084,10 +13084,44 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 placeholder="(34) 99999-9999")
     
         st.markdown("**Descrição da(s) piscina(s) atendida(s)**")
-        bs_piscinas = st.text_area("Piscinas atendidas", key="bs_cont_piscinas",
-            height=60,
-            placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas")
-    
+        bs_piscinas = st.text_area(
+            "Piscinas principais / descrição base",
+            key="bs_cont_piscinas",
+            height=70,
+            placeholder="Ex.: Piscina adulto (150 m³), piscina infantil (30 m³), descobertas",
+            help="Campo principal que será usado no contrato. Use os campos abaixo para acrescentar mais piscinas sem apagar a descrição base.",
+        )
+
+        st.caption("➕ Use os campos abaixo quando o contrato tiver mais piscinas além da descrição principal.")
+        bs_qtd_piscinas_extra = st.number_input(
+            "Quantidade de piscinas adicionais",
+            min_value=0,
+            max_value=10,
+            step=1,
+            key="bs_cont_qtd_piscinas_extra",
+            help="Abre campos extras para incluir outras piscinas no mesmo contrato.",
+        )
+
+        _piscinas_extras_bs = []
+        if bs_qtd_piscinas_extra:
+            for _idx_piscina_extra in range(1, int(bs_qtd_piscinas_extra) + 1):
+                _valor_extra_piscina = st.text_input(
+                    f"Piscina adicional {_idx_piscina_extra}",
+                    key=f"bs_cont_piscina_extra_{_idx_piscina_extra}",
+                    placeholder="Ex.: SPA 15 m³, piscina aquecida 60 m³, hidro, prainha...",
+                )
+                _valor_extra_piscina = str(_valor_extra_piscina or "").strip()
+                if _valor_extra_piscina:
+                    _piscinas_extras_bs.append(_valor_extra_piscina)
+
+        _piscinas_base_bs = str(st.session_state.get("bs_cont_piscinas", "") or "").strip()
+        _piscinas_contrato_partes_bs = [_piscinas_base_bs] if _piscinas_base_bs else []
+        _piscinas_contrato_partes_bs.extend(_piscinas_extras_bs)
+        _piscinas_contrato_bs = "; ".join(_piscinas_contrato_partes_bs).strip()
+
+        if _piscinas_contrato_bs:
+            st.caption(f"Prévia no contrato: {_piscinas_contrato_bs}")
+
         st.markdown("**Condições do serviço**")
         _bs_c1, _bs_c2, _bs_c3 = st.columns(3)
         with _bs_c1:
@@ -13174,7 +13208,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         data_inicio         = (st.session_state.get("bs_cont_data_inicio","")).strip() or hoje_br(),
                         data_fim            = _fim_bs,
                         local_data_assinatura = f"{(st.session_state.get('bs_cont_local','Uberlândia/MG')).strip()}, {(st.session_state.get('bs_cont_data_ass','')).strip() or hoje_br()}",
-                        piscinas_atendidas  = (st.session_state.get("bs_cont_piscinas","")).strip(),
+                        piscinas_atendidas  = _piscinas_contrato_bs,
                         produtos_incluidos  = ("Produtos incluídos no valor mensal" if _prods_inc_bs
                                               else "Produtos não incluídos no valor mensal"),
                     )
@@ -13194,7 +13228,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         _end      = (st.session_state.get("bs_cont_endereco","")).strip()
                         _contato  = (st.session_state.get("bs_cont_contato","")).strip()
                         _tel      = (st.session_state.get("bs_cont_telefone","")).strip()
-                        _piscinas = (st.session_state.get("bs_cont_piscinas","")).strip()
+                        _piscinas = _piscinas_contrato_bs or (st.session_state.get("bs_cont_piscinas","")).strip()
                         _freq     = st.session_state.get("bs_cont_freq_outro","").strip() or                             st.session_state.get("bs_cont_frequencia","")
                         _prods_inc = "incluídos" in st.session_state.get("bs_cont_produtos","").lower()
                         _prazo    = "indeterminado" if "indeterminado" in _duracao else "12"
@@ -13490,6 +13524,438 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     
     # Encerra aqui para impedir que módulos Aqua Gestão apareçam no painel Bem Star.
     st.stop()
+
+
+# =========================================
+# CONTRATO AQUA GESTÃO — LIMPEZA E MANUTENÇÃO SEM RT
+# =========================================
+
+st.markdown('<div class="section-card aq-only" id="sec-contrato-limpeza-aqua">', unsafe_allow_html=True)
+st.subheader("📄 Contrato Aqua Gestão — Limpeza e Manutenção de Piscinas sem RT")
+st.caption("Gera contrato operacional de limpeza/manutenção, separado do contrato de Responsabilidade Técnica.")
+
+with st.expander("📋 Preencher e gerar contrato de limpeza/manutenção sem RT", expanded=False):
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _clientes_aqua_contrato_limpeza():
+        _todos = sheets_listar_clientes_completo() or []
+        return filtrar_clientes_por_empresa(_todos, "aqua_gestao")
+
+    _aq_lm_col_atualizar, _aq_lm_col_info = st.columns([1, 3])
+    with _aq_lm_col_atualizar:
+        if st.button("🔄 Atualizar clientes", key="btn_atualizar_clientes_aq_lm_contrato"):
+            _clientes_aqua_contrato_limpeza.clear()
+            st.session_state.pop("_aq_lm_clientes_ultimo_ok", None)
+            st.rerun()
+
+    _aq_lm_clientes = _clientes_aqua_contrato_limpeza() or []
+    if _aq_lm_clientes:
+        st.session_state["_aq_lm_clientes_ultimo_ok"] = _aq_lm_clientes
+    else:
+        _aq_lm_clientes = st.session_state.get("_aq_lm_clientes_ultimo_ok", [])
+
+    _aq_lm_nomes = ["— selecione ou preencha manualmente —"] + [
+        c.get("nome", "") for c in _aq_lm_clientes if c.get("nome")
+    ]
+
+    _aq_lm_sel = st.selectbox(
+        "🔗 Carregar cliente cadastrado",
+        _aq_lm_nomes,
+        key="aq_lm_sel_cliente",
+    )
+
+    if st.button("📂 Carregar dados do cliente", key="btn_aq_lm_carregar_cliente"):
+        _aq_lm_dado = next((c for c in _aq_lm_clientes if c.get("nome") == _aq_lm_sel), {})
+        if _aq_lm_dado:
+            st.session_state["aq_lm_nome"] = _aq_lm_dado.get("nome", "")
+            st.session_state["aq_lm_cnpj"] = formatar_cnpj(_aq_lm_dado.get("cnpj", ""))
+            st.session_state["aq_lm_endereco"] = _aq_lm_dado.get("endereco", "")
+            st.session_state["aq_lm_contato"] = _aq_lm_dado.get("contato", "")
+            st.session_state["aq_lm_telefone"] = formatar_telefone(_aq_lm_dado.get("telefone", ""))
+            _aq_lm_piscinas_auto = []
+            for _nome_p, _vol_p in [
+                ("Piscina adulto/principal", _aq_lm_dado.get("vol_adulto", 0)),
+                ("Piscina infantil", _aq_lm_dado.get("vol_infantil", 0)),
+                ("Piscina family/SPA", _aq_lm_dado.get("vol_family", 0)),
+            ]:
+                try:
+                    _vol_float = float(_vol_p or 0)
+                except Exception:
+                    _vol_float = 0
+                if _vol_float > 0:
+                    _aq_lm_piscinas_auto.append(f"{_nome_p} ({_vol_float:g} m³)")
+            if _aq_lm_piscinas_auto:
+                st.session_state["aq_lm_piscinas"] = "; ".join(_aq_lm_piscinas_auto)
+            st.success("✅ Dados carregados. Revise antes de gerar o contrato.")
+            st.rerun()
+        else:
+            st.warning("Selecione um cliente cadastrado ou preencha manualmente.")
+
+    st.markdown("**Contratante**")
+    _aq_lm_c1, _aq_lm_c2 = st.columns(2)
+    with _aq_lm_c1:
+        st.text_input("Nome do contratante / condomínio *", key="aq_lm_nome")
+        st.text_input("CPF/CNPJ", key="aq_lm_cnpj", placeholder="00.000.000/0000-00")
+        st.text_input("Contato / responsável", key="aq_lm_contato")
+    with _aq_lm_c2:
+        st.text_input("Endereço", key="aq_lm_endereco")
+        st.text_input("Telefone / WhatsApp", key="aq_lm_telefone")
+        st.text_input("E-mail", key="aq_lm_email")
+
+    st.markdown("**🏊 Piscinas atendidas**")
+    st.text_area(
+        "Piscina(s) principal(is)",
+        key="aq_lm_piscinas",
+        height=80,
+        placeholder="Ex.: Piscina adulto (150 m³); Piscina infantil (30 m³)",
+        help="Campo principal usado no contrato. Use os campos abaixo para acrescentar mais piscinas.",
+    )
+
+    st.caption("➕ Adicione quantas piscinas extras forem necessárias.")
+    _aq_lm_qtd_extra = st.number_input(
+        "Quantidade de piscinas adicionais",
+        min_value=0,
+        max_value=20,
+        value=int(st.session_state.get("aq_lm_qtd_extra", 0) or 0),
+        step=1,
+        key="aq_lm_qtd_extra",
+    )
+
+    _aq_lm_piscinas_extras = []
+    if _aq_lm_qtd_extra:
+        for _idx_extra in range(1, int(_aq_lm_qtd_extra) + 1):
+            _valor_extra = st.text_input(
+                f"Piscina adicional {_idx_extra}",
+                key=f"aq_lm_piscina_extra_{_idx_extra}",
+                placeholder="Ex.: Piscina aquecida 60 m³",
+            )
+            if str(_valor_extra or "").strip():
+                _aq_lm_piscinas_extras.append(str(_valor_extra).strip())
+
+    _aq_lm_base_piscinas = str(st.session_state.get("aq_lm_piscinas", "") or "").strip()
+    _aq_lm_partes_piscinas = [_aq_lm_base_piscinas] if _aq_lm_base_piscinas else []
+    _aq_lm_partes_piscinas.extend(_aq_lm_piscinas_extras)
+    _aq_lm_piscinas_contrato = "; ".join(_aq_lm_partes_piscinas).strip()
+
+    if _aq_lm_piscinas_contrato:
+        st.caption(f"Prévia no contrato: {_aq_lm_piscinas_contrato}")
+
+    st.markdown("**Condições do serviço**")
+    _aq_lm_s1, _aq_lm_s2, _aq_lm_s3 = st.columns(3)
+    with _aq_lm_s1:
+        _aq_lm_freq = st.selectbox(
+            "Frequência",
+            ["1x por semana", "2x por semana", "3x por semana", "Diária", "Outra"],
+            key="aq_lm_frequencia",
+        )
+        if _aq_lm_freq == "Outra":
+            st.text_input("Descreva a frequência", key="aq_lm_freq_outro")
+    with _aq_lm_s2:
+        st.selectbox(
+            "Produtos químicos",
+            ["Produtos não incluídos no valor mensal", "Produtos incluídos no valor mensal"],
+            key="aq_lm_produtos",
+        )
+    with _aq_lm_s3:
+        st.text_input("Valor mensal (R$) *", key="aq_lm_valor", placeholder="Ex.: 1.200,00")
+
+    _aq_lm_p1, _aq_lm_p2, _aq_lm_p3 = st.columns(3)
+    with _aq_lm_p1:
+        st.text_input("Valor por extenso", key="aq_lm_valor_extenso", placeholder="Ex.: mil e duzentos reais")
+    with _aq_lm_p2:
+        st.text_input("Dia de vencimento", key="aq_lm_vencimento", placeholder="Ex.: 10")
+    with _aq_lm_p3:
+        st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_lm_pagamento")
+
+    st.markdown("**Duração do contrato**")
+    _aq_lm_duracao = st.radio(
+        "Tipo de contrato",
+        ["Por tempo indeterminado", "12 meses com prorrogação automática"],
+        key="aq_lm_duracao",
+        horizontal=True,
+    )
+
+    _aq_lm_d1, _aq_lm_d2, _aq_lm_d3 = st.columns(3)
+    with _aq_lm_d1:
+        st.text_input("Data de início", key="aq_lm_data_inicio", placeholder="dd/mm/aaaa", value=hoje_br())
+    with _aq_lm_d2:
+        if "12 meses" in _aq_lm_duracao:
+            st.text_input("Data de término", key="aq_lm_data_fim", placeholder="dd/mm/aaaa")
+        else:
+            st.text_input("Data de término", key="aq_lm_data_fim", value="Indeterminado", disabled=True)
+    with _aq_lm_d3:
+        st.text_input("Data de assinatura", key="aq_lm_data_ass", placeholder="dd/mm/aaaa", value=hoje_br())
+
+    st.text_input("Local de assinatura", key="aq_lm_local", value="Uberlândia/MG")
+
+    st.info(
+        "Este contrato é operacional e não substitui contrato de Responsabilidade Técnica, ART, laudos, perícias "
+        "ou relatório técnico normativo."
+    )
+
+    if st.button("📄 Gerar Contrato Aqua Gestão sem RT (PDF)", type="primary", use_container_width=True, key="btn_gerar_contrato_aq_lm"):
+        if not str(st.session_state.get("aq_lm_nome", "") or "").strip():
+            st.error("Informe o nome do contratante.")
+        elif not str(st.session_state.get("aq_lm_valor", "") or "").strip():
+            st.error("Informe o valor mensal.")
+        else:
+            try:
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import cm
+                from reportlab.lib import colors
+                from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+                from xml.sax.saxutils import escape as _esc_pdf
+                import io as _io
+
+                _nome = str(st.session_state.get("aq_lm_nome", "") or "").strip()
+                _cnpj = str(st.session_state.get("aq_lm_cnpj", "") or "").strip()
+                _end = str(st.session_state.get("aq_lm_endereco", "") or "").strip()
+                _contato = str(st.session_state.get("aq_lm_contato", "") or "").strip()
+                _tel = str(st.session_state.get("aq_lm_telefone", "") or "").strip()
+                _email = str(st.session_state.get("aq_lm_email", "") or "").strip()
+                _freq = str(st.session_state.get("aq_lm_freq_outro", "") or "").strip() or str(st.session_state.get("aq_lm_frequencia", "") or "").strip()
+                _prods_inc = "incluídos" in str(st.session_state.get("aq_lm_produtos", "") or "").lower()
+                _valor = str(st.session_state.get("aq_lm_valor", "") or "").strip()
+                _ext = str(st.session_state.get("aq_lm_valor_extenso", "") or "").strip() or _valor
+                _venc = str(st.session_state.get("aq_lm_vencimento", "") or "").strip() or "10"
+                _pgto = str(st.session_state.get("aq_lm_pagamento", "Pix") or "Pix").strip()
+                _inicio = str(st.session_state.get("aq_lm_data_inicio", "") or "").strip() or hoje_br()
+                _duracao = str(st.session_state.get("aq_lm_duracao", "") or "")
+                _fim = "Indeterminado" if "indeterminado" in _duracao.lower() else (str(st.session_state.get("aq_lm_data_fim", "") or "").strip() or "—")
+                _prazo = "indeterminado" if "indeterminado" in _duracao.lower() else "12 meses"
+                _local = str(st.session_state.get("aq_lm_local", "") or "").strip() or "Uberlândia/MG"
+                _data_ass = str(st.session_state.get("aq_lm_data_ass", "") or "").strip() or hoje_br()
+                _piscinas_txt = _aq_lm_piscinas_contrato or "conforme descrição operacional acordada entre as partes"
+                _prod_txt = "estão incluídos no valor mensal contratado" if _prods_inc else "não estão incluídos no valor mensal contratado"
+                _qualif = f"inscrito(a) no CPF/CNPJ sob nº {_esc_pdf(_cnpj)}," if _cnpj else ""
+
+                _styles = getSampleStyleSheet()
+                _s_titulo = ParagraphStyle("aq_lm_titulo", parent=_styles["Heading1"], fontSize=14, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#0D2A4A"))
+                _s_sub = ParagraphStyle("aq_lm_sub", parent=_styles["Normal"], fontSize=10, alignment=TA_CENTER, spaceAfter=4, textColor=colors.HexColor("#1565A8"))
+                _s_clausula = ParagraphStyle("aq_lm_clausula", parent=_styles["Normal"], fontSize=10, spaceBefore=10, spaceAfter=3, fontName="Helvetica-Bold", textColor=colors.HexColor("#0D2A4A"))
+                _s_body = ParagraphStyle("aq_lm_body", parent=_styles["Normal"], fontSize=9.5, alignment=TA_JUSTIFY, spaceBefore=2, spaceAfter=4, leading=14, leftIndent=8)
+                _s_center = ParagraphStyle("aq_lm_center", parent=_styles["Normal"], fontSize=10, alignment=TA_CENTER, spaceBefore=4)
+                _s_small = ParagraphStyle("aq_lm_small", parent=_styles["Normal"], fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+
+                _story = []
+
+                _logo_aq = encontrar_logo()
+                if _logo_aq and _logo_aq.exists():
+                    try:
+                        from reportlab.platypus import Image as RLImage
+                        _img = RLImage(str(_logo_aq), width=6.5*cm, height=2.2*cm, kind="proportional")
+                        _img.hAlign = "CENTER"
+                        _story.append(_img)
+                        _story.append(Spacer(1, 0.35*cm))
+                    except Exception:
+                        pass
+
+                _story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS", _s_titulo))
+                _story.append(Paragraph("Limpeza e Manutenção de Piscinas — sem Responsabilidade Técnica", _s_sub))
+                _story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#1565A8")))
+                _story.append(Spacer(1, 0.3*cm))
+
+                # Tabela de identificação com largura compatível com A4 e quebra automática.
+                # Antes estava maior que a área útil da página e o texto do CONTRATANTE vazava para fora.
+                _s_table_label = ParagraphStyle(
+                    "aq_lm_table_label",
+                    parent=_styles["Normal"],
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    leading=10.5,
+                    textColor=colors.white,
+                    alignment=0,
+                )
+                _s_table_value = ParagraphStyle(
+                    "aq_lm_table_value",
+                    parent=_styles["Normal"],
+                    fontName="Helvetica",
+                    fontSize=8.5,
+                    leading=11,
+                    textColor=colors.black,
+                    alignment=0,
+                    wordWrap="CJK",
+                )
+
+                _contato_partes = [
+                    _esc_pdf(_contato or "—"),
+                    _esc_pdf(_tel or "—"),
+                    _esc_pdf(_email or "—"),
+                ]
+                _contato_txt = " | ".join([p for p in _contato_partes if p and p != "—"]) or "—"
+                _contratante_txt = (
+                    f"{_esc_pdf(_nome)}"
+                    f"{', ' + _qualif if _qualif else ''}"
+                    f"<br/>Endereço: {_esc_pdf(_end or '—')}"
+                )
+
+                _id_data = [
+                    [
+                        Paragraph("CONTRATADA", _s_table_label),
+                        Paragraph("AQUA GESTÃO CONTROLE TÉCNICO LTDA.<br/>CNPJ 66.008.795/0001-92", _s_table_value),
+                    ],
+                    [
+                        Paragraph("CONTRATANTE", _s_table_label),
+                        Paragraph(_contratante_txt, _s_table_value),
+                    ],
+                    [
+                        Paragraph("CONTATO", _s_table_label),
+                        Paragraph(_contato_txt, _s_table_value),
+                    ],
+                ]
+                _t_id = Table(_id_data, colWidths=[3.2*cm, 12.8*cm], hAlign="CENTER")
+                _t_id.setStyle(TableStyle([
+                    ("VALIGN", (0,0), (-1,-1), "TOP"),
+                    ("BOX", (0,0), (-1,-1), 1, colors.HexColor("#1565A8")),
+                    ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#D8E2EF")),
+                    ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#0D2A4A")),
+                    ("TOPPADDING", (0,0), (-1,-1), 6),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                    ("LEFTPADDING", (0,0), (-1,-1), 7),
+                    ("RIGHTPADDING", (0,0), (-1,-1), 7),
+                ]))
+                _story.append(_t_id)
+                _story.append(Spacer(1, 0.3*cm))
+                _story.append(Paragraph(
+                    "As partes acima identificadas têm entre si justo e contratado o presente instrumento, "
+                    "regido pelas cláusulas e condições seguintes.", _s_body
+                ))
+
+                _clausulas = [
+                    ("CLÁUSULA 1 — DO OBJETO",
+                     "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços regulares "
+                     "de limpeza, conservação e manutenção operacional de piscina(s) localizada(s) no endereço "
+                     f"do CONTRATANTE. Piscina(s) atendida(s): {_esc_pdf(_piscinas_txt)}. "
+                     "Os serviços abrangem rotinas operacionais como aspiração, escovação de paredes e bordas, "
+                     "peneiração e retirada de resíduos, limpeza de cestos de skimmer e pré-filtro, acompanhamento "
+                     "visual da água e operação rotineira de circulação e filtração."),
+
+                    ("CLÁUSULA 2 — SERVIÇO SEM RESPONSABILIDADE TÉCNICA",
+                     "Este contrato é exclusivamente operacional e não inclui Responsabilidade Técnica, ART, "
+                     "emissão de laudos, perícias, pareceres normativos, representação perante CRQ ou Vigilância "
+                     "Sanitária, nem relatório técnico mensal de RT. Caso tais serviços sejam necessários, deverão "
+                     "ser contratados em instrumento próprio."),
+
+                    ("CLÁUSULA 3 — DA FREQUÊNCIA E EXECUÇÃO",
+                     f"Os serviços serão executados com a seguinte frequência: {_esc_pdf(_freq or 'conforme programação operacional')}. "
+                     "As visitas ocorrerão em dias e horários definidos conforme programação operacional da CONTRATADA, "
+                     "podendo haver ajustes por necessidade climática, operacional, feriados, caso fortuito ou força maior. "
+                     "Serviços extraordinários, emergenciais ou fora da rotina poderão ser cobrados à parte."),
+
+                    ("CLÁUSULA 4 — DOS PRODUTOS E MATERIAIS",
+                     f"Os produtos químicos, acessórios, insumos e materiais consumíveis {_prod_txt}. "
+                     + ("Quando não incluídos, caberá ao CONTRATANTE providenciar os produtos necessários em quantidade "
+                        "e qualidade suficientes para a execução dos serviços. A ausência de produtos pode impactar o "
+                        "resultado operacional sem caracterizar inadimplemento da CONTRATADA."
+                        if not _prods_inc else "")),
+
+                    ("CLÁUSULA 5 — DO PREÇO E DO PAGAMENTO",
+                     f"Pela prestação dos serviços, o CONTRATANTE pagará à CONTRATADA o valor mensal de R$ {_esc_pdf(_valor)} "
+                     f"({_esc_pdf(_ext)}). O vencimento ocorrerá todo dia {_esc_pdf(_venc)} de cada mês, mediante {_esc_pdf(_pgto)}. "
+                     "O atraso sujeitará o CONTRATANTE a multa de 2%, juros de 1% ao mês pro rata die e correção monetária."),
+
+                    ("CLÁUSULA 6 — DO PRAZO DE VIGÊNCIA",
+                     f"O presente contrato vigorará por prazo {_esc_pdf(_prazo)}, com início em {_esc_pdf(_inicio)} "
+                     f"e término em {_esc_pdf(_fim)}. Findo o prazo, poderá ser renovado por acordo entre as partes, "
+                     "inclusive de forma tácita, caso a prestação prossiga sem oposição expressa."),
+
+                    ("CLÁUSULA 7 — DAS OBRIGAÇÕES DAS PARTES",
+                     "A CONTRATADA executará os serviços com zelo e boa-fé, comunicando irregularidades visíveis que "
+                     "interfiram na conservação da piscina. O CONTRATANTE garantirá livre acesso ao local, manterá os "
+                     "sistemas básicos em funcionamento, comunicará eventos ou alterações de uso e efetuará os pagamentos "
+                     "na forma e prazo pactuados."),
+
+                    ("CLÁUSULA 8 — DAS LIMITAÇÕES DE RESPONSABILIDADE",
+                     "A CONTRATADA não se responsabiliza por falhas estruturais, elétricas, hidráulicas ou mecânicas fora "
+                     "do escopo contratado; danos por mau uso, acesso indevido de terceiros, vandalismo, intempéries, "
+                     "ausência de insumos ou problemas preexistentes não informados pelo CONTRATANTE."),
+
+                    ("CLÁUSULA 9 — DA RESCISÃO",
+                     "Este contrato poderá ser rescindido por mútuo acordo ou por qualquer das partes mediante aviso prévio "
+                     "por escrito de 30 dias. Permanecerão exigíveis os valores vencidos e os serviços efetivamente prestados."),
+
+                    ("CLÁUSULA 10 — DISPOSIÇÕES GERAIS E FORO",
+                     "Qualquer alteração de escopo, frequência, preço ou condição relevante deverá ser formalizada por escrito. "
+                     "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir controvérsias oriundas deste contrato, "
+                     "com renúncia de qualquer outro, por mais privilegiado que seja."),
+                ]
+
+                for _titulo_cl, _texto_cl in _clausulas:
+                    _story.append(Paragraph(_titulo_cl, _s_clausula))
+                    _story.append(Paragraph(_texto_cl, _s_body))
+
+                _story.append(Spacer(1, 0.45*cm))
+                _story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#D8E2EF")))
+                _story.append(Spacer(1, 0.25*cm))
+                _story.append(Paragraph(
+                    "E, por estarem justas e contratadas, firmam o presente instrumento em 2 (duas) vias de igual teor e forma.",
+                    _s_body,
+                ))
+                _story.append(Paragraph(f"{_esc_pdf(_local)}, {_esc_pdf(_data_ass)}.", _s_center))
+                _story.append(Spacer(1, 1*cm))
+
+                _ass_data = [
+                    ["___________________________________", "___________________________________"],
+                    ["AQUA GESTÃO CONTROLE TÉCNICO LTDA.\nCONTRATADA", f"{_nome}\nCONTRATANTE"],
+                    ["", ""],
+                    ["___________________________________", "___________________________________"],
+                    ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
+                ]
+                _t_ass = Table(_ass_data, colWidths=[9*cm, 9*cm])
+                _t_ass.setStyle(TableStyle([
+                    ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                    ("FONTSIZE", (0,0), (-1,-1), 9),
+                    ("VALIGN", (0,0), (-1,-1), "TOP"),
+                    ("TOPPADDING", (0,0), (-1,-1), 4),
+                ]))
+                _story.append(_t_ass)
+                _story.append(Spacer(1, 0.25*cm))
+                _story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#1565A8")))
+                _story.append(Paragraph(
+                    "Aqua Gestão Controle Técnico LTDA. | CNPJ 66.008.795/0001-92 | Documento operacional sem RT",
+                    _s_small,
+                ))
+
+                _pasta_aq_lm = GENERATED_DIR / slugify_nome(_nome)
+                _pasta_aq_lm.mkdir(parents=True, exist_ok=True)
+                _ts_aq_lm = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _pdf_aq_lm_path = _pasta_aq_lm / f"{_ts_aq_lm}_{slugify_nome(_nome)}_CONTRATO_AQUA_SEM_RT.pdf"
+
+                _buf = _io.BytesIO()
+                _doc_pdf = SimpleDocTemplate(
+                    _buf,
+                    pagesize=A4,
+                    topMargin=2*cm,
+                    bottomMargin=2*cm,
+                    leftMargin=2.5*cm,
+                    rightMargin=2.5*cm,
+                    title=f"Contrato Aqua Gestão sem RT — {_nome}",
+                    author="Aqua Gestão Controle Técnico LTDA.",
+                )
+                _doc_pdf.build(_story)
+                _pdf_bytes = _buf.getvalue()
+
+                with open(_pdf_aq_lm_path, "wb") as _pf:
+                    _pf.write(_pdf_bytes)
+
+                st.success(f"✅ Contrato Aqua Gestão sem RT gerado para {_nome}!")
+                st.download_button(
+                    "⬇️ Baixar Contrato Aqua Gestão sem RT",
+                    data=_pdf_bytes,
+                    file_name=_pdf_aq_lm_path.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_dl_contrato_aq_lm",
+                )
+
+            except Exception as _e:
+                st.error(f"Erro ao gerar contrato Aqua Gestão sem RT: {_e}")
+                import traceback as _tb
+                st.code(_tb.format_exc(), language="text")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
 
 st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_allow_html=True)
 st.subheader("Dados do contrato de Responsabilidade Técnica")
