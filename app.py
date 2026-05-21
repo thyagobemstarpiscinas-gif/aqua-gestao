@@ -15052,6 +15052,42 @@ st.caption(
     "Indicado para condomínios com prestador externo, zelador do condomínio, funcionário próprio, empresa contratada ou rotina mista."
 )
 
+# ── Seletor de condomínio para os POPs ──────────────────────────────────────
+_nomes_conds_pops = []
+try:
+    _nomes_conds_pops = sorted([n for n in sheets_listar_clientes() if n.strip()])
+except Exception:
+    _nomes_conds_pops = []
+
+if _nomes_conds_pops:
+    _cond_atual_pops = st.session_state.get("nome_condominio", "")
+    _idx_pops = _nomes_conds_pops.index(_cond_atual_pops) if _cond_atual_pops in _nomes_conds_pops else 0
+    _sel_pops = st.selectbox(
+        "Condomínio",
+        _nomes_conds_pops,
+        index=_idx_pops,
+        key="pops_sel_condominio",
+        help="Selecione o condomínio cadastrado. Os dados (CNPJ, síndico, endereço) serão usados automaticamente.",
+    )
+    if _sel_pops != st.session_state.get("nome_condominio", ""):
+        # Carrega dados completos do condomínio selecionado
+        try:
+            _todos_clientes_pops = sheets_listar_clientes_completo()
+            _dados_cond_pops = next((c for c in _todos_clientes_pops if c.get("nome", "").strip() == _sel_pops), {})
+            st.session_state["nome_condominio"] = _sel_pops
+            if _dados_cond_pops.get("cnpj"):
+                st.session_state["cnpj_condominio"] = _dados_cond_pops["cnpj"]
+            if _dados_cond_pops.get("endereco"):
+                st.session_state["endereco_condominio"] = _dados_cond_pops["endereco"]
+            if _dados_cond_pops.get("contato"):
+                st.session_state["nome_sindico"] = _dados_cond_pops["contato"]
+        except Exception:
+            st.session_state["nome_condominio"] = _sel_pops
+    else:
+        st.session_state["nome_condominio"] = _sel_pops
+else:
+    st.warning("⚠️ Nenhum condomínio cadastrado encontrado. Cadastre um condomínio na aba de clientes primeiro.")
+
 # Normaliza valores antigos/estranhos salvos no session_state para não manter textos quebrados na tela.
 _opcoes_executor_pops = [
     "Prestador externo",
