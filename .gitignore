@@ -6,3 +6,12 @@ __pycache__/
 # Backups locais de desenvolvimento
 backups_dev/
 app_backup_*.py
+
+# Backups locais de desenvolvimento
+backups_dev/
+app_backup_*.py
+app_v*.py
+patch_*.py
+
+# Arquivos temporarios locais do app
+app_*.py
