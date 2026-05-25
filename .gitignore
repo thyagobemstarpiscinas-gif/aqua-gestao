@@ -2,3 +2,7 @@
 *.json
 generated/
 __pycache__/
+
+# Backups locais de desenvolvimento
+backups_dev/
+app_backup_*.py
