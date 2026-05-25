@@ -1450,121 +1450,6 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
     return sugestoes
 
 
-TIPOS_TRATAMENTO_PISCINA = ["Químico tradicional", "Gerador de cloro"]
-
-
-def normalizar_tipo_tratamento_piscina(valor: str) -> str:
-    """Normaliza o tipo de tratamento salvo para manter retrocompatibilidade."""
-    valor_norm = normalizar_texto_busca(valor)
-    if "gerador" in valor_norm and "cloro" in valor_norm:
-        return "Gerador de cloro"
-    return "Químico tradicional"
-
-
-def _tratamentos_piscinas_from_dados(dados: dict) -> dict:
-    """Retorna mapa {nome_piscina: tipo_tratamento} a partir do JSON local do cliente."""
-    if not isinstance(dados, dict):
-        return {}
-    mapa = {}
-    bruto = dados.get("tratamentos_piscinas", {}) or {}
-    if isinstance(bruto, dict):
-        for nome, tipo in bruto.items():
-            nome_limpo = re.sub(r"\s+", " ", str(nome or "").strip())
-            if nome_limpo:
-                mapa[nome_limpo] = normalizar_tipo_tratamento_piscina(tipo)
-
-    for pe in dados.get("piscinas_extras", []) or []:
-        if isinstance(pe, dict):
-            nome_pe = re.sub(r"\s+", " ", str(pe.get("nome", "") or "").strip())
-            if nome_pe and pe.get("tipo_tratamento"):
-                mapa[nome_pe] = normalizar_tipo_tratamento_piscina(pe.get("tipo_tratamento"))
-
-    return mapa
-
-
-def _tipo_tratamento_para_piscina(dados: dict, nome_piscina: str) -> str:
-    """Busca o tipo de tratamento de uma piscina pelo nome, tolerando acentos/variações."""
-    nome_piscina = re.sub(r"\s+", " ", str(nome_piscina or "").strip())
-    mapa = _tratamentos_piscinas_from_dados(dados)
-    if not nome_piscina:
-        return "Químico tradicional"
-
-    if nome_piscina in mapa:
-        return normalizar_tipo_tratamento_piscina(mapa[nome_piscina])
-
-    for nome_salvo, tipo in mapa.items():
-        if nomes_condominio_equivalentes(nome_piscina, nome_salvo):
-            return normalizar_tipo_tratamento_piscina(tipo)
-
-    return "Químico tradicional"
-
-
-def calcular_sugestoes_gerador_cloro(ph: float | None, crl: float | None,
-                                     alc: float | None, dc: float | None,
-                                     cya: float | None, volume_m3: float) -> list[dict]:
-    """
-    Camada operacional para piscinas com gerador de cloro.
-    Não altera a fórmula principal: bloqueia sugestão automática de cloro químico
-    e mantém correções de pH, alcalinidade, dureza e CYA pela função existente.
-    """
-    sugestoes = []
-
-    if volume_m3 <= 0:
-        return sugestoes
-
-    if crl is not None and crl < META_CRL:
-        sugestoes.append({
-            "prioridade": 2,
-            "produto": "Gerador de cloro",
-            "quantidade": 0,
-            "unidade": "",
-            "acao": f"Ajustar geração de cloro — CRL {crl:.1f} ppm abaixo da meta",
-            "justificativa": (
-                "Piscina cadastrada com gerador de cloro. Priorizar conferência do nível de sal "
-                "conforme o equipamento, limpeza/estado da célula, vazão, tempo de filtração e "
-                "percentual de produção antes de recomendar cloro manual."
-            ),
-            "norma": "ABNT NBR 10339 / orientação operacional",
-        })
-    elif crl is not None and crl > FAIXA_CRL_MAX:
-        sugestoes.append({
-            "prioridade": 2,
-            "produto": "Gerador de cloro",
-            "quantidade": 0,
-            "unidade": "",
-            "acao": f"Reduzir/pausar geração — CRL {crl:.1f} ppm acima do limite",
-            "justificativa": (
-                "Cloro livre acima da faixa. Reduzir temporariamente o percentual/tempo de produção "
-                "do gerador, manter circulação e reavaliar antes de nova intervenção."
-            ),
-            "norma": "ABNT NBR 10339 / orientação operacional",
-        })
-
-    sugestoes.extend(
-        calcular_sugestoes_dosagem(
-            ph=ph,
-            crl=None,
-            alc=alc,
-            dc=dc,
-            cya=cya,
-            volume_m3=volume_m3,
-        )
-    )
-
-    sugestoes.sort(key=lambda x: x.get("prioridade", 99))
-    return sugestoes
-
-
-def calcular_sugestoes_por_tratamento(tipo_tratamento: str, ph: float | None, crl: float | None,
-                                      alc: float | None, dc: float | None,
-                                      cya: float | None, volume_m3: float) -> list[dict]:
-    """Seleciona o motor de sugestão conforme o tratamento cadastrado da piscina."""
-    tipo = normalizar_tipo_tratamento_piscina(tipo_tratamento)
-    if tipo == "Gerador de cloro":
-        return calcular_sugestoes_gerador_cloro(ph=ph, crl=crl, alc=alc, dc=dc, cya=cya, volume_m3=volume_m3)
-    return calcular_sugestoes_dosagem(ph=ph, crl=crl, alc=alc, dc=dc, cya=cya, volume_m3=volume_m3)
-
-
 def exibir_sugestoes_dosagem(sugestoes: list[dict]):
     """Exibe as sugestões de dosagem formatadas no Streamlit."""
     if not sugestoes:
@@ -10030,7 +9915,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # Carrega configuração de piscinas salva ou usa padrão
         _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
         _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
-        _tratamentos_piscinas_op = _tratamentos_piscinas_from_dados(_dados_cond_op)
         _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
 
         # Piscinas vem automaticamente do cadastro da ADM — operador nao configura
@@ -10168,14 +10052,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             pisc_slug = _slug_map.get(pisc_nome, slugify_nome(pisc_nome)[:12])
             st.markdown('<div class="op-card">', unsafe_allow_html=True)
             st.markdown(f'<div class="op-title">🧪 {pisc_nome}</div>', unsafe_allow_html=True)
-            _tipo_trat_pisc = _tipo_tratamento_para_piscina(_dados_cond_op, pisc_nome)
-            _trat_badge_bg = "#e8f0fe" if _tipo_trat_pisc == "Gerador de cloro" else "#f4f6f8"
-            _trat_badge_color = "#1565A8" if _tipo_trat_pisc == "Gerador de cloro" else "#4b5563"
-            st.markdown(
-                f'<span class="op-chip" style="background:{_trat_badge_bg};border-color:{_trat_badge_color};color:{_trat_badge_color};">'
-                f'⚙️ Tratamento: {_tipo_trat_pisc}</span>',
-                unsafe_allow_html=True
-            )
 
             c1, c2 = st.columns(2)
             with c1:
@@ -10208,7 +10084,6 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 "ph": p_ph, "cloro_livre": p_crl, "cloro_total": p_ct,
                 "cloraminas": str(p_cloraminas) if p_cloraminas is not None else "",
                 "alcalinidade": p_alc, "dureza": p_dc, "cianurico": p_cya,
-                "tipo_tratamento": _tipo_trat_pisc,
             })
 
             # ── Sugestões de dosagem em tempo real ───────────────────────────
@@ -10270,13 +10145,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
                 _sugestoes = []
                 if _vol_usar > 0:
-                    _sugestoes = calcular_sugestoes_por_tratamento(
-                        tipo_tratamento=_tipo_trat_pisc,
+                    _sugestoes = calcular_sugestoes_dosagem(
                         ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
                         volume_m3=_vol_usar
                     )
                 if _sugestoes:
-                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³) — {_tipo_trat_pisc}:**")
+                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
                     for _s in _sugestoes:
                         _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
                         if _s["quantidade"] and _s["quantidade"] > 0:
@@ -11159,6 +11033,67 @@ def _mascarar_pin_admin(pin: str) -> str:
     return f"{_pin[:2]}{'*' * (len(_pin) - 2)}"
 
 
+def _obter_url_acesso_operador_admin() -> str:
+    """Retorna URL pública do app para compartilhar com operadores.
+
+    Prioridade:
+    1) st.secrets["APP_URL"] ou st.secrets["app_url"]
+    2) variável de ambiente AQUA_GESTAO_APP_URL ou STREAMLIT_APP_URL
+    3) vazio, permitindo o admin preencher manualmente no campo da tela
+    """
+    try:
+        for chave in ("APP_URL", "app_url"):
+            try:
+                valor = str(st.secrets.get(chave, "") or "").strip()
+            except Exception:
+                valor = ""
+            if valor:
+                return valor
+    except Exception:
+        pass
+
+    for chave in ("AQUA_GESTAO_APP_URL", "STREAMLIT_APP_URL"):
+        valor = str(os.environ.get(chave, "") or "").strip()
+        if valor:
+            return valor
+
+    return ""
+
+
+def _montar_mensagem_acesso_operador_admin(nome: str, pin: str, condominios: list[str], acesso_total: bool, url_app: str) -> str:
+    """Monta mensagem pronta para WhatsApp/e-mail com link, instruções e PIN."""
+    nome_limpo = re.sub(r"\s+", " ", str(nome or "operador").strip()) or "operador"
+    pin_limpo = str(pin or "").strip()
+    url_limpa = str(url_app or "").strip()
+
+    if acesso_total:
+        escopo = "Acesso liberado para todos os condomínios disponíveis no seu painel."
+    else:
+        conds = _condominios_organizar(condominios)
+        if conds:
+            escopo = "Condomínios liberados: " + ", ".join(conds)
+        else:
+            escopo = "Condomínios liberados: confirme no painel administrativo."
+
+    linhas = [
+        f"Olá, {nome_limpo}! Seguem seus dados de acesso ao Aqua Gestão App:",
+        "",
+        f"Link de acesso: {url_limpa or '[cole aqui o link do app]'}",
+        f"PIN do operador: {pin_limpo or '[PIN não localizado]'}",
+        "",
+        "Como acessar:",
+        "1. Abra o link acima no celular.",
+        "2. Toque em “Acessar como Operador”.",
+        "3. Digite o PIN exatamente como informado.",
+        "4. Selecione o condomínio liberado e registre a visita.",
+        "",
+        escopo,
+        "",
+        "Atenção: o PIN é individual. Não compartilhe com terceiros.",
+    ]
+    return "\n".join(linhas)
+
+
 def _op_tem_acesso_total(op: dict) -> bool:
     _conds = _condominios_organizar(op.get("condomínios", []))
     return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds) or not _conds
@@ -11404,6 +11339,9 @@ with _tab_ops1:
                 st.caption("Operador")
                 st.markdown(f"**{_op_nome_sel}**")
                 st.caption(f"PIN mascarado: {_mascarar_pin_admin(_op_pin_sel)}")
+                with st.expander("🔓 Ver PIN completo", expanded=False):
+                    st.code(_op_pin_sel or "PIN não localizado", language=None)
+                    st.caption("Use somente para suporte administrativo e envio ao próprio operador.")
             with _sum2:
                 st.caption("Status")
                 st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
@@ -11431,6 +11369,49 @@ with _tab_ops1:
                         st.markdown("**Permissões salvas que não batem exatamente com o cadastro atual:**")
                         for _c in _op_orfaos_sel:
                             st.caption(f"⚠️ {_c}")
+
+            with st.expander("📲 Enviar acesso ao operador", expanded=False):
+                _url_padrao_op = _obter_url_acesso_operador_admin()
+                _url_key_op = f"url_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}"
+                _url_acesso_op = st.text_input(
+                    "Link público do app",
+                    value=st.session_state.get(_url_key_op, _url_padrao_op),
+                    key=_url_key_op,
+                    placeholder="https://seu-app.streamlit.app",
+                    help="Para preencher automaticamente, configure APP_URL nos secrets do Streamlit Cloud ou AQUA_GESTAO_APP_URL no ambiente.",
+                )
+                _conds_msg_op = ["TODOS"] if _op_total_sel else (_op_exatos_sel or _op_conds_sel)
+                _msg_acesso_op = _montar_mensagem_acesso_operador_admin(
+                    nome=_op_nome_sel,
+                    pin=_op_pin_sel,
+                    condominios=_conds_msg_op,
+                    acesso_total=_op_total_sel,
+                    url_app=_url_acesso_op,
+                )
+                st.text_area(
+                    "Mensagem pronta para copiar",
+                    value=_msg_acesso_op,
+                    height=260,
+                    key=f"msg_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    help="Copie e envie por WhatsApp, SMS ou e-mail.",
+                )
+                _share1, _share2 = st.columns([1, 1])
+                with _share1:
+                    st.link_button(
+                        "💬 Abrir WhatsApp com mensagem",
+                        f"https://wa.me/?text={quote(_msg_acesso_op)}",
+                        use_container_width=True,
+                    )
+                with _share2:
+                    st.download_button(
+                        "⬇️ Baixar instruções em TXT",
+                        data=_msg_acesso_op.encode("utf-8"),
+                        file_name=f"acesso_operador_{limpar_nome_arquivo(_op_nome_sel or 'operador')}.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                        key=f"download_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}",
+                    )
+                st.caption("O envio é iniciado pelo WhatsApp do aparelho/navegador do administrador; o app não armazena telefone nem dispara mensagem automática.")
 
             with st.expander("📋 Duplicar permissões de outro operador", expanded=False):
                 _ops_origem_dup = [
@@ -11809,9 +11790,6 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
-    for k in ["cc_trat_adulto", "cc_trat_infantil", "cc_trat_family",
-              "cc_pisc_extra1_trat", "cc_pisc_extra2_trat"]:
-        st.session_state[k] = "Químico tradicional"
     # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
     st.session_state["cc_verificacoes_semanais"] = 3
     st.session_state["cc_srv_rt"] = False
@@ -11847,10 +11825,6 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_vol_adulto"]   = str(_cc_cliente_editar.get("vol_adulto","") or "")
             st.session_state["cc_vol_infantil"] = str(_cc_cliente_editar.get("vol_infantil","") or "")
             st.session_state["cc_vol_family"]   = str(_cc_cliente_editar.get("vol_family","") or "")
-            _trat_cc = _tratamentos_piscinas_from_dados(_cc_cliente_editar)
-            st.session_state["cc_trat_adulto"]   = normalizar_tipo_tratamento_piscina(_trat_cc.get("Piscina Adulto", "Químico tradicional"))
-            st.session_state["cc_trat_infantil"] = normalizar_tipo_tratamento_piscina(_trat_cc.get("Piscina Infantil", "Químico tradicional"))
-            st.session_state["cc_trat_family"]   = normalizar_tipo_tratamento_piscina(_trat_cc.get("Piscina Family", "Químico tradicional"))
             try:
                 st.session_state["cc_verificacoes_semanais"] = int(_cc_cliente_editar.get("verificacoes_semanais", 3) or 3)
             except Exception:
@@ -11858,22 +11832,8 @@ if _cc_modo == "✏️ Editar cliente existente":
             _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
             st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
             st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
-            if len(_piscs_extras) > 0:
-                _extra1_nome = _piscs_extras[0].get("nome", "")
-                st.session_state["cc_pisc_extra1_trat"] = normalizar_tipo_tratamento_piscina(
-                    _piscs_extras[0].get("tipo_tratamento") or _trat_cc.get(_extra1_nome, "Químico tradicional")
-                )
-            else:
-                st.session_state["cc_pisc_extra1_trat"] = "Químico tradicional"
             st.session_state["cc_pisc_extra2_nome"] = _piscs_extras[1]["nome"] if len(_piscs_extras) > 1 else ""
             st.session_state["cc_pisc_extra2_vol"]  = str(_piscs_extras[1].get("vol","") or "") if len(_piscs_extras) > 1 else ""
-            if len(_piscs_extras) > 1:
-                _extra2_nome = _piscs_extras[1].get("nome", "")
-                st.session_state["cc_pisc_extra2_trat"] = normalizar_tipo_tratamento_piscina(
-                    _piscs_extras[1].get("tipo_tratamento") or _trat_cc.get(_extra2_nome, "Químico tradicional")
-                )
-            else:
-                st.session_state["cc_pisc_extra2_trat"] = "Químico tradicional"
             st.rerun()
     else:
         st.info("Nenhum cliente para editar.")
@@ -11978,51 +11938,22 @@ with cv3:
     cc_vol_family   = st.text_input("👨‍👩‍👧 Family (m³)", key="cc_vol_family",
         placeholder="ex: 50", help="Volume da piscina family em metros cúbicos")
 
-st.markdown("**⚙️ Tipo de tratamento por piscina**")
-st.caption("Use 'Gerador de cloro' quando a piscina tiver clorador/gerador salino. A sugestão passa a priorizar ajuste do equipamento.")
-ct1, ct2, ct3 = st.columns(3)
-with ct1:
-    cc_trat_adulto = st.selectbox(
-        "Tratamento Adulto",
-        TIPOS_TRATAMENTO_PISCINA,
-        key="cc_trat_adulto",
-        help="Define como o sistema orienta a correção do cloro na piscina adulto."
-    )
-with ct2:
-    cc_trat_infantil = st.selectbox(
-        "Tratamento Infantil",
-        TIPOS_TRATAMENTO_PISCINA,
-        key="cc_trat_infantil",
-        help="Define como o sistema orienta a correção do cloro na piscina infantil."
-    )
-with ct3:
-    cc_trat_family = st.selectbox(
-        "Tratamento Family/Spa",
-        TIPOS_TRATAMENTO_PISCINA,
-        key="cc_trat_family",
-        help="Define como o sistema orienta a correção do cloro na piscina family/spa."
-    )
-
 # Piscinas extras (outra, SPA, coberta, etc.)
 st.markdown("**Outras piscinas** (SPA, coberta, olímpica, etc.)")
-_cv_extra1, _cv_extra2, _cv_extra2b = st.columns([1.4, 0.8, 1.1])
+_cv_extra1, _cv_extra2 = st.columns(2)
 with _cv_extra1:
     cc_pisc_extra1_nome = st.text_input("Nome da piscina extra 1", key="cc_pisc_extra1_nome",
         placeholder="ex: SPA, Coberta, Olímpica")
 with _cv_extra2:
     cc_pisc_extra1_vol  = st.text_input("Volume (m³)", key="cc_pisc_extra1_vol",
         placeholder="ex: 80")
-with _cv_extra2b:
-    cc_pisc_extra1_trat = st.selectbox("Tratamento extra 1", TIPOS_TRATAMENTO_PISCINA, key="cc_pisc_extra1_trat")
-_cv_extra3, _cv_extra4, _cv_extra4b = st.columns([1.4, 0.8, 1.1])
+_cv_extra3, _cv_extra4 = st.columns(2)
 with _cv_extra3:
     cc_pisc_extra2_nome = st.text_input("Nome da piscina extra 2", key="cc_pisc_extra2_nome",
         placeholder="ex: Aquecida, Semiolímpica")
 with _cv_extra4:
     cc_pisc_extra2_vol  = st.text_input("Volume (m³) ", key="cc_pisc_extra2_vol",
         placeholder="ex: 120")
-with _cv_extra4b:
-    cc_pisc_extra2_trat = st.selectbox("Tratamento extra 2", TIPOS_TRATAMENTO_PISCINA, key="cc_pisc_extra2_trat")
 
 
 st.markdown("**🧪 Rotina de verificação técnica**")
@@ -12039,19 +11970,6 @@ if "cc_verificacoes_semanais" not in st.session_state:
 
 _cc_freq_col1, _cc_freq_col2 = st.columns([1, 2.2])
 with _cc_freq_col1:
-    cc_tipo_tratamento = st.selectbox(
-        "Tipo de tratamento",
-        [
-            "Cloro tradicional",
-            "Sal / gerador de cloro",
-            "Ozônio",
-            "UV",
-            "Tratamento misto",
-            "Outro",
-        ],
-        key="cc_tipo_tratamento",
-    )
-
     cc_verificacoes_semanais = st.number_input(
         "Verificações por semana",
         min_value=1, max_value=7,
@@ -12081,27 +11999,18 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
-            _tratamentos_piscinas_form = {
-                "Piscina Adulto": normalizar_tipo_tratamento_piscina(st.session_state.get("cc_trat_adulto", "Químico tradicional")),
-                "Piscina Infantil": normalizar_tipo_tratamento_piscina(st.session_state.get("cc_trat_infantil", "Químico tradicional")),
-                "Piscina Family": normalizar_tipo_tratamento_piscina(st.session_state.get("cc_trat_family", "Químico tradicional")),
-            }
-            for _en, _ev, _et in [
+            for _en, _ev in [
                 (st.session_state.get("cc_pisc_extra1_nome","").strip(),
-                 st.session_state.get("cc_pisc_extra1_vol","").strip(),
-                 st.session_state.get("cc_pisc_extra1_trat", "Químico tradicional")),
+                 st.session_state.get("cc_pisc_extra1_vol","").strip()),
                 (st.session_state.get("cc_pisc_extra2_nome","").strip(),
-                 st.session_state.get("cc_pisc_extra2_vol","").strip(),
-                 st.session_state.get("cc_pisc_extra2_trat", "Químico tradicional")),
+                 st.session_state.get("cc_pisc_extra2_vol","").strip()),
             ]:
                 if _en:
                     try:
-                        _ev_f = float(_ev.replace(",",".") if _ev else 0)
+                        _ev_f = float(_ev.replace(",",".")) if _ev else 0
                     except:
                         _ev_f = 0
-                    _et_norm = normalizar_tipo_tratamento_piscina(_et)
-                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f, "tipo_tratamento": _et_norm})
-                    _tratamentos_piscinas_form[_en] = _et_norm
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
 
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
                 ok = sheets_editar_cliente(
@@ -12140,13 +12049,11 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                 "vol_infantil": _vol_i,
                 "vol_family": _vol_f,
                 "verificacoes_semanais": int(cc_verificacoes_semanais or 3),
-                "tipo_tratamento": cc_tipo_tratamento,
                 "analises_mensais_padrao": calcular_linhas_analises_por_frequencia(int(cc_verificacoes_semanais or 3)),
                 "empresa": _cc_empresa_val,
                 "servicos": _cc_servicos_norm,
                 "operadores_vinculados": _cc_operadores_sel,
                 "piscinas_extras": _piscs_extras_form,
-                "tratamentos_piscinas": _tratamentos_piscinas_form,
             })
             # Monta lista de piscinas ativas para o operador (sem precisar configurar)
             _piscinas_adm = []
@@ -15051,42 +14958,6 @@ st.caption(
     "Gere um Caderno de POPs no padrão Aqua Gestão, adaptado ao tipo de operação do condomínio. "
     "Indicado para condomínios com prestador externo, zelador do condomínio, funcionário próprio, empresa contratada ou rotina mista."
 )
-
-# ── Seletor de condomínio para os POPs ──────────────────────────────────────
-_nomes_conds_pops = []
-try:
-    _nomes_conds_pops = sorted([n for n in sheets_listar_clientes() if n.strip()])
-except Exception:
-    _nomes_conds_pops = []
-
-if _nomes_conds_pops:
-    _cond_atual_pops = st.session_state.get("nome_condominio", "")
-    _idx_pops = _nomes_conds_pops.index(_cond_atual_pops) if _cond_atual_pops in _nomes_conds_pops else 0
-    _sel_pops = st.selectbox(
-        "Condomínio",
-        _nomes_conds_pops,
-        index=_idx_pops,
-        key="pops_sel_condominio",
-        help="Selecione o condomínio cadastrado. Os dados (CNPJ, síndico, endereço) serão usados automaticamente.",
-    )
-    if _sel_pops != st.session_state.get("nome_condominio", ""):
-        # Carrega dados completos do condomínio selecionado
-        try:
-            _todos_clientes_pops = sheets_listar_clientes_completo()
-            _dados_cond_pops = next((c for c in _todos_clientes_pops if c.get("nome", "").strip() == _sel_pops), {})
-            st.session_state["nome_condominio"] = _sel_pops
-            if _dados_cond_pops.get("cnpj"):
-                st.session_state["cnpj_condominio"] = _dados_cond_pops["cnpj"]
-            if _dados_cond_pops.get("endereco"):
-                st.session_state["endereco_condominio"] = _dados_cond_pops["endereco"]
-            if _dados_cond_pops.get("contato"):
-                st.session_state["nome_sindico"] = _dados_cond_pops["contato"]
-        except Exception:
-            st.session_state["nome_condominio"] = _sel_pops
-    else:
-        st.session_state["nome_condominio"] = _sel_pops
-else:
-    st.warning("⚠️ Nenhum condomínio cadastrado encontrado. Cadastre um condomínio na aba de clientes primeiro.")
 
 # Normaliza valores antigos/estranhos salvos no session_state para não manter textos quebrados na tela.
 _opcoes_executor_pops = [
