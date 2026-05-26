@@ -2824,8 +2824,8 @@ def validar_email(email: str) -> bool:
 def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     erros = []
 
-    if not validar_cpf(dados["CPF_SINDICO"]):
-        erros.append("CPF do síndico/representante inválido.")
+    if dados.get("CPF_SINDICO", "").strip() and not validar_cpf(dados["CPF_SINDICO"]):
+        erros.append("CPF do síndico/representante inválido. Verifique o formato.")
     if not validar_cnpj(dados["CNPJ_CONDOMINIO"]):
         erros.append("CNPJ do condomínio inválido.")
     if not validar_data_br(dados["DATA_ASSINATURA"]):
