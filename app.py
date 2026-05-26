@@ -11033,67 +11033,6 @@ def _mascarar_pin_admin(pin: str) -> str:
     return f"{_pin[:2]}{'*' * (len(_pin) - 2)}"
 
 
-def _obter_url_acesso_operador_admin() -> str:
-    """Retorna URL pública do app para compartilhar com operadores.
-
-    Prioridade:
-    1) st.secrets["APP_URL"] ou st.secrets["app_url"]
-    2) variável de ambiente AQUA_GESTAO_APP_URL ou STREAMLIT_APP_URL
-    3) vazio, permitindo o admin preencher manualmente no campo da tela
-    """
-    try:
-        for chave in ("APP_URL", "app_url"):
-            try:
-                valor = str(st.secrets.get(chave, "") or "").strip()
-            except Exception:
-                valor = ""
-            if valor:
-                return valor
-    except Exception:
-        pass
-
-    for chave in ("AQUA_GESTAO_APP_URL", "STREAMLIT_APP_URL"):
-        valor = str(os.environ.get(chave, "") or "").strip()
-        if valor:
-            return valor
-
-    return ""
-
-
-def _montar_mensagem_acesso_operador_admin(nome: str, pin: str, condominios: list[str], acesso_total: bool, url_app: str) -> str:
-    """Monta mensagem pronta para WhatsApp/e-mail com link, instruções e PIN."""
-    nome_limpo = re.sub(r"\s+", " ", str(nome or "operador").strip()) or "operador"
-    pin_limpo = str(pin or "").strip()
-    url_limpa = str(url_app or "").strip()
-
-    if acesso_total:
-        escopo = "Acesso liberado para todos os condomínios disponíveis no seu painel."
-    else:
-        conds = _condominios_organizar(condominios)
-        if conds:
-            escopo = "Condomínios liberados: " + ", ".join(conds)
-        else:
-            escopo = "Condomínios liberados: confirme no painel administrativo."
-
-    linhas = [
-        f"Olá, {nome_limpo}! Seguem seus dados de acesso ao Aqua Gestão App:",
-        "",
-        f"Link de acesso: {url_limpa or '[cole aqui o link do app]'}",
-        f"PIN do operador: {pin_limpo or '[PIN não localizado]'}",
-        "",
-        "Como acessar:",
-        "1. Abra o link acima no celular.",
-        "2. Toque em “Acessar como Operador”.",
-        "3. Digite o PIN exatamente como informado.",
-        "4. Selecione o condomínio liberado e registre a visita.",
-        "",
-        escopo,
-        "",
-        "Atenção: o PIN é individual. Não compartilhe com terceiros.",
-    ]
-    return "\n".join(linhas)
-
-
 def _op_tem_acesso_total(op: dict) -> bool:
     _conds = _condominios_organizar(op.get("condomínios", []))
     return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds) or not _conds
@@ -11339,9 +11278,6 @@ with _tab_ops1:
                 st.caption("Operador")
                 st.markdown(f"**{_op_nome_sel}**")
                 st.caption(f"PIN mascarado: {_mascarar_pin_admin(_op_pin_sel)}")
-                with st.expander("🔓 Ver PIN completo", expanded=False):
-                    st.code(_op_pin_sel or "PIN não localizado", language=None)
-                    st.caption("Use somente para suporte administrativo e envio ao próprio operador.")
             with _sum2:
                 st.caption("Status")
                 st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
@@ -11369,49 +11305,6 @@ with _tab_ops1:
                         st.markdown("**Permissões salvas que não batem exatamente com o cadastro atual:**")
                         for _c in _op_orfaos_sel:
                             st.caption(f"⚠️ {_c}")
-
-            with st.expander("📲 Enviar acesso ao operador", expanded=False):
-                _url_padrao_op = _obter_url_acesso_operador_admin()
-                _url_key_op = f"url_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}"
-                _url_acesso_op = st.text_input(
-                    "Link público do app",
-                    value=st.session_state.get(_url_key_op, _url_padrao_op),
-                    key=_url_key_op,
-                    placeholder="https://seu-app.streamlit.app",
-                    help="Para preencher automaticamente, configure APP_URL nos secrets do Streamlit Cloud ou AQUA_GESTAO_APP_URL no ambiente.",
-                )
-                _conds_msg_op = ["TODOS"] if _op_total_sel else (_op_exatos_sel or _op_conds_sel)
-                _msg_acesso_op = _montar_mensagem_acesso_operador_admin(
-                    nome=_op_nome_sel,
-                    pin=_op_pin_sel,
-                    condominios=_conds_msg_op,
-                    acesso_total=_op_total_sel,
-                    url_app=_url_acesso_op,
-                )
-                st.text_area(
-                    "Mensagem pronta para copiar",
-                    value=_msg_acesso_op,
-                    height=260,
-                    key=f"msg_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}",
-                    help="Copie e envie por WhatsApp, SMS ou e-mail.",
-                )
-                _share1, _share2 = st.columns([1, 1])
-                with _share1:
-                    st.link_button(
-                        "💬 Abrir WhatsApp com mensagem",
-                        f"https://wa.me/?text={quote(_msg_acesso_op)}",
-                        use_container_width=True,
-                    )
-                with _share2:
-                    st.download_button(
-                        "⬇️ Baixar instruções em TXT",
-                        data=_msg_acesso_op.encode("utf-8"),
-                        file_name=f"acesso_operador_{limpar_nome_arquivo(_op_nome_sel or 'operador')}.txt",
-                        mime="text/plain",
-                        use_container_width=True,
-                        key=f"download_acesso_op_{_normalizar_chave_acesso(_op_nome_sel)}",
-                    )
-                st.caption("O envio é iniciado pelo WhatsApp do aparelho/navegador do administrador; o app não armazena telefone nem dispara mensagem automática.")
 
             with st.expander("📋 Duplicar permissões de outro operador", expanded=False):
                 _ops_origem_dup = [
@@ -13910,7 +13803,16 @@ with col_btn1:
         "✅ Gerar contrato RT",
         type="primary",
         use_container_width=True,
+        key="btn_gerar_contrato_rt_principal",
     )
+
+if gerar:
+    # A função gerar_contrato_e_aditivo() é definida mais abaixo no arquivo.
+    # Por isso o botão só marca a solicitação; o processamento real acontece
+    # no bloco PROCESSAMENTO, depois que todas as funções já foram carregadas.
+    st.session_state["_gerar_contrato_rt_pendente"] = True
+    st.info("Solicitação recebida. Gerando o contrato RT...")
+
 
 with col_btn2:
     gerar_aditivo_rapido = st.button(
@@ -16969,7 +16871,7 @@ def gerar_contrato_e_aditivo():
     Fluxo v15: removida a geração de aditivo de desconto da tela principal de RT,
     para manter o contrato limpo para CRQ/ART e alinhado ao item 3.2.
     """
-    email_cliente = st.session_state.email_cliente.strip()
+    email_cliente = str(st.session_state.get("email_cliente", "") or "").strip()
     dados = {
         "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
         "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
@@ -16990,9 +16892,9 @@ def gerar_contrato_e_aditivo():
         return
 
     try:
-        nome_condominio = st.session_state.nome_condominio.strip()
-        nome_sindico = st.session_state.nome_sindico.strip()
-        whatsapp_cliente = st.session_state.whatsapp_cliente.strip()
+        nome_condominio = str(st.session_state.get("nome_condominio", "") or "").strip()
+        nome_sindico = str(st.session_state.get("nome_sindico", "") or "").strip()
+        whatsapp_cliente = str(st.session_state.get("whatsapp_cliente", "") or "").strip()
 
         nome_pasta = slugify_nome(nome_condominio)
         pasta_condominio = GENERATED_DIR / nome_pasta
@@ -17009,24 +16911,24 @@ def gerar_contrato_e_aditivo():
         placeholders = {
             "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
             "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
-            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
-            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
-            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
+            "{{NOME_CONTRATANTE}}": str(st.session_state.get("nome_condominio", "") or "").strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": str(st.session_state.get("cnpj_condominio", "") or "").strip(),
+            "{{ENDERECO_CONTRATANTE}}": str(st.session_state.get("endereco_condominio", "") or "").strip(),
             "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
             "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
             "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
             "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
-            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
+            "{{VALOR_MENSAL}}": valor_para_template(str(st.session_state.get("valor_mensal", "") or "").strip()),
             "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
             "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
             "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
             "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
             "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
             "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
-            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
-            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
-            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
+            "{{DATA_INICIO_CONTRATO}}": str(st.session_state.get("data_inicio", "") or "").strip(),
+            "{{DATA_FIM_CONTRATO}}": str(st.session_state.get("data_fim", "") or "").strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {str(st.session_state.get('data_assinatura', '') or '').strip()}",
         }
 
         with st.spinner("Gerando contrato DOCX editável..."):
@@ -17122,7 +17024,10 @@ def gerar_contrato_e_aditivo():
         )
 
     except Exception as e:
-        st.error(f"Erro na geração do contrato: {e}")
+        st.session_state["_contrato_rt_ultimo_erro"] = f"{type(e).__name__}: {e}"
+        st.error(f"Erro na geração do contrato: {type(e).__name__}: {e}")
+        with st.expander("Detalhes técnicos do erro", expanded=False):
+            st.exception(e)
 
 
 def gerar_somente_aditivo_rapido():
@@ -17271,8 +17176,17 @@ def gerar_somente_aditivo_rapido():
 # PROCESSAMENTO
 # =========================================
 
-if gerar:
-    gerar_contrato_e_aditivo()
+# Processa a solicitação do botão principal de RT somente depois que
+# gerar_contrato_e_aditivo() já foi definida no arquivo.
+if st.session_state.pop("_gerar_contrato_rt_pendente", False):
+    with st.spinner("Gerando contrato RT..."):
+        try:
+            gerar_contrato_e_aditivo()
+        except Exception as _e:
+            st.error(f"Erro ao gerar contrato RT: {_e}")
+            with st.expander("Detalhe técnico do erro", expanded=True):
+                import traceback as _tb
+                st.code(_tb.format_exc(), language="text")
 
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
