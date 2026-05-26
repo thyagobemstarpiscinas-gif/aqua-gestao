@@ -10,6 +10,12 @@ from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
+import pandas as pd
+import numpy as np
+try:
+    import altair as alt
+except Exception:
+    alt = None
 from docx import Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1079,6 +1085,400 @@ def sheets_listar_todas_visitas() -> list[dict]:
         return []
 
 
+
+# =========================================
+# INTEGRAÇÃO GLIDE → GOOGLE SHEETS → STREAMLIT
+# Aba esperada: analises_campo
+# =========================================
+
+ABA_ANALISES_CAMPO = "analises_campo"
+
+FAIXAS_CONFORMIDADE_RT_GLIDE = {
+    "ph": {"nome": "pH", "min": 7.2, "max": 7.8, "unidade": "", "gravidade": "Sanitário / Patrimonial"},
+    "crl": {"nome": "Cloro Residual Livre", "min": 0.5, "max": 3.0, "unidade": "mg/L", "gravidade": "Sanitário / Saúde Pública"},
+    "cc": {"nome": "Cloro Combinado", "min": 0.0, "max": 0.2, "unidade": "mg/L", "gravidade": "Sanitário / Saúde Pública"},
+    "alcalinidade": {"nome": "Alcalinidade Total", "min": 80.0, "max": 120.0, "unidade": "mg/L", "gravidade": "Patrimonial / Operacional"},
+    "dureza": {"nome": "Dureza Cálcica", "min": 150.0, "max": 300.0, "unidade": "mg/L", "gravidade": "Patrimonial / Estrutural"},
+    "cya": {"nome": "Ácido Cianúrico", "min": 30.0, "max": 50.0, "unidade": "mg/L", "gravidade": "Operacional"},
+}
+
+
+def _float_glide(valor):
+    """Converte valor vindo do Glide/Sheets para float; vazio continua NaN."""
+    if valor is None:
+        return np.nan
+    texto = str(valor).strip()
+    if not texto or texto.upper() in {"NM", "N/M", "NA", "N/A", "-", "—", "NONE", "NULL", "NAN"}:
+        return np.nan
+    texto = texto.replace(",", ".")
+    try:
+        return float(texto)
+    except Exception:
+        return np.nan
+
+
+def _fmt_numero_rt(valor, casas=2, nm="NM"):
+    """Formata número para exibição técnica, mantendo ausentes como NM."""
+    try:
+        if pd.isna(valor):
+            return nm
+    except Exception:
+        pass
+    try:
+        f = float(valor)
+        if abs(f - round(f)) < 0.0001:
+            return str(int(round(f)))
+        return str(round(f, casas)).replace(".", ",")
+    except Exception:
+        texto = str(valor or "").strip()
+        return texto if texto else nm
+
+
+def _mes_int(valor, padrao=None):
+    meses = {
+        "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3, "abril": 4,
+        "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
+        "outubro": 10, "novembro": 11, "dezembro": 12,
+    }
+    txt = str(valor or "").strip().lower()
+    if not txt:
+        return padrao
+    try:
+        iv = int(float(txt.replace(",", ".")))
+        return iv if 1 <= iv <= 12 else padrao
+    except Exception:
+        return meses.get(txt, padrao)
+
+
+def carregar_analises_campo_glide(sem_cache: bool = True) -> pd.DataFrame:
+    """Lê a aba analises_campo do Google Sheets.
+
+    Usa a conexão gspread já existente no app, preservando planilha privada
+    e evitando CSV público. O parâmetro sem_cache limpa caches antes da leitura
+    para refletir atualizações recentes do Glide.
+    """
+    try:
+        if sem_cache:
+            try:
+                obter_aba_sheets.clear()
+            except Exception:
+                pass
+        aba = obter_aba_sheets(ABA_ANALISES_CAMPO)
+        if aba is None:
+            st.session_state["_glide_ultimo_erro"] = "Aba analises_campo não encontrada ou Sheets indisponível."
+            return pd.DataFrame()
+
+        registros = aba.get_all_records()
+        df = pd.DataFrame(registros)
+        if df.empty:
+            st.session_state.pop("_glide_ultimo_erro", None)
+            return pd.DataFrame()
+
+        colunas = [
+            "data", "condominio_id", "operador", "ph", "crl", "ct",
+            "alcalinidade", "dureza", "cya", "dosagem_recom_cloro",
+            "dosagem_efetivada_cloro",
+        ]
+        for col in colunas:
+            if col not in df.columns:
+                df[col] = np.nan
+
+        df["data_dt"] = pd.to_datetime(df["data"], errors="coerce")
+        for col in ["ph", "crl", "ct", "alcalinidade", "dureza", "cya"]:
+            df[col] = df[col].apply(_float_glide)
+
+        df["cc"] = df["ct"] - df["crl"]
+        df.loc[df["ct"].isna() | df["crl"].isna(), "cc"] = np.nan
+        df["cc"] = df["cc"].clip(lower=0)
+
+        df["mes"] = df["data_dt"].dt.month
+        df["ano"] = df["data_dt"].dt.year
+        df["mes_ano"] = df["data_dt"].dt.strftime("%m/%Y")
+        df["condominio_id"] = df["condominio_id"].astype(str).str.strip()
+        df["operador"] = df["operador"].astype(str).str.strip()
+
+        st.session_state.pop("_glide_ultimo_erro", None)
+        return df
+    except Exception as e:
+        _log_sheets_erro("carregar_analises_campo_glide", e)
+        st.session_state["_glide_ultimo_erro"] = f"{type(e).__name__}: {e}"
+        return pd.DataFrame()
+
+
+def filtrar_analises_glide(df: pd.DataFrame, condominio_id: str, mes: int | str, ano: int | str) -> pd.DataFrame:
+    """Filtra análises do Glide por condomínio e mês/ano."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cond = str(condominio_id or "").strip()
+    mes_i = _mes_int(mes)
+    try:
+        ano_i = int(str(ano).strip())
+    except Exception:
+        ano_i = datetime.now().year
+    if not cond or not mes_i:
+        return pd.DataFrame()
+
+    saida = df.copy()
+    # comparação tolerante com a rotina já usada no app
+    saida = saida[saida["condominio_id"].apply(lambda x: nomes_condominio_equivalentes(cond, x))]
+    saida = saida[(saida["mes"] == mes_i) & (saida["ano"] == ano_i)]
+    return saida.sort_values("data_dt").reset_index(drop=True)
+
+
+def calcular_conformidade_glide(df: pd.DataFrame) -> pd.DataFrame:
+    """Calcula leituras, desvios, % de conformidade e status por parâmetro."""
+    linhas = []
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["parametro", "parâmetro", "leituras", "ok", "desvios", "conformidade_%", "status", "gravidade"])
+
+    for parametro, cfg in FAIXAS_CONFORMIDADE_RT_GLIDE.items():
+        serie = pd.to_numeric(df.get(parametro, pd.Series(dtype=float)), errors="coerce")
+        validas = serie.dropna()
+        total = int(validas.shape[0])
+        if total == 0:
+            ok = desvios = 0
+            pct = np.nan
+            status = "NM"
+        else:
+            dentro = validas.between(cfg["min"], cfg["max"], inclusive="both")
+            ok = int(dentro.sum())
+            desvios = int(total - ok)
+            pct = round((ok / total) * 100, 1)
+            if pct >= 95:
+                status = "OK"
+            elif pct >= 80:
+                status = "Atenção"
+            else:
+                status = "Crítico"
+            if parametro == "cc" and desvios > 0 and pct < 85:
+                status = "Crítico"
+
+        linhas.append({
+            "parametro": parametro,
+            "parâmetro": cfg["nome"],
+            "leituras": total,
+            "ok": ok,
+            "desvios": desvios,
+            "conformidade_%": pct,
+            "status": status,
+            "gravidade": cfg["gravidade"],
+        })
+    return pd.DataFrame(linhas)
+
+
+def status_geral_glide(df_conf: pd.DataFrame) -> str:
+    if df_conf is None or df_conf.empty:
+        return "SEM DADOS"
+    status = set(df_conf["status"].astype(str))
+    if "Crítico" in status:
+        return "NÃO CONFORME"
+    if "Atenção" in status:
+        return "EM CORREÇÃO"
+    if status == {"NM"}:
+        return "SEM DADOS"
+    return "CONFORME"
+
+
+def tabela_analitica_glide(df: pd.DataFrame) -> pd.DataFrame:
+    """Tabela final: exibe NM para ausentes, sem alterar o DataFrame numérico."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = ["data", "operador", "ph", "crl", "ct", "cc", "alcalinidade", "dureza", "cya", "dosagem_recom_cloro", "dosagem_efetivada_cloro"]
+    saida = df.copy()
+    for col in cols:
+        if col not in saida.columns:
+            saida[col] = np.nan
+    saida = saida[cols]
+    for col in ["ph", "crl", "ct", "cc", "alcalinidade", "dureza", "cya"]:
+        saida[col] = saida[col].apply(_fmt_numero_rt)
+    for col in ["dosagem_recom_cloro", "dosagem_efetivada_cloro"]:
+        saida[col] = saida[col].fillna("NM").replace("", "NM")
+    return saida.rename(columns={
+        "data": "Data",
+        "operador": "Operador",
+        "ph": "pH",
+        "crl": "CRL",
+        "ct": "CT",
+        "cc": "CC",
+        "alcalinidade": "Alcalinidade",
+        "dureza": "Dureza Cálcica",
+        "cya": "CYA",
+        "dosagem_recom_cloro": "Dosagem Recomendada pela RT",
+        "dosagem_efetivada_cloro": "Dosagem Efetivada pela Operação",
+    })
+
+
+def analises_glide_para_relatorio(df: pd.DataFrame) -> list[dict]:
+    """Converte DataFrame do Glide para o formato já consumido pelo PDF mensal."""
+    itens = []
+    if df is None or df.empty:
+        return itens
+    for _, row in df.iterrows():
+        data_dt = row.get("data_dt")
+        data_fmt = data_dt.strftime("%d/%m/%Y") if pd.notna(data_dt) else str(row.get("data", "") or "")
+        itens.append({
+            "data": data_fmt,
+            "ph": _fmt_numero_rt(row.get("ph")),
+            "cloro_livre": _fmt_numero_rt(row.get("crl")),
+            "cloro_total": _fmt_numero_rt(row.get("ct")),
+            "cloro_combinado": _fmt_numero_rt(row.get("cc")),
+            "alcalinidade": _fmt_numero_rt(row.get("alcalinidade")),
+            "dureza": _fmt_numero_rt(row.get("dureza")),
+            "cianurico": _fmt_numero_rt(row.get("cya")),
+            "operador": str(row.get("operador", "") or "").strip(),
+            "dosagem_recom_cloro": str(row.get("dosagem_recom_cloro", "") or "").strip(),
+            "dosagem_efetivada_cloro": str(row.get("dosagem_efetivada_cloro", "") or "").strip(),
+        })
+    return itens
+
+
+def gerar_plano_acao_glide(df_conf: pd.DataFrame) -> list[dict]:
+    """Gera plano de ação técnico a partir da conformidade mensal."""
+    if df_conf is None or df_conf.empty:
+        return []
+    status = dict(zip(df_conf["parametro"], df_conf["status"]))
+    acoes = []
+
+    def add(categoria, nao_conf, evidencia, risco, recomendacao, prazo, responsavel, criterio):
+        acoes.append({
+            "numero": len(acoes) + 1,
+            "categoria": categoria,
+            "nao_conformidade": nao_conf,
+            "evidencia": evidencia,
+            "risco_associado": risco,
+            "recomendacao": recomendacao,
+            "prazo": prazo,
+            "responsavel": responsavel,
+            "criterio_encerramento": criterio,
+        })
+
+    if status.get("cc") in {"Atenção", "Crítico"}:
+        add("Sanitário / Saúde Pública", "Cloro combinado acima da meta operacional.", "CC calculado por CT - CRL com leituras acima de 0,2 mg/L.", "Formação de cloraminas e redução da eficiência sanitizante.", "Executar oxidação complementar / supercloração controlada e reavaliar CT, CRL e CC.", "24h", "Operação / RT", "CC ≤ 0,2 mg/L")
+    if status.get("crl") in {"Atenção", "Crítico"}:
+        add("Sanitário / Saúde Pública", "CRL fora da faixa técnica.", "CRL fora da faixa 0,5–3,0 mg/L.", "Possível redução da segurança sanitária ou excesso de desinfetante.", "Revisar a dosagem de desinfetante e a demanda oxidante da água.", "Próxima rotina", "Operação / RT", "CRL entre 0,5 e 3,0 mg/L")
+    if status.get("ph") in {"Atenção", "Crítico"}:
+        add("Sanitário / Patrimonial", "pH fora da faixa técnica.", "pH fora da faixa 7,2–7,8.", "Redução da eficiência do cloro, desconforto aos usuários e risco patrimonial.", "Corrigir pH e reavaliar antes de novas intervenções químicas relevantes.", "Imediato", "Operação / RT", "pH entre 7,2 e 7,8")
+    if status.get("dureza") in {"Atenção", "Crítico"}:
+        add("Patrimonial / Estrutural", "Dureza cálcica fora da faixa técnica.", "DC fora da faixa 150–300 mg/L.", "Risco de agressividade, corrosão, ataque a rejunte/revestimento ou incrustação.", "Ajustar dureza cálcica conforme avaliação técnica e reavaliar o parâmetro.", "Próxima rotina", "Operação / RT", "DC entre 150 e 300 mg/L")
+    if status.get("alcalinidade") in {"Atenção", "Crítico"}:
+        add("Patrimonial / Operacional", "Alcalinidade fora da faixa técnica.", "Alcalinidade fora da faixa 80–120 mg/L.", "Instabilidade de pH e maior consumo químico.", "Corrigir alcalinidade e acompanhar estabilidade do pH.", "Próxima rotina", "Operação / RT", "Alcalinidade entre 80 e 120 mg/L")
+    if status.get("cya") in {"Atenção", "Crítico"}:
+        add("Operacional", "Ácido cianúrico fora da faixa técnica.", "CYA fora da faixa 30–50 mg/L.", "Possível perda de eficiência do cloro por estabilizante inadequado.", "Reavaliar estabilizante e considerar renovação parcial quando tecnicamente indicada.", "Próxima rotina", "Operação / RT", "CYA entre 30 e 50 mg/L")
+    return acoes
+
+
+def importar_glide_para_campos_relatorio(df: pd.DataFrame):
+    """Preenche as linhas manuais do relatório com as análises vindas do Glide."""
+    analises = analises_glide_para_relatorio(df)
+    total = max(ANALISES_PADRAO, len(analises))
+    garantir_campos_analises(total)
+    for i in range(total):
+        item = analises[i] if i < len(analises) else {}
+        st.session_state[f"rel_analise_data_{i}"] = item.get("data", "")
+        st.session_state[f"rel_analise_ph_{i}"] = item.get("ph", "")
+        st.session_state[f"rel_analise_cl_{i}"] = item.get("cloro_livre", "")
+        st.session_state[f"rel_analise_ct_{i}"] = item.get("cloro_total", "")
+        st.session_state[f"rel_analise_alc_{i}"] = item.get("alcalinidade", "")
+        st.session_state[f"rel_analise_dc_{i}"] = item.get("dureza", "")
+        st.session_state[f"rel_analise_cya_{i}"] = item.get("cianurico", "")
+        st.session_state[f"rel_analise_operador_{i}"] = item.get("operador", "")
+
+    df_conf = calcular_conformidade_glide(df)
+    st.session_state["_rel_glide_conformidade"] = df_conf.to_dict("records")
+    st.session_state["_rel_glide_analises"] = analises
+    st.session_state["_rel_glide_status"] = status_geral_glide(df_conf)
+    st.session_state["_rel_glide_plano_acao"] = gerar_plano_acao_glide(df_conf)
+    if st.session_state["_rel_glide_status"] in {"CONFORME", "NÃO CONFORME", "EM CORREÇÃO"}:
+        st.session_state["rel_status_agua"] = st.session_state["_rel_glide_status"]
+
+    plano = st.session_state["_rel_glide_plano_acao"]
+    for i in range(5):
+        item = plano[i] if i < len(plano) else {}
+        st.session_state[f"rel_rec_texto_{i}"] = item.get("recomendacao", "")
+        st.session_state[f"rel_rec_prazo_{i}"] = item.get("prazo", "")
+        st.session_state[f"rel_rec_resp_{i}"] = item.get("responsavel", "")
+
+
+def renderizar_painel_glide_relatorio_rt():
+    """Painel Streamlit para validar e importar as análises automáticas do Glide."""
+    st.markdown("#### 📡 Integração automática Glide → Google Sheets")
+    with st.expander("Fonte automática `analises_campo`", expanded=False):
+        st.caption("Lê a aba analises_campo em tempo real, filtra por condomínio e mês/ano, calcula CC = CT - CRL e mantém NM apenas na exibição.")
+
+        df_base = carregar_analises_campo_glide(sem_cache=st.button("🔄 Atualizar dados do Glide", key="btn_atualizar_glide_rt"))
+        erro = st.session_state.get("_glide_ultimo_erro", "")
+        if df_base.empty:
+            st.warning("Nenhum dado encontrado na aba analises_campo.")
+            if erro:
+                st.code(erro)
+            return
+
+        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
+        mes_rel = st.session_state.get("rel_mes_referencia") or datetime.now().month
+        ano_rel = st.session_state.get("rel_ano_referencia") or datetime.now().year
+
+        condominios = sorted([c for c in df_base["condominio_id"].dropna().astype(str).str.strip().unique() if c])
+        if nome_rel and nome_rel in condominios:
+            idx_cond = condominios.index(nome_rel)
+        else:
+            idx_cond = 0
+
+        c1, c2, c3 = st.columns([2.2, 0.9, 0.9])
+        with c1:
+            sel_cond = st.selectbox("Condomínio no Glide", condominios, index=idx_cond, key="glide_condominio_id_rel")
+        with c2:
+            sel_mes = st.selectbox("Mês", list(range(1, 13)), index=max((_mes_int(mes_rel, datetime.now().month) or 1) - 1, 0), key="glide_mes_rel")
+        with c3:
+            anos = sorted([int(a) for a in df_base["ano"].dropna().unique()], reverse=True) or [datetime.now().year]
+            ano_default = int(ano_rel) if str(ano_rel).isdigit() and int(ano_rel) in anos else anos[0]
+            sel_ano = st.selectbox("Ano", anos, index=anos.index(ano_default), key="glide_ano_rel")
+
+        df_mes = filtrar_analises_glide(df_base, sel_cond, sel_mes, sel_ano)
+        df_conf = calcular_conformidade_glide(df_mes)
+        status_mes = status_geral_glide(df_conf)
+
+        m1, m2, m3, m4 = st.columns(4)
+        conf_validas = pd.to_numeric(df_conf.get("conformidade_%", pd.Series(dtype=float)), errors="coerce").dropna()
+        media_conf = round(conf_validas.mean(), 1) if not conf_validas.empty else 0
+        desvios = int(pd.to_numeric(df_conf.get("desvios", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not df_conf.empty else 0
+        criticos = int((df_conf.get("status", pd.Series(dtype=str)) == "Crítico").sum()) if not df_conf.empty else 0
+        m1.metric("Leituras do mês", len(df_mes))
+        m2.metric("Conformidade média", f"{media_conf}%")
+        m3.metric("Status", status_mes)
+        m4.metric("Desvios", desvios)
+
+        st.dataframe(df_conf, use_container_width=True, hide_index=True)
+        st.dataframe(tabela_analitica_glide(df_mes), use_container_width=True, hide_index=True)
+
+        if alt is not None and not df_mes.empty:
+            st.markdown("**Evolução temporal**")
+            tabs = st.tabs(["pH", "CRL", "CC", "Alcalinidade", "Dureza", "CYA"])
+            for tab, param in zip(tabs, ["ph", "crl", "cc", "alcalinidade", "dureza", "cya"]):
+                with tab:
+                    cfg = FAIXAS_CONFORMIDADE_RT_GLIDE[param]
+                    dados_g = df_mes[["data_dt", param]].copy()
+                    dados_g[param] = pd.to_numeric(dados_g[param], errors="coerce")
+                    dados_g = dados_g.dropna(subset=["data_dt"])
+                    if dados_g[param].dropna().empty:
+                        st.info(f"Sem medições válidas para {cfg['nome']}.")
+                    else:
+                        linha = alt.Chart(dados_g).mark_line(point=True).encode(
+                            x=alt.X("data_dt:T", title="Data"),
+                            y=alt.Y(f"{param}:Q", title=f"{cfg['nome']} ({cfg['unidade']})"),
+                            tooltip=[alt.Tooltip("data_dt:T", title="Data"), alt.Tooltip(f"{param}:Q", title=cfg["nome"])],
+                        )
+                        faixa = alt.Chart(pd.DataFrame({"minimo": [cfg["min"]], "maximo": [cfg["max"]]})).mark_rect(opacity=0.12).encode(y="minimo:Q", y2="maximo:Q")
+                        st.altair_chart((faixa + linha).properties(height=230), use_container_width=True)
+
+        if st.button("⬇️ Usar dados do Glide neste relatório", type="primary", use_container_width=True, disabled=df_mes.empty):
+            importar_glide_para_campos_relatorio(df_mes)
+            st.session_state["rel_nome_condominio"] = sel_cond
+            st.session_state["rel_mes_referencia"] = f"{int(sel_mes):02d}"
+            st.session_state["rel_ano_referencia"] = str(sel_ano)
+            st.success(f"{len(df_mes)} leitura(s) importada(s) do Glide para o relatório mensal.")
+            st.rerun()
+
+
 def extrair_lancamento_de_pdf_visita(pdf_bytes: bytes, nome_condominio_padrao: str = "") -> dict:
     """Extrai dados básicos de um PDF de Relatório de Visita Aqua Gestão.
 
@@ -1486,7 +1886,7 @@ def exibir_sugestoes_dosagem(sugestoes: list[dict]):
 # =========================================
 
 APP_TITLE = "Aqua Gestão – Controle Técnico de Piscinas"
-APP_VERSION = "v6_relatorio_premium_aqua_final"
+APP_VERSION = "v7_glide_rt_premium_completo"
 RESPONSAVEL_TÉCNICO = "Thyago Fernando da Silveira"
 RESPONSAVEL_TECNICO_ASSINATURA = "Thyago Fernando da Silveira | CRQ 024025748 | Técnico em Química"
 CRQ = "CRQ-MG 2ª Região | CRQ 024025748"
@@ -2824,8 +3224,8 @@ def validar_email(email: str) -> bool:
 def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     erros = []
 
-    if dados.get("CPF_SINDICO", "").strip() and not validar_cpf(dados["CPF_SINDICO"]):
-        erros.append("CPF do síndico/representante inválido. Verifique o formato.")
+    if not validar_cpf(dados["CPF_SINDICO"]):
+        erros.append("CPF do síndico/representante inválido.")
     if not validar_cnpj(dados["CNPJ_CONDOMINIO"]):
         erros.append("CNPJ do condomínio inválido.")
     if not validar_data_br(dados["DATA_ASSINATURA"]):
@@ -5062,12 +5462,21 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         dc = _pegar_alias(item, "dureza", "dc", "dureza_calcica", "DC")
         cya = _pegar_alias(item, "cianurico", "cya", "acido_cianurico", "CYA")
         operador = _pegar_alias(item, "operador", "responsavel", "Operador")
-        if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, operador]):
+        cc = _pegar_alias(item, "cloro_combinado", "cc", "CC")
+        if not str(cc or "").strip():
+            try:
+                crl_f = _float_glide(crl)
+                ct_f = _float_glide(ct)
+                cc = _fmt_numero_rt(max(ct_f - crl_f, 0)) if not (pd.isna(crl_f) or pd.isna(ct_f)) else ""
+            except Exception:
+                cc = ""
+        if any(str(v or "").strip() for v in [data, ph, crl, ct, cc, alc, dc, cya, operador]):
             linhas.append([
                 _rl_valor(normalizar_data_visita(data) if data else "", "—"),
                 _rl_f(ph),
                 _rl_f(crl),
                 _rl_f(ct),
+                _rl_f(cc),
                 _rl_f(alc),
                 _rl_f(dc),
                 _rl_f(cya),
@@ -5193,7 +5602,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             t = Table(conv, colWidths=widths, repeatRows=1 if header else 0, hAlign="LEFT")
             cmds = [
                 ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#AEBFCC")),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("VALIGN", (0,0), (-1,-1), "TOP"),
                 ("LEFTPADDING", (0,0), (-1,-1), 5),
                 ("RIGHTPADDING", (0,0), (-1,-1), 5),
                 ("TOPPADDING", (0,0), (-1,-1), 5),
@@ -5278,7 +5687,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ("BACKGROUND", (0,2), (1,2), azul_claro), ("BACKGROUND", (0,4), (1,4), azul_claro),
             ("BACKGROUND", (0,6), (1,6), azul_claro), ("BACKGROUND", (0,8), (1,8), azul_claro),
             ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#AEBFCC")),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6),
             ("TOPPADDING", (0,0), (-1,-1), 6), ("BOTTOMPADDING", (0,0), (-1,-1), 6),
         ]))
@@ -5351,14 +5760,37 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 
         story.append(P("4. CONTROLE OPERACIONAL – MONITORAMENTO IN LOCO", "AqH1"))
         story.append(P("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da ABNT NBR 10339.", "AqBody"))
-        story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
+        confs_pdf = dados_relatorio.get("conformidade_parametros", []) or []
+        if confs_pdf:
+            story.append(P("4.1 Painel Consolidado de Conformidade", "AqH2"))
+            linhas_conf = []
+            for c in confs_pdf:
+                pct = c.get("conformidade_%", "")
+                try:
+                    pct_txt = "NM" if pd.isna(pct) else f"{float(pct):.1f}%".replace(".", ",")
+                except Exception:
+                    pct_txt = str(pct or "NM")
+                linhas_conf.append([
+                    c.get("parâmetro", c.get("parametro", "")),
+                    str(c.get("leituras", "")),
+                    str(c.get("ok", "")),
+                    str(c.get("desvios", "")),
+                    pct_txt,
+                    c.get("status", ""),
+                    c.get("gravidade", ""),
+                ])
+            story.append(table([["Parâmetro", "Leituras", "OK", "Desvios", "Conformidade", "Status", "Gravidade"]] + linhas_conf,
+                widths=[36*mm, 18*mm, 14*mm, 18*mm, 25*mm, 22*mm, 47*mm]))
+            story.append(Spacer(1, 3*mm))
+
+        story.append(P("4.2 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         if linhas_a:
-            story.append(table([["Data", "pH", "CRL (ppm)", "Cl. Total (ppm)", "Alcalinidade (ppm)", "Dureza Cálcica (ppm)", "Ác. Cianúrico (ppm)", "Operador"]] + linhas_a,
-                widths=[22*mm, 16*mm, 19*mm, 22*mm, 27*mm, 27*mm, 28*mm, 19*mm]))
+            story.append(table([["Data", "pH", "CRL", "CT", "CC", "Alcalinidade", "Dureza", "CYA", "Operador"]] + linhas_a,
+                widths=[21*mm, 13*mm, 15*mm, 15*mm, 15*mm, 25*mm, 24*mm, 22*mm, 30*mm]))
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
-        story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
+        story.append(P("4.3 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
         if linhas_d:
             story.append(table([["Produto Químico", "Fabricante / Lote", "Qtd.", "Unid.", "Finalidade Técnica"]] + linhas_d,
@@ -5392,12 +5824,19 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 
         story.append(P("5.2 Recomendações Técnicas ao Cliente", "AqH2"))
         recs = []
-        for idx, r in enumerate(dados_relatorio.get("recomendacoes", []) or [], start=1):
-            if str(r.get("recomendacao", "")).strip():
-                recs.append([str(idx), r.get("recomendacao", ""), r.get("prazo", ""), r.get("responsavel", "")])
+        plano_acao = dados_relatorio.get("plano_acao", []) or []
+        fonte_recs = plano_acao if plano_acao else (dados_relatorio.get("recomendacoes", []) or [])
+        for idx, r in enumerate(fonte_recs, start=1):
+            rec_txt = r.get("recomendacao", r.get("recomendacao_tecnica", ""))
+            if str(rec_txt or "").strip():
+                criterio = r.get("criterio_encerramento", "") or "Reavaliar parâmetro e registrar evidência no próximo acompanhamento."
+                recs.append([str(idx), rec_txt, r.get("prazo", ""), r.get("responsavel", ""), criterio])
         if not recs:
-            recs = [["1", "Manter rotina de monitoramento e registrar as leituras no sistema.", "Próxima rotina", "Operação / RT"]]
-        story.append(table([["Nº", "Recomendação Técnica", "Prazo", "Responsável"]] + recs, widths=[13*mm, 100*mm, 32*mm, 35*mm]))
+            recs = [["1", "Manter rotina de monitoramento e registrar as leituras no sistema.", "Próxima rotina", "Operação / RT", "Registros mensais sem desvios críticos."]]
+        story.append(table([["Nº", "Recomendação Técnica", "Prazo", "Responsável", "Critério de encerramento"]] + recs,
+            widths=[10*mm, 79*mm, 24*mm, 28*mm, 39*mm]))
+        story.append(Spacer(1, 8*mm))
+        story.append(PageBreak())
 
         story.append(P("6. ASSINATURAS E VALIDAÇÃO", "AqH1"))
         assinatura = [
@@ -5971,6 +6410,9 @@ def montar_dados_relatorio() -> dict:
         "conformidades": coletar_conformidades_relatorio(),
         "epis": coletar_epis_relatorio(),
         "avaliacao_automatica": avaliacao,
+        "conformidade_parametros": st.session_state.get("_rel_glide_conformidade", []),
+        "plano_acao": st.session_state.get("_rel_glide_plano_acao", []),
+        "fonte_analises": "Glide / Google Sheets" if st.session_state.get("_rel_glide_analises") else "Manual / Modo Campo",
     }
 
 
@@ -7536,7 +7978,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             _tbl_sig.setStyle(TableStyle([
                 ("BOX", (0,0), (-1,-1), 0.4, BORDA),
                 ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#fbfdff")),
-                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("VALIGN", (0,0), (-1,-1), "TOP"),
                 ("PADDING", (0,0), (-1,-1), 8),
                 ("ALIGN", (1,0), (1,0), "CENTER"),
             ]))
@@ -13803,16 +14245,7 @@ with col_btn1:
         "✅ Gerar contrato RT",
         type="primary",
         use_container_width=True,
-        key="btn_gerar_contrato_rt_principal",
     )
-
-if gerar:
-    # A função gerar_contrato_e_aditivo() é definida mais abaixo no arquivo.
-    # Por isso o botão só marca a solicitação; o processamento real acontece
-    # no bloco PROCESSAMENTO, depois que todas as funções já foram carregadas.
-    st.session_state["_gerar_contrato_rt_pendente"] = True
-    st.info("Solicitação recebida. Gerando o contrato RT...")
-
 
 with col_btn2:
     gerar_aditivo_rapido = st.button(
@@ -15631,6 +16064,9 @@ st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeho
 
 st.markdown("**Análises físico-químicas**")
 
+# Integração automática: Glide -> Google Sheets -> Streamlit
+renderizar_painel_glide_relatorio_rt()
+
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
 _linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
@@ -16871,7 +17307,7 @@ def gerar_contrato_e_aditivo():
     Fluxo v15: removida a geração de aditivo de desconto da tela principal de RT,
     para manter o contrato limpo para CRQ/ART e alinhado ao item 3.2.
     """
-    email_cliente = str(st.session_state.get("email_cliente", "") or "").strip()
+    email_cliente = st.session_state.email_cliente.strip()
     dados = {
         "DATA_ASSINATURA": (st.session_state.get("data_assinatura") or "").strip(),
         "NOME_CONDOMINIO": (st.session_state.get("nome_condominio") or "").strip(),
@@ -16892,9 +17328,9 @@ def gerar_contrato_e_aditivo():
         return
 
     try:
-        nome_condominio = str(st.session_state.get("nome_condominio", "") or "").strip()
-        nome_sindico = str(st.session_state.get("nome_sindico", "") or "").strip()
-        whatsapp_cliente = str(st.session_state.get("whatsapp_cliente", "") or "").strip()
+        nome_condominio = st.session_state.nome_condominio.strip()
+        nome_sindico = st.session_state.nome_sindico.strip()
+        whatsapp_cliente = st.session_state.whatsapp_cliente.strip()
 
         nome_pasta = slugify_nome(nome_condominio)
         pasta_condominio = GENERATED_DIR / nome_pasta
@@ -16911,24 +17347,24 @@ def gerar_contrato_e_aditivo():
         placeholders = {
             "{{CNPJ_CONTRATADA}}": "66.008.795/0001-92",
             "{{ENDERECO_CONTRATADA}}": "R. Benito Segatto, nº 201, Casa 02, Jardim Europa, Uberlândia/MG, CEP 38.414-680",
-            "{{NOME_CONTRATANTE}}": str(st.session_state.get("nome_condominio", "") or "").strip(),
-            "{{CPF_CNPJ_CONTRATANTE}}": str(st.session_state.get("cnpj_condominio", "") or "").strip(),
-            "{{ENDERECO_CONTRATANTE}}": str(st.session_state.get("endereco_condominio", "") or "").strip(),
+            "{{NOME_CONTRATANTE}}": st.session_state.nome_condominio.strip(),
+            "{{CPF_CNPJ_CONTRATANTE}}": st.session_state.cnpj_condominio.strip(),
+            "{{ENDERECO_CONTRATANTE}}": st.session_state.endereco_condominio.strip(),
             "{{REPRESENTANTE_CONTRATANTE}}": (st.session_state.get("nome_sindico") or "").strip(),
             "{{CPF_SINDICO}}": (st.session_state.get("cpf_sindico") or "").strip(),
             "{{QUALIFICACAO_REPRESENTANTE}}": (st.session_state.get("cargo_sindico") or "Síndico").strip(),
             "{{VOLUMES_PISCINAS}}": st.session_state.get("volumes_piscinas", ""),
             "{{FREQUENCIA_VISITAS}}": (st.session_state.get("frequencia_visitas") or "1 (uma)").split(" ")[0],
-            "{{VALOR_MENSAL}}": valor_para_template(str(st.session_state.get("valor_mensal", "") or "").strip()),
+            "{{VALOR_MENSAL}}": valor_para_template(st.session_state.valor_mensal.strip()),
             "{{VALOR_MENSAL_EXTENSO}}": st.session_state.get("valor_mensal_extenso", ""),
             "{{DIA_PAGAMENTO}}": st.session_state.get("dia_pagamento", ""),
             "{{FORMA_PAGAMENTO}}": st.session_state.get("forma_pagamento", "Pix"),
             "{{MULTA_ATRASO}}": st.session_state.get("multa_atraso", ""),
             "{{JUROS_ATRASO}}": st.session_state.get("juros_atraso", ""),
             "{{PRAZO_CONTRATO}}": st.session_state.get("prazo_contrato", ""),
-            "{{DATA_INICIO_CONTRATO}}": str(st.session_state.get("data_inicio", "") or "").strip(),
-            "{{DATA_FIM_CONTRATO}}": str(st.session_state.get("data_fim", "") or "").strip(),
-            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {str(st.session_state.get('data_assinatura', '') or '').strip()}",
+            "{{DATA_INICIO_CONTRATO}}": st.session_state.data_inicio.strip(),
+            "{{DATA_FIM_CONTRATO}}": st.session_state.data_fim.strip(),
+            "{{LOCAL_DATA_ASSINATURA}}": f"Uberlândia/MG, {st.session_state.data_assinatura.strip()}",
         }
 
         with st.spinner("Gerando contrato DOCX editável..."):
@@ -17024,10 +17460,7 @@ def gerar_contrato_e_aditivo():
         )
 
     except Exception as e:
-        st.session_state["_contrato_rt_ultimo_erro"] = f"{type(e).__name__}: {e}"
-        st.error(f"Erro na geração do contrato: {type(e).__name__}: {e}")
-        with st.expander("Detalhes técnicos do erro", expanded=False):
-            st.exception(e)
+        st.error(f"Erro na geração do contrato: {e}")
 
 
 def gerar_somente_aditivo_rapido():
@@ -17176,17 +17609,8 @@ def gerar_somente_aditivo_rapido():
 # PROCESSAMENTO
 # =========================================
 
-# Processa a solicitação do botão principal de RT somente depois que
-# gerar_contrato_e_aditivo() já foi definida no arquivo.
-if st.session_state.pop("_gerar_contrato_rt_pendente", False):
-    with st.spinner("Gerando contrato RT..."):
-        try:
-            gerar_contrato_e_aditivo()
-        except Exception as _e:
-            st.error(f"Erro ao gerar contrato RT: {_e}")
-            with st.expander("Detalhe técnico do erro", expanded=True):
-                import traceback as _tb
-                st.code(_tb.format_exc(), language="text")
+if gerar:
+    gerar_contrato_e_aditivo()
 
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
