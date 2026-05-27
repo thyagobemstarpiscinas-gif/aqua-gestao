@@ -872,8 +872,9 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_infantil) if vol_infantil else "",
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
+                    str(cnpj or "").strip(),       # N - CNPJ / Cartão CNPJ
                 ]
-                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                aba.update(range_name=f"A{linha_sheets}:N{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -1678,11 +1679,32 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
     """
     Calcula sugestões de produtos e doses baseado nos parâmetros medidos.
     Retorna lista de dicts com: produto, quantidade, unidade, prioridade, justificativa.
+
+    Correção crítica:
+    - Cloro não usa mais DOSE_DICLORO_56=15 g/m³ nem DOSE_HIPOCLORITO_65=13 g/m³
+      como multiplicador estático.
+    - A dose é calculada pelo teor ativo real do produto:
+        gramas_produto = (déficit_ppm × volume_m³) / teor_ativo
+    - Para evitar supercloração operacional, o fator de demanda do cloro fica neutro
+      nesta recomendação automática. Ex.: 278 m³ × 3,0 ppm ÷ 0,56 = 1.489 g ≈ 1,49 kg.
     """
     sugestoes = []
 
+    try:
+        volume_m3 = float(volume_m3 or 0)
+    except Exception:
+        volume_m3 = 0.0
+
     if volume_m3 <= 0:
         return sugestoes
+
+    def _dose_cloro_por_teor_ativo(deficit_ppm: float, volume: float, teor_ativo: float) -> int:
+        """Retorna gramas de produto comercial pelo teor ativo real."""
+        if deficit_ppm <= 0 or volume <= 0 or teor_ativo <= 0:
+            return 0
+        # Fator neutro para atender ao critério de precisão química e evitar supercloração.
+        fator_demanda_cloro = 1.0
+        return round((deficit_ppm * volume) / teor_ativo * fator_demanda_cloro)
 
     # ── 1. pH — SEMPRE CORRIGIR ANTES DO CLORO ───────────────────────────────
     if ph is not None:
@@ -1713,21 +1735,20 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
                 "norma": "APSP / WHO",
             })
 
-    # ── 2. CLORO — produto baseado no pH ─────────────────────────────────────
+    # ── 2. CLORO — produto baseado no pH e calculado por teor ativo real ─────
     if crl is not None and crl < META_CRL:
         deficit_crl = round(META_CRL - crl, 2)
 
-        # Seleciona produto pelo pH
         if ph is None or ph <= 7.5:
             produto_cloro = "Hipoclorito de cálcio 65%"
-            fator_cloro   = DOSE_HIPOCLORITO_65
-            motivo_cloro  = f"pH {ph:.1f} ≤ 7,5 — produto ideal nesta faixa" if ph else "pH não medido — usando padrão"
+            teor_ativo = 0.65
+            motivo_cloro = f"pH {ph:.1f} ≤ 7,5 — produto ideal nesta faixa" if ph is not None else "pH não medido — usando padrão"
         else:
             produto_cloro = "Dicloro 56%"
-            fator_cloro   = DOSE_DICLORO_56
-            motivo_cloro  = f"pH {ph:.1f} entre 7,5–7,8 — Dicloro é mais indicado (mais ácido)"
+            teor_ativo = 0.56
+            motivo_cloro = f"pH {ph:.1f} entre 7,5–7,8 — Dicloro é mais indicado (mais ácido)"
 
-        dose_g = round(deficit_crl * volume_m3 * fator_cloro * FATOR_DEMANDA)
+        dose_g = _dose_cloro_por_teor_ativo(deficit_crl, volume_m3, teor_ativo)
 
         if dose_g >= 1000:
             qtd_fmt = round(dose_g / 1000, 2)
@@ -1743,8 +1764,9 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
             "unidade": unid,
             "acao": f"Elevar CRL de {crl:.1f} → {META_CRL:.1f} ppm",
             "justificativa": f"CRL {crl:.1f} ppm abaixo da meta ({META_CRL} ppm). "
-                             f"Déficit: {deficit_crl} ppm × {volume_m3}m³ × {fator_cloro}g × 1,2 dem. "
-                             f"| {motivo_cloro}.",
+                             f"Déficit: {deficit_crl} ppm × {volume_m3:g}m³ ÷ teor ativo {teor_ativo:.0%}. "
+                             f"Dose calculada pelo teor ativo real do produto, sem multiplicador estático antigo "
+                             f"({DOSE_DICLORO_56} ou {DOSE_HIPOCLORITO_65} g/m³). | {motivo_cloro}.",
             "norma": "APSP / WHO",
         })
 
@@ -1774,7 +1796,7 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
                 "unidade": unid,
                 "acao": f"Elevar alcalinidade de {alc:.0f} → {META_ALC:.0f} ppm",
                 "justificativa": f"Alcalinidade {alc:.0f} ppm abaixo de {FAIXA_ALC_MIN} ppm. "
-                                 f"Déficit: {deficit_alc:.0f} ppm ÷ 10 × {DOSE_BICARBONATO}g × {volume_m3}m³.",
+                                 f"Déficit: {deficit_alc:.0f} ppm ÷ 10 × {DOSE_BICARBONATO}g × {volume_m3:g}m³.",
                 "norma": "WHO / ABNT NBR 10339",
             })
         elif alc > FAIXA_ALC_MAX:
@@ -1785,13 +1807,13 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
                 "produto": "Ácido muriático 31%",
                 "quantidade": dose_ml,
                 "unidade": "mL",
-                "acao": f"Reduzir alcalinidade de {alc:.0f} → {META_ALC:.0f} ppm",
+                "acao": f"Reduzir alcalinidade de {alc:.0f} ppm",
                 "justificativa": f"Alcalinidade {alc:.0f} ppm acima de {FAIXA_ALC_MAX} ppm. "
-                                 "Aplicar ácido muriático com bomba desligada.",
+                                 "Aplicar em etapas, com bomba ligada, e reavaliar pH.",
                 "norma": "APSP",
             })
 
-    # ── 4. DUREZA ─────────────────────────────────────────────────────────────
+    # ── 4. DUREZA CÁLCICA ─────────────────────────────────────────────────────
     if dc is not None:
         if dc < FAIXA_DC_MIN:
             deficit_dc = round(META_DUREZA - dc, 1)
@@ -1805,27 +1827,27 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
                 "unidade": unid,
                 "acao": f"Elevar dureza de {dc:.0f} → {META_DUREZA:.0f} ppm",
                 "justificativa": f"Dureza {dc:.0f} ppm abaixo de {FAIXA_DC_MIN} ppm. "
-                                 "Água agressiva corrói equipamentos e pisos.",
-                "norma": "APSP / WHO",
+                                 "Água agressiva/corrosiva — proteger revestimentos e equipamentos.",
+                "norma": "APSP / ABNT NBR 10339",
             })
         elif dc > FAIXA_DC_MAX:
             sugestoes.append({
                 "prioridade": 4,
-                "produto": "Troca parcial de água",
-                "quantidade": round(volume_m3 * 0.2),
-                "unidade": "m³",
-                "acao": f"Reduzir dureza de {dc:.0f} ppm",
+                "produto": "Diluição parcial / sequestrante",
+                "quantidade": 0,
+                "unidade": "",
+                "acao": f"Dureza {dc:.0f} ppm — acima do limite",
                 "justificativa": f"Dureza {dc:.0f} ppm acima de {FAIXA_DC_MAX} ppm. "
-                                 "Trocar ~20% da água e reequilibrar.",
+                                 "Risco de incrustação — avaliar diluição parcial ou sequestrante.",
                 "norma": "APSP",
             })
 
-    # ── 5. CYA — só monitoramento ─────────────────────────────────────────────
+    # ── 5. CYA — monitoramento ────────────────────────────────────────────────
     if cya is not None:
         if cya > FAIXA_CYA_MAX:
             sugestoes.append({
                 "prioridade": 5,
-                "produto": "Troca parcial de água",
+                "produto": "Diluição parcial de água",
                 "quantidade": round(volume_m3 * 0.3),
                 "unidade": "m³",
                 "acao": f"CYA {cya:.0f} ppm acima do limite",
@@ -1845,11 +1867,8 @@ def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
                 "norma": "APSP",
             })
 
-    # Ordena por prioridade
     sugestoes.sort(key=lambda x: x["prioridade"])
     return sugestoes
-
-
 def exibir_sugestoes_dosagem(sugestoes: list[dict]):
     """Exibe as sugestões de dosagem formatadas no Streamlit."""
     if not sugestoes:
@@ -5554,8 +5573,9 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         from reportlab.lib.units import mm
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-            Image as RLImage, PageBreak, HRFlowable
+            Image as RLImage, PageBreak, HRFlowable, KeepTogether
         )
+        from reportlab.platypus.doctemplate import LayoutError
         from PIL import Image as PILImage
 
         pdf_path = Path(pdf_path)
@@ -5574,22 +5594,31 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         logo_path = garantir_logo_aqua_oficial()
 
         styles = getSampleStyleSheet()
-        styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=azul, alignment=TA_CENTER, spaceAfter=2))
-        styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10.5, leading=13, textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
-        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4))
-        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4))
-        styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
-        styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
-        styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=9.2, textColor=preto))
-        styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.5, leading=9.2, textColor=azul))
-        styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
 
-        def P(texto, style="AqBody"):
+        def _leading(font_size: float) -> float:
+            return round(float(font_size) * 1.3, 2)
+
+        styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=_leading(17), textColor=azul, alignment=TA_CENTER, spaceAfter=2))
+        styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10.5, leading=_leading(10.5), textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
+        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=_leading(13), textColor=azul, spaceBefore=10, spaceAfter=4, keepWithNext=True))
+        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=_leading(10.5), textColor=azul2, spaceBefore=8, spaceAfter=4, keepWithNext=True))
+        styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7, leading=_leading(8.7), textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
+        styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=_leading(7.6), textColor=cinza, spaceAfter=2))
+        styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=_leading(7.4), textColor=preto, wordWrap="CJK"))
+        styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.5, leading=_leading(7.5), textColor=azul, wordWrap="CJK"))
+        styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=_leading(8.2), textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6, wordWrap="CJK"))
+
+        def _escapar_pdf(texto: str, max_chars: int = 1800) -> str:
             texto = _limpar_texto_pdf(str(texto or ""))
-            texto = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return Paragraph(texto, styles[style])
+            texto = re.sub(r"(\S{42})(?=\S)", r"\1 ", texto)
+            if max_chars and len(texto) > max_chars:
+                texto = texto[:max_chars].rstrip() + "…"
+            return texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        def table(data, widths=None, header=True):
+        def P(texto, style="AqBody", max_chars: int = 1800):
+            return Paragraph(_escapar_pdf(texto, max_chars=max_chars), styles[style])
+
+        def table(data, widths=None, header=True, max_cell_chars: int = 520):
             conv = []
             for r, row in enumerate(data):
                 out = []
@@ -5597,16 +5626,26 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     if isinstance(c, Paragraph):
                         out.append(c)
                     else:
-                        out.append(P(c, "AqCellBold" if (header and r == 0) else "AqCell"))
+                        estilo = "AqCellBold" if (header and r == 0) else "AqCell"
+                        limite = 220 if (header and r == 0) else max_cell_chars
+                        out.append(P(c, estilo, max_chars=limite))
                 conv.append(out)
-            t = Table(conv, colWidths=widths, repeatRows=1 if header else 0, hAlign="LEFT")
+
+            t = Table(
+                conv,
+                colWidths=widths,
+                repeatRows=1 if header else 0,
+                hAlign="LEFT",
+                splitByRow=1,
+            )
+            t.keepWithNext = False
             cmds = [
                 ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#AEBFCC")),
                 ("VALIGN", (0,0), (-1,-1), "TOP"),
-                ("LEFTPADDING", (0,0), (-1,-1), 5),
-                ("RIGHTPADDING", (0,0), (-1,-1), 5),
-                ("TOPPADDING", (0,0), (-1,-1), 5),
-                ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                ("LEFTPADDING", (0,0), (-1,-1), 4),
+                ("RIGHTPADDING", (0,0), (-1,-1), 4),
+                ("TOPPADDING", (0,0), (-1,-1), 4),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 4),
             ]
             if header:
                 cmds += [
@@ -5620,6 +5659,20 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     cmds.append(("BACKGROUND", (0,i), (-1,i), azul_claro))
             t.setStyle(TableStyle(cmds))
             return t
+
+        def append_keep_together(flowables: list, max_items: int = 9):
+            """Mantém título + tabela juntos quando couber; para tabelas grandes, permite split seguro."""
+            if not flowables:
+                return
+            try:
+                tabela = next((f for f in flowables if isinstance(f, Table)), None)
+                linhas = len(getattr(tabela, "_cellvalues", []) or []) if tabela is not None else len(flowables)
+                if linhas <= max_items:
+                    story.append(KeepTogether(flowables))
+                else:
+                    story.extend(flowables)
+            except Exception:
+                story.extend(flowables)
 
         doc = SimpleDocTemplate(
             str(pdf_path), pagesize=A4,
@@ -5783,12 +5836,16 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 widths=[36*mm, 18*mm, 14*mm, 18*mm, 25*mm, 22*mm, 47*mm]))
             story.append(Spacer(1, 3*mm))
 
-        story.append(P("4.2 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         if linhas_a:
-            story.append(table([["Data", "pH", "CRL", "CT", "CC", "Alcalinidade", "Dureza", "CYA", "Operador"]] + linhas_a,
-                widths=[21*mm, 13*mm, 15*mm, 15*mm, 15*mm, 25*mm, 24*mm, 22*mm, 30*mm]))
+            tbl_analises = table(
+                [["Data", "pH", "CRL", "CT", "CC", "Alcalinidade", "Dureza", "CYA", "Operador"]] + linhas_a,
+                widths=[21*mm, 13*mm, 15*mm, 15*mm, 15*mm, 25*mm, 24*mm, 22*mm, 30*mm],
+                max_cell_chars=260,
+            )
+            append_keep_together([P("4.2 Registro de Análises Físico-Químicas", "AqH2"), tbl_analises], max_items=10)
         else:
+            story.append(P("4.2 Registro de Análises Físico-Químicas", "AqH2"))
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
         story.append(P("4.3 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
@@ -5822,7 +5879,6 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             for o in obs[:8]:
                 story.append(P(f"• {o}", "AqSmall"))
 
-        story.append(P("5.2 Recomendações Técnicas ao Cliente", "AqH2"))
         recs = []
         plano_acao = dados_relatorio.get("plano_acao", []) or []
         fonte_recs = plano_acao if plano_acao else (dados_relatorio.get("recomendacoes", []) or [])
@@ -5833,8 +5889,12 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 recs.append([str(idx), rec_txt, r.get("prazo", ""), r.get("responsavel", ""), criterio])
         if not recs:
             recs = [["1", "Manter rotina de monitoramento e registrar as leituras no sistema.", "Próxima rotina", "Operação / RT", "Registros mensais sem desvios críticos."]]
-        story.append(table([["Nº", "Recomendação Técnica", "Prazo", "Responsável", "Critério de encerramento"]] + recs,
-            widths=[10*mm, 79*mm, 24*mm, 28*mm, 39*mm]))
+        tbl_recs = table(
+            [["Nº", "Recomendação Técnica", "Prazo", "Responsável", "Critério de encerramento"]] + recs,
+            widths=[10*mm, 79*mm, 24*mm, 28*mm, 39*mm],
+            max_cell_chars=700,
+        )
+        append_keep_together([P("5.2 Recomendações Técnicas ao Cliente", "AqH2"), tbl_recs], max_items=7)
         story.append(Spacer(1, 8*mm))
         story.append(PageBreak())
 
@@ -5865,7 +5925,23 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 except Exception:
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
-        doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+        try:
+            doc.build(list(story), onFirstPage=header_footer, onLaterPages=header_footer)
+        except LayoutError as e:
+            _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab/LayoutError", e)
+            # Fallback defensivo: preserva o conteúdo, mas troca agrupamentos por fluxo simples
+            # e deixa o ReportLab dividir tabelas grandes entre páginas.
+            story_fallback = []
+            for item in story:
+                if isinstance(item, KeepTogether):
+                    try:
+                        story_fallback.extend(list(item._content))
+                    except Exception:
+                        story_fallback.append(P("Bloco técnico ajustado automaticamente para evitar estouro de layout.", "AqWarn"))
+                else:
+                    story_fallback.append(item)
+            doc.build(list(story_fallback), onFirstPage=header_footer, onLaterPages=header_footer)
+
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
     except Exception as e:
         _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab", e)
