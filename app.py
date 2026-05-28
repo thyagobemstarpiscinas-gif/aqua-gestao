@@ -13692,7 +13692,6 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.subheader("📝 Contrato Aqua Gestão — Limpeza e Manutenção")
     st.caption("Gera contrato operacional Aqua Gestão separado do contrato de Responsabilidade Técnica.")
 
-    @st.cache_data(ttl=300, show_spinner=False)
     def _clientes_aqua_limpeza_cache():
         return filtrar_clientes_por_empresa(sheets_listar_clientes_completo() or [], "aqua_gestao")
 
@@ -13792,7 +13791,6 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.subheader("🧪 Dossiê de Segurança Química — FDS essenciais e GHS")
     st.caption("Gera dossiê padrão Aqua para qualquer condomínio cadastrado, com fichas essenciais por produto e quadro GHS.")
 
-    @st.cache_data(ttl=300, show_spinner=False)
     def _clientes_aqua_dossie_cache():
         return filtrar_clientes_por_empresa(sheets_listar_clientes_completo() or [], "aqua_gestao")
 
