@@ -3776,32 +3776,45 @@ def aplicar_cliente_completo_no_relatorio(cliente_base: dict | None = None, nome
     email = str(cliente.get("email") or cliente.get("email_cliente") or "").strip()
     cep = str(cliente.get("cep") or cliente.get("cep_condominio") or "").strip()
 
-    # Sincroniza formulário principal para que botões antigos também funcionem.
-    if nome:
-        st.session_state["nome_condominio"] = nome
-    if cnpj:
-        st.session_state["cnpj_condominio"] = cnpj
-    if endereco:
-        st.session_state["endereco_condominio"] = endereco
-    if representante:
-        st.session_state["nome_sindico"] = representante
-    if cpf_rep:
-        st.session_state["cpf_sindico"] = cpf_rep
-    if telefone:
-        st.session_state["whatsapp_cliente"] = telefone
-    if email:
-        st.session_state["email_cliente"] = email
-    if cep:
-        st.session_state["cep_condominio"] = cep
-    st.session_state["cargo_sindico"] = str(cliente.get("cargo_sindico") or st.session_state.get("cargo_sindico") or "Síndico")
+    # Sincronização defensiva:
+    # No Streamlit, NÃO é seguro atribuir st.session_state["chave_de_widget"]
+    # depois que o widget com essa key já foi renderizado no mesmo rerun.
+    # Isso causava StreamlitAPIException ao clicar em "Carregar".
+    def _safe_state_set(chave: str, valor):
+        if valor in (None, ""):
+            return
+        try:
+            st.session_state[chave] = valor
+        except Exception:
+            # Widget já instanciado neste ciclo: não derruba o relatório.
+            # O valor principal do Relatório RT será aplicado nas chaves rel_*,
+            # que são renderizadas depois deste botão.
+            pass
+
+    # Sincroniza formulário principal apenas quando seguro, para compatibilidade.
+    _safe_state_set("nome_condominio", nome)
+    _safe_state_set("cnpj_condominio", cnpj)
+    _safe_state_set("endereco_condominio", endereco)
+    _safe_state_set("nome_sindico", representante)
+    _safe_state_set("cpf_sindico", cpf_rep)
+    _safe_state_set("whatsapp_cliente", telefone)
+    _safe_state_set("email_cliente", email)
+    _safe_state_set("cep_condominio", cep)
+    try:
+        st.session_state["cargo_sindico"] = str(cliente.get("cargo_sindico") or st.session_state.get("cargo_sindico") or "Síndico")
+    except Exception:
+        pass
 
     # Campos próprios do relatório RT.
-    st.session_state["rel_nome_condominio"] = nome
-    st.session_state["rel_cnpj_condominio"] = cnpj
-    st.session_state["rel_endereco_condominio"] = endereco
-    st.session_state["rel_representante"] = representante
-    st.session_state["rel_cpf_cnpj_representante"] = cpf_rep or cnpj
-    st.session_state["rel_cep"] = cep
+    # Estes são os campos usados pelo bloco persistente e ficam antes da renderização,
+    # então podem receber o cadastro completo com segurança.
+    _safe_state_set("rel_nome_condominio", nome)
+    _safe_state_set("rel_cnpj_condominio", cnpj)
+    _safe_state_set("rel_endereco_condominio", endereco)
+    _safe_state_set("rel_representante", representante)
+    _safe_state_set("rel_cpf_cnpj_representante", cpf_rep or cnpj)
+    _safe_state_set("rel_cep_condominio", cep)
+    _safe_state_set("rel_cep", cep)
 
     # ART e dados regulatórios salvos localmente, quando existirem.
     st.session_state["rel_art_status"] = str(cliente.get("rel_art_status") or "Emitida")
