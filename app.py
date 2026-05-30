@@ -13895,7 +13895,6 @@ st.markdown("</div>", unsafe_allow_html=True)
 # =========================================
 
 # Encerra aqui para impedir que módulos Aqua Gestão apareçam no painel Bem Star.
-st.stop()
 
 st.markdown('<div class="section-card aq-only" id="sec-formulario">', unsafe_allow_html=True)
 st.subheader("Dados do contrato de Responsabilidade Técnica")
