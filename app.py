@@ -13881,6 +13881,9 @@ with st.expander("📋 Preencher e gerar dossiê", expanded=False):
                     "representante": st.session_state.get("aq_dossie_representante", ""),
                     "data": st.session_state.get("aq_dossie_data", ""),
                     "versao": st.session_state.get("aq_dossie_versao", ""),
+                    "nome": st.session_state.get("aq_dossie_nome", ""),
+                    "cnpj": st.session_state.get("aq_dossie_cnpj", ""),
+                    "produtos": _dados_fds_essenciais_aqua(),
                 }
                 pdf_bytes = gerar_dossie_fds_ghs_aqua_pdf(dados)
                 nome_arq = limpar_nome_arquivo(f"Dossie_Seguranca_Quimica_{dados['nome']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
