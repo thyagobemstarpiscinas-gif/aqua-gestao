@@ -10012,6 +10012,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.session_state["op_assinatura_responsavel_b64"] = ""
             st.session_state["op_assinatura_responsavel_data"] = ""
             st.session_state["_op_ass_canvas_nonce"] = st.session_state.get("_op_ass_canvas_nonce", 0) + 1
+            for _k_apos in ["op_ph_apos","op_crl_apos","op_ct_apos","op_alc_apos","op_dc_apos","op_cya_apos"]:
+                st.session_state[_k_apos] = ""
+            st.session_state["op_apos_ativo"] = False
 
         # ── Autosave: função chamada a cada mudança de campo ─────────────────
         def _autosave_rascunho():
@@ -10251,6 +10254,39 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         if not op_dosagens and op_piscinas_dados:
             op_dosagens = op_piscinas_dados[0].get("dosagens", [])
 
+
+        # ── Parâmetros APÓS o tratamento ──────────────────────────────────────
+        st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.markdown('<div class="op-title">🟢 Parâmetros após o tratamento</div>', unsafe_allow_html=True)
+        _apos_ativo = st.checkbox(
+            "✅ Registrar parâmetros após tratamento",
+            key="op_apos_ativo",
+            help="Ative somente se você mediu novamente após aplicar os produtos."
+        )
+        if _apos_ativo:
+            st.caption("Preencha os valores medidos após a aplicação dos produtos químicos.")
+            _apos_c1, _apos_c2 = st.columns(2)
+            with _apos_c1:
+                st.text_input("pH após",               key="op_ph_apos",  placeholder="ex: 7,4", on_change=_autosave_rascunho)
+                st.text_input("Alcalinidade após mg/L", key="op_alc_apos", placeholder="ex: 100", on_change=_autosave_rascunho)
+                st.text_input("Dureza DC após mg/L",   key="op_dc_apos",  placeholder="ex: 200", on_change=_autosave_rascunho)
+            with _apos_c2:
+                st.text_input("CRL após mg/L",         key="op_crl_apos", placeholder="ex: 2,5", on_change=_autosave_rascunho)
+                st.text_input("Cloro Total após mg/L", key="op_ct_apos",  placeholder="ex: 2,8", on_change=_autosave_rascunho)
+                st.text_input("CYA após mg/L",         key="op_cya_apos", placeholder="ex: 40",  on_change=_autosave_rascunho)
+            _apos_vals = [
+                (st.session_state.get("op_ph_apos",""),  7.2, 7.8, "pH após"),
+                (st.session_state.get("op_crl_apos",""), 0.5, 3.0, "CRL após"),
+                (st.session_state.get("op_alc_apos",""), 80,  120, "Alcalinidade após"),
+                (st.session_state.get("op_dc_apos",""),  150, 300, "Dureza DC após"),
+                (st.session_state.get("op_cya_apos",""), 30,  50,  "CYA após"),
+            ]
+            for _av, _mn, _mx, _rot in _apos_vals:
+                _vf = valor_float(re.sub(r"[^0-9.,]","",str(_av)).replace(",","."))
+                if _vf is not None:
+                    _ok = _mn <= _vf <= _mx
+                    st.markdown(f"{'✅' if _ok else '⚠️'} **{_rot}: {_vf}** {'— conforme' if _ok else '— fora da faixa'}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
         # ── Fotos categorizadas — com salvamento imediato ───────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
@@ -10674,6 +10710,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_extras_b64": fotos_extras_b64,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": _agora_brasilia(),
+                    "ph_apos":           re.sub(r"[^0-9.,]","",st.session_state.get("op_ph_apos","")).replace(",","."),
+                    "cloro_livre_apos":  re.sub(r"[^0-9.,]","",st.session_state.get("op_crl_apos","")).replace(",","."),
+                    "cloro_total_apos":  re.sub(r"[^0-9.,]","",st.session_state.get("op_ct_apos","")).replace(",","."),
+                    "alcalinidade_apos": re.sub(r"[^0-9.,]","",st.session_state.get("op_alc_apos","")).replace(",","."),
+                    "dureza_apos":       re.sub(r"[^0-9.,]","",st.session_state.get("op_dc_apos","")).replace(",","."),
+                    "cianurico_apos":    re.sub(r"[^0-9.,]","",st.session_state.get("op_cya_apos","")).replace(",","."),
                 }
                 pendentes = dados_ex.get("lancamentos_campo", [])
                 pendentes.append(lancamento)
