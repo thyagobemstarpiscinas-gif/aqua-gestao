@@ -13438,74 +13438,73 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         return buf.getvalue()
 
 
-    def _dados_fds_essenciais_aqua() -> list[dict]:
-        """Dados essenciais consolidados das FDS padrão usadas no dossiê Aqua."""
-        return [
-            {
-                "produto": "Pastilhas Tricloro / Ácido tricloroisocianúrico",
-                "uso": "Desinfecção e manutenção do residual de cloro.",
-                "ghs": "GHS03 oxidante; GHS07 nocivo/irritante; GHS09 meio ambiente.",
-                "perigos": "Comburente, nocivo se ingerido, irritação ocular/respiratória, muito tóxico ao ambiente aquático.",
-                "epi": "Luvas químicas, óculos de segurança ou protetor facial, roupa de proteção e calçado fechado.",
-                "primeiros_socorros": "Inalação: remover para local ventilado. Olhos/pele: lavar com água por pelo menos 15 minutos. Ingestão: não provocar vômito e procurar atendimento.",
-                "armazenamento": "Manter seco, ventilado, fechado, longe de calor, fontes de ignição, combustíveis, ácidos e produtos incompatíveis.",
-            },
-            {
-                "produto": "Hipoclorito de Cálcio / Cloro Granulado",
-                "uso": "Oxidação e desinfecção da água.",
-                "ghs": "GHS03 oxidante; GHS05 corrosivo; GHS08 perigo à saúde; GHS07 nocivo; GHS09 meio ambiente.",
-                "perigos": "Pode agravar incêndio, nocivo se ingerido, provoca queimaduras severas e lesões oculares graves, pode afetar sistema respiratório, muito tóxico ao ambiente aquático.",
-                "epi": "Luvas químicas, proteção ocular/facial, roupa de proteção, calçado fechado; proteção respiratória em poeira ou baixa ventilação.",
-                "primeiros_socorros": "Inalação: local ventilado. Pele: retirar roupa contaminada e lavar. Olhos: lavar por 15 minutos. Ingestão: não provocar vômito.",
-                "armazenamento": "Separar de ácidos, combustíveis, material orgânico, papel, madeira, óleo, tecidos e outros produtos químicos. Manter fechado e seco.",
-            },
-            {
-                "produto": "Dicloro Orgânico 56%",
-                "uso": "Desinfecção da água e ajuste operacional de cloro.",
-                "ghs": "GHS05 lesão ocular; GHS07 irritante/nocivo; GHS09 meio ambiente.",
-                "perigos": "Nocivo se ingerido, irrita a pele, provoca lesões oculares graves, pode irritar vias respiratórias, muito tóxico ao ambiente aquático.",
-                "epi": "Luvas, proteção ocular/facial, roupa de proteção e calçado fechado.",
-                "primeiros_socorros": "Inalação: remover para local ventilado. Pele/olhos: lavar com água; procurar atendimento em caso de lesão ou irritação persistente. Não provocar vômito.",
-                "armazenamento": "Manter em local ventilado, fechado e separado de produtos incompatíveis, ácidos, materiais combustíveis e fontes de calor.",
-            },
-            {
-                "produto": "Diminuidor de pH e Alcalinidade",
-                "uso": "Correção de pH e alcalinidade.",
-                "ghs": "GHS05 corrosivo; GHS07 nocivo/irritante.",
-                "perigos": "Nocivo se ingerido ou inalado, provoca queimadura severa à pele e dano aos olhos, tóxico para organismos aquáticos.",
-                "epi": "Luvas resistentes a ácidos, óculos/protetor facial, roupa de proteção, calçado fechado; proteção respiratória se houver névoa/vapor.",
-                "primeiros_socorros": "Inalação: local ventilado. Pele/olhos: lavar imediatamente com água em abundância. Ingestão: não provocar vômito e procurar atendimento.",
-                "armazenamento": "Guardar fechado, ventilado e separado de clorados, alcalinos, metais e produtos incompatíveis. Não misturar com cloro.",
-            },
-            {
-                "produto": "Limpa Bordas",
-                "uso": "Limpeza de bordas e resíduos aderidos.",
-                "ghs": "GHS05 corrosivo/lesão ocular.",
-                "perigos": "Irritação moderada à pele, lesões oculares graves, tóxico/nocivo ao ambiente aquático.",
-                "epi": "Luvas de proteção, óculos ou protetor facial, roupa de proteção e calçado fechado.",
-                "primeiros_socorros": "Pele: lavar com água. Olhos: enxaguar cuidadosamente por vários minutos. Ingestão: não provocar vômito; procurar orientação médica.",
-                "armazenamento": "Manter na embalagem original, fechado, identificado e longe de produtos incompatíveis.",
-            },
-            {
-                "produto": "Clarificante / Floc Plus 2 em 1",
-                "uso": "Clarificação/floculação da água.",
-                "ghs": "GHS05 corrosivo.",
-                "perigos": "Pode ser corrosivo para metais, provoca queimaduras graves à pele e lesões oculares graves.",
-                "epi": "Luvas químicas, óculos/protetor facial, roupa de proteção, calçado fechado; proteção respiratória em névoa/vapor.",
-                "primeiros_socorros": "Pele/olhos: lavar imediatamente com água por pelo menos 15 minutos. Ingestão: não provocar vômito.",
-                "armazenamento": "Conservar na embalagem original, em recipiente resistente à corrosão, separado de incompatíveis.",
-            },
-            {
-                "produto": "Bicarbonato de Sódio",
-                "uso": "Elevação de alcalinidade e estabilização operacional do pH.",
-                "ghs": "Não classificado como perigoso no sistema GHS informado na FDS.",
-                "perigos": "Pode causar leve irritação mecânica em pele, olhos ou vias respiratórias por poeira.",
-                "epi": "Óculos de proteção, luvas, vestimenta adequada, sapato fechado; máscara se houver formação de poeira.",
-                "primeiros_socorros": "Inalação: local ventilado. Pele/olhos: lavar com água. Ingestão: lavar a boca e procurar orientação se houver indisposição.",
-                "armazenamento": "Local ventilado, seco, recipiente fechado e separado de materiais incompatíveis.",
-            },
-        ]
-
+def _dados_fds_essenciais_aqua() -> list[dict]:
+    """Dados essenciais consolidados das FDS padrão usadas no dossiê Aqua."""
+    return [
+        {
+            "produto": "Pastilhas Tricloro / Ácido tricloroisocianúrico",
+            "uso": "Desinfecção e manutenção do residual de cloro.",
+            "ghs": "GHS03 oxidante; GHS07 nocivo/irritante; GHS09 meio ambiente.",
+            "perigos": "Comburente, nocivo se ingerido, irritação ocular/respiratória, muito tóxico ao ambiente aquático.",
+            "epi": "Luvas químicas, óculos de segurança ou protetor facial, roupa de proteção e calçado fechado.",
+            "primeiros_socorros": "Inalação: remover para local ventilado. Olhos/pele: lavar com água por pelo menos 15 minutos. Ingestão: não provocar vômito e procurar atendimento.",
+            "armazenamento": "Manter seco, ventilado, fechado, longe de calor, fontes de ignição, combustíveis, ácidos e produtos incompatíveis.",
+        },
+        {
+            "produto": "Hipoclorito de Cálcio / Cloro Granulado",
+            "uso": "Oxidação e desinfecção da água.",
+            "ghs": "GHS03 oxidante; GHS05 corrosivo; GHS08 perigo à saúde; GHS07 nocivo; GHS09 meio ambiente.",
+            "perigos": "Pode agravar incêndio, nocivo se ingerido, provoca queimaduras severas e lesões oculares graves, pode afetar sistema respiratório, muito tóxico ao ambiente aquático.",
+            "epi": "Luvas químicas, proteção ocular/facial, roupa de proteção, calçado fechado; proteção respiratória em poeira ou baixa ventilação.",
+            "primeiros_socorros": "Inalação: local ventilado. Pele: retirar roupa contaminada e lavar. Olhos: lavar por 15 minutos. Ingestão: não provocar vômito.",
+            "armazenamento": "Separar de ácidos, combustíveis, material orgânico, papel, madeira, óleo, tecidos e outros produtos químicos. Manter fechado e seco.",
+        },
+        {
+            "produto": "Dicloro Orgânico 56%",
+            "uso": "Desinfecção da água e ajuste operacional de cloro.",
+            "ghs": "GHS05 lesão ocular; GHS07 irritante/nocivo; GHS09 meio ambiente.",
+            "perigos": "Nocivo se ingerido, irrita a pele, provoca lesões oculares graves, pode irritar vias respiratórias, muito tóxico ao ambiente aquático.",
+            "epi": "Luvas, proteção ocular/facial, roupa de proteção e calçado fechado.",
+            "primeiros_socorros": "Inalação: remover para local ventilado. Pele/olhos: lavar com água; procurar atendimento em caso de lesão ou irritação persistente. Não provocar vômito.",
+            "armazenamento": "Manter em local ventilado, fechado e separado de produtos incompatíveis, ácidos, materiais combustíveis e fontes de calor.",
+        },
+        {
+            "produto": "Diminuidor de pH e Alcalinidade",
+            "uso": "Correção de pH e alcalinidade.",
+            "ghs": "GHS05 corrosivo; GHS07 nocivo/irritante.",
+            "perigos": "Nocivo se ingerido ou inalado, provoca queimadura severa à pele e dano aos olhos, tóxico para organismos aquáticos.",
+            "epi": "Luvas resistentes a ácidos, óculos/protetor facial, roupa de proteção, calçado fechado; proteção respiratória se houver névoa/vapor.",
+            "primeiros_socorros": "Inalação: local ventilado. Pele/olhos: lavar imediatamente com água em abundância. Ingestão: não provocar vômito e procurar atendimento.",
+            "armazenamento": "Guardar fechado, ventilado e separado de clorados, alcalinos, metais e produtos incompatíveis. Não misturar com cloro.",
+        },
+        {
+            "produto": "Limpa Bordas",
+            "uso": "Limpeza de bordas e resíduos aderidos.",
+            "ghs": "GHS05 corrosivo/lesão ocular.",
+            "perigos": "Irritação moderada à pele, lesões oculares graves, tóxico/nocivo ao ambiente aquático.",
+            "epi": "Luvas de proteção, óculos ou protetor facial, roupa de proteção e calçado fechado.",
+            "primeiros_socorros": "Pele: lavar com água. Olhos: enxaguar cuidadosamente por vários minutos. Ingestão: não provocar vômito; procurar orientação médica.",
+            "armazenamento": "Manter na embalagem original, fechado, identificado e longe de produtos incompatíveis.",
+        },
+        {
+            "produto": "Clarificante / Floc Plus 2 em 1",
+            "uso": "Clarificação/floculação da água.",
+            "ghs": "GHS05 corrosivo.",
+            "perigos": "Pode ser corrosivo para metais, provoca queimaduras graves à pele e lesões oculares graves.",
+            "epi": "Luvas químicas, óculos/protetor facial, roupa de proteção, calçado fechado; proteção respiratória em névoa/vapor.",
+            "primeiros_socorros": "Pele/olhos: lavar imediatamente com água por pelo menos 15 minutos. Ingestão: não provocar vômito.",
+            "armazenamento": "Conservar na embalagem original, em recipiente resistente à corrosão, separado de incompatíveis.",
+        },
+        {
+            "produto": "Bicarbonato de Sódio",
+            "uso": "Elevação de alcalinidade e estabilização operacional do pH.",
+            "ghs": "Não classificado como perigoso no sistema GHS informado na FDS.",
+            "perigos": "Pode causar leve irritação mecânica em pele, olhos ou vias respiratórias por poeira.",
+            "epi": "Óculos de proteção, luvas, vestimenta adequada, sapato fechado; máscara se houver formação de poeira.",
+            "primeiros_socorros": "Inalação: local ventilado. Pele/olhos: lavar com água. Ingestão: lavar a boca e procurar orientação se houver indisposição.",
+            "armazenamento": "Local ventilado, seco, recipiente fechado e separado de materiais incompatíveis.",
+        },
+    ]
 
 def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     """Gera dossiê de segurança química com FDS essenciais e GHS para condomínio selecionado."""
