@@ -14116,6 +14116,10 @@ st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.stop()
 
+# FIX_BEMSTAR_STOP_ANTES_AQUA_OK
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
+    st.stop()
+
 st.subheader("🧪 Dossiê de Segurança Química — FDS essenciais e GHS")
 st.caption("Gera dossiê padrão Aqua para qualquer condomínio cadastrado, com fichas essenciais por produto e quadro GHS.")
 
