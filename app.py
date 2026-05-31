@@ -13548,6 +13548,7 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         title=f"Dossiê de Segurança Química - {nome}",
         author="Aqua Gestão Controle Técnico Ltda",
     )
+    h_pt = A4[1]  # altura da página em pontos
 
     styles = getSampleStyleSheet()
     def add(name, **kw):
@@ -13594,35 +13595,45 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         w, h = A4
 
         if doc_obj.page == 1:
-            canvas.setFillColor(colors.HexColor("#F0F4F8"))
+            # CAPA PÁGINA CHEIA — fundo azul navy 100%
+            canvas.setFillColor(AZUL)
             canvas.rect(0, 0, w, h, fill=1, stroke=0)
 
-            faixa_h = h * 0.44
-            canvas.setFillColor(AZUL)
-            canvas.rect(0, h - faixa_h, w, faixa_h, fill=1, stroke=0)
-
+            # Linha dourada decorativa no topo
             canvas.setFillColor(DOURADO)
-            canvas.rect(w - 0.5*cm, h - faixa_h, 0.5*cm, faixa_h, fill=1, stroke=0)
-            canvas.rect(0, h - faixa_h - 0.2*cm, w, 0.2*cm, fill=1, stroke=0)
+            canvas.rect(0, h - 0.35*cm, w, 0.35*cm, fill=1, stroke=0)
 
-            canvas.setFillColor(colors.white)
-            canvas.setFont("Helvetica-Bold", 10)
-            canvas.drawString(1.4*cm, h - 0.9*cm, "AQUA GESTÃO CONTROLE TÉCNICO LTDA")
-            canvas.setFont("Helvetica", 7.5)
-            canvas.drawString(1.4*cm, h - 1.35*cm,
-                "Responsabilidade Técnica  |  Segurança Química  |  Piscinas Coletivas")
-            canvas.setFont("Helvetica", 7)
-            canvas.drawRightString(w - 0.7*cm, h - 0.9*cm,  f"Versão {versao}")
-            canvas.drawRightString(w - 0.7*cm, h - 1.35*cm, f"Emissão: {data_emissao}")
-
-            canvas.setFillColor(AZUL)
-            canvas.rect(0, 0, w, 1.1*cm, fill=1, stroke=0)
+            # Linha dourada no rodapé
             canvas.setFillColor(DOURADO)
-            canvas.rect(0, 1.1*cm, w, 0.1*cm, fill=1, stroke=0)
+            canvas.rect(0, 0.9*cm, w, 0.12*cm, fill=1, stroke=0)
+
+            # Faixa do rodapé mais escura
+            canvas.setFillColor(colors.HexColor("#081828"))
+            canvas.rect(0, 0, w, 0.9*cm, fill=1, stroke=0)
+
+            # Texto do rodapé
             canvas.setFillColor(colors.white)
             canvas.setFont("Helvetica", 7)
-            canvas.drawCentredString(w/2, 0.42*cm,
-                f"CNPJ 66.008.795/0001-92  |  Uberlândia/MG  |  Dossiê FDS/GHS  |  Versão {versao}")
+            canvas.drawCentredString(w/2, 0.32*cm,
+                f"CNPJ 66.008.795/0001-92  |  Uberlândia/MG  |  Dossiê FDS/GHS  |  Versão {versao}  |  Emissão: {data_emissao}")
+
+            # Logo centralizada — usa LOGO_AQUA_OFICIAL_B64 já no app
+            try:
+                import base64 as _b64, io as _io
+                _logo_data = _b64.b64decode(LOGO_AQUA_OFICIAL_B64)
+                _logo_buf = _io.BytesIO(_logo_data)
+                from reportlab.lib.utils import ImageReader
+                _logo_img = ImageReader(_logo_buf)
+                _logo_w = 7.5*cm
+                _logo_h = 7.5*cm
+                _logo_x = (w - _logo_w) / 2
+                _logo_y = h * 0.52
+                canvas.drawImage(_logo_img, _logo_x, _logo_y,
+                                 width=_logo_w, height=_logo_h,
+                                 preserveAspectRatio=True, mask="auto")
+            except Exception as _e:
+                pass
+
             canvas.restoreState()
             return
 
@@ -13646,14 +13657,22 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
 
     story = []
 
-    # ── CAPA ─────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 8*mm))
-    story.append(Paragraph("DOSSIÊ DE SEGURANÇA QUÍMICA", styles["CapaTit"]))
-    story.append(HRFlowable(width="75%", thickness=1.5, color=DOURADO,
-                             spaceBefore=4, spaceAfter=8, hAlign="CENTER"))
-    story.append(Paragraph("FDS ESSENCIAIS  •  GHS  •  NR-26  •  NR-06", styles["CapaSub"]))
-    story.append(Spacer(1, 20*mm))
+    # ── CAPA — conteúdo desenhado no canvas (header_footer página 1) ──────────
+    # A capa é página cheia via canvas. O story só posiciona os elementos
+    # que o ReportLab precisa para reservar o espaço da página.
+    # Título do dossiê (no terço superior, sobre o canvas azul)
+    story.append(Spacer(1, h_pt * 0.32))  # empurra para baixo da logo
 
+    # Subtítulo
+    story.append(Paragraph("FDS ESSENCIAIS  •  GHS  •  NR-26  •  NR-06",
+        ParagraphStyle("CapaSubCapa", parent=styles["Normal"], fontSize=12, leading=15,
+                       textColor=DOURADO, alignment=TA_CENTER, fontName="Helvetica-Bold")))
+    story.append(Spacer(1, 6*mm))
+    story.append(HRFlowable(width="60%", thickness=1.0, color=DOURADO,
+                             spaceBefore=2, spaceAfter=8, hAlign="CENTER"))
+    story.append(Spacer(1, 8*mm))
+
+    # Card do condomínio
     card_data = [
         [Paragraph("CONDOMÍNIO / LOCAL ATENDIDO", styles["CapaCard"])],
         [Paragraph(esc(nome), styles["CapaCardBodyB"])],
@@ -13661,13 +13680,13 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         [Paragraph(f"Endereço: {esc(endereco)}", styles["CapaCardBody"])],
         [Paragraph(f"Data de emissão: {esc(data_emissao)}  |  Versão: {versao}", styles["CapaCardBody"])],
     ]
-    card = Table(card_data, colWidths=[17.3*cm])
+    card = Table(card_data, colWidths=[15.0*cm])
     card.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(0,0),  AZUL),
-        ("BACKGROUND",    (0,1),(0,-1), colors.white),
+        ("BACKGROUND",    (0,0),(0,0),  colors.HexColor("#0A1F38")),
+        ("BACKGROUND",    (0,1),(0,-1), colors.HexColor("#0F2535")),
         ("BOX",           (0,0),(-1,-1), 1.5, DOURADO),
         ("LINEBELOW",     (0,0),(0,0),   0.8, DOURADO),
-        ("INNERGRID",     (0,1),(-1,-1), 0.3, BORDA),
+        ("INNERGRID",     (0,1),(-1,-1), 0.3, colors.HexColor("#1A3A55")),
         ("LEFTPADDING",   (0,0),(-1,-1), 14),
         ("RIGHTPADDING",  (0,0),(-1,-1), 14),
         ("TOPPADDING",    (0,0),(-1,-1), 10),
@@ -13675,23 +13694,18 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         ("ALIGN",         (0,0),(-1,-1), "CENTER"),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
-    story.append(card)
-    story.append(Spacer(1, 10*mm))
 
-    nota = Table([[Paragraph(
-        "Documento operacional para consulta rápida junto à casa de máquinas, "
-        "armário químico e equipe operacional designada.",
-        styles["CapaNota"]
-    )]], colWidths=[17.3*cm])
-    nota.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), DOURADO_BG),
-        ("BOX",           (0,0),(-1,-1), 0.8, DOURADO),
-        ("LEFTPADDING",   (0,0),(-1,-1), 12),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 12),
-        ("TOPPADDING",    (0,0),(-1,-1), 8),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 8),
+    # Centraliza o card na página
+    card_wrapper = Table([[card]], colWidths=[17.3*cm])
+    card_wrapper.setStyle(TableStyle([
+        ("ALIGN",  (0,0),(-1,-1), "CENTER"),
+        ("VALIGN", (0,0),(-1,-1), "MIDDLE"),
+        ("LEFTPADDING",  (0,0),(-1,-1), 0),
+        ("RIGHTPADDING", (0,0),(-1,-1), 0),
+        ("TOPPADDING",   (0,0),(-1,-1), 0),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 0),
     ]))
-    story.append(nota)
+    story.append(card_wrapper)
     story.append(PageBreak())
 
     # ── SEÇÕES 1-3 ───────────────────────────────────────────────────────────
