@@ -5941,12 +5941,22 @@ def montar_dados_relatorio() -> dict:
     if not any(observacoes):
         observacoes = textos_auto["observacoes"]
 
+    # --- LÓGICA DE IDENTIDADE DINÂMICA ---
+    empresa_atual = _empresa_ativa_nome()
+    is_bem_star = "Bem Star" in empresa_atual
+
+    empresa_rt_dinamica = EMPRESA_BEM_STAR if is_bem_star else EMPRESA_RT
+    responsavel_dinamico = "Equipe Operacional" if is_bem_star else RESPONSAVEL_TÉCNICO
+    assinatura_dinamica = "Bem Star Piscinas" if is_bem_star else RESPONSAVEL_TECNICO_ASSINATURA
+    crq_dinamico = "N/A" if is_bem_star else CRQ
+    qualificacao_dinamica = "Operação e Manutenção" if is_bem_star else QUALIFICACAO_RT
+
     return {
-        "empresa_rt": EMPRESA_RT,
-        "responsavel_tecnico": RESPONSAVEL_TÉCNICO,
-        "assinatura_rt_texto": RESPONSAVEL_TECNICO_ASSINATURA,
-        "crq": CRQ,
-        "qualificacao": QUALIFICACAO_RT,
+        "empresa_rt": empresa_rt_dinamica,
+        "responsavel_tecnico": responsavel_dinamico,
+        "assinatura_rt_texto": assinatura_dinamica,
+        "crq": crq_dinamico,
+        "qualificacao": qualificacao_dinamica,
         "certificacoes": CERTIFICACOES_RT,
         "nome_condominio": nome_condominio,
         "cnpj_condominio": dados_base.get("cnpj_condominio", ""),
@@ -8141,6 +8151,511 @@ def _carregar_clientes_bem_star_relatorio() -> dict:
     return clientes
 
 
+
+def _filtrar_lancamentos_preview_por_mes(lancamentos: list[dict], mes: str = "", ano: str = "") -> list[dict]:
+    """Filtra lançamentos pelo mês/ano informado. Compatível com Bem Star."""
+    mes = str(mes or "").strip()
+    ano = str(ano or "").strip()
+
+    if not mes and not ano:
+        return lancamentos or []
+
+    filtrados = []
+    for lanc in lancamentos or []:
+        if not isinstance(lanc, dict):
+            continue
+        data_lanc = lanc.get("data") or lanc.get("data_visita") or lanc.get("Data") or ""
+        try:
+            if lancamento_pertence_mes_ano(data_lanc, mes, ano):
+                filtrados.append(lanc)
+        except Exception:
+            continue
+    return filtrados
+
+
+def _bs_mes_int(valor) -> int:
+    """Converte mês numérico ou por extenso para inteiro."""
+    txt = str(valor or "").strip().lower()
+    mapa = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3,
+        "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+        "agosto": 8, "setembro": 9, "outubro": 10,
+        "novembro": 11, "dezembro": 12,
+    }
+    if txt in mapa:
+        return mapa[txt]
+    dig = re.sub(r"\D", "", txt)
+    if dig:
+        n = int(dig)
+        if 1 <= n <= 12:
+            return n
+    return datetime.now().month
+
+
+def _bs_gerar_datas_visitas_mes(mes: str, ano: str, dias_semana: list[str]) -> list[str]:
+    """Gera datas DD/MM/AAAA do mês para os dias da semana selecionados."""
+    try:
+        mes_int = _bs_mes_int(mes)
+        ano_int = int(str(ano or datetime.now().year).strip())
+    except Exception:
+        mes_int = datetime.now().month
+        ano_int = datetime.now().year
+
+    mapa_dias = {
+        "Segunda-feira": 0,
+        "Terça-feira": 1,
+        "Quarta-feira": 2,
+        "Quinta-feira": 3,
+        "Sexta-feira": 4,
+        "Sábado": 5,
+        "Domingo": 6,
+    }
+
+    dias_idx = {mapa_dias[d] for d in (dias_semana or []) if d in mapa_dias}
+    if not dias_idx:
+        return []
+
+    atual = datetime(ano_int, mes_int, 1)
+    if mes_int == 12:
+        prox = datetime(ano_int + 1, 1, 1)
+    else:
+        prox = datetime(ano_int, mes_int + 1, 1)
+
+    datas = []
+    while atual < prox:
+        if atual.weekday() in dias_idx:
+            datas.append(atual.strftime("%d/%m/%Y"))
+        atual += timedelta(days=1)
+
+    return datas
+
+
+def _bs_key_data(data_visita: str) -> str:
+    """Cria chave estável para campos da agenda Bem Star."""
+    return re.sub(r"\D", "", str(data_visita or ""))
+
+
+def _bs_lancamento_por_data(lancamentos: list[dict], data_visita: str) -> dict:
+    """Retorna lançamento existente para a data informada, se houver."""
+    alvo = normalizar_data_visita(data_visita)
+    for lc in lancamentos or []:
+        if normalizar_data_visita(lc.get("data", "")) == alvo:
+            return lc
+    return {}
+
+
+def _bs_preencher_padrao_se_vazio(key: str, valor):
+    """Preenche session_state apenas se a chave ainda não existe."""
+    if key not in st.session_state and valor not in (None, ""):
+        st.session_state[key] = str(valor)
+
+
+def _bs_coletar_lancamentos_agenda_manual() -> list[dict]:
+    """Coleta as visitas da agenda mensal Bem Star a partir dos campos bs_agenda_*."""
+    mes = st.session_state.get("csr_mes_rel", "")
+    ano = st.session_state.get("csr_ano_rel", "")
+    dias_semana = st.session_state.get("bs_rel_dias_semana", []) or []
+    incluir_vazias = bool(st.session_state.get("bs_rel_incluir_visitas_vazias", True))
+
+    datas = _bs_gerar_datas_visitas_mes(mes, ano, dias_semana)
+    if not datas:
+        return []
+
+    operador = str(st.session_state.get("csr_operador_rel", "") or "").strip()
+    obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
+
+    lancamentos = []
+    for data_visita in datas:
+        k = _bs_key_data(data_visita)
+
+        piscina_nome = str(st.session_state.get(f"bs_agenda_piscina_{k}", "") or "").strip() or "Piscina principal"
+        ph = str(st.session_state.get(f"bs_agenda_ph_{k}", "") or "").strip()
+        crl = str(st.session_state.get(f"bs_agenda_crl_{k}", "") or "").strip()
+        ct = str(st.session_state.get(f"bs_agenda_ct_{k}", "") or "").strip()
+        alc = str(st.session_state.get(f"bs_agenda_alc_{k}", "") or "").strip()
+        dc = str(st.session_state.get(f"bs_agenda_dc_{k}", "") or "").strip()
+        cya = str(st.session_state.get(f"bs_agenda_cya_{k}", "") or "").strip()
+        obs = str(st.session_state.get(f"bs_agenda_obs_{k}", "") or "").strip()
+
+        dosagens = []
+        for i in range(3):
+            prod = str(st.session_state.get(f"bs_agenda_dos_prod_{k}_{i}", "") or "").strip()
+            qtd = str(st.session_state.get(f"bs_agenda_dos_qtd_{k}_{i}", "") or "").strip()
+            unid = str(st.session_state.get(f"bs_agenda_dos_un_{k}_{i}", "") or "").strip()
+            fin = str(st.session_state.get(f"bs_agenda_dos_fin_{k}_{i}", "") or "").strip()
+            if prod or qtd or fin:
+                dosagens.append({
+                    "produto": prod,
+                    "quantidade": qtd,
+                    "unidade": unid,
+                    "finalidade": fin,
+                })
+
+        tem_dados = any([ph, crl, ct, alc, dc, cya, obs, dosagens])
+        if not tem_dados and not incluir_vazias:
+            continue
+
+        lancamentos.append({
+            "data": data_visita,
+            "operador": operador,
+            "parecer": "Registro operacional Bem Star",
+            "observacao": obs or obs_geral,
+            "problemas": "",
+            "ph": ph,
+            "cloro_livre": crl,
+            "cloro_total": ct,
+            "alcalinidade": alc,
+            "dureza": dc,
+            "cianurico": cya,
+            "piscinas": [{
+                "nome": piscina_nome,
+                "ph": ph,
+                "cloro_livre": crl,
+                "cloro_total": ct,
+                "alcalinidade": alc,
+                "dureza": dc,
+                "cianurico": cya,
+            }],
+            "dosagens": dosagens,
+            "fonte": "Agenda mensal Bem Star",
+        })
+
+    return lancamentos
+
+
+
+def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> list:
+    """Coleta fotos para o relatório Bem Star sem derrubar o relatório.
+
+    Compatibilidade segura:
+    - usa fotos já presentes nos lançamentos, quando existirem;
+    - aceita paths locais salvos como string;
+    - ignora itens inexistentes;
+    - se não houver foto, retorna lista vazia.
+    Não altera Sheets, Drive, dosagem ou modo operador.
+    """
+    fotos = []
+
+    def _add_foto(item):
+        if not item:
+            return
+
+        # Uploads Streamlit ou objetos em memória: deixa o gerador tentar usar.
+        if hasattr(item, "read") or hasattr(item, "getvalue") or hasattr(item, "getbuffer"):
+            fotos.append(item)
+            return
+
+        try:
+            p = Path(str(item))
+            if p.exists() and p.is_file():
+                fotos.append(p)
+        except Exception:
+            pass
+
+    for lc in lancamentos or []:
+        if not isinstance(lc, dict):
+            continue
+
+        # Listas comuns dentro do payload.
+        for chave_lista in (
+            "fotos", "fotos_campo", "fotos_paths", "imagens",
+            "fotos_antes", "fotos_depois", "fotos_casa_maquinas"
+        ):
+            valor = lc.get(chave_lista)
+            if isinstance(valor, list):
+                for item in valor:
+                    _add_foto(item)
+            else:
+                _add_foto(valor)
+
+        # Chaves individuais comuns.
+        for chave in (
+            "foto", "foto_antes", "foto_depois", "foto_casa_maquinas",
+            "foto_casa_maquina", "imagem", "imagem_antes", "imagem_depois"
+        ):
+            _add_foto(lc.get(chave))
+
+    # Fallback leve: tenta pasta local do cliente, se existir.
+    try:
+        pasta_cliente = GENERATED_DIR / slugify_nome(cliente)
+        if pasta_cliente.exists():
+            for padrao in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+                for p in pasta_cliente.rglob(padrao):
+                    _add_foto(p)
+    except Exception:
+        pass
+
+    try:
+        return deduplicar_fotos(fotos)
+    except Exception:
+        return fotos
+
+
+
+def _bs_float(valor):
+    """Converte valor textual em float, aceitando vírgula."""
+    try:
+        txt = str(valor or "").strip().replace(",", ".")
+        txt = re.sub(r"[^0-9.\-]", "", txt)
+        if txt in ("", "-", ".", "-."):
+            return None
+        return float(txt)
+    except Exception:
+        return None
+
+
+def _bs_fmt_num(valor, casas=2):
+    try:
+        return f"{float(valor):.{casas}f}".replace(".", ",")
+    except Exception:
+        return "—"
+
+
+def _bs_stats_valores(lancamentos, campo):
+    vals = []
+    for lc in lancamentos or []:
+        if not isinstance(lc, dict):
+            continue
+        piscinas = lc.get("piscinas", [])
+        base = piscinas[0] if piscinas and isinstance(piscinas[0], dict) else lc
+        v = _bs_float(base.get(campo, lc.get(campo, "")))
+        if v is not None:
+            vals.append(v)
+
+    if not vals:
+        return {
+            "n": 0,
+            "min": None,
+            "max": None,
+            "media": None,
+            "valores": [],
+        }
+
+    return {
+        "n": len(vals),
+        "min": min(vals),
+        "max": max(vals),
+        "media": sum(vals) / len(vals),
+        "valores": vals,
+    }
+
+
+def _bs_conformidade(vals, minimo=None, maximo=None, menor_que=None):
+    if not vals:
+        return 0, 0, 0
+
+    total = len(vals)
+    ok = 0
+    for v in vals:
+        if menor_que is not None:
+            if v < menor_que:
+                ok += 1
+        else:
+            if minimo <= v <= maximo:
+                ok += 1
+
+    perc = round((ok / total) * 100) if total else 0
+    return ok, total, perc
+
+
+def _bs_dia_semana_resumo():
+    dias = st.session_state.get("bs_rel_dias_semana", []) or []
+    mapa = {
+        "Segunda-feira": "segunda-feira",
+        "Terça-feira": "terça-feira",
+        "Quarta-feira": "quarta-feira",
+        "Quinta-feira": "quinta-feira",
+        "Sexta-feira": "sexta-feira",
+        "Sábado": "sábado",
+        "Domingo": "domingo",
+    }
+    if not dias:
+        return "conforme cronograma operacional definido"
+    return ", ".join(mapa.get(d, d.lower()) for d in dias)
+
+
+def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", mes: str = "", ano: str = "") -> str:
+    """Gera parecer técnico-operacional editável para relatório mensal Bem Star.
+
+    Baseado apenas nos parâmetros e dosagens lançados na agenda mensal.
+    Não altera Sheets, dosagem automática, modo operador ou relatórios Aqua Gestão.
+    """
+    lancamentos = [lc for lc in (lancamentos or []) if isinstance(lc, dict)]
+    total_visitas = len(lancamentos)
+    freq_txt = _bs_dia_semana_resumo()
+
+    ph = _bs_stats_valores(lancamentos, "ph")
+    crl = _bs_stats_valores(lancamentos, "cloro_livre")
+    ct = _bs_stats_valores(lancamentos, "cloro_total")
+    alc = _bs_stats_valores(lancamentos, "alcalinidade")
+    dc = _bs_stats_valores(lancamentos, "dureza")
+    cya = _bs_stats_valores(lancamentos, "cianurico")
+
+    cl_comb_vals = []
+    for lc in lancamentos:
+        piscinas = lc.get("piscinas", [])
+        base = piscinas[0] if piscinas and isinstance(piscinas[0], dict) else lc
+        v_ct = _bs_float(base.get("cloro_total", lc.get("cloro_total", "")))
+        v_crl = _bs_float(base.get("cloro_livre", lc.get("cloro_livre", "")))
+        if v_ct is not None and v_crl is not None:
+            cl_comb_vals.append(round(max(v_ct - v_crl, 0), 2))
+
+    linhas = []
+
+    periodo = f"{mes}/{ano}".strip("/")
+    if total_visitas:
+        linhas.append(
+            f"Durante o período de {periodo}, foram registradas {total_visitas} visita(s) de manutenção "
+            f"na piscina de {cliente or 'cliente selecionado'}, em frequência {freq_txt}. "
+            "Os parâmetros físico-químicos foram aferidos conforme rotina operacional, com aplicação de produtos de tratamento conforme a demanda observada em campo."
+        )
+    else:
+        linhas.append(
+            f"Durante o período de {periodo}, não foram identificadas visitas preenchidas na agenda mensal. "
+            "Recomenda-se completar as leituras e dosagens antes da emissão final do relatório."
+        )
+
+    # Conformidade geral
+    if ph["valores"]:
+        ok, tot, perc = _bs_conformidade(ph["valores"], 7.2, 7.8)
+        linhas.append(
+            f"Quanto ao pH, foram registradas {tot} leitura(s), com média de {_bs_fmt_num(ph['media'])}, "
+            f"mínimo de {_bs_fmt_num(ph['min'])} e máximo de {_bs_fmt_num(ph['max'])}. "
+            f"A conformidade estimada foi de {ok}/{tot} ({perc}%) dentro da faixa operacional de referência 7,2 a 7,8."
+        )
+
+        if ph["max"] is not None and ph["max"] > 7.8:
+            linhas.append(
+                "Foi observada tendência de pH elevado em parte das medições. Recomenda-se manter acompanhamento frequente "
+                "e avaliar fatores operacionais que possam favorecer a elevação do pH, como aeração excessiva, cascatas, jatos, retorno de água com turbulência ou alcalinidade em patamar elevado. "
+                "Quando necessário, realizar correções graduais com redutor de pH, sempre respeitando a segurança operacional e a compatibilidade dos produtos."
+            )
+        elif ph["min"] is not None and ph["min"] < 7.2:
+            linhas.append(
+                "Foram observadas leituras de pH abaixo da faixa operacional. Recomenda-se acompanhamento da alcalinidade total, revisão da rotina de dosagem e correção gradual para evitar desconforto aos usuários, corrosividade e instabilidade do cloro."
+            )
+        else:
+            linhas.append(
+                "O pH permaneceu majoritariamente dentro da faixa operacional, indicando boa estabilidade do equilíbrio ácido-base da água no período avaliado."
+            )
+
+    if crl["valores"]:
+        ok, tot, perc = _bs_conformidade(crl["valores"], 1.0, 3.0)
+        linhas.append(
+            f"O cloro livre apresentou média de {_bs_fmt_num(crl['media'])} mg/L, com conformidade de {ok}/{tot} ({perc}%) "
+            "na faixa operacional de 1,0 a 3,0 mg/L."
+        )
+
+        if crl["min"] is not None and crl["min"] < 1.0:
+            linhas.append(
+                "Foram identificadas leituras de cloro livre abaixo da faixa operacional em parte das visitas. Recomenda-se reforçar o controle de dosagem, verificar demanda orgânica, intensidade de uso da piscina, eficiência da filtração e tempo de recirculação."
+            )
+        elif crl["max"] is not None and crl["max"] > 3.0:
+            linhas.append(
+                "Houve leituras de cloro livre acima da faixa operacional. Recomenda-se evitar superdosagens, acompanhar a dissipação natural do residual e orientar a equipe quanto à dosagem proporcional ao volume e à demanda real da água."
+            )
+        else:
+            linhas.append(
+                "O residual de cloro livre manteve-se em condição operacional adequada para manutenção sanitária da água."
+            )
+
+    if cl_comb_vals:
+        clc_min = min(cl_comb_vals)
+        clc_max = max(cl_comb_vals)
+        clc_med = sum(cl_comb_vals) / len(cl_comb_vals)
+        ok, tot, perc = _bs_conformidade(cl_comb_vals, menor_que=0.40)
+
+        linhas.append(
+            f"O cloro combinado calculado apresentou média de {_bs_fmt_num(clc_med)} mg/L, variando de {_bs_fmt_num(clc_min)} a {_bs_fmt_num(clc_max)} mg/L, "
+            f"com {ok}/{tot} leitura(s) abaixo de 0,40 mg/L."
+        )
+
+        if clc_max >= 0.40:
+            linhas.append(
+                "A presença de cloro combinado em patamar elevado pode indicar carga orgânica relevante ou necessidade de oxidação. Recomenda-se avaliar retrolavagem, renovação parcial da água, oxidação periódica e acompanhamento após períodos de maior uso."
+            )
+        else:
+            linhas.append(
+                "O cloro combinado permaneceu em patamar controlado, sem indicação relevante de acúmulo de cloraminas no período avaliado."
+            )
+
+    if alc["valores"]:
+        ok, tot, perc = _bs_conformidade(alc["valores"], 80, 120)
+        linhas.append(
+            f"A alcalinidade total apresentou média de {_bs_fmt_num(alc['media'], 0)} mg/L, com conformidade de {ok}/{tot} ({perc}%) na faixa de 80 a 120 mg/L. "
+            "Esse parâmetro deve continuar sendo monitorado por sua influência direta na estabilidade do pH."
+        )
+        if alc["min"] is not None and alc["min"] < 80:
+            linhas.append(
+                "Leituras de alcalinidade abaixo do ideal podem favorecer oscilações de pH. Recomenda-se correção gradual com alcalinizante apropriado quando confirmado em nova medição."
+            )
+        elif alc["max"] is not None and alc["max"] > 120:
+            linhas.append(
+                "Alcalinidade acima do ideal pode dificultar a correção do pH e favorecer incrustações. Recomenda-se acompanhamento e correção técnica gradual."
+            )
+
+    if dc["valores"]:
+        ok, tot, perc = _bs_conformidade(dc["valores"], 150, 400)
+        linhas.append(
+            f"A dureza cálcica apresentou média de {_bs_fmt_num(dc['media'], 0)} mg/L, com conformidade de {ok}/{tot} ({perc}%) na faixa de 150 a 400 mg/L, "
+            "sem indicação automática de risco crítico quando mantida dentro desse intervalo."
+        )
+
+    if cya["valores"]:
+        ok, tot, perc = _bs_conformidade(cya["valores"], 30, 50)
+        linhas.append(
+            f"O ácido cianúrico apresentou média de {_bs_fmt_num(cya['media'], 0)} mg/L, com conformidade de {ok}/{tot} ({perc}%) na faixa de 30 a 50 mg/L."
+        )
+        if cya["max"] is not None and cya["max"] > 50:
+            linhas.append(
+                "Valores elevados de CYA podem reduzir a eficiência do cloro livre. Recomenda-se controlar o uso de clorados estabilizados e avaliar renovação parcial da água quando necessário."
+            )
+        elif cya["min"] is not None and cya["min"] < 30:
+            linhas.append(
+                "Valores baixos de CYA em piscina externa podem aumentar a perda de cloro por radiação solar. Recomenda-se avaliar estabilização conforme necessidade operacional."
+            )
+
+    # Dosagens e ações
+    total_dosagens = 0
+    produtos = []
+    for lc in lancamentos:
+        for d in lc.get("dosagens", []) or []:
+            if isinstance(d, dict):
+                total_dosagens += 1
+                prod = str(d.get("produto", "") or "").strip()
+                if prod:
+                    produtos.append(prod)
+
+    if total_dosagens:
+        produtos_unicos = []
+        vistos = set()
+        for p in produtos:
+            chave = p.lower()
+            if chave not in vistos:
+                vistos.add(chave)
+                produtos_unicos.append(p)
+
+        lista_prod = ", ".join(produtos_unicos[:6]) if produtos_unicos else "produtos de tratamento"
+        linhas.append(
+            f"No período, foram registradas {total_dosagens} dosagem(ns) aplicada(s), envolvendo {lista_prod}. "
+            "As dosagens devem continuar sendo realizadas conforme demanda observada nas leituras, volume da piscina, frequência de uso e condições climáticas."
+        )
+    else:
+        linhas.append(
+            "Não foram registradas dosagens aplicadas na agenda mensal. Recomenda-se preencher as dosagens executadas em cada visita para melhorar a rastreabilidade operacional do relatório."
+        )
+
+    obs_geral = str(st.session_state.get("csr_obs_rel", "") or "").strip()
+    if obs_geral:
+        linhas.append(f"Observação complementar registrada pela equipe: {obs_geral}")
+
+    linhas.append(
+        "Como recomendações gerais para o próximo período, orienta-se manter a rotina de aferição dos parâmetros, registrar todas as dosagens aplicadas, acompanhar o comportamento do pH e do cloro residual, manter a filtração e retrolavagem conforme necessidade operacional e comunicar ao condomínio qualquer condição recorrente que possa comprometer a estabilidade da água."
+    )
+
+    return "\n\n".join(linhas)
+
+
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
@@ -8170,27 +8685,67 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     vistos = set()
     lancamentos_todos = []
     for lc in (lancamentos_local or []) + (lancamentos_sheets or []):
-        chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
+        chave = f"{normalizar_data_visita(lc.get('data',''))}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
         if chave not in vistos:
             vistos.add(chave)
             lancamentos_todos.append(lc)
 
     lancamentos_csr = _filtrar_lancamentos_preview_por_mes(lancamentos_todos, csr_mes, csr_ano)
+
+    # Agenda mensal Bem Star:
+    # se o usuário definiu dias de visita, a agenda vira a base do relatório.
+    # lançamentos existentes por data alimentam a tela; campos manuais podem complementar.
+    lancamentos_agenda = _bs_coletar_lancamentos_agenda_manual()
+
+    if lancamentos_agenda:
+        por_data_agenda = {
+            normalizar_data_visita(lc.get("data", "")): lc
+            for lc in lancamentos_agenda
+            if lc.get("data")
+        }
+
+        unificados = []
+        datas_usadas = set()
+
+        # Mantém lançamentos reais que não estejam na agenda.
+        for lc in lancamentos_csr or []:
+            d = normalizar_data_visita(lc.get("data", ""))
+            if d in por_data_agenda:
+                unificados.append(por_data_agenda[d])
+                datas_usadas.add(d)
+            else:
+                unificados.append(lc)
+
+        # Adiciona visitas programadas sem lançamento real.
+        for d, lc in por_data_agenda.items():
+            if d not in datas_usadas:
+                unificados.append(lc)
+
+        def _ord(lc):
+            try:
+                return datetime.strptime(normalizar_data_visita(lc.get("data", "")), "%d/%m/%Y")
+            except Exception:
+                return datetime.max
+
+        lancamentos_csr = sorted(unificados, key=_ord)
+
     if not lancamentos_csr:
-        msg = "Nenhum lançamento encontrado para o cliente/período selecionado."
+        msg = "Nenhum lançamento encontrado. Defina a agenda mensal de visitas ou registre visitas no modo campo."
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     lanc_para_relatorio = []
     vistos_rel = set()
     for lc in lancamentos_csr:
-        chave = f"{lc.get('data','')}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
+        chave = f"{normalizar_data_visita(lc.get('data',''))}-{lc.get('operador','')}-{lc.get('ph','') or ((lc.get('piscinas') or [{}])[0].get('ph','') if lc.get('piscinas') else '')}"
         if chave in vistos_rel:
             continue
         vistos_rel.add(chave)
+
         piscinas = lc.get("piscinas", [])
         dados = piscinas[0] if piscinas else lc
+
         lanc_para_relatorio.append({
-            "data": lc.get("data", ""),
+            "data": normalizar_data_visita(lc.get("data", "")),
             "ph": dados.get("ph", lc.get("ph", "")),
             "cloro_livre": dados.get("cloro_livre", lc.get("cloro_livre", "")),
             "cloro_total": dados.get("cloro_total", lc.get("cloro_total", "")),
@@ -8204,6 +8759,7 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         })
 
     fotos_paths = _coletar_fotos_bem_star_preview(csr_sel, lancamentos_csr)
+
     return {
         "ok": True,
         "cliente": csr_sel,
@@ -8211,6 +8767,7 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "ano": csr_ano,
         "operador": csr_operador_nome,
         "obs_geral": csr_obs_geral,
+        "parecer_tecnico": st.session_state.get("bs_rel_parecer_tecnico", ""),
         "dados_cliente": csr_dados_sel,
         "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio,
@@ -8312,6 +8869,980 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
     }
 
 
+
+def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> tuple[bool, str]:
+    """Gera PDF mensal Bem Star em formato Dashboard Gerencial Impresso.
+
+    Escopo:
+    - Somente relatório Bem Star.
+    - Não altera Sheets, modo operador, dosagem automática, login ou relatórios Aqua Gestão.
+    """
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm, mm
+        from reportlab.lib.utils import ImageReader
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            PageBreak, Image as RLImage, KeepTogether
+        )
+        from html import escape as _html_escape
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Paleta baseada na identidade Bem Star
+        AZUL_ESCURO = colors.HexColor("#063A63")
+        AZUL = colors.HexColor("#006EA6")
+        AZUL_CLARO = colors.HexColor("#E8F6FB")
+        TURQUESA = colors.HexColor("#29AFC7")
+        CINZA_BG = colors.HexColor("#F5F7FA")
+        CINZA_LINHA = colors.HexColor("#EEF2F5")
+        CINZA_TEXTO = colors.HexColor("#5C6670")
+        CINZA_CLARO = colors.HexColor("#9AA6B2")
+        BORDA = colors.HexColor("#D7DEE6")
+        TEXTO = colors.HexColor("#1F2A36")
+        ALERTA = colors.HexColor("#FFF4D6")
+
+        cliente = str(ctx.get("cliente") or "").strip()
+        dados_cliente = ctx.get("dados_cliente", {}) or {}
+        nome_cliente = str(dados_cliente.get("nome") or cliente or "Cliente").strip()
+        mes = str(ctx.get("mes") or "").strip()
+        ano = str(ctx.get("ano") or "").strip()
+        operador = str(ctx.get("operador") or "").strip() or "—"
+        obs_geral = str(ctx.get("obs_geral") or "").strip()
+        parecer = str(ctx.get("parecer_tecnico") or "").strip()
+        lancamentos = [l for l in (ctx.get("lancamentos", []) or []) if isinstance(l, dict)]
+        fotos = ctx.get("fotos", []) or []
+
+        def _mes_nome(m):
+            nomes = {
+                "1": "Janeiro", "01": "Janeiro",
+                "2": "Fevereiro", "02": "Fevereiro",
+                "3": "Março", "03": "Março",
+                "4": "Abril", "04": "Abril",
+                "5": "Maio", "05": "Maio",
+                "6": "Junho", "06": "Junho",
+                "7": "Julho", "07": "Julho",
+                "8": "Agosto", "08": "Agosto",
+                "9": "Setembro", "09": "Setembro",
+                "10": "Outubro",
+                "11": "Novembro",
+                "12": "Dezembro",
+            }
+            return nomes.get(str(m).strip(), str(m).strip() or "Mês")
+
+        mes_nome = _mes_nome(mes)
+
+        def _periodo_mes(m, a):
+            try:
+                mi = int(str(m).strip())
+                ai = int(str(a).strip())
+                ini = datetime(ai, mi, 1)
+                prox = datetime(ai + 1, 1, 1) if mi == 12 else datetime(ai, mi + 1, 1)
+                fim = prox - timedelta(days=1)
+                return ini.strftime("%d/%m/%Y"), fim.strftime("%d/%m/%Y")
+            except Exception:
+                return "—", "—"
+
+        periodo_ini, periodo_fim = _periodo_mes(mes, ano)
+
+        dias_sel = st.session_state.get("bs_rel_dias_semana", []) if "st" in globals() else []
+        mapa_dias_curto = {
+            "Segunda-feira": "Seg", "Terça-feira": "Ter", "Quarta-feira": "Qua",
+            "Quinta-feira": "Qui", "Sexta-feira": "Sex", "Sábado": "Sáb", "Domingo": "Dom"
+        }
+        freq_curta = "/".join(mapa_dias_curto.get(d, d[:3]) for d in (dias_sel or [])) or "Agenda"
+
+        def _buscar_logo_bem_star():
+            base = Path(__file__).parent
+            candidatos = [
+                base / "bem_star_logo.png",
+                base / "bem_star_logo.jpg",
+                base / "bem_star_logo.jpeg",
+                base / "bem_star_logo.webp",
+            ]
+            for p in candidatos:
+                if p.exists() and p.is_file():
+                    return p
+            try:
+                for p in base.glob("*bem*star*logo*"):
+                    if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        return p
+            except Exception:
+                pass
+            return None
+
+        logo_bem_star_path = _buscar_logo_bem_star()
+
+        def _f(valor):
+            try:
+                txt = str("" if valor is None else valor).replace(",", ".")
+                txt = re.sub(r"[^0-9.\-]", "", txt)
+                if txt in ("", "-", ".", "-."):
+                    return None
+                return float(txt)
+            except Exception:
+                return None
+
+        def _fmt(valor, casas=2):
+            v = _f(valor)
+            if v is None:
+                return "—"
+            return f"{v:.{casas}f}".replace(".", ",")
+
+        def _data_ordem(lc):
+            try:
+                return datetime.strptime(normalizar_data_visita(lc.get("data", "")), "%d/%m/%Y")
+            except Exception:
+                return datetime.max
+
+        lancamentos = sorted(lancamentos, key=_data_ordem)
+
+        def _base_lanc(lc):
+            ps = lc.get("piscinas", [])
+            if isinstance(ps, list) and ps and isinstance(ps[0], dict):
+                return ps[0]
+            return lc
+
+        def _dia_sem(data_txt):
+            try:
+                dt = datetime.strptime(normalizar_data_visita(data_txt), "%d/%m/%Y")
+                return ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"][dt.weekday()]
+            except Exception:
+                return "—"
+
+        def _cl_comb(lc):
+            b = _base_lanc(lc)
+            ct = _f(b.get("cloro_total", lc.get("cloro_total", "")))
+            crl = _f(b.get("cloro_livre", lc.get("cloro_livre", "")))
+            if ct is None or crl is None:
+                return None
+            return max(ct - crl, 0)
+
+        def _tem_leitura(lc):
+            b = _base_lanc(lc)
+            campos = ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico"]
+            return any(str(b.get(c, lc.get(c, "")) or "").strip() for c in campos)
+
+        def _vals(campo):
+            vals = []
+            for lc in lancamentos:
+                b = _base_lanc(lc)
+                v = _f(b.get(campo, lc.get(campo, "")))
+                if v is not None:
+                    vals.append(v)
+            return vals
+
+        def _conformidade(vals, minimo=None, maximo=None, menor_que=None):
+            if not vals:
+                return 0, 0, 0
+            ok = 0
+            for v in vals:
+                if menor_que is not None:
+                    ok += 1 if v < menor_que else 0
+                else:
+                    ok += 1 if minimo <= v <= maximo else 0
+            pct = round(ok / len(vals) * 100)
+            return ok, len(vals), pct
+
+        ph_vals = _vals("ph")
+        crl_vals = _vals("cloro_livre")
+        ct_vals = _vals("cloro_total")
+        alc_vals = _vals("alcalinidade")
+        dc_vals = _vals("dureza")
+        cya_vals = _vals("cianurico")
+        clc_vals = [v for v in [_cl_comb(lc) for lc in lancamentos] if v is not None]
+
+        ph_ok, ph_tot, ph_pct = _conformidade(ph_vals, 7.2, 7.8)
+        crl_ok, crl_tot, crl_pct = _conformidade(crl_vals, 1.0, 3.0)
+        clc_ok, clc_tot, clc_pct = _conformidade(clc_vals, menor_que=0.40)
+
+        total_leituras = sum(1 for lc in lancamentos if _tem_leitura(lc))
+        total_sem_leitura = max(len(lancamentos) - total_leituras, 0)
+
+        total_dosagens = 0
+        for lc in lancamentos:
+            for d in lc.get("dosagens", []) or []:
+                if isinstance(d, dict) and any(str(d.get(k, "") or "").strip() for k in ("produto", "quantidade", "finalidade")):
+                    total_dosagens += 1
+
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(
+            name="BS_Title", parent=styles["Title"], fontName="Helvetica-Bold",
+            fontSize=20, leading=23, textColor=AZUL_ESCURO, alignment=TA_LEFT, spaceAfter=4
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_Sub", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=8.5, leading=11, textColor=CINZA_TEXTO, alignment=TA_LEFT
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_H1", parent=styles["Heading1"], fontName="Helvetica-Bold",
+            fontSize=12.5, leading=15, textColor=AZUL_ESCURO, spaceBefore=8, spaceAfter=5
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_H2", parent=styles["Heading2"], fontName="Helvetica-Bold",
+            fontSize=10, leading=12, textColor=AZUL, spaceBefore=5, spaceAfter=3
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_Body", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=8.6, leading=11.2, textColor=TEXTO, spaceAfter=3
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_BodySmall", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=7.2, leading=8.7, textColor=CINZA_TEXTO
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_Label", parent=styles["Normal"], fontName="Helvetica-Bold",
+            fontSize=6.6, leading=7.5, textColor=CINZA_TEXTO, alignment=TA_CENTER
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_Number", parent=styles["Normal"], fontName="Helvetica-Bold",
+            fontSize=18, leading=21, textColor=AZUL_ESCURO, alignment=TA_CENTER
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_NumberBlue", parent=styles["Normal"], fontName="Helvetica-Bold",
+            fontSize=18, leading=21, textColor=AZUL, alignment=TA_CENTER
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_Table", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=7.0, leading=8.2, textColor=TEXTO
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_TableMuted", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=7.0, leading=8.2, textColor=CINZA_CLARO
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_TableHead", parent=styles["Normal"], fontName="Helvetica-Bold",
+            fontSize=6.8, leading=7.8, textColor=colors.white, alignment=TA_CENTER
+        ))
+        styles.add(ParagraphStyle(
+            name="BS_RightSmall", parent=styles["Normal"], fontName="Helvetica",
+            fontSize=7.3, leading=9, textColor=CINZA_TEXTO, alignment=TA_RIGHT
+        ))
+
+
+        if "BS_CoverTitle" not in styles.byName:
+            styles.add(ParagraphStyle(
+                name="BS_CoverTitle",
+                parent=styles["Title"],
+                fontName="Helvetica-Bold",
+                fontSize=27,
+                leading=31,
+                textColor=AZUL_ESCURO,
+                alignment=TA_CENTER,
+                spaceAfter=8,
+            ))
+        if "BS_CoverSub" not in styles.byName:
+            styles.add(ParagraphStyle(
+                name="BS_CoverSub",
+                parent=styles["Normal"],
+                fontName="Helvetica",
+                fontSize=10,
+                leading=13,
+                textColor=CINZA_TEXTO,
+                alignment=TA_CENTER,
+            ))
+        if "BS_CoverClient" not in styles.byName:
+            styles.add(ParagraphStyle(
+                name="BS_CoverClient",
+                parent=styles["Normal"],
+                fontName="Helvetica-Bold",
+                fontSize=18,
+                leading=22,
+                textColor=AZUL_ESCURO,
+                alignment=TA_CENTER,
+            ))
+        if "BS_CoverMeta" not in styles.byName:
+            styles.add(ParagraphStyle(
+                name="BS_CoverMeta",
+                parent=styles["Normal"],
+                fontName="Helvetica",
+                fontSize=10,
+                leading=13,
+                textColor=TEXTO,
+                alignment=TA_CENTER,
+            ))
+
+        def P(txt, style="BS_Body"):
+            raw = str(txt or "")
+            safe = _html_escape(raw)
+            # Permite tags básicas usadas internamente.
+            for a, b in [
+                ("&lt;b&gt;", "<b>"), ("&lt;/b&gt;", "</b>"),
+                ("&lt;br/&gt;", "<br/>"), ("&lt;br /&gt;", "<br/>"), ("&lt;br&gt;", "<br/>"),
+            ]:
+                safe = safe.replace(a, b)
+            safe = safe.replace("\n", "<br/>")
+            return Paragraph(safe, styles[style])
+
+
+        def _capa_premium_background(canvas, doc_obj):
+            """Desenha fundo geométrico exclusivo da folha de rosto."""
+            canvas.saveState()
+            w, h = A4
+
+            # Fundo branco base
+            canvas.setFillColor(colors.white)
+            canvas.rect(0, 0, w, h, fill=1, stroke=0)
+
+            # Bloco superior azul corporativo
+            canvas.setFillColor(colors.HexColor("#15707C"))
+            canvas.rect(0, h - 9.8 * cm, w, 9.8 * cm, fill=1, stroke=0)
+
+            # Bloco azul escuro lateral para peso executivo
+            canvas.setFillColor(colors.HexColor("#0D3D75"))
+            canvas.rect(0, 0, 1.35 * cm, h, fill=1, stroke=0)
+
+            # Triângulo geométrico superior direito
+            canvas.setFillColor(colors.HexColor("#0A315F"))
+            p = canvas.beginPath()
+            p.moveTo(w - 6.2 * cm, h)
+            p.lineTo(w, h)
+            p.lineTo(w, h - 5.7 * cm)
+            p.close()
+            canvas.drawPath(p, fill=1, stroke=0)
+
+            # Linha de destaque
+            canvas.setStrokeColor(colors.HexColor("#42B7CE"))
+            canvas.setLineWidth(2.2)
+            canvas.line(2.1 * cm, h - 2.25 * cm, w - 2.1 * cm, h - 2.25 * cm)
+
+            # Rodapé institucional da capa
+            canvas.setFillColor(colors.HexColor("#5C6670"))
+            canvas.setFont("Helvetica", 7.4)
+            canvas.drawCentredString(
+                w / 2,
+                1.18 * cm,
+                f"Bem Star Piscinas Ltda | CNPJ {CNPJ_BEM_STAR} | Uberlândia/MG"
+            )
+
+            canvas.restoreState()
+
+
+
+        def _capa_bem_star_background(canvas, doc_obj):
+            """Fundo geométrico premium exclusivo da folha de rosto."""
+            canvas.saveState()
+            w, h = A4
+
+            canvas.setFillColor(colors.white)
+            canvas.rect(0, 0, w, h, fill=1, stroke=0)
+
+            # Bloco azul corporativo no terço superior
+            canvas.setFillColor(colors.HexColor("#15707C"))
+            canvas.rect(0, h - 9.2 * cm, w, 9.2 * cm, fill=1, stroke=0)
+
+            # Bloco lateral azul escuro
+            canvas.setFillColor(colors.HexColor("#0D3D75"))
+            canvas.rect(0, 0, 1.25 * cm, h, fill=1, stroke=0)
+
+            # Detalhe geométrico no canto superior direito
+            canvas.setFillColor(colors.HexColor("#0A315F"))
+            p = canvas.beginPath()
+            p.moveTo(w - 6.2 * cm, h)
+            p.lineTo(w, h)
+            p.lineTo(w, h - 5.7 * cm)
+            p.close()
+            canvas.drawPath(p, fill=1, stroke=0)
+
+            # Linha de destaque
+            canvas.setStrokeColor(colors.HexColor("#42B7CE"))
+            canvas.setLineWidth(2)
+            canvas.line(2.0 * cm, h - 2.25 * cm, w - 2.0 * cm, h - 2.25 * cm)
+
+            canvas.restoreState()
+
+
+        def _header_footer(canvas, doc_obj):
+            canvas.saveState()
+            w, h = A4
+
+            # Cabeçalho minimalista
+            if logo_bem_star_path:
+                try:
+                    canvas.drawImage(
+                        ImageReader(str(logo_bem_star_path)),
+                        1.25 * cm,
+                        h - 1.08 * cm,
+                        width=3.4 * cm,
+                        height=0.72 * cm,
+                        preserveAspectRatio=True,
+                        mask="auto",
+                    )
+                except Exception:
+                    canvas.setFillColor(AZUL_ESCURO)
+                    canvas.setFont("Helvetica-Bold", 9)
+                    canvas.drawString(1.25 * cm, h - 0.72 * cm, "BEM STAR PISCINAS")
+            else:
+                canvas.setFillColor(AZUL_ESCURO)
+                canvas.setFont("Helvetica-Bold", 9)
+                canvas.drawString(1.25 * cm, h - 0.72 * cm, "BEM STAR PISCINAS")
+
+            canvas.setFillColor(CINZA_TEXTO)
+            canvas.setFont("Helvetica", 7)
+            canvas.drawRightString(w - 1.25 * cm, h - 0.55 * cm, nome_cliente)
+            canvas.drawRightString(w - 1.25 * cm, h - 0.88 * cm, f"{mes_nome} / {ano}")
+
+            canvas.setStrokeColor(BORDA)
+            canvas.setLineWidth(0.35)
+            canvas.line(1.25 * cm, h - 1.22 * cm, w - 1.25 * cm, h - 1.22 * cm)
+
+            canvas.setStrokeColor(BORDA)
+            canvas.line(1.25 * cm, 1.0 * cm, w - 1.25 * cm, 1.0 * cm)
+            canvas.setFillColor(CINZA_TEXTO)
+            canvas.setFont("Helvetica", 6.7)
+            canvas.drawString(1.25 * cm, 0.66 * cm, f"Bem Star Piscinas Ltda | CNPJ {CNPJ_BEM_STAR} | Uberlândia/MG")
+            canvas.drawRightString(w - 1.25 * cm, 0.66 * cm, f"Página {doc_obj.page}")
+            canvas.restoreState()
+
+        def _card(titulo, valor, subtitulo="", destaque=False):
+            return Table(
+                [[P(str(valor), "BS_NumberBlue" if destaque else "BS_Number")],
+                 [P(titulo.upper(), "BS_Label")],
+                 [P(subtitulo, "BS_BodySmall")]],
+                colWidths=[4.05 * cm],
+                rowHeights=[10 * mm, 5 * mm, 7 * mm]
+            )
+
+        def _style_card(tbl, destaque=False):
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#FFFFFF")),
+                ("BOX", (0,0), (-1,-1), 0.55, colors.HexColor("#DCEAF1")),
+                ("LINEABOVE", (0,0), (-1,0), 2.0, TURQUESA if destaque else AZUL),
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("LEFTPADDING", (0,0), (-1,-1), 6),
+                ("RIGHTPADDING", (0,0), (-1,-1), 6),
+                ("TOPPADDING", (0,0), (-1,-1), 4),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+            ]))
+            return tbl
+
+        story = []
+
+        # CAPA DOSSIÊ BEM STAR — INÍCIO
+        capa_titulo = ParagraphStyle(
+            name="CapaTituloBemStar",
+            fontName="Helvetica-Bold",
+            fontSize=27,
+            leading=32,
+            textColor=colors.HexColor("#15707C"),
+            alignment=TA_CENTER,
+            spaceAfter=6,
+        )
+        capa_subtitulo = ParagraphStyle(
+            name="CapaSubtituloBemStar",
+            fontName="Helvetica",
+            fontSize=11,
+            leading=15,
+            textColor=colors.HexColor("#444444"),
+            alignment=TA_CENTER,
+            spaceAfter=6,
+        )
+        capa_label = ParagraphStyle(
+            name="CapaLabelBemStar",
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor("#666666"),
+            alignment=TA_CENTER,
+            spaceAfter=5,
+        )
+        capa_cliente = ParagraphStyle(
+            name="CapaClienteBemStar",
+            fontName="Helvetica-Bold",
+            fontSize=19,
+            leading=23,
+            textColor=colors.HexColor("#15707C"),
+            alignment=TA_CENTER,
+            spaceAfter=5,
+        )
+        capa_meta = ParagraphStyle(
+            name="CapaMetaBemStar",
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor("#333333"),
+            alignment=TA_CENTER,
+            spaceAfter=4,
+        )
+        capa_rodape = ParagraphStyle(
+            name="CapaRodapeBemStar",
+            fontName="Helvetica",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor("#444444"),
+            alignment=TA_CENTER,
+        )
+
+        story.append(Spacer(1, 36 * mm))
+
+        if logo_bem_star_path:
+            try:
+                logo_capa = RLImage(
+                    str(logo_bem_star_path),
+                    width=10.8 * cm,
+                    height=3.2 * cm,
+                    kind="proportional",
+                )
+                logo_capa.hAlign = "CENTER"
+                story.append(logo_capa)
+            except Exception:
+                story.append(Paragraph("BEM STAR PISCINAS", capa_titulo))
+        else:
+            story.append(Paragraph("BEM STAR PISCINAS", capa_titulo))
+
+        story.append(Spacer(1, 26 * mm))
+
+        story.append(Paragraph("RELATÓRIO OPERACIONAL", capa_titulo))
+        story.append(Paragraph("DE MANUTENÇÃO", capa_titulo))
+        story.append(Paragraph(
+            "Dashboard gerencial impresso de manutenção de piscinas",
+            capa_subtitulo
+        ))
+
+        story.append(Spacer(1, 30 * mm))
+
+        story.append(Paragraph("CLIENTE / LOCAL ATENDIDO", capa_label))
+        story.append(Paragraph(nome_cliente, capa_cliente))
+        story.append(Paragraph(f"Período de Referência: {mes_nome}/{ano}", capa_meta))
+
+        story.append(Spacer(1, 42 * mm))
+
+        story.append(Paragraph(
+            "Finalidade: Registro de parâmetros físico-químicos, dosagens e rotina operacional.",
+            capa_rodape
+        ))
+        story.append(Paragraph(
+            f"Data de emissão: {hoje_br()}",
+            capa_rodape
+        ))
+
+        story.append(Spacer(1, 5 * mm))
+
+        story.append(Paragraph(
+            f"Bem Star Piscinas Ltda | CNPJ {CNPJ_BEM_STAR} | Uberlândia/MG",
+            capa_rodape
+        ))
+
+        # Obrigatório: dashboard começa somente na próxima página.
+        story.append(PageBreak())
+        # CAPA DOSSIÊ BEM STAR — FIM
+
+
+        story.append(Spacer(1, 3 * mm))
+
+        # Título do dashboard
+        header_info = Table(
+            [[
+                P("Dashboard Gerencial de Manutenção", "BS_Title"),
+                P(f"<b>{nome_cliente}</b><br/>{mes_nome} / {ano}<br/>{periodo_ini} a {periodo_fim}", "BS_RightSmall")
+            ]],
+            colWidths=[11.2 * cm, 5.9 * cm]
+        )
+        header_info.setStyle(TableStyle([
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+        ]))
+        story.append(header_info)
+
+        # Faixa institucional
+        faixa = Table(
+            [[P("Relatório mensal operacional — Bem Star Piscinas", "BS_TableHead")]],
+            colWidths=[17.1 * cm],
+            rowHeights=[8 * mm]
+        )
+        faixa.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), AZUL_ESCURO),
+            ("TEXTCOLOR", (0,0), (-1,-1), colors.white),
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ]))
+        story.append(faixa)
+        story.append(Spacer(1, 4 * mm))
+
+        # Cards de resumo do mês
+        story.append(P("Resumo do Mês", "BS_H1"))
+
+        cards = [
+            _style_card(_card("Total de visitas", len(lancamentos), f"Frequência: {freq_curta}", True), True),
+            _style_card(_card("pH conforme", f"{ph_pct}%", f"{ph_ok}/{ph_tot} leitura(s)"), False),
+            _style_card(_card("Cloro livre conforme", f"{crl_pct}%", f"{crl_ok}/{crl_tot} leitura(s)"), False),
+            _style_card(_card("Dosagens registradas", total_dosagens, "Aplicações no mês", True), True),
+        ]
+        cards_table = Table([cards], colWidths=[4.2 * cm, 4.2 * cm, 4.2 * cm, 4.2 * cm])
+        cards_table.setStyle(TableStyle([
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 2),
+            ("RIGHTPADDING", (0,0), (-1,-1), 2),
+        ]))
+        story.append(cards_table)
+        story.append(Spacer(1, 4 * mm))
+
+        info_rows = [
+            [P("Cliente", "BS_TableMuted"), P(nome_cliente, "BS_Table"), P("Operador", "BS_TableMuted"), P(operador, "BS_Table")],
+            [P("Período", "BS_TableMuted"), P(f"{periodo_ini} a {periodo_fim}", "BS_Table"), P("Visitas sem leitura", "BS_TableMuted"), P(str(total_sem_leitura), "BS_Table")],
+            [P("Prestador", "BS_TableMuted"), P(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", "BS_Table"), P("Responsável", "BS_TableMuted"), P(RESPONSAVEL_TÉCNICO, "BS_Table")],
+        ]
+        info_tbl = Table(info_rows, colWidths=[2.4*cm, 6.0*cm, 2.7*cm, 6.0*cm])
+        info_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), CINZA_BG),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 5),
+            ("RIGHTPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        story.append(info_tbl)
+        story.append(Spacer(1, 5 * mm))
+
+        # Tabela de visitas com design dashboard
+        story.append(P("Registros de Visita — Parâmetros Físico-Químicos", "BS_H1"))
+        story.append(P("Linhas em tom mais claro indicam visita programada sem leitura química registrada, normalmente associada à rotina física/operacional.", "BS_BodySmall"))
+
+        rows = [[
+            P("#", "BS_TableHead"), P("Data", "BS_TableHead"), P("Dia", "BS_TableHead"),
+            P("pH", "BS_TableHead"), P("CL", "BS_TableHead"), P("CT", "BS_TableHead"),
+            P("CC", "BS_TableHead"), P("Alc.", "BS_TableHead"), P("Dur.", "BS_TableHead"), P("CYA", "BS_TableHead")
+        ]]
+
+        empty_rows_idx = []
+        for idx, lc in enumerate(lancamentos, 1):
+            b = _base_lanc(lc)
+            clc = _cl_comb(lc)
+            tem_leitura = _tem_leitura(lc)
+            style_cell = "BS_Table" if tem_leitura else "BS_TableMuted"
+            if not tem_leitura:
+                empty_rows_idx.append(idx)
+
+            rows.append([
+                P(str(idx), style_cell),
+                P(normalizar_data_visita(lc.get("data", "")) or "—", style_cell),
+                P(_dia_sem(lc.get("data", "")), style_cell),
+                P(_fmt(b.get("ph", lc.get("ph", ""))), style_cell),
+                P(_fmt(b.get("cloro_livre", lc.get("cloro_livre", ""))), style_cell),
+                P(_fmt(b.get("cloro_total", lc.get("cloro_total", ""))), style_cell),
+                P(_fmt(clc), style_cell),
+                P(_fmt(b.get("alcalinidade", lc.get("alcalinidade", "")), 0), style_cell),
+                P(_fmt(b.get("dureza", lc.get("dureza", "")), 0), style_cell),
+                P(_fmt(b.get("cianurico", lc.get("cianurico", "")), 0), style_cell),
+            ])
+
+        if len(rows) == 1:
+            rows.append([P("—", "BS_TableMuted") for _ in range(10)])
+
+        t_vis = Table(
+            rows,
+            colWidths=[7*mm, 22*mm, 11*mm, 12*mm, 14*mm, 14*mm, 14*mm, 15*mm, 15*mm, 14*mm],
+            repeatRows=1
+        )
+        style_vis = [
+            ("BACKGROUND", (0,0), (-1,0), AZUL),
+            ("GRID", (0,0), (-1,-1), 0.22, BORDA),
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 3),
+            ("RIGHTPADDING", (0,0), (-1,-1), 3),
+            ("TOPPADDING", (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ]
+
+        for r in range(1, len(rows)):
+            if r in empty_rows_idx:
+                style_vis.append(("BACKGROUND", (0,r), (-1,r), colors.HexColor("#FAFBFC")))
+            elif r % 2 == 0:
+                style_vis.append(("BACKGROUND", (0,r), (-1,r), CINZA_LINHA))
+
+        for r_i, lc in enumerate(lancamentos, 1):
+            b = _base_lanc(lc)
+            checks = [
+                (3, _f(b.get("ph", lc.get("ph", ""))), lambda v: 7.2 <= v <= 7.8),
+                (4, _f(b.get("cloro_livre", lc.get("cloro_livre", ""))), lambda v: 1.0 <= v <= 3.0),
+                (6, _cl_comb(lc), lambda v: v < 0.40),
+                (7, _f(b.get("alcalinidade", lc.get("alcalinidade", ""))), lambda v: 80 <= v <= 120),
+                (8, _f(b.get("dureza", lc.get("dureza", ""))), lambda v: 150 <= v <= 400),
+                (9, _f(b.get("cianurico", lc.get("cianurico", ""))), lambda v: 30 <= v <= 50),
+            ]
+            for col, valor, regra in checks:
+                if valor is not None and not regra(valor):
+                    style_vis.append(("BACKGROUND", (col, r_i), (col, r_i), ALERTA))
+
+        t_vis.setStyle(TableStyle(style_vis))
+        story.append(t_vis)
+        story.append(Spacer(1, 5 * mm))
+
+        # Estatística em tabela compacta
+        story.append(P("Análise Estatística do Mês", "BS_H1"))
+
+        stats = [
+            ("pH", ph_vals, "7,2–7,8", lambda v: 7.2 <= v <= 7.8, 2),
+            ("Cloro Livre", crl_vals, "1,0–3,0", lambda v: 1.0 <= v <= 3.0, 2),
+            ("Cloro Total", ct_vals, "—", lambda v: True, 2),
+            ("Cloro Combinado", clc_vals, "<0,40", lambda v: v < 0.40, 2),
+            ("Alcalinidade", alc_vals, "80–120", lambda v: 80 <= v <= 120, 0),
+            ("Dureza", dc_vals, "150–400", lambda v: 150 <= v <= 400, 0),
+            ("CYA", cya_vals, "30–50", lambda v: 30 <= v <= 50, 0),
+        ]
+
+        stat_rows = [[P("Parâmetro", "BS_TableHead"), P("Mín.", "BS_TableHead"), P("Méd.", "BS_TableHead"), P("Máx.", "BS_TableHead"), P("Faixa", "BS_TableHead"), P("Conf.", "BS_TableHead")]]
+        for nome, vals, faixa, regra, casas in stats:
+            if vals:
+                ok = sum(1 for v in vals if regra(v))
+                conf = f"{ok}/{len(vals)} ({round(ok/len(vals)*100)}%)"
+                stat_rows.append([
+                    P(nome, "BS_Table"),
+                    P(_fmt(min(vals), casas), "BS_Table"),
+                    P(_fmt(sum(vals)/len(vals), casas), "BS_Table"),
+                    P(_fmt(max(vals), casas), "BS_Table"),
+                    P(faixa, "BS_Table"),
+                    P(conf, "BS_Table"),
+                ])
+            else:
+                stat_rows.append([P(nome, "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted"), P(faixa, "BS_TableMuted"), P("—", "BS_TableMuted")])
+
+        t_stats = Table(stat_rows, colWidths=[43*mm, 20*mm, 20*mm, 20*mm, 30*mm, 34*mm], repeatRows=1)
+        t_stats.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), AZUL_ESCURO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN", (1,1), (-1,-1), "CENTER"),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, CINZA_LINHA]),
+            ("LEFTPADDING", (0,0), (-1,-1), 5),
+            ("RIGHTPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        story.append(t_stats)
+
+        story.append(PageBreak())
+
+        # Observações técnicas em bullet points, não texto corrido
+        story.append(P("Observações Técnicas e Recomendações", "BS_H1"))
+
+        bullet_rows = []
+        def _bullet(titulo, texto):
+            bullet_rows.append([
+                P("•", "BS_NumberBlue"),
+                P(f"<b>{titulo}</b><br/>{texto}", "BS_Body")
+            ])
+
+        _bullet("Visitas do mês", f"Foram registradas <b>{len(lancamentos)}</b> visita(s), com frequência <b>{freq_curta}</b>. Leituras químicas preenchidas em <b>{total_leituras}</b> visita(s).")
+        _bullet("pH", f"Conformidade de <b>{ph_pct}%</b> ({ph_ok}/{ph_tot}). Média: <b>{_fmt(sum(ph_vals)/len(ph_vals) if ph_vals else None)}</b>. Faixa de referência: <b>7,2 a 7,8</b>.")
+        _bullet("Cloro livre", f"Conformidade de <b>{crl_pct}%</b> ({crl_ok}/{crl_tot}). Média: <b>{_fmt(sum(crl_vals)/len(crl_vals) if crl_vals else None)} mg/L</b>. Faixa de referência: <b>1,0 a 3,0 mg/L</b>.")
+        _bullet("Cloro combinado", f"Conformidade de <b>{clc_pct}%</b> ({clc_ok}/{clc_tot}) abaixo de <b>0,40 mg/L</b>. Média: <b>{_fmt(sum(clc_vals)/len(clc_vals) if clc_vals else None)} mg/L</b>.")
+        _bullet("Dosagens", f"Foram registradas <b>{total_dosagens}</b> dosagem(ns) no período. Recomenda-se manter o registro por visita para rastreabilidade operacional.")
+        _bullet("Recomendação geral", "Manter rotina de aferição, registrar dosagens, acompanhar pH e cloro residual, além de preservar filtração e retrolavagem conforme necessidade operacional.")
+
+        if obs_geral:
+            _bullet("Observação da equipe", obs_geral)
+
+        if parecer:
+            blocos_parecer = [
+                re.sub(r"\s+", " ", b.strip())
+                for b in parecer.split("\n\n")
+                if b.strip()
+            ][:6]
+
+            if blocos_parecer:
+                texto_parecer = "<br/>".join([f"• {b}" for b in blocos_parecer])
+                _bullet("Parecer complementar", texto_parecer)
+
+        t_bullets = Table(bullet_rows, colWidths=[8*mm, 16.1*cm])
+        t_bullets.setStyle(TableStyle([
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("BACKGROUND", (0,0), (-1,-1), colors.white),
+            ("LINEBELOW", (0,0), (-1,-1), 0.2, CINZA_LINHA),
+            ("LEFTPADDING", (0,0), (-1,-1), 4),
+            ("RIGHTPADDING", (0,0), (-1,-1), 4),
+            ("TOPPADDING", (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+        ]))
+        story.append(t_bullets)
+        story.append(Spacer(1, 5 * mm))
+
+        # Dosagens aplicadas
+        story.append(P("Ações Realizadas e Dosagens Aplicadas", "BS_H1"))
+        dos_rows = [[P("Data", "BS_TableHead"), P("Produto", "BS_TableHead"), P("Qtd.", "BS_TableHead"), P("Unid.", "BS_TableHead"), P("Finalidade", "BS_TableHead")]]
+
+        for lc in lancamentos:
+            data_lc = normalizar_data_visita(lc.get("data", ""))
+            for d in lc.get("dosagens", []) or []:
+                if isinstance(d, dict):
+                    prod = str(d.get("produto", "") or "").strip()
+                    qtd = str(d.get("quantidade", "") or "").strip()
+                    unid = str(d.get("unidade", "") or "").strip()
+                    fin = str(d.get("finalidade", "") or "").strip()
+                    if prod or qtd or fin:
+                        dos_rows.append([P(data_lc, "BS_Table"), P(prod, "BS_Table"), P(qtd or "—", "BS_Table"), P(unid or "—", "BS_Table"), P(fin or "—", "BS_Table")])
+
+        if len(dos_rows) == 1:
+            dos_rows.append([P("—", "BS_TableMuted"), P("Nenhuma dosagem registrada no período.", "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted")])
+
+        t_dos = Table(dos_rows, colWidths=[24*mm, 48*mm, 22*mm, 20*mm, 65*mm], repeatRows=1)
+        t_dos.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), AZUL),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, CINZA_LINHA]),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN", (0,1), (0,-1), "CENTER"),
+            ("ALIGN", (2,1), (3,-1), "CENTER"),
+            ("LEFTPADDING", (0,0), (-1,-1), 5),
+            ("RIGHTPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        story.append(t_dos)
+
+        # Encerramento compacto
+        story.append(Spacer(1, 7 * mm))
+        story.append(P("Encerramento do Período", "BS_H1"))
+        encerramento = Table(
+            [[
+                P(
+                    f"O presente dashboard consolida as atividades operacionais executadas pela Bem Star Piscinas Ltda "
+                    f"no mês de {mes_nome} / {ano} na piscina de {nome_cliente}.",
+                    "BS_Body"
+                )
+            ], [
+                P(
+                    f"_______________________________________________<br/>{RESPONSAVEL_TÉCNICO}<br/>"
+                    f"Sócio-Administrador — Bem Star Piscinas Ltda<br/>"
+                    f"Quím. CRQ-MG 02ª Região nº {CRQ_NUMERO}<br/>"
+                    f"Operador responsável: {operador}<br/>Uberlândia/MG, {hoje_br()}",
+                    "BS_Body"
+                )
+            ]],
+            colWidths=[17.1*cm]
+        )
+        encerramento.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), CINZA_BG),
+            ("BOX", (0,0), (-1,-1), 0.35, BORDA),
+            ("LEFTPADDING", (0,0), (-1,-1), 10),
+            ("RIGHTPADDING", (0,0), (-1,-1), 10),
+            ("TOPPADDING", (0,0), (-1,-1), 7),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+        ]))
+        story.append(encerramento)
+
+        # REGISTRO FOTOGRÁFICO — fotos passadas via ctx["fotos"] (list[Path])
+        _fotos_pdf = [f for f in (fotos or []) if isinstance(f, Path) and f.exists()]
+        if _fotos_pdf:
+            story.append(PageBreak())
+            story.append(P("Registro Fotográfico", "BS_H1"))
+            story.append(P(
+                "Registros visuais realizados durante as visitas operacionais do período.",
+                "BS_BodySmall"
+            ))
+            story.append(Spacer(1, 3 * mm))
+            _fotos_por_linha = 2
+            _foto_largura = 8.2 * cm
+            _foto_altura = 5.5 * cm
+            for i in range(0, len(_fotos_pdf), _fotos_por_linha):
+                _par = _fotos_pdf[i:i + _fotos_por_linha]
+                _celulas = []
+                for _fp in _par:
+                    try:
+                        _img = RLImage(str(_fp), width=_foto_largura, height=_foto_altura, kind="proportional")
+                        _img.hAlign = "CENTER"
+                        _nome_foto = _fp.stem.replace("_", " ").replace("-", " ").title()
+                        _celulas.append([_img, P(_nome_foto, "BS_BodySmall")])
+                    except Exception:
+                        _celulas.append([P(f"[Foto nao carregada: {_fp.name}]", "BS_BodySmall"), P("", "BS_BodySmall")])
+                while len(_celulas) < _fotos_por_linha:
+                    _celulas.append([P("", "BS_Body"), P("", "BS_Body")])
+                _row_img = [c[0] for c in _celulas]
+                _row_leg = [c[1] for c in _celulas]
+                _t_fotos = Table(
+                    [_row_img, _row_leg],
+                    colWidths=[8.7 * cm] * _fotos_por_linha,
+                    rowHeights=[_foto_altura + 2 * mm, 7 * mm]
+                )
+                _t_fotos.setStyle(TableStyle([
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("GRID", (0, 0), (-1, 0), 0.25, BORDA),
+                    ("BACKGROUND", (0, 0), (-1, 0), CINZA_BG),
+                ]))
+                story.append(_t_fotos)
+                story.append(Spacer(1, 4 * mm))
+
+        # Anexo RT compacto
+        story.append(PageBreak())
+        story.append(P("Anexo — Diferença entre Relatório Operacional e RT", "BS_H1"))
+        story.append(P(
+            "Este documento é um dashboard operacional de manutenção emitido pela Bem Star Piscinas. "
+            "Ele registra visitas, leituras, dosagens e recomendações operacionais, mas não substitui relatório técnico de Responsabilidade Técnica quando este for aplicável.",
+            "BS_Body"
+        ))
+
+        comp = [
+            [P("Item", "BS_TableHead"), P("Operacional — Bem Star", "BS_TableHead"), P("Técnico RT — Aqua Gestão", "BS_TableHead")],
+            [P("Natureza", "BS_Table"), P("Registro operacional de manutenção", "BS_Table"), P("Documento técnico formal", "BS_Table")],
+            [P("Responsável", "BS_Table"), P("Operador e responsável da empresa", "BS_Table"), P("Químico Responsável Técnico registrado no CRQ", "BS_Table")],
+            [P("Substitui RT?", "BS_Table"), P("Não", "BS_Table"), P("Sim, quando contratado e emitido no escopo técnico", "BS_Table")],
+        ]
+        t_comp = Table(comp, colWidths=[38*mm, 67*mm, 73*mm], repeatRows=1)
+        t_comp.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), AZUL_ESCURO),
+            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, CINZA_LINHA]),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING", (0,0), (-1,-1), 5),
+            ("RIGHTPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING", (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+        ]))
+        story.append(t_comp)
+        story.append(Spacer(1, 5 * mm))
+        story.append(P("Aqua Gestão — Responsabilidade Técnica em Química", "BS_H2"))
+        story.append(P(
+            "A Aqua Gestão é a parceira especializada em Responsabilidade Técnica para piscinas coletivas, com atuação em relatórios técnicos, planos de controle, documentação e suporte de conformidade.",
+            "BS_Body"
+        ))
+
+        doc = SimpleDocTemplate(
+            str(output_path),
+            pagesize=A4,
+            rightMargin=1.25 * cm,
+            leftMargin=1.25 * cm,
+            topMargin=1.45 * cm,
+            bottomMargin=1.20 * cm,
+            title=f"Dashboard Mensal Bem Star - {nome_cliente}",
+            author="Bem Star Piscinas",
+        )
+        doc.build(story, onFirstPage=_capa_bem_star_background, onLaterPages=_header_footer)
+
+        return True, ""
+
+    except Exception as e:
+        return False, str(e)
+
+
+def gerar_docx_placeholder_bem_star(output_path: Path, ctx: dict) -> tuple[bool, str]:
+    """Cria DOCX simples apenas para manter compatibilidade com downloads/manifest."""
+    try:
+        from docx import Document as _DocxDoc
+        doc = _DocxDoc()
+        doc.add_heading("Relatório Mensal de Manutenção — Bem Star Piscinas", 0)
+        doc.add_paragraph("O relatório principal foi gerado em PDF no padrão mensal Bem Star.")
+        doc.add_paragraph(f"Cliente: {ctx.get('cliente','')}")
+        doc.add_paragraph(f"Mês/Ano: {ctx.get('mes','')}/{ctx.get('ano','')}")
+        doc.add_paragraph(f"Total de visitas: {len(ctx.get('lancamentos', []) or [])}")
+        doc.add_paragraph("Use o arquivo PDF gerado para envio ao cliente.")
+        doc.save(str(output_path))
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
     ctx = _coletar_contexto_relatorio_bem_star()
     if not ctx.get("ok"):
@@ -8325,57 +9856,53 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
 
     pasta_saida = ctx["pasta"] / "_previa_exata_relatorio" if preview else ctx["pasta"]
     pasta_saida.mkdir(parents=True, exist_ok=True)
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sufixo = "PREVIA_EXATA_RELATORIO_BS" if preview else "RELATORIO_BS"
+    sufixo = "PREVIA_RELATORIO_MENSAL_BS" if preview else "RELATORIO_MENSAL_BS"
     base_nome = limpar_nome_arquivo(f"{ts}_{ctx['cliente']}_{sufixo}")
+
     docx_path = pasta_saida / f"{base_nome}.docx"
     pdf_path = pasta_saida / f"{base_nome}.pdf"
 
-    ok_docx, erro_docx = gerar_relatorio_visita_docx(
-        output_path=docx_path,
-        nome_local=ctx["dados_cliente"].get("nome", ctx["cliente"]),
-        cnpj=ctx["dados_cliente"].get("cnpj", ""),
-        endereco=ctx["dados_cliente"].get("endereco", ""),
-        responsavel=ctx["dados_cliente"].get("contato", ""),
-        operador=ctx["operador"],
-        mes=ctx["mes"],
-        ano=ctx["ano"],
-        lancamentos=ctx["lancamentos"],
-        obs_geral=ctx["obs_geral"],
-        incluir_rt=False,
-        fotos=ctx["fotos"],
-    )
-    if not ok_docx:
-        msg = f"Erro ao gerar DOCX do relatório Bem Star: {erro_docx}"
+    ok_docx, erro_docx = gerar_docx_placeholder_bem_star(docx_path, ctx)
+    ok_pdf, erro_pdf = gerar_pdf_relatorio_mensal_bem_star_modelo(pdf_path, ctx)
+
+    if not ok_pdf:
+        msg = f"Erro ao gerar PDF mensal Bem Star: {erro_pdf}"
         return {
             "ok": False,
             "empresa": "Bem Star Piscinas",
             "preview": preview,
-            "erros": [erro_docx],
+            "erros": [erro_pdf],
             "mensagem": msg,
+            "docx": docx_path,
+            "pdf": pdf_path,
+            "pdf_ok": False,
+            "erro_pdf": erro_pdf,
             "fotos": ctx.get("fotos", []),
             "origem_fotos": ctx.get("origem_fotos", ""),
+            "dados": ctx,
+            "pasta": ctx["pasta"],
         }
 
-    ok_pdf, erro_pdf = converter_docx_para_pdf(docx_path, pdf_path)
     if not preview:
-        registrar_documento_manifest(ctx["pasta"], ctx["cliente"], "Relatório", docx_path, pdf_path, ok_pdf, erro_pdf)
+        registrar_documento_manifest(ctx["pasta"], ctx["cliente"], "Relatório Bem Star", docx_path, pdf_path, ok_pdf, erro_pdf)
 
     return {
         "ok": True,
         "empresa": "Bem Star Piscinas",
         "preview": preview,
         "mensagem": (
-            f"Prévia exata Bem Star atualizada com {len(ctx['lancamentos'])} lançamento(s) e {len(ctx['fotos'])} foto(s)."
+            f"Prévia Bem Star mensal atualizada com {len(ctx['lancamentos'])} visita(s)."
             if preview else
-            f"Relatório Bem Star gerado! {len(ctx['fotos'])} foto(s) incluída(s)."
+            f"Relatório mensal Bem Star gerado com {len(ctx['lancamentos'])} visita(s)."
         ),
         "docx": docx_path,
         "pdf": pdf_path,
         "pdf_ok": ok_pdf,
         "erro_pdf": erro_pdf,
-        "fotos": ctx["fotos"],
-        "origem_fotos": ctx["origem_fotos"],
+        "fotos": ctx.get("fotos", []),
+        "origem_fotos": ctx.get("origem_fotos", ""),
         "dados": ctx,
         "pasta": ctx["pasta"],
     }
@@ -12682,7 +14209,136 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
             placeholder="Condições gerais da piscina, ocorrências, recomendações...")
+
+        # ── Agenda mensal de visitas Bem Star ────────────────────────────────
+        st.markdown("### Agenda mensal de visitas")
+        st.caption("Escolha a frequência e os dias da semana. O sistema monta automaticamente as visitas do mês.")
+
+        _dias_semana_bs = [
+            "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira",
+            "Sexta-feira", "Sábado", "Domingo"
+        ]
+
+        _freq_col, _dias_col = st.columns([1, 3])
+        with _freq_col:
+            st.number_input(
+                "Visitas por semana",
+                min_value=1,
+                max_value=7,
+                value=int(st.session_state.get("bs_rel_freq_semana", 1) or 1),
+                step=1,
+                key="bs_rel_freq_semana",
+            )
+        with _dias_col:
+            st.multiselect(
+                "Dias da visita na semana",
+                options=_dias_semana_bs,
+                default=st.session_state.get("bs_rel_dias_semana", []),
+                key="bs_rel_dias_semana",
+            )
+
+        _freq_bs = int(st.session_state.get("bs_rel_freq_semana", 1) or 1)
+        _dias_sel_bs = st.session_state.get("bs_rel_dias_semana", []) or []
+        if _dias_sel_bs and len(_dias_sel_bs) != _freq_bs:
+            st.warning(f"Você informou {_freq_bs} visita(s) por semana, mas selecionou {len(_dias_sel_bs)} dia(s). Ajuste para a agenda ficar coerente.")
+
+        st.checkbox(
+            "Incluir no relatório as visitas programadas mesmo sem parâmetros preenchidos",
+            value=bool(st.session_state.get("bs_rel_incluir_visitas_vazias", True)),
+            key="bs_rel_incluir_visitas_vazias",
+            help="Use marcado para o relatório mostrar todos os dias programados do mês. Desmarque se quiser listar apenas visitas preenchidas."
+        )
+
+        _datas_agenda_bs = _bs_gerar_datas_visitas_mes(csr_mes, csr_ano, _dias_sel_bs)
+        if _datas_agenda_bs:
+            st.success(f"Agenda criada com {len(_datas_agenda_bs)} visita(s) em {str(csr_mes).zfill(2)}/{csr_ano}.")
+            st.caption("Quando existir lançamento do operador na mesma data, os campos abaixo são preenchidos como base.")
+
+            for _data_visita_bs in _datas_agenda_bs:
+                _kbs = _bs_key_data(_data_visita_bs)
+                _existente_bs = _bs_lancamento_por_data(lancamentos_csr, _data_visita_bs)
+                _piscinas_exist_bs = _existente_bs.get("piscinas", []) if isinstance(_existente_bs, dict) else []
+                _base_exist_bs = _piscinas_exist_bs[0] if _piscinas_exist_bs else (_existente_bs or {})
+
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_piscina_{_kbs}", _base_exist_bs.get("nome", "Piscina principal"))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_ph_{_kbs}", _base_exist_bs.get("ph", _existente_bs.get("ph", "") if _existente_bs else ""))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_crl_{_kbs}", _base_exist_bs.get("cloro_livre", _existente_bs.get("cloro_livre", "") if _existente_bs else ""))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_ct_{_kbs}", _base_exist_bs.get("cloro_total", _existente_bs.get("cloro_total", "") if _existente_bs else ""))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_alc_{_kbs}", _base_exist_bs.get("alcalinidade", _existente_bs.get("alcalinidade", "") if _existente_bs else ""))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_dc_{_kbs}", _base_exist_bs.get("dureza", _existente_bs.get("dureza", "") if _existente_bs else ""))
+                _bs_preencher_padrao_se_vazio(f"bs_agenda_cya_{_kbs}", _base_exist_bs.get("cianurico", _existente_bs.get("cianurico", "") if _existente_bs else ""))
+
+                if _existente_bs:
+                    _bs_preencher_padrao_se_vazio(f"bs_agenda_obs_{_kbs}", _existente_bs.get("observacao", ""))
+
+                _titulo_exp = f"📅 {_data_visita_bs}"
+                if _existente_bs:
+                    _titulo_exp += " — preenchido pelo operador"
+                else:
+                    _titulo_exp += " — preencher manualmente"
+
+                with st.expander(_titulo_exp, expanded=False):
+                    st.text_input("Piscina / setor", key=f"bs_agenda_piscina_{_kbs}", placeholder="ex: Piscina principal")
+
+                    _pa, _pb, _pc = st.columns(3)
+                    with _pa:
+                        st.text_input("pH", key=f"bs_agenda_ph_{_kbs}", placeholder="ex: 7,4")
+                        st.text_input("Alcalinidade mg/L", key=f"bs_agenda_alc_{_kbs}", placeholder="ex: 90")
+                    with _pb:
+                        st.text_input("Cloro livre mg/L", key=f"bs_agenda_crl_{_kbs}", placeholder="ex: 1,5")
+                        st.text_input("Dureza cálcica mg/L", key=f"bs_agenda_dc_{_kbs}", placeholder="ex: 200")
+                    with _pc:
+                        st.text_input("Cloro total mg/L", key=f"bs_agenda_ct_{_kbs}", placeholder="ex: 1,8")
+                        st.text_input("Ácido cianúrico mg/L", key=f"bs_agenda_cya_{_kbs}", placeholder="ex: 40")
+
+                    st.text_area("Observação da visita", key=f"bs_agenda_obs_{_kbs}", height=70)
+
+                    st.markdown("**Dosagens aplicadas nesta visita**")
+                    _dos_exist_bs = _existente_bs.get("dosagens", []) if isinstance(_existente_bs, dict) else []
+                    for _i_dos in range(3):
+                        if _i_dos < len(_dos_exist_bs) and isinstance(_dos_exist_bs[_i_dos], dict):
+                            _d_exist = _dos_exist_bs[_i_dos]
+                            _bs_preencher_padrao_se_vazio(f"bs_agenda_dos_prod_{_kbs}_{_i_dos}", _d_exist.get("produto", ""))
+                            _bs_preencher_padrao_se_vazio(f"bs_agenda_dos_qtd_{_kbs}_{_i_dos}", _d_exist.get("quantidade", ""))
+                            _bs_preencher_padrao_se_vazio(f"bs_agenda_dos_un_{_kbs}_{_i_dos}", _d_exist.get("unidade", ""))
+                            _bs_preencher_padrao_se_vazio(f"bs_agenda_dos_fin_{_kbs}_{_i_dos}", _d_exist.get("finalidade", ""))
+
+                        _d1, _d2, _d3, _d4 = st.columns([2, 1, 1, 2])
+                        with _d1:
+                            st.text_input("Produto", key=f"bs_agenda_dos_prod_{_kbs}_{_i_dos}", placeholder="ex: Hipoclorito", label_visibility="visible" if _i_dos == 0 else "collapsed")
+                        with _d2:
+                            st.text_input("Qtd.", key=f"bs_agenda_dos_qtd_{_kbs}_{_i_dos}", placeholder="ex: 600", label_visibility="visible" if _i_dos == 0 else "collapsed")
+                        with _d3:
+                            st.text_input("Unid.", key=f"bs_agenda_dos_un_{_kbs}_{_i_dos}", placeholder="g/ml/kg", label_visibility="visible" if _i_dos == 0 else "collapsed")
+                        with _d4:
+                            st.text_input("Finalidade", key=f"bs_agenda_dos_fin_{_kbs}_{_i_dos}", placeholder="ex: Elevar cloro", label_visibility="visible" if _i_dos == 0 else "collapsed")
+        else:
+            st.info("Selecione os dias da semana para o sistema montar as visitas do mês.")
     
+        # ── Parecer e recomendações técnicas ────────────────────────────────
+        st.markdown("### Parecer e recomendações técnicas")
+        st.caption("Clique para gerar um texto automático com base nas visitas, parâmetros e dosagens lançados. Depois revise e edite antes de gerar o PDF.")
+
+        _bs_lancs_para_parecer = _bs_coletar_lancamentos_agenda_manual()
+        if st.button("🔎 Preencher parecer e recomendações técnicas", key="bs_btn_preencher_parecer"):
+            st.session_state["bs_rel_parecer_tecnico"] = gerar_parecer_tecnico_bem_star(
+                _bs_lancs_para_parecer,
+                cliente=csr_sel,
+                mes=csr_mes,
+                ano=csr_ano,
+            )
+            try:
+                st.toast("Parecer técnico preenchido. Revise antes de gerar o relatório.", icon="✅")
+            except Exception:
+                st.success("Parecer técnico preenchido. Revise antes de gerar o relatório.")
+
+        st.text_area(
+            "Texto do parecer técnico-operacional",
+            key="bs_rel_parecer_tecnico",
+            height=320,
+            placeholder="Clique no botão acima para preencher automaticamente ou digite o parecer manualmente."
+        )
+
         # ── Coleta fotos das visitas ─────────────────────────────────────────
         pasta_fotos_csr = (GENERATED_DIR / slugify_nome(csr_sel) / "fotos_campo") if csr_sel else None
         fotos_csr = []
