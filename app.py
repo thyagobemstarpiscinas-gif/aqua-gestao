@@ -13507,7 +13507,7 @@ def _dados_fds_essenciais_aqua() -> list[dict]:
     ]
 
 def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
-    """Gera Dossiê de Segurança Química — FDS, GHS, NR-26 e NR-06, com capa premium."""
+    """Gera Dossiê de Segurança Química — FDS, GHS, NR-26 e NR-06, capa premium v2."""
     import io
     import html
     from reportlab.lib import colors
@@ -13517,85 +13517,71 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     from reportlab.lib.units import cm, mm
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        PageBreak
+        PageBreak, HRFlowable, KeepTogether
     )
 
     buffer = io.BytesIO()
 
-    AZUL = colors.HexColor("#0D2A4A")
-    AZUL_2 = colors.HexColor("#1565A8")
-    AZUL_CLARO = colors.HexColor("#EAF4FF")
-    CINZA = colors.HexColor("#46515E")
-    CINZA_CLARO = colors.HexColor("#F5F7FA")
-    BORDA = colors.HexColor("#D7E1EA")
-    DOURADO = colors.HexColor("#C8960C")
+    AZUL       = colors.HexColor("#0D2A4A")
+    AZUL_2     = colors.HexColor("#1565A8")
+    AZUL_CLARO = colors.HexColor("#E8F1FB")
+    CINZA      = colors.HexColor("#46515E")
+    BORDA      = colors.HexColor("#C9D8E8")
+    DOURADO    = colors.HexColor("#C8960C")
+    DOURADO_BG = colors.HexColor("#FFF8E6")
+    LARANJA    = colors.HexColor("#BF360C")
 
-    nome = str(dados.get("nome") or "CONTRATANTE / LOCAL ATENDIDO").strip()
-    cnpj = str(dados.get("cnpj") or "Não informado").strip()
-    endereco = str(dados.get("endereco") or "Não informado").strip()
-    representante = str(dados.get("representante") or "Representante legal não informado").strip()
-    data_emissao = str(dados.get("data") or hoje_br()).strip()
-    versao = str(dados.get("versao") or "1.0").strip()
+    nome          = str(dados.get("nome")          or "CONTRATANTE / LOCAL ATENDIDO").strip()
+    cnpj          = str(dados.get("cnpj")          or "Não informado").strip()
+    endereco      = str(dados.get("endereco")       or "Não informado").strip()
+    representante = str(dados.get("representante")  or "Representante legal não informado").strip()
+    data_emissao  = str(dados.get("data")           or hoje_br()).strip()
+    versao        = str(dados.get("versao")         or "1.0").strip()
 
     def esc(v):
         return html.escape(str(v or ""), quote=False).replace("\n", "<br/>")
 
     doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.35 * cm,
-        leftMargin=1.35 * cm,
-        topMargin=1.45 * cm,
-        bottomMargin=1.25 * cm,
+        buffer, pagesize=A4,
+        rightMargin=1.4*cm, leftMargin=1.4*cm,
+        topMargin=1.5*cm, bottomMargin=1.3*cm,
         title=f"Dossiê de Segurança Química - {nome}",
         author="Aqua Gestão Controle Técnico Ltda",
     )
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="Secao", parent=styles["Heading2"], fontName="Helvetica-Bold",
-        fontSize=13, leading=16, textColor=AZUL, spaceBefore=8, spaceAfter=6
-    ))
-    styles.add(ParagraphStyle(
-        name="Texto", parent=styles["Normal"], fontSize=9.2, leading=12.2,
-        textColor=colors.HexColor("#263442"), alignment=TA_JUSTIFY, spaceAfter=5
-    ))
-    styles.add(ParagraphStyle(
-        name="TextoSmall", parent=styles["Normal"], fontSize=8.1, leading=10.2,
-        textColor=colors.HexColor("#263442"), alignment=TA_LEFT
-    ))
-    styles.add(ParagraphStyle(
-        name="Tabela", parent=styles["Normal"], fontSize=7.35, leading=9.1,
-        textColor=colors.HexColor("#263442")
-    ))
-    styles.add(ParagraphStyle(
-        name="TabelaHead", parent=styles["Normal"], fontName="Helvetica-Bold",
-        fontSize=7.4, leading=9.1, textColor=colors.white, alignment=TA_CENTER
-    ))
-    styles.add(ParagraphStyle(
-        name="FichaTitulo", parent=styles["Heading3"], fontName="Helvetica-Bold",
-        fontSize=10.3, leading=12.8, textColor=AZUL, spaceBefore=7, spaceAfter=5
-    ))
-    styles.add(ParagraphStyle(
-        name="CapaTituloPremium", parent=styles["Title"], fontName="Helvetica-Bold",
-        fontSize=24, leading=29, textColor=colors.white, alignment=TA_CENTER, spaceAfter=8
-    ))
-    styles.add(ParagraphStyle(
-        name="CapaSubPremium", parent=styles["Normal"], fontSize=12.2, leading=16,
-        textColor=colors.white, alignment=TA_CENTER, spaceAfter=6
-    ))
-    styles.add(ParagraphStyle(
-        name="CapaCardTitulo", parent=styles["Normal"], fontName="Helvetica-Bold",
-        fontSize=9, leading=11, textColor=colors.white, alignment=TA_CENTER
-    ))
-    styles.add(ParagraphStyle(
-        name="CapaCardTexto", parent=styles["Normal"], fontSize=9.2, leading=12.5,
-        textColor=colors.HexColor("#1F2D3A"), alignment=TA_LEFT
-    ))
-    styles.add(ParagraphStyle(
-        name="CapaSelo", parent=styles["Normal"], fontName="Helvetica-Bold",
-        fontSize=8.0, leading=10, textColor=AZUL, alignment=TA_CENTER
-    ))
+    def add(name, **kw):
+        if name not in styles:
+            styles.add(ParagraphStyle(name=name, **kw))
+
+    add("Secao",       parent=styles["Heading2"], fontName="Helvetica-Bold",
+        fontSize=12, leading=15, textColor=AZUL, spaceBefore=10, spaceAfter=5)
+    add("Texto",       parent=styles["Normal"],   fontSize=9, leading=12,
+        textColor=colors.HexColor("#1F2D3A"), alignment=TA_JUSTIFY, spaceAfter=5)
+    add("TextoSmall",  parent=styles["Normal"],   fontSize=8, leading=10,
+        textColor=colors.HexColor("#1F2D3A"), alignment=TA_LEFT)
+    add("Tabela",      parent=styles["Normal"],   fontSize=7.5, leading=9.5,
+        textColor=colors.HexColor("#1F2D3A"))
+    add("TabelaHead",  parent=styles["Normal"],   fontName="Helvetica-Bold",
+        fontSize=7.5, leading=9.5, textColor=colors.white, alignment=TA_CENTER)
+    add("TabelaLabel", parent=styles["Normal"],   fontName="Helvetica-Bold",
+        fontSize=7.5, leading=9.5, textColor=colors.white)
+    add("FichaTitulo", parent=styles["Heading3"], fontName="Helvetica-Bold",
+        fontSize=10, leading=13, textColor=AZUL, spaceBefore=8, spaceAfter=3)
+    add("CapaTit",     parent=styles["Title"],    fontName="Helvetica-Bold",
+        fontSize=22, leading=26, textColor=DOURADO, alignment=TA_CENTER, spaceAfter=4)
+    add("CapaSub",     parent=styles["Normal"],   fontSize=12, leading=15,
+        textColor=colors.white, alignment=TA_CENTER, spaceAfter=4)
+    add("CapaCard",    parent=styles["Normal"],   fontName="Helvetica-Bold",
+        fontSize=8.5, leading=11, textColor=DOURADO, alignment=TA_CENTER)
+    add("CapaCardBody",parent=styles["Normal"],   fontSize=9.5, leading=13,
+        textColor=colors.HexColor("#1F2D3A"), alignment=TA_CENTER)
+    add("CapaCardBodyB",parent=styles["Normal"],  fontName="Helvetica-Bold",
+        fontSize=12, leading=15, textColor=AZUL, alignment=TA_CENTER)
+    add("CapaNota",    parent=styles["Normal"],   fontSize=8, leading=10.5,
+        textColor=colors.HexColor("#5D4037"), alignment=TA_CENTER)
+    add("GHSDesc",     parent=styles["Normal"],   fontSize=7.5, leading=9.5,
+        textColor=colors.HexColor("#1F2D3A"), alignment=TA_LEFT)
 
     def P(texto, style="Texto"):
         return Paragraph(esc(texto), styles[style])
@@ -13608,299 +13594,390 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         w, h = A4
 
         if doc_obj.page == 1:
-            canvas.setFillColor(colors.HexColor("#F4F8FC"))
+            canvas.setFillColor(colors.HexColor("#F0F4F8"))
             canvas.rect(0, 0, w, h, fill=1, stroke=0)
 
+            faixa_h = h * 0.44
             canvas.setFillColor(AZUL)
-            canvas.rect(0, h - 10.2 * cm, w, 10.2 * cm, fill=1, stroke=0)
-
-            canvas.setFillColor(AZUL_2)
-            canvas.rect(w - 2.0 * cm, h - 10.2 * cm, 2.0 * cm, 10.2 * cm, fill=1, stroke=0)
+            canvas.rect(0, h - faixa_h, w, faixa_h, fill=1, stroke=0)
 
             canvas.setFillColor(DOURADO)
-            canvas.rect(0, h - 10.35 * cm, w, 0.15 * cm, fill=1, stroke=0)
+            canvas.rect(w - 0.5*cm, h - faixa_h, 0.5*cm, faixa_h, fill=1, stroke=0)
+            canvas.rect(0, h - faixa_h - 0.2*cm, w, 0.2*cm, fill=1, stroke=0)
 
             canvas.setFillColor(colors.white)
-            canvas.setFont("Helvetica-Bold", 11)
-            canvas.drawString(1.45 * cm, h - 1.25 * cm, "AQUA GESTÃO CONTROLE TÉCNICO LTDA")
-            canvas.setFont("Helvetica", 8)
-            canvas.drawString(1.45 * cm, h - 1.65 * cm, "Responsabilidade técnica | Segurança química | Piscinas coletivas")
+            canvas.setFont("Helvetica-Bold", 10)
+            canvas.drawString(1.4*cm, h - 0.9*cm, "AQUA GESTÃO CONTROLE TÉCNICO LTDA")
+            canvas.setFont("Helvetica", 7.5)
+            canvas.drawString(1.4*cm, h - 1.35*cm,
+                "Responsabilidade Técnica  |  Segurança Química  |  Piscinas Coletivas")
+            canvas.setFont("Helvetica", 7)
+            canvas.drawRightString(w - 0.7*cm, h - 0.9*cm,  f"Versão {versao}")
+            canvas.drawRightString(w - 0.7*cm, h - 1.35*cm, f"Emissão: {data_emissao}")
 
             canvas.setFillColor(AZUL)
-            canvas.rect(0, 0, w, 1.45 * cm, fill=1, stroke=0)
+            canvas.rect(0, 0, w, 1.1*cm, fill=1, stroke=0)
+            canvas.setFillColor(DOURADO)
+            canvas.rect(0, 1.1*cm, w, 0.1*cm, fill=1, stroke=0)
             canvas.setFillColor(colors.white)
-            canvas.setFont("Helvetica", 7.5)
-            canvas.drawCentredString(w / 2, 0.58 * cm, f"CNPJ 66.008.795/0001-92 | Uberlândia/MG | Dossiê FDS/GHS | Versão {versao}")
+            canvas.setFont("Helvetica", 7)
+            canvas.drawCentredString(w/2, 0.42*cm,
+                f"CNPJ 66.008.795/0001-92  |  Uberlândia/MG  |  Dossiê FDS/GHS  |  Versão {versao}")
             canvas.restoreState()
             return
 
         canvas.setFillColor(AZUL)
-        canvas.rect(0, h - 1.15 * cm, w, 1.15 * cm, fill=1, stroke=0)
+        canvas.rect(0, h - 1.05*cm, w, 1.05*cm, fill=1, stroke=0)
+        canvas.setFillColor(DOURADO)
+        canvas.rect(0, h - 1.1*cm, w, 0.05*cm, fill=1, stroke=0)
         canvas.setFillColor(colors.white)
-        canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(1.35 * cm, h - 0.72 * cm, "Aqua Gestão Controle Técnico Ltda | Dossiê de Segurança Química - FDS essenciais e GHS")
-        canvas.setFont("Helvetica", 8)
-        canvas.drawRightString(w - 1.35 * cm, h - 0.72 * cm, f"Página {doc_obj.page}")
-
+        canvas.setFont("Helvetica-Bold", 7.5)
+        canvas.drawString(1.4*cm, h - 0.68*cm,
+            "Aqua Gestão  |  Dossiê de Segurança Química — FDS / GHS / NR-26 / NR-06")
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawRightString(w - 1.4*cm, h - 0.68*cm, f"Pág. {doc_obj.page}")
         canvas.setStrokeColor(BORDA)
-        canvas.line(1.35 * cm, 0.95 * cm, w - 1.35 * cm, 0.95 * cm)
-        canvas.setFont("Helvetica", 7)
+        canvas.line(1.4*cm, 0.9*cm, w - 1.4*cm, 0.9*cm)
+        canvas.setFont("Helvetica", 6.8)
         canvas.setFillColor(CINZA)
-        canvas.drawCentredString(w / 2, 0.55 * cm, f"Dossiê FDS/GHS | Versão {versao} | Emissão {data_emissao}")
+        canvas.drawCentredString(w/2, 0.48*cm,
+            f"Dossiê FDS/GHS  |  Versão {versao}  |  Emissão {data_emissao}  |  {nome}")
         canvas.restoreState()
 
     story = []
 
-    # CAPA PREMIUM
-    story.append(Spacer(1, 20 * mm))
-    story.append(Paragraph("DOSSIÊ DE SEGURANÇA QUÍMICA", styles["CapaTituloPremium"]))
-    story.append(Paragraph("FDS, GHS, NR-26 e NR-06", styles["CapaSubPremium"]))
-    story.append(Paragraph("Fichas essenciais para uso operacional junto aos produtos", styles["CapaSubPremium"]))
-    story.append(Spacer(1, 16 * mm))
+    # ── CAPA ─────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 8*mm))
+    story.append(Paragraph("DOSSIÊ DE SEGURANÇA QUÍMICA", styles["CapaTit"]))
+    story.append(HRFlowable(width="75%", thickness=1.5, color=DOURADO,
+                             spaceBefore=4, spaceAfter=8, hAlign="CENTER"))
+    story.append(Paragraph("FDS ESSENCIAIS  •  GHS  •  NR-26  •  NR-06", styles["CapaSub"]))
+    story.append(Spacer(1, 20*mm))
 
-    selos = Table(
-        [[
-            Paragraph("FDS ESSENCIAIS", styles["CapaSelo"]),
-            Paragraph("SINALIZAÇÃO GHS", styles["CapaSelo"]),
-            Paragraph("EPIs MÍNIMOS", styles["CapaSelo"]),
-            Paragraph("CONSULTA RÁPIDA", styles["CapaSelo"]),
-        ]],
-        colWidths=[4.0 * cm, 4.0 * cm, 4.0 * cm, 4.0 * cm],
-    )
-    selos.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#DCE8F4")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#DCE8F4")),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    story.append(selos)
-    story.append(Spacer(1, 14 * mm))
-
-    capa = [
-        [Paragraph("CONTRATANTE / LOCAL ATENDIDO", styles["CapaCardTitulo"])],
-        [Paragraph(esc(nome.upper()), styles["CapaCardTexto"])],
-        [Paragraph(f"<b>CNPJ:</b> {esc(cnpj)}", styles["CapaCardTexto"])],
-        [Paragraph(f"<b>Endereço:</b> {esc(endereco)}", styles["CapaCardTexto"])],
-        [Paragraph("<b>Finalidade:</b> orientação operacional, sinalização GHS, EPIs mínimos e consulta rápida às FDS essenciais", styles["CapaCardTexto"])],
-        [Paragraph(f"<b>Data de emissão:</b> {esc(data_emissao)}", styles["CapaCardTexto"])],
+    card_data = [
+        [Paragraph("CONDOMÍNIO / LOCAL ATENDIDO", styles["CapaCard"])],
+        [Paragraph(esc(nome), styles["CapaCardBodyB"])],
+        [Paragraph(f"CNPJ: {esc(cnpj)}", styles["CapaCardBody"])],
+        [Paragraph(f"Endereço: {esc(endereco)}", styles["CapaCardBody"])],
+        [Paragraph(f"Data de emissão: {esc(data_emissao)}  |  Versão: {versao}", styles["CapaCardBody"])],
     ]
-    t = Table(capa, colWidths=[17.2 * cm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.white),
-        ("BOX", (0, 0), (-1, -1), 1.1, colors.HexColor("#C9D8E8")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#E2EAF2")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 12),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    card = Table(card_data, colWidths=[17.3*cm])
+    card.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(0,0),  AZUL),
+        ("BACKGROUND",    (0,1),(0,-1), colors.white),
+        ("BOX",           (0,0),(-1,-1), 1.5, DOURADO),
+        ("LINEBELOW",     (0,0),(0,0),   0.8, DOURADO),
+        ("INNERGRID",     (0,1),(-1,-1), 0.3, BORDA),
+        ("LEFTPADDING",   (0,0),(-1,-1), 14),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 14),
+        ("TOPPADDING",    (0,0),(-1,-1), 10),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 10),
+        ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
     ]))
-    story.append(t)
-    story.append(Spacer(1, 12 * mm))
+    story.append(card)
+    story.append(Spacer(1, 10*mm))
 
-    nota_capa = Table(
-        [[Paragraph(
-            "Documento operacional para manter junto aos produtos químicos. "
-            "Não substitui as FDS oficiais dos fabricantes, que devem permanecer arquivadas e disponíveis para consulta, fiscalização, emergência e treinamento.",
-            styles["CapaCardTexto"]
-        )]],
-        colWidths=[17.2 * cm],
-    )
-    nota_capa.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF8E6")),
-        ("BOX", (0, 0), (-1, -1), 0.8, DOURADO),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    nota = Table([[Paragraph(
+        "Documento operacional para consulta rápida junto à casa de máquinas, "
+        "armário químico e equipe operacional designada.",
+        styles["CapaNota"]
+    )]], colWidths=[17.3*cm])
+    nota.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), DOURADO_BG),
+        ("BOX",           (0,0),(-1,-1), 0.8, DOURADO),
+        ("LEFTPADDING",   (0,0),(-1,-1), 12),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 12),
+        ("TOPPADDING",    (0,0),(-1,-1), 8),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 8),
     ]))
-    story.append(nota_capa)
+    story.append(nota)
     story.append(PageBreak())
 
-    # SEÇÕES INICIAIS
+    # ── SEÇÕES 1-3 ───────────────────────────────────────────────────────────
     story.append(Paragraph("1. Finalidade do dossiê", styles["Secao"]))
-    story.append(P("Este dossiê organiza, em linguagem operacional, as informações essenciais das Fichas com Dados de Segurança (FDS) dos produtos químicos utilizados na rotina de piscinas. O objetivo é facilitar consulta rápida na casa de máquinas, apoiar a sinalização GHS, orientar EPIs mínimos e reforçar os cuidados de armazenamento, manuseio e resposta inicial a incidentes."))
-    story.append(P("Importante: as fichas essenciais deste documento não substituem a FDS oficial do fabricante. As FDS completas devem permanecer arquivadas em meio físico e/ou digital, disponíveis para consulta, fiscalização, emergência e treinamento."))
+    story.append(P("Este dossiê consolida, em formato operacional, as informações essenciais das Fichas com "
+        "Dados de Segurança (FDS) dos produtos químicos utilizados em piscinas, incluindo perigos GHS, EPIs mínimos, "
+        "primeiros socorros, armazenamento e medidas de emergência. A FDS completa do fabricante deve permanecer "
+        "arquivada em meio físico ou digital e disponível para consulta, fiscalização ou atendimento emergencial."))
+    story.append(P("Este documento não substitui o rótulo, a FDS integral do fabricante, o treinamento da equipe, "
+        "a avaliação de risco do local ou a obrigação de fornecimento, conservação e uso adequado de EPIs."))
 
     story.append(Paragraph("2. O que deve ficar junto aos produtos", styles["Secao"]))
     for item in [
-        "Quadro GHS de leitura rápida, preferencialmente plastificado e afixado na casa de máquinas ou armário químico.",
-        "Tabela produto x pictograma x risco x EPI, para consulta antes do manuseio.",
-        "Ficha essencial de cada produto efetivamente armazenado no condomínio.",
-        "Telefone de emergência e orientação para levar a FDS ao atendimento médico quando houver exposição.",
-        "Rótulo original íntegro; em caso de fracionamento autorizado, manter etiqueta complementar com nome do produto, pictogramas GHS e data.",
+        "Identificação do produto e finalidade.",
+        "Pictogramas GHS e palavra de advertência.",
+        "Perigos principais e proibição de misturas.",
+        "EPIs mínimos antes do manuseio.",
+        "Primeiros socorros resumidos.",
+        "Conduta em derramamento/vazamento.",
+        "Armazenamento e incompatibilidades.",
+        "Telefone de emergência do fornecedor ou serviço toxicológico informado na FDS.",
     ]:
         story.append(bullet(item))
 
     story.append(Paragraph("3. Integração documental: FDS, GHS, NR-26 e NR-06", styles["Secao"]))
-    story.append(P("FDS: documento técnico do fabricante com identificação, perigos, primeiros socorros, controle de exposição, armazenamento, incompatibilidades, derramamento e destinação."))
-    story.append(P("GHS: sistema de classificação e comunicação de perigos. No dossiê, aparece nos pictogramas, palavra de advertência, frases H e principais precauções."))
-    story.append(P("NR-26: relaciona-se à sinalização de segurança, rotulagem preventiva, identificação dos produtos químicos e treinamento quanto aos perigos."))
-    story.append(P("NR-06: relaciona-se ao fornecimento, uso, conservação, guarda e substituição dos EPIs, respeitando a avaliação de risco e a indicação das FDS."))
+    story.append(P("FDS: documento técnico do fabricante com identificação, perigos, primeiros socorros, "
+        "controle de exposição, armazenamento, incompatibilidades, derramamento e destinação."))
+    story.append(P("GHS: sistema global de classificação e comunicação de perigos — pictogramas, "
+        "palavra de advertência, frases H e precauções P."))
+    story.append(P("NR-26: sinalização de segurança, rotulagem preventiva, identificação dos produtos "
+        "químicos e treinamento quanto aos perigos."))
+    story.append(P("NR-06: fornecimento, uso, conservação, guarda e substituição dos EPIs conforme "
+        "avaliação de risco e indicação das FDS."))
     story.append(PageBreak())
 
-    story.append(Paragraph("4. Quadro GHS - leitura rápida dos pictogramas", styles["Secao"]))
-    ghs_rows = [
-        ["OXIDANTE", "Chama sobre círculo", "Pode intensificar incêndio; manter longe de combustíveis, papel, tecidos, óleos e fontes de calor."],
-        ["CORROSIVO", "Corrosão", "Pode causar queimaduras na pele, lesões oculares graves ou corrosão a metais."],
-        ["IRRITANTE / NOCIVO", "Exclamação", "Pode causar irritação, toxicidade aguda moderada ou irritação respiratória."],
-        ["PERIGO À SAÚDE", "Silhueta humana", "Pode provocar dano a órgãos-alvo ou efeito relevante por exposição."],
-        ["AMBIENTAL", "Árvore e peixe", "Pode ser tóxico ao ambiente aquático; evitar descarte em solo, ralos e cursos d'água."],
+    # ── SEÇÃO 4 — GUIA GHS ───────────────────────────────────────────────────
+    story.append(Paragraph("4. Guia GHS — Pictogramas e significado operacional", styles["Secao"]))
+    story.append(P("O Sistema Globalmente Harmonizado (GHS) classifica e comunica os perigos dos produtos "
+        "químicos por meio de pictogramas padronizados, palavras de advertência (PERIGO / ATENÇÃO) e frases de "
+        "perigo (frases H). Antes de manusear qualquer produto, identifique os pictogramas no rótulo e adote "
+        "os EPIs indicados."))
+    story.append(Spacer(1, 4))
+
+    GHS_CORES = {
+        "GHS03": colors.HexColor("#BF360C"),
+        "GHS05": colors.HexColor("#4A148C"),
+        "GHS06": colors.HexColor("#212121"),
+        "GHS07": colors.HexColor("#E65100"),
+        "GHS08": colors.HexColor("#880E4F"),
+        "GHS09": colors.HexColor("#1B5E20"),
+    }
+
+    ghs_dados = [
+        ("GHS03", "OXIDANTE",
+         "Pode agravar incêndio ou explosão. Manter longe de combustíveis, papel, tecidos e fontes de calor. "
+         "Nunca misturar com materiais orgânicos, ácidos ou inflamáveis.",
+         "Tricloro, Hipoclorito de Cálcio"),
+        ("GHS05", "CORROSIVO",
+         "Pode causar queimaduras severas na pele, lesões oculares graves ou corroer metais. "
+         "Usar EPI completo. Em contato com pele/olhos, lavar imediatamente com água abundante.",
+         "Hipoclorito, Dicloro, Diminuidor de pH, Limpa Bordas, Clarificante/FLOC"),
+        ("GHS06", "TÓXICO AGUDO",
+         "Pode causar morte ou intoxicação grave por inalação, ingestão ou contato. "
+         "Não presente nos produtos deste dossiê — referência para reconhecimento em outros contextos.",
+         "— não presente neste dossiê"),
+        ("GHS07", "IRRITANTE / NOCIVO",
+         "Irritação à pele/olhos, toxicidade aguda moderada ou desconforto respiratório. "
+         "Evitar inalação de pós e vapores. Usar proteção ocular e respiratória quando necessário.",
+         "Tricloro, Hipoclorito, Dicloro, Diminuidor de pH"),
+        ("GHS08", "PERIGO À SAÚDE",
+         "Pode provocar dano a órgãos-alvo, sensibilização respiratória ou efeitos graves à saúde. "
+         "Minimizar exposição repetida. Consultar FDS para limites de exposição.",
+         "Hipoclorito de Cálcio"),
+        ("GHS09", "AMBIENTAL",
+         "Tóxico ao ambiente aquático (agudo ou crônico). Evitar qualquer descarte em solo, "
+         "ralos, cursos d'água ou rede pluvial. Conter derramamentos imediatamente.",
+         "Tricloro, Hipoclorito, Dicloro, Limpa Bordas"),
     ]
-    tabela_ghs = [[P("Classe", "TabelaHead"), P("Pictograma", "TabelaHead"), P("Leitura operacional", "TabelaHead")]]
-    tabela_ghs += [[P(a, "Tabela"), P(b, "Tabela"), P(c, "Tabela")] for a, b, c in ghs_rows]
-    tg = Table(tabela_ghs, colWidths=[4.0 * cm, 4.1 * cm, 9.8 * cm], repeatRows=1)
+
+    ghs_head = [
+        P("Código", "TabelaHead"),
+        P("Classe de perigo", "TabelaHead"),
+        P("Significado e conduta operacional", "TabelaHead"),
+        P("Produtos neste dossiê", "TabelaHead"),
+    ]
+    ghs_table = [ghs_head]
+    for idx, (cod, classe, sig, prods) in enumerate(ghs_dados):
+        cor = GHS_CORES.get(cod, AZUL)
+        badge = Table([[Paragraph(f"<b>{cod}</b>", ParagraphStyle(
+            f"B{idx}", parent=styles["Normal"], fontSize=7, fontName="Helvetica-Bold",
+            textColor=colors.white, alignment=TA_CENTER, leading=9
+        ))]], colWidths=[1.5*cm], rowHeights=[0.7*cm])
+        badge.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(-1,-1), cor),
+            ("BOX",           (0,0),(-1,-1), 0.8, colors.HexColor("#37474F")),
+            ("TOPPADDING",    (0,0),(-1,-1), 10),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 0),
+            ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+        ]))
+        ghs_table.append([
+            badge,
+            Paragraph(f"<b>{classe}</b>", styles["GHSDesc"]),
+            Paragraph(sig, styles["GHSDesc"]),
+            Paragraph(f"<i>{prods}</i>", styles["GHSDesc"]),
+        ])
+
+    tg = Table(ghs_table, colWidths=[1.8*cm, 3.2*cm, 8.0*cm, 4.3*cm], repeatRows=1)
     tg.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CINZA_CLARO]),
-        ("BOX", (0, 0), (-1, -1), 0.7, BORDA),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, BORDA),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("BACKGROUND",    (0,0),(-1,0),  AZUL),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, AZUL_CLARO]),
+        ("BOX",           (0,0),(-1,-1), 0.8, BORDA),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, BORDA),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("LEFTPADDING",   (0,0),(-1,-1), 5),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 5),
+        ("TOPPADDING",    (0,0),(-1,-1), 6),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
     ]))
     story.append(tg)
     story.append(Spacer(1, 6))
-    story.append(P("Regra operacional: antes de manusear qualquer produto, confirmar nome do produto, rótulo, pictograma GHS, EPI mínimo e incompatibilidades. Nunca misturar produtos químicos entre si."))
 
+    alerta = Table([[Paragraph(
+        "REGRA OPERACIONAL: nunca misturar produtos químicos entre si. "
+        "Antes de manusear, confirmar rótulo, pictograma GHS, EPI mínimo e incompatibilidades.",
+        ParagraphStyle("Alert", parent=styles["Normal"], fontSize=8.5, leading=11,
+                       textColor=LARANJA, fontName="Helvetica-Bold")
+    )]], colWidths=[17.3*cm])
+    alerta.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#FFF3E0")),
+        ("BOX",           (0,0),(-1,-1), 1.0, LARANJA),
+        ("LEFTPADDING",   (0,0),(-1,-1), 10),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 10),
+        ("TOPPADDING",    (0,0),(-1,-1), 7),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 7),
+    ]))
+    story.append(alerta)
+    story.append(PageBreak())
+
+    # ── SEÇÃO 5 — MATRIZ ─────────────────────────────────────────────────────
     produtos = _dados_fds_essenciais_aqua()
 
-    def infere(prod):
-        nome_prod = str(prod.get("produto", "")).lower()
-        base = {
-            "fonte": "FDS oficial do fabricante / matriz essencial Aqua Gestão",
-            "palavra": "PERIGO",
-            "frases": "Conforme FDS oficial do fabricante.",
-            "derramamento": "Isolar área, usar EPI compatível, conter/recolher com segurança e evitar liberação ao meio ambiente.",
-            "emergencia": "PRÓ-QUÍMICA: 0800 110 8270.",
-        }
-        if "tricloro" in nome_prod:
-            base.update({"fonte": "FDS Tricloro - revisão vigente", "frases": "H272, H302, H319, H335, H400, H410.", "emergencia": "CEATOX: 0800 722 6001."})
-        elif "hipoclorito" in nome_prod:
-            base.update({"fonte": "FDS Hipoclorito de Cálcio / Cloro Granulado - revisão vigente", "frases": "H272, H302, H314, H318, H371, H400."})
-        elif "dicloro" in nome_prod:
-            base.update({"fonte": "FDS Dicloro Orgânico 56% - revisão vigente", "frases": "H302, H315, H318, H335, H400, H410."})
-        elif "diminuidor" in nome_prod or "ácido" in nome_prod or "ph" in nome_prod:
-            base.update({"fonte": "FDS Diminuidor de pH e Alcalinidade - revisão vigente", "frases": "H302, H314, H318, H332, H401."})
-        elif "limpa" in nome_prod:
-            base.update({"fonte": "FDS Limpa Bordas - revisão vigente", "frases": "H316, H318, H401, H412."})
-        elif "clarificante" in nome_prod or "floc" in nome_prod:
-            base.update({"fonte": "FDS Clarificante / FLOC - revisão vigente", "frases": "H290, H314, H318, H402."})
-        elif "bicarbonato" in nome_prod:
-            base.update({"fonte": "FDS Bicarbonato de Sódio - versão vigente", "palavra": "NÃO CLASSIFICADO COMO PERIGOSO", "frases": "Não aplicável pela classificação apresentada na FDS.", "emergencia": "Telefone do fornecedor / atendimento médico local."})
-        return base
-
-    story.append(Paragraph("5. Matriz produto x GHS x EPI mínimo", styles["Secao"]))
-    matriz = [[P("Produto", "TabelaHead"), P("GHS principal", "TabelaHead"), P("Risco operacional", "TabelaHead"), P("EPI mínimo", "TabelaHead")]]
+    story.append(Paragraph("5. Tabela produto × GHS × risco × EPI mínimo", styles["Secao"]))
+    matriz = [[P("Produto", "TabelaHead"), P("GHS / risco principal", "TabelaHead"), P("EPI mínimo", "TabelaHead")]]
     for prod in produtos:
-        matriz.append([
-            P(prod.get("produto", ""), "Tabela"),
-            P(prod.get("ghs", ""), "Tabela"),
-            P(prod.get("perigos", ""), "Tabela"),
-            P(prod.get("epi", ""), "Tabela"),
-        ])
-    tm = Table(matriz, colWidths=[3.4 * cm, 4.0 * cm, 5.0 * cm, 5.5 * cm], repeatRows=1)
+        risco = prod.get("ghs", "") + ". " + prod.get("perigos", "")
+        matriz.append([P(prod.get("produto",""), "Tabela"), P(risco, "Tabela"), P(prod.get("epi",""), "Tabela")])
+    tm = Table(matriz, colWidths=[4.2*cm, 8.0*cm, 6.1*cm], repeatRows=1)
     tm.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CINZA_CLARO]),
-        ("BOX", (0, 0), (-1, -1), 0.7, BORDA),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, BORDA),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND",    (0,0),(-1,0),  AZUL),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, AZUL_CLARO]),
+        ("BOX",           (0,0),(-1,-1), 0.8, BORDA),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, BORDA),
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
+        ("LEFTPADDING",   (0,0),(-1,-1), 5),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 5),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
     ]))
     story.append(tm)
     story.append(PageBreak())
 
+    # ── SEÇÃO 6 — FICHAS ─────────────────────────────────────────────────────
     story.append(Paragraph("6. Fichas essenciais por produto", styles["Secao"]))
-    story.append(P("As fichas abaixo são versões de consulta rápida para manter junto aos produtos. Elas resumem informações críticas das FDS oficiais: GHS, EPIs, primeiros socorros, derramamento e armazenamento."))
+    story.append(P("Versões de consulta rápida para manter junto aos produtos. Resumem informações críticas "
+        "das FDS: GHS, EPIs, primeiros socorros, derramamento e armazenamento."))
 
-    for i, prod in enumerate(produtos, start=1):
+    def infere(prod):
+        n = str(prod.get("produto", "")).lower()
+        base = {
+            "fonte":        "FDS oficial do fabricante / matriz essencial Aqua Gestão",
+            "palavra":      "PERIGO",
+            "frases":       "Conforme FDS oficial do fabricante.",
+            "derramamento": "Isolar área, usar EPI compatível, conter/recolher com segurança "
+                            "e evitar liberação ao meio ambiente.",
+            "emergencia":   "PRÓ-QUÍMICA: 0800 110 8270.",
+        }
+        if "tricloro" in n:
+            base.update({"fonte":"FDS Tricloro Domclor - revisão 09/05/2024",
+                         "frases":"H272, H302, H319, H335, H400, H410.",
+                         "emergencia":"CEATOX: 0800 722 6001."})
+        elif "hipoclorito" in n:
+            base.update({"fonte":"FDS Cloro Granulado Premium - revisão 24/06/2025",
+                         "frases":"H272, H302, H314, H318, H371, H400."})
+        elif "dicloro" in n:
+            base.update({"fonte":"FDS Dicloro Orgânico Hidroazul - revisão 24/06/2025",
+                         "frases":"H302, H315, H318, H335, H400, H410."})
+        elif "diminuidor" in n or "ph" in n:
+            base.update({"fonte":"FDS Diminuidor de pH e Alcalinidade Hidroazul - revisão 15/09/2025",
+                         "frases":"H302, H314, H318, H332, H401."})
+        elif "limpa" in n:
+            base.update({"fonte":"FDS Limpa Bordas Hidroazul - revisão 15/09/2025",
+                         "frases":"H316, H318, H401, H412."})
+        elif "clarificante" in n or "floc" in n:
+            base.update({"fonte":"FDS FLOC Plus 2 em 1 - revisão 15/09/2025",
+                         "frases":"H290, H314, H318, H402."})
+        elif "bicarbonato" in n:
+            base.update({"fonte":"FDS Bicarbonato de Sódio - versão 03, 13/12/2023",
+                         "palavra":"NÃO CLASSIFICADO COMO PERIGOSO",
+                         "frases":"Não aplicável pela classificação apresentada na FDS.",
+                         "emergencia":"Telefone do fornecedor: (12) 3141-3000."})
+        return base
+
+    for i, prod in enumerate(produtos, 1):
         extra = infere(prod)
-        ficha = [
-            [P("Produto", "TabelaHead"), P(str(prod.get("produto", "")).upper(), "Tabela")],
-            [P("Fonte FDS", "TabelaHead"), P(extra["fonte"], "Tabela")],
-            [P("Palavra de advertência", "TabelaHead"), P(extra["palavra"], "Tabela")],
-            [P("GHS", "TabelaHead"), P(prod.get("ghs", ""), "Tabela")],
-            [P("Frases H principais", "TabelaHead"), P(extra["frases"], "Tabela")],
-            [P("Uso", "TabelaHead"), P(prod.get("uso", ""), "Tabela")],
-            [P("EPI mínimo", "TabelaHead"), P(prod.get("epi", ""), "Tabela")],
-            [P("Primeiros socorros essenciais", "TabelaHead"), P(prod.get("primeiros_socorros", ""), "Tabela")],
-            [P("Derramamento", "TabelaHead"), P(extra["derramamento"], "Tabela")],
-            [P("Armazenamento / incompatibilidades", "TabelaHead"), P(prod.get("armazenamento", ""), "Tabela")],
-            [P("Emergência", "TabelaHead"), P(extra["emergencia"], "Tabela")],
+        rows = [
+            ("Produto",                     str(prod.get("produto","")).upper()),
+            ("Fonte FDS",                   extra["fonte"]),
+            ("Palavra de advertência",      extra["palavra"]),
+            ("GHS",                         prod.get("ghs","")),
+            ("Frases H principais",         extra["frases"]),
+            ("Uso",                         prod.get("uso","")),
+            ("EPI mínimo",                  prod.get("epi","")),
+            ("Primeiros socorros",          prod.get("primeiros_socorros","")),
+            ("Derramamento",                extra["derramamento"]),
+            ("Armazenamento/incompatíveis", prod.get("armazenamento","")),
+            ("Emergência",                  extra["emergencia"]),
         ]
-        story.append(Paragraph(f"6.{i}. {str(prod.get('produto', '')).upper()}", styles["FichaTitulo"]))
-        tf = Table(ficha, colWidths=[4.2 * cm, 13.7 * cm])
+        ficha = [[Paragraph(esc(lab), styles["TabelaLabel"]),
+                  Paragraph(esc(val), styles["Tabela"])] for lab, val in rows]
+        row_bgs = [("BACKGROUND", (1,idx), (1,idx),
+                    colors.white if idx % 2 == 0 else AZUL_CLARO)
+                   for idx in range(len(rows))]
+        tf = Table(ficha, colWidths=[4.4*cm, 13.2*cm])
         tf.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), AZUL),
-            ("BACKGROUND", (1, 0), (1, -1), colors.white),
-            ("BOX", (0, 0), (-1, -1), 0.7, BORDA),
-            ("INNERGRID", (0, 0), (-1, -1), 0.35, BORDA),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("BACKGROUND",    (0,0),(0,-1), AZUL),
+            ("BOX",           (0,0),(-1,-1), 0.8, BORDA),
+            ("INNERGRID",     (0,0),(-1,-1), 0.3, BORDA),
+            ("VALIGN",        (0,0),(-1,-1), "TOP"),
+            ("LEFTPADDING",   (0,0),(-1,-1), 6),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+            ("TOPPADDING",    (0,0),(-1,-1), 4),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+        ] + row_bgs))
+        story.append(KeepTogether([
+            Paragraph(f"6.{i}. {str(prod.get('produto','')).upper()}", styles["FichaTitulo"]),
+            HRFlowable(width="100%", thickness=0.6, color=DOURADO, spaceBefore=1, spaceAfter=4),
+            tf,
         ]))
-        story.append(tf)
-        story.append(Spacer(1, 7))
+        story.append(Spacer(1, 8))
 
     story.append(PageBreak())
 
+    # ── SEÇÕES 7-9 ───────────────────────────────────────────────────────────
     story.append(Paragraph("7. Regras operacionais de segurança química", styles["Secao"]))
     for regra in [
-        "Nunca misturar produtos químicos entre si, especialmente produtos clorados com ácidos, diminuidores de pH, produtos orgânicos ou materiais combustíveis.",
+        "Nunca misturar produtos químicos entre si, especialmente clorados com ácidos, "
+        "diminuidores de pH, produtos orgânicos ou materiais combustíveis.",
         "Não usar produto sem rótulo, vencido, em embalagem improvisada ou sem identificação mínima.",
-        "Não fracionar produto sem autorização e sem etiqueta complementar com nome do produto, pictogramas e risco principal.",
-        "Manter produtos incompatíveis separados fisicamente, fechados, em local ventilado, seco e de acesso controlado.",
-        "Registrar e comunicar imediatamente derramamento, odor intenso, reação inesperada, fumaça, aquecimento, embalagem estufada, vazamento ou contato acidental.",
-        "Em acidente com exposição, afastar a pessoa da fonte, iniciar primeiros socorros conforme a FDS e levar a FDS/rótulo ao atendimento médico.",
-        "A administração deve manter as FDS completas arquivadas e disponíveis à equipe operacional, à fiscalização e ao atendimento emergencial.",
+        "Não fracionar produto sem autorização e sem etiqueta complementar com nome, pictogramas e risco.",
+        "Manter produtos incompatíveis separados, fechados, em local ventilado, seco e de acesso controlado.",
+        "Registrar e comunicar imediatamente derramamento, odor intenso, reação inesperada, fumaça, "
+        "aquecimento, embalagem estufada, vazamento ou contato acidental.",
+        "Em acidente com exposição, afastar a pessoa da fonte, iniciar primeiros socorros conforme a FDS "
+        "e levar a FDS/rótulo ao atendimento médico.",
+        "A administração deve manter as FDS completas arquivadas e disponíveis à equipe operacional, "
+        "à fiscalização e ao atendimento emergencial.",
     ]:
         story.append(bullet(regra))
 
-    story.append(Paragraph("8. Plano mínimo de EPIs", styles["Secao"]))
-    epi_rows = [
-        ["Medição comum sem manipulação direta relevante", "Óculos de proteção, calçado fechado e higiene das mãos."],
-        ["Manuseio/dosagem de clorados sólidos", "Luvas químicas, óculos/protetor facial, roupa de proteção; respirador contra poeiras quando houver dispersão."],
-        ["Manuseio de ácidos/diminuidores de pH", "Luvas químicas, protetor facial/óculos, avental ou roupa resistente, ventilação; respirador para névoas/vapores quando indicado."],
-        ["Limpa bordas e clarificante/floculante", "Luvas, proteção ocular/facial, roupa de proteção; evitar respingos."],
-        ["Derramamento ou vazamento", "EPI completo compatível com a FDS; isolar área e acionar suporte técnico quando necessário."],
-    ]
-    epi_table = [[P("Atividade", "TabelaHead"), P("EPI mínimo recomendado", "TabelaHead")]]
-    epi_table += [[P(a, "Tabela"), P(b, "Tabela")] for a, b in epi_rows]
-    te = Table(epi_table, colWidths=[6.2 * cm, 11.7 * cm], repeatRows=1)
-    te.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CINZA_CLARO]),
-        ("BOX", (0, 0), (-1, -1), 0.7, BORDA),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, BORDA),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.append(te)
+    story.append(Paragraph("8. Orientações NR-26 e NR-06", styles["Secao"]))
+    story.append(P("NR-26: manter identificação, rotulagem preventiva, sinalização e orientação da equipe "
+        "sobre os riscos dos produtos químicos, com acesso às FDS e resumos essenciais junto ao local de "
+        "armazenamento/manuseio."))
+    story.append(P("NR-06: os EPIs devem ser fornecidos, usados, higienizados, guardados e substituídos "
+        "conforme risco, orientação técnica e certificado de aprovação quando aplicável."))
 
-    story.append(Paragraph("9. Controle de entrega e ciência", styles["Secao"]))
-    story.append(P("A CONTRATANTE declara ciência de que recebeu este Dossiê de Segurança Química contendo orientações essenciais de FDS, GHS, NR-26 e NR-06 para os produtos listados, comprometendo-se a manter as informações disponíveis à equipe operacional própria ou terceirizada e a preservar as FDS completas arquivadas para consulta."))
+    story.append(Paragraph("9. Termo de recebimento e ciência", styles["Secao"]))
+    story.append(P(f"A administração do {esc(nome)} declara ciência do recebimento deste Dossiê de "
+        "Segurança Química, comprometendo-se a disponibilizar seu conteúdo ao responsável local e à equipe "
+        "operacional designada, própria ou terceirizada, mantendo as FDS completas arquivadas para consulta."))
     story.append(Spacer(1, 8))
     story.append(P(f"Uberlândia/MG, {data_emissao}."))
-    story.append(Spacer(1, 16))
+    story.append(Spacer(1, 18))
 
     ass = [[
-        Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>Thyago Fernando da Silveira<br/>CRQ-MG 2ª Região | CRQ 024025748", styles["TextoSmall"]),
-        Paragraph(f"_________________________________________<br/>{esc(nome)}<br/>{esc(representante)}<br/>CNPJ {esc(cnpj)}", styles["TextoSmall"]),
+        Paragraph("_________________________________________<br/>AQUA GESTÃO CONTROLE TÉCNICO LTDA<br/>"
+                  "Thyago Fernando da Silveira<br/>CRQ 024025748", styles["TextoSmall"]),
+        Paragraph(f"_________________________________________<br/>{esc(nome)}<br/>"
+                  f"{esc(representante)}<br/>CNPJ {esc(cnpj)}", styles["TextoSmall"]),
     ]]
-    ta = Table(ass, colWidths=[8.8 * cm, 8.8 * cm])
+    ta = Table(ass, colWidths=[8.65*cm, 8.65*cm])
     ta.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
+        ("LEFTPADDING",   (0,0),(-1,-1), 6),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
     ]))
     story.append(ta)
 
@@ -13909,10 +13986,6 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     buffer.close()
     return pdf
 
-
-st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
-st.subheader("📝 Contrato Aqua Gestão — Limpeza e Manutenção")
-st.caption("Gera contrato operacional Aqua Gestão separado do contrato de Responsabilidade Técnica.")
 
 def _clientes_aqua_limpeza_cache():
     return filtrar_clientes_por_empresa(sheets_listar_clientes_completo() or [], "aqua_gestao")
