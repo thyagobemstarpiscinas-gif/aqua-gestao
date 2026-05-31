@@ -13726,7 +13726,8 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     )
 
     story = []
-    # Página 1 = capa (canvas puro). O PageBreak força nova página para o conteúdo.
+    # Página 1 = capa (canvas puro). Spacer mínimo força render da página 1.
+    story.append(Spacer(1, 1))
     story.append(PageBreak())
 
     story.append(Paragraph("1. Finalidade do dossiê", styles["Secao"]))
