@@ -13619,6 +13619,11 @@ if st.button(_btn_label, type="primary", use_container_width=True):
         with st.spinner("Salvando no Google Sheets..."):
             _cc_servicos = _servicos_padrao_empresa_ativa()
             _cc_empresa_val = _servicos_para_empresa(_cc_servicos)
+            # FIX: em modo edição, preserva a empresa original do cliente
+            # para evitar que o painel ativo sobrescreva Bem Star → Aqua Gestão
+            if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("empresa"):
+                _cc_empresa_val = _cc_cliente_editar["empresa"]
+                _cc_servicos = _normalizar_servicos_cliente({"empresa": _cc_empresa_val})
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
@@ -14425,22 +14430,26 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             st.markdown("---")
             st.markdown("**📄 Gerar novamente PDF de uma visita salva**")
 
-            if _lanc_sheets_csr:
-                _opcoes_bs_pdf = list(range(len(_lanc_sheets_csr)))
+            # Usa a mesma lista exibida em "👁 Ver lançamentos".
+            # Assim inclui visitas importadas/local + Sheets, como a de 01/06/26.
+            _visitas_regen_bs = lancamentos_csr or []
+
+            if _visitas_regen_bs:
+                _opcoes_bs_pdf = list(range(len(_visitas_regen_bs)))
                 _idx_bs_pdf = st.selectbox(
-                    "Selecionar visita salva no Sheets",
+                    "Selecionar visita encontrada / salva",
                     _opcoes_bs_pdf,
                     format_func=lambda i: (
-                        f"{_lanc_sheets_csr[i].get('data', 'sem data')} | "
-                        f"{_lanc_sheets_csr[i].get('operador', 'sem operador')} | "
-                        f"ID: {_lanc_sheets_csr[i].get('id_visita', 'sem ID')}"
+                        f"{normalizar_data_visita(_visitas_regen_bs[i].get('data', 'sem data'))} | "
+                        f"{_visitas_regen_bs[i].get('operador', 'sem operador')} | "
+                        f"ID: {_visitas_regen_bs[i].get('id_visita', 'sem ID')}"
                     ),
                     key="bs_regerar_pdf_visita_idx",
                 )
 
                 if st.button("📄 Gerar PDF Bem Star da visita selecionada", key="bs_btn_regerar_pdf_visita"):
                     try:
-                        lanc_bs_admin = dict(_lanc_sheets_csr[_idx_bs_pdf] or {})
+                        lanc_bs_admin = dict(_visitas_regen_bs[_idx_bs_pdf] or {})
                         cond_bs_admin = lanc_bs_admin.get("condominio") or csr_sel
                         data_bs_admin = normalizar_data_visita(lanc_bs_admin.get("data", ""))
                         sufixo_data_bs = str(data_bs_admin or lanc_bs_admin.get("data", "")).replace("/", "")
