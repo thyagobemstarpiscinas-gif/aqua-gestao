@@ -14315,9 +14315,14 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         with rts1:
             csr_sel = st.selectbox("Selecione o cliente", opcoes_csr, key="csr_sel_relatorio")
         with rts2:
-            csr_mes = st.text_input("Mês", key="csr_mes_rel", placeholder=datetime.now().strftime("%m"))
+            # Inicializa com mês/ano atual se ainda não preenchido
+            if "csr_mes_rel" not in st.session_state or not st.session_state["csr_mes_rel"]:
+                st.session_state["csr_mes_rel"] = datetime.now().strftime("%m")
+            if "csr_ano_rel" not in st.session_state or not st.session_state["csr_ano_rel"]:
+                st.session_state["csr_ano_rel"] = str(datetime.now().year)
+            csr_mes = st.text_input("Mês", key="csr_mes_rel")
         with rts3:
-            csr_ano = st.text_input("Ano", key="csr_ano_rel", placeholder=str(datetime.now().year))
+            csr_ano = st.text_input("Ano", key="csr_ano_rel")
     
         csr_dados_sel = next((c for c in clientes_sem_rt_reload if c["nome"] == csr_sel), {})
     
