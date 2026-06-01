@@ -874,6 +874,52 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         _log_sheets_erro("sheets_editar_cliente", e)
         return False
 
+def sheets_atualizar_cliente_empresa_status(id_cliente: str, empresa: str | None = None, status: str | None = None) -> bool:
+    """Atualiza somente empresa (coluna M) e/ou status (coluna I) do cliente.
+
+    Usado pela área administrativa para transferir cliente entre Aqua Gestão,
+    Bem Star Piscinas ou Ambas, e para desativar sem apagar histórico.
+    """
+    try:
+        id_limpo = str(id_cliente or "").strip()
+        if not id_limpo:
+            return False
+
+        sh = conectar_sheets()
+        if sh is None:
+            return False
+        aba = obter_aba_sheets("👥 Clientes")
+        todos = aba.get_all_values()
+
+        for i, row in enumerate(todos):
+            if len(row) > 1 and str(row[1]).strip() == id_limpo:
+                linha_sheets = i + 1
+
+                if status is not None:
+                    status_limpo = re.sub(r"\s+", " ", str(status or "").strip()) or "Ativo"
+                    aba.update(
+                        range_name=f"I{linha_sheets}:I{linha_sheets}",
+                        values=[[status_limpo]],
+                        value_input_option="USER_ENTERED",
+                    )
+
+                if empresa is not None:
+                    empresa_limpa = re.sub(r"\s+", " ", str(empresa or "").strip()) or "Aqua Gestão"
+                    aba.update(
+                        range_name=f"M{linha_sheets}:M{linha_sheets}",
+                        values=[[empresa_limpa]],
+                        value_input_option="USER_ENTERED",
+                    )
+
+                st.cache_data.clear()
+                return True
+
+        return False
+    except Exception as e:
+        _log_sheets_erro("sheets_atualizar_cliente_empresa_status", e)
+        return False
+
+
 def sheets_carregar_cliente_por_nome(nome: str) -> dict:
     """Retorna dict com dados do cliente pelo nome (busca parcial)."""
     clientes = sheets_listar_clientes_completo()
@@ -2218,6 +2264,10 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     """
     resultado = []
     for c in clientes:
+        _status_cliente = normalizar_texto_busca(c.get("status", "Ativo"))
+        if _status_cliente in ("inativo", "desativado", "excluido", "cancelado"):
+            continue
+
         servicos = _normalizar_servicos_cliente(c)
         # Campo empresa do cadastro (col M do Sheets)
         _emp = str(c.get("empresa", "") or "").strip().lower()
@@ -2303,6 +2353,35 @@ def _normalizar_servicos_cliente(dados: dict | None) -> dict:
         rt = legado["rt"]
         limpeza = legado["limpeza"]
     return {"rt": rt, "limpeza": limpeza}
+
+
+def _cliente_relatorio_visita_bem_star_sem_rt(nome_condominio: str) -> bool:
+    """Define se o PDF de visita deve usar identidade Bem Star.
+
+    Regra: condomínios com limpeza Bem Star e sem RT Aqua devem gerar o
+    relatório operacional Bem Star, sem assinatura/rodapé de RT Aqua.
+    """
+    nome_condominio = str(nome_condominio or "").strip()
+    if not nome_condominio:
+        return False
+
+    cliente = {}
+    try:
+        cliente = sheets_carregar_cliente_por_nome(nome_condominio) or {}
+    except Exception:
+        cliente = {}
+
+    if not cliente:
+        try:
+            for _c in sheets_listar_clientes_completo():
+                if nomes_condominio_equivalentes(_c.get("nome", ""), nome_condominio):
+                    cliente = _c
+                    break
+        except Exception:
+            cliente = {}
+
+    servicos = _normalizar_servicos_cliente(cliente)
+    return bool(servicos.get("limpeza")) and not bool(servicos.get("rt"))
 
 
 def _servicos_para_empresa(servicos: dict | None) -> str:
@@ -11216,31 +11295,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             nome_arq = limpar_nome_arquivo(f"Relatorio_Visita_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
             with st.spinner("Gerando PDF..."):
                 try:
-                    pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
+                    _bem_star_sem_rt = _cliente_relatorio_visita_bem_star_sem_rt(_salvo["nome"])
+
+                    if _bem_star_sem_rt:
+                        pdf_bytes = gerar_pdf_relatorio_visita_bem_star(_ult_lanc, _salvo["nome"])
+                        nome_arq_pdf = limpar_nome_arquivo(f"Relatorio_BemStar_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
+                        legenda_pdf = "PDF gerado com identidade Bem Star, pois o condomínio está cadastrado sem RT Aqua."
+                    else:
+                        pdf_bytes = gerar_pdf_relatorio_visita(_ult_lanc, _salvo["nome"])
+                        nome_arq_pdf = nome_arq
+                        legenda_pdf = "Baixe e compartilhe diretamente pelo WhatsApp."
+
                     st.download_button(
                         "📄 Baixar PDF desta visita",
                         data=pdf_bytes,
-                        file_name=f"{nome_arq}.pdf",
+                        file_name=f"{nome_arq_pdf}.pdf",
                         mime="application/pdf",
                         use_container_width=True,
                         key="btn_dl_relatorio_visita",
                     )
-                    st.caption("Baixe e compartilhe diretamente pelo WhatsApp.")
-                    # Botao PDF Bem Star Premium
-                    if st.session_state.get("empresa_ativa") == "bem_star":
-                        try:
-                            pdf_bs = gerar_pdf_relatorio_visita_bem_star(_ult_lanc, _salvo["nome"])
-                            nome_bs = limpar_nome_arquivo(f"Relatorio_BemStar_{_salvo['nome']}_{_salvo['data'].replace('/','')}")
-                            st.download_button(
-                                "⭐ Baixar PDF Bem Star (com capa premium)",
-                                data=pdf_bs,
-                                file_name=f"{nome_bs}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True,
-                                key="btn_dl_relatorio_visita_bs",
-                            )
-                        except Exception as _ebs:
-                            st.warning(f"PDF Bem Star nao gerado: {_ebs}")
+                    st.caption(legenda_pdf)
                 except Exception as _e:
                     import traceback
                     _erro_pdf = str(_e)
@@ -13297,6 +13371,93 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.session_state["cc_pisc_extra2_nome"] = _piscs_extras[1]["nome"] if len(_piscs_extras) > 1 else ""
             st.session_state["cc_pisc_extra2_vol"]  = str(_piscs_extras[1].get("vol","") or "") if len(_piscs_extras) > 1 else ""
             st.rerun()
+
+        if _cc_cliente_editar:
+            with st.expander("⚙️ Transferir ou desativar cliente", expanded=True):
+                _empresa_atual_cliente = str(_cc_cliente_editar.get("empresa", "") or "Aqua Gestão").strip()
+                _status_atual_cliente = str(_cc_cliente_editar.get("status", "") or "Ativo").strip()
+                st.caption(
+                    f"Cliente selecionado: **{_cc_cliente_editar.get('nome','')}** · "
+                    f"Empresa atual: **{_empresa_atual_cliente}** · Status: **{_status_atual_cliente}**"
+                )
+
+                _opcoes_empresa_cliente = ["Aqua Gestão", "Bem Star Piscinas", "Ambas"]
+                try:
+                    _idx_empresa_cliente = _opcoes_empresa_cliente.index(_empresa_atual_cliente)
+                except Exception:
+                    _idx_empresa_cliente = 0
+
+                _nova_empresa_cliente = st.selectbox(
+                    "Transferir cliente para",
+                    _opcoes_empresa_cliente,
+                    index=_idx_empresa_cliente,
+                    key="cc_transferir_empresa_destino",
+                    help="Atualiza a coluna M do cadastro: Aqua Gestão = RT, Bem Star = Limpeza sem RT, Ambas = RT + Limpeza.",
+                )
+
+                if st.button("🔁 Transferir cliente", key="btn_transferir_cliente_empresa", use_container_width=True):
+                    _ok_transferir = sheets_atualizar_cliente_empresa_status(
+                        _cc_cliente_editar.get("id", ""),
+                        empresa=_nova_empresa_cliente,
+                        status="Ativo",
+                    )
+                    if _ok_transferir:
+                        try:
+                            _pasta_cliente_transferir = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
+                            _pasta_cliente_transferir.mkdir(parents=True, exist_ok=True)
+                            _dados_cliente_transferir = carregar_dados_condominio(_pasta_cliente_transferir) or {}
+                            _servicos_transferir = _normalizar_servicos_cliente({"empresa": _nova_empresa_cliente})
+                            _dados_cliente_transferir.update({
+                                "nome_condominio": _cc_cliente_editar.get("nome", ""),
+                                "empresa": _nova_empresa_cliente,
+                                "servicos": _servicos_transferir,
+                                "status": "Ativo",
+                            })
+                            salvar_dados_condominio(_pasta_cliente_transferir, _dados_cliente_transferir)
+                        except Exception as e:
+                            _log_sheets_erro("atualizar_local_transferencia_cliente", e)
+                        st.success(f"Cliente transferido para {_nova_empresa_cliente}.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível transferir o cliente. Verifique o diagnóstico do Sheets.")
+
+                st.divider()
+                st.warning("Desativar remove o cliente das listas ativas sem apagar visitas, relatórios ou histórico.")
+                _conf_desativar_cliente = st.checkbox(
+                    "Confirmo que desejo desativar este cliente",
+                    key="cc_confirmar_desativar_cliente",
+                )
+                if st.button(
+                    "🗑️ Desativar cliente",
+                    key="btn_desativar_cliente",
+                    disabled=not _conf_desativar_cliente,
+                    use_container_width=True,
+                ):
+                    _ok_desativar = sheets_atualizar_cliente_empresa_status(
+                        _cc_cliente_editar.get("id", ""),
+                        status="Inativo",
+                    )
+                    if _ok_desativar:
+                        try:
+                            _pasta_cliente_desativar = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
+                            _pasta_cliente_desativar.mkdir(parents=True, exist_ok=True)
+                            _dados_cliente_desativar = carregar_dados_condominio(_pasta_cliente_desativar) or {}
+                            _dados_cliente_desativar.update({
+                                "nome_condominio": _cc_cliente_editar.get("nome", ""),
+                                "empresa": _empresa_atual_cliente,
+                                "servicos": _normalizar_servicos_cliente({"empresa": _empresa_atual_cliente}),
+                                "status": "Inativo",
+                                "desativado_em": _agora_brasilia(),
+                            })
+                            salvar_dados_condominio(_pasta_cliente_desativar, _dados_cliente_desativar)
+                        except Exception as e:
+                            _log_sheets_erro("atualizar_local_desativacao_cliente", e)
+                        st.success("Cliente desativado. O histórico foi preservado.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível desativar o cliente. Verifique o diagnóstico do Sheets.")
     else:
         st.info("Nenhum cliente para editar.")
 
@@ -14205,7 +14366,109 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     st.caption(f"📅 {_lc.get('data','?')} | pH {_lc.get('ph','–')} | CRL {_lc.get('cloro_livre','–')} | op: {_lc.get('operador','–')}")
         else:
             st.info("Nenhum lançamento encontrado para este cliente/período. O operador precisa registrar visitas no modo campo.")
-    
+
+        # ── Recuperação e reemissão de PDF individual — Bem Star sem RT ───────
+        with st.expander("📄 Recuperar PDF antigo / gerar novamente visita salva", expanded=False):
+            st.caption(
+                "Use este bloco para clientes Bem Star sem RT. Ele importa um PDF antigo para a aba 🔬 Visitas "
+                "ou gera novamente o PDF individual usando a identidade visual Bem Star."
+            )
+
+            st.markdown("**📥 Importar PDF de visita para o histórico**")
+            pdf_visita_bs_import = st.file_uploader(
+                "Enviar PDF do Relatório de Visita",
+                type=["pdf"],
+                key="bs_pdf_visita_importador",
+            )
+
+            if pdf_visita_bs_import is not None:
+                if st.button("📥 Importar PDF para a aba 🔬 Visitas", key="bs_btn_importar_pdf_visita"):
+                    try:
+                        pdf_bytes_bs = pdf_visita_bs_import.getvalue()
+                        lanc_pdf_bs = extrair_lancamento_de_pdf_visita(pdf_bytes_bs, csr_sel)
+                        if not lanc_pdf_bs:
+                            st.error("Não consegui extrair dados suficientes deste PDF. Confira se é um Relatório de Visita gerado pelo sistema.")
+                        else:
+                            cond_pdf_bs = lanc_pdf_bs.get("condominio") or csr_sel
+                            ok_pdf_bs = sheets_salvar_lancamento_campo(lanc_pdf_bs, cond_pdf_bs)
+
+                            try:
+                                pasta_pdf_bs = GENERATED_DIR / slugify_nome(cond_pdf_bs)
+                                pasta_pdf_bs.mkdir(exist_ok=True)
+                                dados_pdf_bs = carregar_dados_condominio(pasta_pdf_bs) or {}
+                                pend_pdf_bs = dados_pdf_bs.get("lancamentos_campo", [])
+                                pend_pdf_bs.append(lanc_pdf_bs)
+                                dados_pdf_bs["lancamentos_campo"] = pend_pdf_bs
+                                dados_pdf_bs["nome_condominio"] = dados_pdf_bs.get("nome_condominio", cond_pdf_bs)
+                                salvar_dados_condominio(pasta_pdf_bs, dados_pdf_bs)
+                            except Exception as e:
+                                _log_sheets_erro("bs_salvar_pdf_importado_json_local", e)
+
+                            if ok_pdf_bs:
+                                st.success(
+                                    f"✅ PDF importado e salvo como visita: {cond_pdf_bs} — {lanc_pdf_bs.get('data','data não identificada')}"
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.warning("Consegui ler o PDF, mas não consegui salvar na aba 🔬 Visitas.")
+                                erro_pdf_bs = st.session_state.get("_sheets_ultimo_erro", "")
+                                if erro_pdf_bs:
+                                    st.code(erro_pdf_bs[:2000])
+                    except Exception as e:
+                        _log_sheets_erro("bs_importar_pdf_visita_ui", e)
+                        st.error("Erro ao importar o PDF de visita.")
+                        erro_pdf_bs = st.session_state.get("_sheets_ultimo_erro", "")
+                        if erro_pdf_bs:
+                            st.code(erro_pdf_bs[:2000])
+
+            st.markdown("---")
+            st.markdown("**📄 Gerar novamente PDF de uma visita salva**")
+
+            if _lanc_sheets_csr:
+                _opcoes_bs_pdf = list(range(len(_lanc_sheets_csr)))
+                _idx_bs_pdf = st.selectbox(
+                    "Selecionar visita salva no Sheets",
+                    _opcoes_bs_pdf,
+                    format_func=lambda i: (
+                        f"{_lanc_sheets_csr[i].get('data', 'sem data')} | "
+                        f"{_lanc_sheets_csr[i].get('operador', 'sem operador')} | "
+                        f"ID: {_lanc_sheets_csr[i].get('id_visita', 'sem ID')}"
+                    ),
+                    key="bs_regerar_pdf_visita_idx",
+                )
+
+                if st.button("📄 Gerar PDF Bem Star da visita selecionada", key="bs_btn_regerar_pdf_visita"):
+                    try:
+                        lanc_bs_admin = dict(_lanc_sheets_csr[_idx_bs_pdf] or {})
+                        cond_bs_admin = lanc_bs_admin.get("condominio") or csr_sel
+                        data_bs_admin = normalizar_data_visita(lanc_bs_admin.get("data", ""))
+                        sufixo_data_bs = str(data_bs_admin or lanc_bs_admin.get("data", "")).replace("/", "")
+
+                        with st.spinner("Gerando PDF Bem Star da visita salva..."):
+                            pdf_bytes_bs_admin = gerar_pdf_relatorio_visita_bem_star(lanc_bs_admin, cond_bs_admin)
+                            nome_arq_bs_admin = limpar_nome_arquivo(
+                                f"Relatorio_BemStar_{cond_bs_admin}_{sufixo_data_bs}"
+                            )
+
+                        st.success("✅ PDF gerado com identidade Bem Star.")
+                        st.download_button(
+                            "⬇️ Baixar PDF Bem Star regenerado",
+                            data=pdf_bytes_bs_admin,
+                            file_name=f"{nome_arq_bs_admin}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="bs_dl_pdf_visita_regenerado",
+                        )
+                    except Exception as e:
+                        _log_sheets_erro("bs_regenerar_pdf_visita", e)
+                        st.error("Não consegui gerar novamente o PDF desta visita.")
+                        erro_reg_bs = st.session_state.get("_sheets_ultimo_erro", "")
+                        if erro_reg_bs:
+                            st.code(erro_reg_bs[:2000])
+            else:
+                st.info("Nenhuma visita salva no Sheets para este cliente. Importe um PDF acima ou salve uma visita pelo modo operador.")
+
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
             placeholder="Condições gerais da piscina, ocorrências, recomendações...")
@@ -17924,6 +18187,69 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
     erro_sheets = st.session_state.get("_sheets_ultimo_erro", "")
     if erro_sheets:
         st.code(erro_sheets[:1500])
+
+    st.markdown("---")
+    st.markdown("**📄 Gerar novamente PDF de uma visita salva**")
+    st.caption(
+        "Use isto para baixar novamente o PDF individual de uma visita já gravada na aba 🔬 Visitas. "
+        "A identidade visual é decidida pelo cadastro do condomínio: Bem Star sem RT gera PDF Bem Star; "
+        "clientes com RT Aqua continuam no modelo Aqua Gestão."
+    )
+
+    if lancamentos_sheets:
+        _opcoes_pdf_visita = list(range(len(lancamentos_sheets)))
+        _idx_pdf_visita = st.selectbox(
+            "Selecionar visita salva para gerar PDF",
+            _opcoes_pdf_visita,
+            format_func=lambda i: (
+                f"{lancamentos_sheets[i].get('data', 'sem data')} | "
+                f"{lancamentos_sheets[i].get('operador', 'sem operador')} | "
+                f"ID: {lancamentos_sheets[i].get('id_visita', 'sem ID')}"
+            ),
+            key="rel_regerar_pdf_visita_idx",
+        )
+
+        if st.button("📄 Gerar novamente PDF da visita selecionada", key="btn_regerar_pdf_visita_admin"):
+            try:
+                lanc_pdf_admin = dict(lancamentos_sheets[_idx_pdf_visita] or {})
+                cond_pdf_admin = (
+                    lanc_pdf_admin.get("condominio")
+                    or nome_rel_atual
+                    or st.session_state.get("rel_nome_condominio", "")
+                )
+                data_pdf_admin = normalizar_data_visita(lanc_pdf_admin.get("data", ""))
+                sufixo_data_admin = str(data_pdf_admin or lanc_pdf_admin.get("data", "")).replace("/", "")
+
+                with st.spinner("Gerando PDF da visita salva..."):
+                    if _cliente_relatorio_visita_bem_star_sem_rt(cond_pdf_admin):
+                        pdf_bytes_admin = gerar_pdf_relatorio_visita_bem_star(lanc_pdf_admin, cond_pdf_admin)
+                        nome_arq_admin = limpar_nome_arquivo(
+                            f"Relatorio_BemStar_{cond_pdf_admin}_{sufixo_data_admin}"
+                        )
+                        st.success("PDF gerado com identidade Bem Star, pois o cadastro está sem RT Aqua.")
+                    else:
+                        pdf_bytes_admin = gerar_pdf_relatorio_visita(lanc_pdf_admin, cond_pdf_admin)
+                        nome_arq_admin = limpar_nome_arquivo(
+                            f"Relatorio_Visita_{cond_pdf_admin}_{sufixo_data_admin}"
+                        )
+                        st.success("PDF gerado com identidade Aqua Gestão / RT.")
+
+                st.download_button(
+                    "⬇️ Baixar PDF regenerado",
+                    data=pdf_bytes_admin,
+                    file_name=f"{nome_arq_admin}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_pdf_visita_regenerado_admin",
+                )
+            except Exception as e:
+                _log_sheets_erro("regenerar_pdf_visita_admin", e)
+                st.error("Não consegui gerar novamente o PDF desta visita.")
+                erro_reg_pdf = st.session_state.get("_sheets_ultimo_erro", "")
+                if erro_reg_pdf:
+                    st.code(erro_reg_pdf[:2000])
+    else:
+        st.info("Nenhuma visita salva no Sheets para regenerar PDF neste condomínio.")
 
     st.markdown("---")
     st.markdown("**📄 Recuperar visita antiga a partir de PDF**")
