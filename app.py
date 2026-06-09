@@ -7759,7 +7759,7 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
-        leftMargin=2.0*cm, rightMargin=2.0*cm, topMargin=1.8*cm, bottomMargin=1.8*cm)
+        leftMargin=1.55*cm, rightMargin=1.55*cm, topMargin=1.35*cm, bottomMargin=1.35*cm)
 
     NAVY  = colors.HexColor("#0A1628")
     GOLD  = colors.HexColor("#C8960C")
@@ -7776,10 +7776,10 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     GOLDB = colors.HexColor("#fffbf0")
 
     def S(n, **k): return ParagraphStyle(n, **k)
-    s_sec  = S("s1", fontSize=9,  textColor=NAVY,  fontName="Helvetica-Bold", spaceAfter=4, leading=11)
-    s_body = S("s2", fontSize=9,  textColor=AZUL,  fontName="Times-Roman",    leading=13)
-    s_bold = S("s3", fontSize=9,  textColor=NAVY,  fontName="Helvetica-Bold", leading=12)
-    s_sm   = S("s4", fontSize=8,  textColor=CINZA, fontName="Helvetica",      leading=11)
+    s_sec  = S("s1", fontSize=9.5, textColor=NAVY,  fontName="Helvetica-Bold", spaceAfter=5, leading=12)
+    s_body = S("s2", fontSize=8.5, textColor=AZUL,  fontName="Helvetica",      leading=12)
+    s_bold = S("s3", fontSize=8.8, textColor=NAVY,  fontName="Helvetica-Bold", leading=12)
+    s_sm   = S("s4", fontSize=7.8, textColor=CINZA, fontName="Helvetica",      leading=10.5)
     s_ok   = S("s5", fontSize=8,  textColor=VERDE, fontName="Helvetica",      leading=11)
     s_err  = S("s6", fontSize=8,  textColor=VERM,  fontName="Helvetica-Bold", leading=11)
     s_alt  = S("s7", fontSize=8,  textColor=LARAN, fontName="Helvetica-Bold", leading=11)
@@ -7800,15 +7800,20 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
         logo_elem = Paragraph("<b>AQUA GESTAO</b>", S("lf", fontSize=12, textColor=NAVY, fontName="Helvetica-Bold"))
 
     hdr = Table([
-        [logo_elem, Paragraph("<b>RELATORIO DE SUPERVISAO TECNICA</b>",
-            S("ht", fontSize=13, textColor=NAVY, fontName="Times-Bold", alignment=2, leading=16))],
-        ["", Paragraph("Visita do Responsavel Tecnico Habilitado",
-            S("hs", fontSize=8, textColor=GOLD, fontName="Helvetica-Bold", alignment=2, leading=11))],
-    ], colWidths=["40%","60%"])
-    hdr.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("LINEBELOW",(0,1),(-1,1),1.5,GOLD),("BOTTOMPADDING",(0,1),(-1,1),6)]))
+        [logo_elem, Paragraph("<b>RELATORIO DE SUPERVISAO TECNICA</b><br/><font size='8' color='#C8960C'>Visita do Responsavel Tecnico Habilitado</font>",
+            S("ht", fontSize=14, textColor=colors.white, fontName="Helvetica-Bold", alignment=2, leading=17))],
+    ], colWidths=["34%","66%"])
+    hdr.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(0,0),colors.white),
+        ("BACKGROUND",(1,0),(1,0),NAVY),
+        ("BOX",(0,0),(-1,-1),1.0,NAVY),
+        ("LINEBELOW",(0,0),(-1,0),2.0,GOLD),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+        ("LEFTPADDING",(0,0),(-1,-1),8), ("RIGHTPADDING",(0,0),(-1,-1),8),
+        ("TOPPADDING",(0,0),(-1,-1),8), ("BOTTOMPADDING",(0,0),(-1,-1),8),
+    ]))
     elems.append(hdr)
-    elems.append(Spacer(1,8))
+    elems.append(Spacer(1,10))
 
     # Bloco RT
     rt = Table([
@@ -7823,8 +7828,9 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     ], colWidths=["40%","33%","27%"])
     rt.setStyle(TableStyle([
         ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("BACKGROUND",(0,1),(-1,1),GOLDB),("GRID",(0,0),(-1,-1),0.5,BORDA),
-        ("PADDING",(0,0),(-1,-1),6),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("BOX",(0,0),(-1,-1),1.2,NAVY)]))
+        ("BACKGROUND",(0,1),(-1,1),GOLDB),("GRID",(0,0),(-1,-1),0.35,BORDA),
+        ("LINEBELOW",(0,0),(-1,0),1.0,GOLD),
+        ("PADDING",(0,0),(-1,-1),7),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("BOX",(0,0),(-1,-1),1.1,NAVY)]))
     elems.append(rt)
     elems.append(Spacer(1,8))
 
@@ -7843,11 +7849,14 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
         [Paragraph("Tecnico",s_sm),    Paragraph(op,s_body)],
     ], colWidths=["35%","65%"])
     ident.setStyle(TableStyle([
-        ("SPAN",(0,0),(1,0)),("BACKGROUND",(0,0),(1,0),AZULM),("TEXTCOLOR",(0,0),(1,0),colors.white),
+        ("SPAN",(0,0),(1,0)),("BACKGROUND",(0,0),(1,0),NAVY),("TEXTCOLOR",(0,0),(1,0),colors.white),
         ("FONTNAME",(0,0),(1,0),"Helvetica-Bold"),("ALIGN",(0,0),(1,0),"CENTER"),
-        ("GRID",(0,0),(-1,-1),0.3,BORDA),("BACKGROUND",(0,1),(0,-1),AZULC),
+        ("LINEBELOW",(0,0),(1,0),1.0,GOLD),
+        ("GRID",(0,0),(-1,-1),0.25,BORDA),("BACKGROUND",(0,1),(0,-1),AZULC),
         ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,CINZAC]),
-        ("PADDING",(0,0),(-1,-1),5),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
+        ("LEFTPADDING",(0,0),(-1,-1),7),("RIGHTPADDING",(0,0),(-1,-1),7),
+        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
     elems.append(ident)
     elems.append(Spacer(1,8))
 
@@ -7918,10 +7927,13 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
             rows.append([Paragraph("Cloraminas",s_sm),Paragraph(f"<b>{str(cl).replace('.', ',')}</b>",s_bold),
                          Paragraph("<= 0,2",s_sm),Paragraph(stcl,s_err if "NAO" in stcl else s_ok),Paragraph("Visita",s_sm)])
         tp = Table(rows, colWidths=["28%","15%","22%","22%","13%"])
-        tp.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.3,BORDA),
+        tp.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.25,BORDA),
             ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),colors.white),
             ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),7),
-            ("PADDING",(0,0),(-1,-1),5)]))
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,CINZAC]),
+            ("LEFTPADDING",(0,0),(-1,-1),5),("RIGHTPADDING",(0,0),(-1,-1),5),
+            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
         elems.append(tp)
         elems.append(Spacer(1,8))
 
@@ -7936,10 +7948,13 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
                        Paragraph(pf,s_sm),Paragraph(ac,s_just),Paragraph(pz,s_sm),Paragraph("Operador",s_sm)])
         tpr = Table(pr, colWidths=["12%","14%","8%","10%","34%","11%","11%"])
         tpr.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#b71c1c")),
+            ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#8f1d1d")),
             ("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-            ("GRID",(0,0),(-1,-1),0.3,BORDA),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1),[LARANB,colors.white]),("PADDING",(0,0),(-1,-1),4)]))
+            ("GRID",(0,0),(-1,-1),0.25,BORDA),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[LARANB,colors.white]),
+            ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),
+            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
         elems.append(tpr)
         elems.append(Spacer(1,8))
 
@@ -7972,7 +7987,10 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
             "A ART encontra-se em tramitacao junto ao CRQ-MG 2a Regiao.")
     db = Table([[Paragraph(decl, s_just)]], colWidths=["100%"])
     db.setStyle(TableStyle([("BOX",(0,0),(-1,-1),0.8,NAVY),
-        ("BACKGROUND",(0,0),(-1,-1),GOLDB),("PADDING",(0,0),(-1,-1),8)]))
+        ("LINEABOVE",(0,0),(-1,0),1.0,GOLD),
+        ("BACKGROUND",(0,0),(-1,-1),GOLDB),
+        ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),
+        ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8)]))
     elems.append(db)
     elems.append(Spacer(1,10))
 
@@ -7993,6 +8011,7 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
 
     tass = Table([[ass_nome],[HRFlowable(width="100%",thickness=0.6,color=BORDA)],[ass_info]], colWidths=["100%"])
     tass.setStyle(TableStyle([("BOX",(0,0),(-1,-1),1.0,NAVY),
+        ("LINEABOVE",(0,0),(-1,0),1.0,GOLD),
         ("BACKGROUND",(0,0),(-1,-1),GOLDB),("PADDING",(0,0),(-1,-1),10),
         ("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
     elems.append(tass)
