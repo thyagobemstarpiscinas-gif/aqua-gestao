@@ -1,3 +1,4 @@
+
 import os
 import re
 import json
@@ -604,7 +605,19 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
         dosagem_txt = _montar_resumo_dosagens_lancamento(lancamento)
 
+        # Payload para Google Sheets: mantém dados técnicos, nomes e IDs das fotos,
+        # mas remove base64/bytes para não estourar o limite de célula do Sheets.
         payload = dict(lancamento)
+        for _k_payload in list(payload.keys()):
+            _k_norm = str(_k_payload).lower()
+            if (
+                _k_norm.endswith("_b64")
+                or _k_norm.endswith("_base64")
+                or "base64" in _k_norm
+                or "bytes" in _k_norm
+            ):
+                payload.pop(_k_payload, None)
+
         payload["data"] = data_normalizada
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
@@ -963,8 +976,21 @@ def salvar_operadores(lista: list):
 
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global 2940 (acesso total)."""
+    Também aceita PIN global 2940 (acesso total) e PIN do RT via secrets [rt] pin."""
     pin_limpo = str(pin or "").strip()
+    # PIN do Responsável Técnico — lido do secrets [rt] pin
+    try:
+        _pin_rt = str(st.secrets.get("rt", {}).get("pin", "") or "").strip()
+        if _pin_rt and pin_limpo == _pin_rt:
+            return {
+                "nome": "Thyago Fernando da Silveira",
+                "pin": pin_limpo,
+                "condomínios": ["TODOS"],
+                "acesso_total": True,
+                "is_rt": True,
+            }
+    except Exception:
+        pass
     # PIN global continua funcionando — acesso total
     if pin_limpo == PIN_OPERADOR:
         return {"nome": "Operador", "pin": pin_limpo, "condomínios": ["TODOS"], "acesso_total": True}
@@ -7459,6 +7485,57 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             ts.append(("BACKGROUND", (0, i+1), (-1, i+1), bg))
         t_param.setStyle(TableStyle(ts))
         elems.append(t_param)
+
+        # Tabela comparativa: parâmetros antes x após o tratamento.
+        # Os campos "após" são capturados no modo operador e salvos no lançamento.
+        # Mantém a tabela principal original intacta e só aparece quando houver
+        # pelo menos um valor pós-tratamento preenchido.
+        def _valor_apos_pdf(_key: str) -> str:
+            _map_top = {
+                "ph": "ph_apos",
+                "cloro_livre": "cloro_livre_apos",
+                "cloro_total": "cloro_total_apos",
+                "alcalinidade": "alcalinidade_apos",
+                "dureza": "dureza_apos",
+                "cianurico": "cianurico_apos",
+            }
+            return str(
+                pisc.get(_map_top.get(_key, f"{_key}_apos"), "")
+                or lancamento.get(_map_top.get(_key, f"{_key}_apos"), "")
+                or ""
+            ).strip()
+
+        _tem_apos_pdf = any(_valor_apos_pdf(_k) for _, _k, _, _, _ in PARAMS)
+        if _tem_apos_pdf:
+            elems.append(Spacer(1, 6))
+            elems.append(Paragraph("Parâmetros antes x após o tratamento", s_sec))
+            comp_rows = [[
+                Paragraph("<b>Parâmetro</b>", s_body_sm),
+                Paragraph("<b>Antes</b>", s_body_sm),
+                Paragraph("<b>Após</b>", s_body_sm),
+                Paragraph("<b>Faixa ideal</b>", s_body_sm),
+            ]]
+            for label, key, mn, mx, quinzenal in PARAMS:
+                _antes = str(pisc.get(key, lancamento.get(key, "")) or "").strip()
+                _apos = _valor_apos_pdf(key)
+                if _antes or _apos:
+                    comp_rows.append([
+                        Paragraph(label, s_body_sm),
+                        Paragraph((_antes or "—").replace(".", ","), s_body),
+                        Paragraph((_apos or "—").replace(".", ","), s_body),
+                        Paragraph(faixas_txt.get(label, "—"), s_body_sm),
+                    ])
+            if len(comp_rows) > 1:
+                t_comp = Table(comp_rows, colWidths=["28%", "22%", "22%", "28%"])
+                t_comp.setStyle(TableStyle([
+                    ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+                    ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
+                    ("TEXTCOLOR", (0,0), (-1,0), AZUL_MEDIO),
+                    ("PADDING", (0,0), (-1,-1), 5),
+                    ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafd")]),
+                ]))
+                elems.append(t_comp)
+
         elems.append(Spacer(1, 10))
 
     # ── ALERTAS ───────────────────────────────────────────────────────────────
@@ -11248,6 +11325,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     _op_nome_logado = _op_atual.get("nome", "Operador")
     _op_acesso_total = _op_atual.get("acesso_total", False)
     _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
+    # Flag de Responsável Técnico — ativa fluxo exclusivo de RT
+    _op_is_rt = bool(_op_atual.get("is_rt", False))
+    if _op_is_rt:
+        st.info("🔬 **Modo RT ativo** — Thyago Fernando da Silveira | CRQ-MG 2ª Região 024025748")
 
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
         st.session_state["op_pin_ok"] = False
@@ -11315,6 +11396,34 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         key="btn_dl_relatorio_visita",
                     )
                     st.caption(legenda_pdf)
+                    # Bloco exclusivo RT — compartilhamento WhatsApp
+                    if _op_is_rt:
+                        st.markdown("---")
+                        st.markdown("**📲 Compartilhar com o condomínio**")
+                        _wpp_num = st.text_input(
+                            "WhatsApp do síndico (com DDD, só números)",
+                            placeholder="34999999999",
+                            key="rt_wpp_sindico",
+                        )
+                        _msg_wpp = (
+                            f"*Relatório de Visita — Aqua Gestão*%0A"
+                            f"Condomínio: {_salvo['nome']}%0A"
+                            f"Data: {_salvo['data']}%0A"
+                            f"RT: Thyago Fernando da Silveira | CRQ-MG 2ª Região 024025748%0A%0A"
+                            f"Segue em anexo o relatório técnico da visita de hoje.%0A"
+                            f"Salve o PDF baixado acima e envie junto com esta mensagem."
+                        )
+                        if _wpp_num.strip():
+                            _wpp_num_limpo = "".join(c for c in _wpp_num if c.isdigit())
+                            _link_wpp = f"https://wa.me/55{_wpp_num_limpo}?text={_msg_wpp}"
+                            st.link_button(
+                                "📲 Abrir WhatsApp com mensagem pronta",
+                                _link_wpp,
+                                use_container_width=True,
+                            )
+                            st.caption("💡 Após abrir o WhatsApp, anexe o PDF baixado acima antes de enviar.")
+                        else:
+                            st.caption("Digite o número do síndico para gerar o link do WhatsApp.")
                 except Exception as _e:
                     import traceback
                     _erro_pdf = str(_e)
@@ -12318,6 +12427,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "dureza_apos":       re.sub(r"[^0-9.,]","",st.session_state.get("op_dc_apos","")).replace(",","."),
                     "cianurico_apos":    re.sub(r"[^0-9.,]","",st.session_state.get("op_cya_apos","")).replace(",","."),
                 }
+                # Marca sync pendente para reenvio automático se Sheets falhar
+                lancamento["sheets_sync"] = "pendente"
                 pendentes = dados_ex.get("lancamentos_campo", [])
                 pendentes.append(lancamento)
                 dados_ex["lancamentos_campo"] = pendentes
@@ -12334,12 +12445,26 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.session_state["_sheets_ultimo_erro"] = str(_e_sh)
 
                 if ok_sheets:
+                    # Marca sync concluída no JSON local
+                    lancamento["sheets_sync"] = "ok"
+                    try:
+                        _dados_sync = carregar_dados_condominio(pasta_op) or {}
+                        _lancs_sync = _dados_sync.get("lancamentos_campo", [])
+                        for _ls in _lancs_sync:
+                            _ch = f"{_ls.get('data','')}-{_ls.get('operador','')}-{_ls.get('ph','')}"
+                            _ch2 = f"{lancamento.get('data','')}-{lancamento.get('operador','')}-{lancamento.get('ph','')}"
+                            if _ch == _ch2:
+                                _ls["sheets_sync"] = "ok"
+                        _dados_sync["lancamentos_campo"] = _lancs_sync
+                        salvar_dados_condominio(pasta_op, _dados_sync)
+                    except Exception:
+                        pass
                     st.success("✅ Visita salva no Google Sheets e pronta para entrar no relatório mensal.")
                 else:
                     erro_sh = st.session_state.get("_sheets_ultimo_erro", "")
                     st.warning(
                         "⚠️ A visita foi salva localmente e o PDF pode ser gerado normalmente. "
-                        "Houve falha ao gravar no Google Sheets — o relatório mensal pode não importar automaticamente."
+                        "Ela será sincronizada automaticamente com o Google Sheets na próxima abertura do app com boa conexão."
                     )
                     if erro_sh:
                         with st.expander("Detalhes do erro Sheets", expanded=False):
@@ -13465,6 +13590,15 @@ if _cc_modo == "✏️ Editar cliente existente":
 def _mask_cc_cnpj():
     st.session_state["cc_cnpj"] = formatar_cnpj(st.session_state.get("cc_cnpj",""))
 
+def _mask_cc_documento():
+    """Máscara dinâmica para o cadastro: CPF quando PF, CNPJ quando PJ."""
+    doc = st.session_state.get("cc_cnpj", "")
+    tipo = st.session_state.get("cc_tipo_cliente", "Pessoa Jurídica")
+    if tipo == "Pessoa Física":
+        st.session_state["cc_cnpj"] = formatar_cpf(doc)
+    else:
+        st.session_state["cc_cnpj"] = formatar_cnpj(doc)
+
 def _mask_cc_telefone():
     st.session_state["cc_telefone"] = formatar_telefone(st.session_state.get("cc_telefone",""))
 
@@ -13479,6 +13613,13 @@ else:
 # Mantém as chaves antigas coerentes para não quebrar edições/sessão.
 st.session_state["cc_srv_rt"] = bool(_cc_servicos.get("rt"))
 st.session_state["cc_srv_limpeza"] = bool(_cc_servicos.get("limpeza"))
+
+cc_tipo_cliente = st.radio(
+    "Tipo de cliente",
+    ["Pessoa Jurídica", "Pessoa Física"],
+    horizontal=True,
+    key="cc_tipo_cliente",
+)
 
 _operadores_disponiveis = []
 _ops_raw_cc = (sheets_listar_operadores() or []) + (carregar_operadores() or [])
@@ -13507,9 +13648,16 @@ cc_operadores_vinculados = st.multiselect(
 if not _operadores_disponiveis:
     st.caption("Cadastre operadores no módulo de operadores para depois vinculá-los aos condomínios.")
 
+_cc_nome_label = "Nome do condomínio / razão social *" if cc_tipo_cliente == "Pessoa Jurídica" else "Nome completo do cliente *"
+_cc_nome_placeholder = "Ex.: Residencial Bella Vista" if cc_tipo_cliente == "Pessoa Jurídica" else "Ex.: Maria Silva"
+_cc_doc_label = "CNPJ (opcional)" if cc_tipo_cliente == "Pessoa Jurídica" else "CPF (opcional)"
+_cc_doc_placeholder = "00.000.000/0000-00" if cc_tipo_cliente == "Pessoa Jurídica" else "000.000.000-00"
+_cc_contato_label = "Síndico / responsável" if cc_tipo_cliente == "Pessoa Jurídica" else "Responsável / contato"
+_cc_contato_placeholder = "Nome do responsável" if cc_tipo_cliente == "Pessoa Jurídica" else "Nome do contato, se houver"
+
 cc1, cc2 = st.columns(2)
 with cc1:
-    cc_nome     = st.text_input("Nome do condomínio / local *", key="cc_nome", placeholder="Ex.: Residencial Bella Vista")
+    cc_nome     = st.text_input(_cc_nome_label, key="cc_nome", placeholder=_cc_nome_placeholder)
     # CEP com busca automática ViaCEP
     # Aplica CEP formatado se acabou de buscar
     if st.session_state.get("_cc_cep_fmt"):
@@ -13542,8 +13690,8 @@ with cc1:
             st.warning("Digite um CEP válido com 8 dígitos.")
     cc_endereco = st.text_area("Endereço completo", key="cc_endereco", height=70, placeholder="Rua, número, bairro, cidade")
 with cc2:
-    cc_cnpj     = st.text_input("CNPJ (opcional)", key="cc_cnpj", placeholder="00.000.000/0000-00", on_change=_mask_cc_cnpj)
-    cc_contato  = st.text_input("Síndico / responsável", key="cc_contato", placeholder="Nome do responsável")
+    cc_cnpj     = st.text_input(_cc_doc_label, key="cc_cnpj", placeholder=_cc_doc_placeholder, on_change=_mask_cc_documento)
+    cc_contato  = st.text_input(_cc_contato_label, key="cc_contato", placeholder=_cc_contato_placeholder)
     cc_telefone = st.text_input("Telefone (opcional)", key="cc_telefone", placeholder="(34) 99999-9999", on_change=_mask_cc_telefone)
 
 # ── Volumes das piscinas ─────────────────────────────────────────────────────
@@ -13611,7 +13759,7 @@ def _parse_vol(v):
 _btn_label = "💾 Salvar cliente no Google Sheets" if _cc_modo == "➕ Novo cliente" else "💾 Salvar alterações"
 if st.button(_btn_label, type="primary", use_container_width=True):
     if not cc_nome.strip():
-        st.error("Informe o nome do condomínio.")
+        st.error("Informe o nome do cliente.")
     else:
         _vol_a = _parse_vol(cc_vol_adulto)
         _vol_i = _parse_vol(cc_vol_infantil)
@@ -13664,8 +13812,11 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             _pasta_cliente.mkdir(parents=True, exist_ok=True)
             _dados_cliente_local = carregar_dados_condominio(_pasta_cliente) or {}
             _dados_cliente_local.update({
+                "tipo_cliente": st.session_state.get("cc_tipo_cliente", "Pessoa Jurídica"),
                 "nome_condominio": cc_nome.strip(),
+                "nome_cliente": cc_nome.strip(),
                 "cnpj_condominio": cc_cnpj.strip(),
+                "documento_cliente": cc_cnpj.strip(),
                 "cnpj": cc_cnpj.strip(),
                 "cep": cc_cep.strip(),
                 "endereco_condominio": cc_endereco.strip(),
@@ -13706,6 +13857,345 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     st.code(erro_detalhado, language="text")
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+
+
+def _clientes_aqua_limpeza_cache():
+    return filtrar_clientes_por_empresa(sheets_listar_clientes_completo() or [], "aqua_gestao")
+
+
+# =========================================
+# CONTRATO AQUA GESTÃO — LIMPEZA E MANUTENÇÃO
+# =========================================
+
+if _empresa_ativa_codigo() == "aqua_gestao":
+    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+
+    def gerar_contrato_limpeza_aqua_pdf(dados: dict) -> bytes:
+        """Gera contrato Aqua Gestão de limpeza/manutenção em PDF premium."""
+        import io
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            PageBreak, Image as RLImage
+        )
+
+        buf = io.BytesIO()
+        styles = getSampleStyleSheet()
+        navy = colors.HexColor("#071B2D")
+        gold = colors.HexColor("#D8B23A")
+        blue = colors.HexColor("#123A5C")
+        light = colors.HexColor("#EAF2F7")
+
+        def esc(v):
+            return str(v or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").strip()
+
+        tipo_contratante_raw = str(dados.get("tipo_contratante") or "Pessoa Jurídica").strip()
+        tipo_contratante = "Pessoa Física" if tipo_contratante_raw == "Pessoa Física" else "Pessoa Jurídica"
+        nome = esc(dados.get("nome") or "CONTRATANTE NÃO INFORMADO")
+        documento_label = "CPF" if tipo_contratante == "Pessoa Física" else "CNPJ"
+        documento = esc(dados.get("documento") or dados.get("cnpj") or "Não informado")
+        rg = esc(dados.get("rg") or "Não informado")
+        endereco = esc(dados.get("endereco") or "Não informado")
+        representante = esc(dados.get("representante") or "Não informado")
+        representante_doc = esc(dados.get("representante_doc") or "Não informado")
+        telefone = esc(dados.get("telefone") or "Não informado")
+        if tipo_contratante == "Pessoa Física":
+            qualificacao_contratante = (
+                f"{nome}, pessoa física, inscrita no CPF sob nº {documento}, RG nº {rg}, "
+                f"residente e domiciliada em {endereco}, telefone {telefone}"
+            )
+            assinatura_contratante = f"{nome}\nCPF: {documento}\nCONTRATANTE"
+            representante_linha = "Não aplicável"
+        else:
+            qualificacao_contratante = (
+                f"{nome}, pessoa jurídica inscrita no CNPJ sob nº {documento}, com endereço em {endereco}, "
+                f"neste ato representada por {representante}, CPF nº {representante_doc}, telefone {telefone}"
+            )
+            assinatura_contratante = f"{nome}\nRepresentante: {representante}\nCONTRATANTE"
+            representante_linha = f"{representante}\nCPF do representante: {representante_doc}"
+        piscinas = esc(dados.get("piscinas") or "Piscinas do condomínio/local atendido, conforme cadastro e rotina operacional.")
+        frequencia = esc(dados.get("frequencia") or "Frequência não informada")
+        produtos = esc(dados.get("produtos") or "Não informado")
+        valor = esc(dados.get("valor") or "Não informado")
+        vencimento = esc(dados.get("vencimento") or "Não informado")
+        pagamento = esc(dados.get("pagamento") or "Pix")
+        inicio = esc(dados.get("inicio") or hoje_br())
+        fim = esc(dados.get("fim") or "Indeterminado")
+        local_data = esc(dados.get("local_data") or f"Uberlândia/MG, {hoje_br()}")
+
+        s_title = ParagraphStyle("aq_lim_title", parent=styles["Heading1"], alignment=TA_CENTER,
+                                 fontSize=17, leading=22, textColor=colors.white, spaceAfter=8)
+        s_sub = ParagraphStyle("aq_lim_sub", parent=styles["Normal"], alignment=TA_CENTER,
+                               fontSize=10, leading=14, textColor=gold, spaceAfter=4)
+        s_h = ParagraphStyle("aq_lim_h", parent=styles["Heading2"], fontSize=11, leading=14,
+                             textColor=blue, spaceBefore=10, spaceAfter=5)
+        s_body = ParagraphStyle("aq_lim_body", parent=styles["Normal"], fontSize=9.2, leading=13,
+                                alignment=TA_JUSTIFY, spaceAfter=5)
+        s_small = ParagraphStyle("aq_lim_small", parent=styles["Normal"], fontSize=7.5, leading=10,
+                                 alignment=TA_CENTER, textColor=colors.HexColor("#5E7180"))
+
+        story = []
+
+        # Capa
+        logo = garantir_logo_aqua_oficial() if "garantir_logo_aqua_oficial" in globals() else None
+        story.append(Table([[Paragraph("<b>INSTRUMENTO CONTRATUAL — LIMPEZA E MANUTENÇÃO DE PISCINAS</b>", s_sub)]],
+                           colWidths=[17*cm],
+                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
+                                  ("BOX", (0,0), (-1,-1), 0, navy),
+                                  ("TOPPADDING", (0,0), (-1,-1), 18),
+                                  ("BOTTOMPADDING", (0,0), (-1,-1), 6)]))
+        if logo:
+            img = RLImage(str(logo), width=7.8*cm, height=4.6*cm, kind="proportional")
+            img.hAlign = "CENTER"
+            story.append(Table([[img]], colWidths=[17*cm],
+                               style=[("BACKGROUND", (0,0), (-1,-1), navy),
+                                      ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                                      ("TOPPADDING", (0,0), (-1,-1), 16),
+                                      ("BOTTOMPADDING", (0,0), (-1,-1), 14)]))
+        story.append(Table([[Paragraph("<b>Contrato de Prestação de Serviços<br/>de Limpeza e Manutenção</b>", s_title)]],
+                           colWidths=[17*cm],
+                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
+                                  ("TOPPADDING", (0,0), (-1,-1), 8),
+                                  ("BOTTOMPADDING", (0,0), (-1,-1), 20)]))
+        box = Table([
+            [Paragraph("<b>CONTRATANTE / LOCAL ATENDIDO</b>", s_sub)],
+            [Paragraph(f"<b>{nome}</b>", ParagraphStyle("aq_lim_capa_nome", parent=s_title, fontSize=14, leading=18))],
+            [Paragraph(f"Vigência: {inicio} a {fim}", ParagraphStyle("aq_lim_capa_info", parent=s_sub, textColor=colors.white))],
+            [Paragraph(f"Frequência: {frequencia}", ParagraphStyle("aq_lim_capa_info2", parent=s_sub, textColor=colors.white))],
+        ], colWidths=[15*cm])
+        box.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#0A2338")),
+            ("BOX", (0,0), (-1,-1), 0.8, gold),
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("TOPPADDING", (0,0), (-1,-1), 9),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 9),
+        ]))
+        story.append(Table([[box]], colWidths=[17*cm],
+                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
+                                  ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                                  ("TOPPADDING", (0,0), (-1,-1), 20),
+                                  ("BOTTOMPADDING", (0,0), (-1,-1), 36)]))
+        story.append(Table([[Paragraph("Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG", s_small)]],
+                           colWidths=[17*cm],
+                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
+                                  ("BOTTOMPADDING", (0,0), (-1,-1), 22)]))
+        story.append(PageBreak())
+
+        # Identificação
+        story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE LIMPEZA E MANUTENÇÃO DE PISCINAS", s_h))
+        id_table = Table([
+            ["CONTRATADA", "AQUA GESTÃO CONTROLE TÉCNICO LTDA\nCNPJ 66.008.795/0001-92\nUberlândia/MG"],
+            ["CONTRATANTE", f"Tipo: {tipo_contratante}\n{nome}\n{documento_label}: {documento}\nRG: {rg if tipo_contratante == 'Pessoa Física' else 'Não aplicável'}\nEndereço: {endereco}\nRepresentante: {representante_linha}\nTelefone: {telefone}"],
+            ["CONDIÇÕES", f"Frequência: {frequencia}\nProdutos químicos: {produtos}\nValor mensal: R$ {valor}\nVencimento: dia {vencimento}\nForma de pagamento: {pagamento}"],
+        ], colWidths=[4*cm, 13*cm])
+        id_table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (0,-1), blue),
+            ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+            ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
+            ("BACKGROUND", (1,0), (1,-1), light),
+            ("BOX", (0,0), (-1,-1), 0.6, blue),
+            ("INNERGRID", (0,0), (-1,-1), 0.3, colors.HexColor("#B7C8D8")),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("FONTSIZE", (0,0), (-1,-1), 8.5),
+            ("TOPPADDING", (0,0), (-1,-1), 7),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+        ]))
+        story.append(id_table)
+        story.append(Spacer(1, 0.25*cm))
+        story.append(Paragraph("<b>QUALIFICAÇÃO DO CONTRATANTE</b>", s_h))
+        story.append(Paragraph(qualificacao_contratante + ".", s_body))
+
+        clausulas = [
+            ("1. DO OBJETO",
+             f"O presente contrato tem por objeto a prestação de serviços de limpeza, conservação e manutenção operacional de piscina(s) pela CONTRATADA. Piscina(s) atendida(s): {piscinas}. Os serviços abrangem, conforme rotina contratada, aspiração, escovação, peneiração, limpeza de bordas, limpeza de cestos e pré-filtros, acompanhamento visual da água e rotinas básicas de circulação e filtração."),
+            ("2. DA FREQUÊNCIA E EXECUÇÃO",
+             f"Os serviços serão executados com a seguinte frequência: {frequencia}. As visitas poderão ser ajustadas por necessidade operacional, climática, feriados, impedimento de acesso, caso fortuito ou força maior, desde que mantida comunicação razoável ao CONTRATANTE."),
+            ("3. DOS PRODUTOS QUÍMICOS E INSUMOS",
+             f"Para fins deste contrato, fica definido que os produtos químicos e materiais consumíveis encontram-se na seguinte condição: {produtos}. Quando produtos estiverem incluídos, consideram-se incluídos os produtos rotineiros necessários ao tratamento ordinário, não abrangendo reposições extraordinárias por contaminação, eventos, drenagens, falhas estruturais, mau uso ou necessidade fora da rotina normal."),
+            ("4. DO VALOR E PAGAMENTO",
+             f"O CONTRATANTE pagará à CONTRATADA o valor mensal de R$ {valor}. O vencimento ocorrerá no dia {vencimento} de cada mês, mediante {pagamento}. O atraso sujeitará o CONTRATANTE à multa de 2%, juros de mora de 1% ao mês pro rata die e correção monetária pelo índice oficial aplicável."),
+            ("5. DA VIGÊNCIA",
+             f"O contrato inicia-se em {inicio} e terá término previsto em {fim}, podendo ser renovado ou prorrogado por acordo entre as partes. A continuidade da prestação sem oposição formal poderá caracterizar prorrogação tácita, preservadas as condições comerciais vigentes."),
+            ("6. DAS OBRIGAÇÕES DAS PARTES",
+             "A CONTRATADA executará os serviços com zelo e boa-fé operacional, comunicando anormalidades observadas. O CONTRATANTE deverá garantir acesso ao local, manter instalações em condições mínimas de operação, informar eventos ou uso intensivo e providenciar reparos estruturais, hidráulicos, elétricos ou mecânicos quando necessários."),
+            ("7. DAS LIMITAÇÕES",
+             "Este contrato não inclui obras civis, manutenção elétrica, reforma hidráulica, substituição de equipamentos, laudos periciais, atendimentos emergenciais extraordinários, responsabilidade técnica química formal ou fornecimento de produtos fora da condição expressamente contratada."),
+            ("8. DO FORO",
+             "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir eventuais controvérsias oriundas deste instrumento, com renúncia a qualquer outro, por mais privilegiado que seja."),
+        ]
+        for titulo, corpo in clausulas:
+            story.append(Paragraph(f"<b>{titulo}</b>", s_h))
+            story.append(Paragraph(corpo, s_body))
+
+        story.append(Spacer(1, 0.35*cm))
+        story.append(Paragraph(f"{local_data}.", ParagraphStyle("aq_lim_center", parent=s_body, alignment=TA_CENTER)))
+        story.append(Spacer(1, 1.0*cm))
+        ass = Table([
+            ["_________________________________________", "_________________________________________"],
+            ["AQUA GESTÃO CONTROLE TÉCNICO LTDA\nCONTRATADA", assinatura_contratante],
+            ["", ""],
+            ["_________________________________________", "_________________________________________"],
+            ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
+        ], colWidths=[8.4*cm, 8.4*cm])
+        ass.setStyle(TableStyle([
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("FONTSIZE", (0,0), (-1,-1), 8.5),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+        ]))
+        story.append(ass)
+
+        def _header_footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFillColor(navy)
+            canvas.rect(0, A4[1]-1.05*cm, A4[0], 1.05*cm, fill=1, stroke=0)
+            canvas.setFillColor(gold)
+            canvas.setFont("Helvetica-Bold", 8)
+            canvas.drawString(2*cm, A4[1]-0.65*cm, "AQUA GESTÃO — LIMPEZA E MANUTENÇÃO DE PISCINAS")
+            canvas.setFillColor(colors.HexColor("#536B7C"))
+            canvas.setFont("Helvetica", 7)
+            canvas.drawCentredString(A4[0]/2, 0.8*cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.8*cm, bottomMargin=1.5*cm)
+        doc.build(story, onFirstPage=lambda c,d: None, onLaterPages=_header_footer)
+        return buf.getvalue()
+
+
+
+    with st.expander("📋 Preencher e gerar contrato de limpeza", expanded=False):
+        c_upd, c_info = st.columns([1, 3])
+        with c_upd:
+            if st.button("🔄 Atualizar clientes", key="btn_atualizar_aq_limpeza"):
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+        _clientes_aq_lim = _clientes_aqua_limpeza_cache() or []
+        _nomes_aq_lim = ["— selecione ou preencha manualmente —"] + [c.get("nome", "") for c in _clientes_aq_lim if c.get("nome")]
+        _sel_aq_lim = st.selectbox("Carregar cliente Aqua cadastrado", _nomes_aq_lim, key="aq_limpeza_cliente_sel")
+
+        if st.button("📂 Carregar dados do cliente", key="btn_aq_limpeza_carregar"):
+            _d = next((c for c in _clientes_aq_lim if c.get("nome") == _sel_aq_lim), {})
+            if _d:
+                st.session_state["aq_limpeza_nome"] = _d.get("nome", "")
+                st.session_state["aq_limpeza_cnpj"] = _d.get("cnpj", "")
+                _doc_digits = re.sub(r"\D", "", str(_d.get("cnpj", "")))
+                st.session_state["aq_limpeza_tipo"] = "Pessoa Física" if len(_doc_digits) == 11 else "Pessoa Jurídica"
+                st.session_state.setdefault("aq_limpeza_rg", "")
+                st.session_state.setdefault("aq_limpeza_representante_doc", "")
+                st.session_state["aq_limpeza_endereco"] = _d.get("endereco", "")
+                st.session_state["aq_limpeza_representante"] = _d.get("contato", "")
+                st.session_state["aq_limpeza_telefone"] = _d.get("telefone", "")
+                vols = []
+                if _d.get("vol_adulto"): vols.append(f"Piscina adulto: {_d.get('vol_adulto')} m³")
+                if _d.get("vol_infantil"): vols.append(f"Piscina infantil: {_d.get('vol_infantil')} m³")
+                if _d.get("vol_family"): vols.append(f"Family/SPA: {_d.get('vol_family')} m³")
+                st.session_state["aq_limpeza_piscinas"] = " | ".join(vols)
+                st.success("✅ Dados carregados.")
+                st.rerun()
+
+        tipo_opts = ["Pessoa Jurídica", "Pessoa Física"]
+        tipo_atual = st.session_state.get("aq_limpeza_tipo", "Pessoa Jurídica")
+        if tipo_atual not in tipo_opts:
+            tipo_atual = "Pessoa Jurídica"
+        aq_lim_tipo = st.radio(
+            "Tipo de contratante",
+            tipo_opts,
+            index=tipo_opts.index(tipo_atual),
+            horizontal=True,
+            key="aq_limpeza_tipo",
+        )
+
+        a1, a2 = st.columns(2)
+        with a1:
+            if aq_lim_tipo == "Pessoa Física":
+                aq_lim_nome = st.text_input("Nome completo *", key="aq_limpeza_nome")
+                aq_lim_cnpj = st.text_input("CPF *", key="aq_limpeza_cnpj")
+                aq_lim_rg = st.text_input("RG", key="aq_limpeza_rg")
+            else:
+                aq_lim_nome = st.text_input("Razão social *", key="aq_limpeza_nome")
+                aq_lim_cnpj = st.text_input("CNPJ *", key="aq_limpeza_cnpj")
+                aq_lim_rg = st.text_input("Inscrição estadual / municipal", key="aq_limpeza_rg")
+            aq_lim_end = st.text_area("Endereço completo", key="aq_limpeza_endereco", height=70)
+        with a2:
+            if aq_lim_tipo == "Pessoa Física":
+                st.caption("Para PF, representante legal não é obrigatório.")
+                aq_lim_rep = st.text_input("Responsável pelo acompanhamento", key="aq_limpeza_representante")
+                aq_lim_rep_doc = st.text_input("CPF do responsável, se houver", key="aq_limpeza_representante_doc")
+            else:
+                aq_lim_rep = st.text_input("Representante legal / síndico *", key="aq_limpeza_representante")
+                aq_lim_rep_doc = st.text_input("CPF do representante legal", key="aq_limpeza_representante_doc")
+            aq_lim_tel = st.text_input("Telefone", key="aq_limpeza_telefone")
+            aq_lim_pisc = st.text_area("Piscinas atendidas", key="aq_limpeza_piscinas", height=70)
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            aq_lim_freq = st.text_input("Frequência de visitas", key="aq_limpeza_frequencia", placeholder="Ex.: segunda, quarta e sexta")
+        with b2:
+            aq_lim_prod = st.radio("Produtos químicos", ["Produtos incluídos no valor mensal", "Produtos não incluídos — por conta do contratante"], key="aq_limpeza_produtos")
+        with b3:
+            aq_lim_valor = st.text_input("Valor mensal (R$) *", key="aq_limpeza_valor", placeholder="Ex.: 3.300,00")
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            aq_lim_venc = st.text_input("Dia de vencimento", key="aq_limpeza_vencimento", placeholder="Ex.: 10")
+        with c2:
+            aq_lim_pgto = st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_limpeza_pagamento")
+        with c3:
+            aq_lim_inicio = st.text_input("Data de início", key="aq_limpeza_inicio", value=hoje_br(), placeholder="dd/mm/aaaa")
+        with c4:
+            aq_lim_fim = st.text_input("Data de término", key="aq_limpeza_fim", placeholder="dd/mm/aaaa ou Indeterminado")
+        aq_lim_local_data = st.text_input("Local e data de assinatura", key="aq_limpeza_local_data", value=f"Uberlândia/MG, {hoje_br()}")
+
+        if st.button("📄 Gerar Contrato Aqua Limpeza (PDF)", type="primary", use_container_width=True, key="btn_gerar_aq_limpeza"):
+            _tipo_contratante = st.session_state.get("aq_limpeza_tipo", "Pessoa Jurídica")
+            if not (st.session_state.get("aq_limpeza_nome","")).strip():
+                st.error("Informe o nome completo/razão social do contratante.")
+            elif not (st.session_state.get("aq_limpeza_cnpj","")).strip():
+                st.error("Informe o CPF ou CNPJ do contratante.")
+            elif _tipo_contratante == "Pessoa Jurídica" and not (st.session_state.get("aq_limpeza_representante","")).strip():
+                st.error("Para Pessoa Jurídica, informe o representante legal/síndico.")
+            elif not (st.session_state.get("aq_limpeza_valor","")).strip():
+                st.error("Informe o valor mensal.")
+            else:
+                try:
+                    dados = {
+                        "tipo_contratante": st.session_state.get("aq_limpeza_tipo", "Pessoa Jurídica"),
+                        "nome": st.session_state.get("aq_limpeza_nome", ""),
+                        "documento": st.session_state.get("aq_limpeza_cnpj", ""),
+                        "cnpj": st.session_state.get("aq_limpeza_cnpj", ""),
+                        "rg": st.session_state.get("aq_limpeza_rg", ""),
+                        "endereco": st.session_state.get("aq_limpeza_endereco", ""),
+                        "representante": st.session_state.get("aq_limpeza_representante", ""),
+                        "representante_doc": st.session_state.get("aq_limpeza_representante_doc", ""),
+                        "telefone": st.session_state.get("aq_limpeza_telefone", ""),
+                        "piscinas": st.session_state.get("aq_limpeza_piscinas", ""),
+                        "frequencia": st.session_state.get("aq_limpeza_frequencia", ""),
+                        "produtos": st.session_state.get("aq_limpeza_produtos", ""),
+                        "valor": valor_para_template(st.session_state.get("aq_limpeza_valor", "")),
+                        "vencimento": st.session_state.get("aq_limpeza_vencimento", ""),
+                        "pagamento": st.session_state.get("aq_limpeza_pagamento", ""),
+                        "inicio": st.session_state.get("aq_limpeza_inicio", ""),
+                        "fim": st.session_state.get("aq_limpeza_fim", ""),
+                        "local_data": st.session_state.get("aq_limpeza_local_data", ""),
+                    }
+                    pdf_bytes = gerar_contrato_limpeza_aqua_pdf(dados)
+                    nome_arq = limpar_nome_arquivo(f"Contrato_Aqua_Limpeza_{dados['nome']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+                    st.success("✅ Contrato de limpeza Aqua gerado com sucesso.")
+                    st.download_button("⬇️ Baixar contrato de limpeza PDF", data=pdf_bytes, file_name=nome_arq, mime="application/pdf", use_container_width=True, key="dl_aq_limpeza_pdf")
+                except Exception as e:
+                    st.error(f"Erro ao gerar contrato de limpeza: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if _empresa_ativa_codigo() != "bem_star":
@@ -15763,282 +16253,6 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     buffer.close()
     return pdf
 
-
-def _clientes_aqua_limpeza_cache():
-    return filtrar_clientes_por_empresa(sheets_listar_clientes_completo() or [], "aqua_gestao")
-
-
-# =========================================
-# CONTRATO AQUA GESTÃO — LIMPEZA E MANUTENÇÃO
-# =========================================
-
-if _empresa_ativa_codigo() == "aqua_gestao":
-    st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
-
-    def gerar_contrato_limpeza_aqua_pdf(dados: dict) -> bytes:
-        """Gera contrato Aqua Gestão de limpeza/manutenção em PDF premium."""
-        import io
-        from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import cm
-        from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-            PageBreak, Image as RLImage
-        )
-
-        buf = io.BytesIO()
-        styles = getSampleStyleSheet()
-        navy = colors.HexColor("#071B2D")
-        gold = colors.HexColor("#D8B23A")
-        blue = colors.HexColor("#123A5C")
-        light = colors.HexColor("#EAF2F7")
-
-        def esc(v):
-            return str(v or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").strip()
-
-        nome = esc(dados.get("nome") or "CONTRATANTE NÃO INFORMADO")
-        cnpj = esc(dados.get("cnpj") or "Não informado")
-        endereco = esc(dados.get("endereco") or "Não informado")
-        representante = esc(dados.get("representante") or "Não informado")
-        telefone = esc(dados.get("telefone") or "Não informado")
-        piscinas = esc(dados.get("piscinas") or "Piscinas do condomínio/local atendido, conforme cadastro e rotina operacional.")
-        frequencia = esc(dados.get("frequencia") or "Frequência não informada")
-        produtos = esc(dados.get("produtos") or "Não informado")
-        valor = esc(dados.get("valor") or "Não informado")
-        vencimento = esc(dados.get("vencimento") or "Não informado")
-        pagamento = esc(dados.get("pagamento") or "Pix")
-        inicio = esc(dados.get("inicio") or hoje_br())
-        fim = esc(dados.get("fim") or "Indeterminado")
-        local_data = esc(dados.get("local_data") or f"Uberlândia/MG, {hoje_br()}")
-
-        s_title = ParagraphStyle("aq_lim_title", parent=styles["Heading1"], alignment=TA_CENTER,
-                                 fontSize=17, leading=22, textColor=colors.white, spaceAfter=8)
-        s_sub = ParagraphStyle("aq_lim_sub", parent=styles["Normal"], alignment=TA_CENTER,
-                               fontSize=10, leading=14, textColor=gold, spaceAfter=4)
-        s_h = ParagraphStyle("aq_lim_h", parent=styles["Heading2"], fontSize=11, leading=14,
-                             textColor=blue, spaceBefore=10, spaceAfter=5)
-        s_body = ParagraphStyle("aq_lim_body", parent=styles["Normal"], fontSize=9.2, leading=13,
-                                alignment=TA_JUSTIFY, spaceAfter=5)
-        s_small = ParagraphStyle("aq_lim_small", parent=styles["Normal"], fontSize=7.5, leading=10,
-                                 alignment=TA_CENTER, textColor=colors.HexColor("#5E7180"))
-
-        story = []
-
-        # Capa
-        logo = garantir_logo_aqua_oficial() if "garantir_logo_aqua_oficial" in globals() else None
-        story.append(Table([[Paragraph("<b>INSTRUMENTO CONTRATUAL — LIMPEZA E MANUTENÇÃO DE PISCINAS</b>", s_sub)]],
-                           colWidths=[17*cm],
-                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
-                                  ("BOX", (0,0), (-1,-1), 0, navy),
-                                  ("TOPPADDING", (0,0), (-1,-1), 18),
-                                  ("BOTTOMPADDING", (0,0), (-1,-1), 6)]))
-        if logo:
-            img = RLImage(str(logo), width=7.8*cm, height=4.6*cm, kind="proportional")
-            img.hAlign = "CENTER"
-            story.append(Table([[img]], colWidths=[17*cm],
-                               style=[("BACKGROUND", (0,0), (-1,-1), navy),
-                                      ("ALIGN", (0,0), (-1,-1), "CENTER"),
-                                      ("TOPPADDING", (0,0), (-1,-1), 16),
-                                      ("BOTTOMPADDING", (0,0), (-1,-1), 14)]))
-        story.append(Table([[Paragraph("<b>Contrato de Prestação de Serviços<br/>de Limpeza e Manutenção</b>", s_title)]],
-                           colWidths=[17*cm],
-                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
-                                  ("TOPPADDING", (0,0), (-1,-1), 8),
-                                  ("BOTTOMPADDING", (0,0), (-1,-1), 20)]))
-        box = Table([
-            [Paragraph("<b>CONTRATANTE / LOCAL ATENDIDO</b>", s_sub)],
-            [Paragraph(f"<b>{nome}</b>", ParagraphStyle("aq_lim_capa_nome", parent=s_title, fontSize=14, leading=18))],
-            [Paragraph(f"Vigência: {inicio} a {fim}", ParagraphStyle("aq_lim_capa_info", parent=s_sub, textColor=colors.white))],
-            [Paragraph(f"Frequência: {frequencia}", ParagraphStyle("aq_lim_capa_info2", parent=s_sub, textColor=colors.white))],
-        ], colWidths=[15*cm])
-        box.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#0A2338")),
-            ("BOX", (0,0), (-1,-1), 0.8, gold),
-            ("ALIGN", (0,0), (-1,-1), "CENTER"),
-            ("TOPPADDING", (0,0), (-1,-1), 9),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 9),
-        ]))
-        story.append(Table([[box]], colWidths=[17*cm],
-                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
-                                  ("ALIGN", (0,0), (-1,-1), "CENTER"),
-                                  ("TOPPADDING", (0,0), (-1,-1), 20),
-                                  ("BOTTOMPADDING", (0,0), (-1,-1), 36)]))
-        story.append(Table([[Paragraph("Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG", s_small)]],
-                           colWidths=[17*cm],
-                           style=[("BACKGROUND", (0,0), (-1,-1), navy),
-                                  ("BOTTOMPADDING", (0,0), (-1,-1), 22)]))
-        story.append(PageBreak())
-
-        # Identificação
-        story.append(Paragraph("CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE LIMPEZA E MANUTENÇÃO DE PISCINAS", s_h))
-        id_table = Table([
-            ["CONTRATADA", "AQUA GESTÃO CONTROLE TÉCNICO LTDA\nCNPJ 66.008.795/0001-92\nUberlândia/MG"],
-            ["CONTRATANTE", f"{nome}\nCNPJ/CPF: {cnpj}\nEndereço: {endereco}\nRepresentante: {representante}\nTelefone: {telefone}"],
-            ["CONDIÇÕES", f"Frequência: {frequencia}\nProdutos químicos: {produtos}\nValor mensal: R$ {valor}\nVencimento: dia {vencimento}\nForma de pagamento: {pagamento}"],
-        ], colWidths=[4*cm, 13*cm])
-        id_table.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (0,-1), blue),
-            ("TEXTCOLOR", (0,0), (0,-1), colors.white),
-            ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
-            ("BACKGROUND", (1,0), (1,-1), light),
-            ("BOX", (0,0), (-1,-1), 0.6, blue),
-            ("INNERGRID", (0,0), (-1,-1), 0.3, colors.HexColor("#B7C8D8")),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ("FONTSIZE", (0,0), (-1,-1), 8.5),
-            ("TOPPADDING", (0,0), (-1,-1), 7),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
-        ]))
-        story.append(id_table)
-        story.append(Spacer(1, 0.25*cm))
-
-        clausulas = [
-            ("1. DO OBJETO",
-             f"O presente contrato tem por objeto a prestação de serviços de limpeza, conservação e manutenção operacional de piscina(s) pela CONTRATADA. Piscina(s) atendida(s): {piscinas}. Os serviços abrangem, conforme rotina contratada, aspiração, escovação, peneiração, limpeza de bordas, limpeza de cestos e pré-filtros, acompanhamento visual da água e rotinas básicas de circulação e filtração."),
-            ("2. DA FREQUÊNCIA E EXECUÇÃO",
-             f"Os serviços serão executados com a seguinte frequência: {frequencia}. As visitas poderão ser ajustadas por necessidade operacional, climática, feriados, impedimento de acesso, caso fortuito ou força maior, desde que mantida comunicação razoável ao CONTRATANTE."),
-            ("3. DOS PRODUTOS QUÍMICOS E INSUMOS",
-             f"Para fins deste contrato, fica definido que os produtos químicos e materiais consumíveis encontram-se na seguinte condição: {produtos}. Quando produtos estiverem incluídos, consideram-se incluídos os produtos rotineiros necessários ao tratamento ordinário, não abrangendo reposições extraordinárias por contaminação, eventos, drenagens, falhas estruturais, mau uso ou necessidade fora da rotina normal."),
-            ("4. DO VALOR E PAGAMENTO",
-             f"O CONTRATANTE pagará à CONTRATADA o valor mensal de R$ {valor}. O vencimento ocorrerá no dia {vencimento} de cada mês, mediante {pagamento}. O atraso sujeitará o CONTRATANTE à multa de 2%, juros de mora de 1% ao mês pro rata die e correção monetária pelo índice oficial aplicável."),
-            ("5. DA VIGÊNCIA",
-             f"O contrato inicia-se em {inicio} e terá término previsto em {fim}, podendo ser renovado ou prorrogado por acordo entre as partes. A continuidade da prestação sem oposição formal poderá caracterizar prorrogação tácita, preservadas as condições comerciais vigentes."),
-            ("6. DAS OBRIGAÇÕES DAS PARTES",
-             "A CONTRATADA executará os serviços com zelo e boa-fé operacional, comunicando anormalidades observadas. O CONTRATANTE deverá garantir acesso ao local, manter instalações em condições mínimas de operação, informar eventos ou uso intensivo e providenciar reparos estruturais, hidráulicos, elétricos ou mecânicos quando necessários."),
-            ("7. DAS LIMITAÇÕES",
-             "Este contrato não inclui obras civis, manutenção elétrica, reforma hidráulica, substituição de equipamentos, laudos periciais, atendimentos emergenciais extraordinários, responsabilidade técnica química formal ou fornecimento de produtos fora da condição expressamente contratada."),
-            ("8. DO FORO",
-             "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir eventuais controvérsias oriundas deste instrumento, com renúncia a qualquer outro, por mais privilegiado que seja."),
-        ]
-        for titulo, corpo in clausulas:
-            story.append(Paragraph(f"<b>{titulo}</b>", s_h))
-            story.append(Paragraph(corpo, s_body))
-
-        story.append(Spacer(1, 0.35*cm))
-        story.append(Paragraph(f"{local_data}.", ParagraphStyle("aq_lim_center", parent=s_body, alignment=TA_CENTER)))
-        story.append(Spacer(1, 1.0*cm))
-        ass = Table([
-            ["_________________________________________", "_________________________________________"],
-            ["AQUA GESTÃO CONTROLE TÉCNICO LTDA\nCONTRATADA", f"{nome}\nCONTRATANTE"],
-            ["", ""],
-            ["_________________________________________", "_________________________________________"],
-            ["TESTEMUNHA 1\nNome:\nCPF:", "TESTEMUNHA 2\nNome:\nCPF:"],
-        ], colWidths=[8.4*cm, 8.4*cm])
-        ass.setStyle(TableStyle([
-            ("ALIGN", (0,0), (-1,-1), "CENTER"),
-            ("FONTSIZE", (0,0), (-1,-1), 8.5),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ("TOPPADDING", (0,0), (-1,-1), 4),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 7),
-        ]))
-        story.append(ass)
-
-        def _header_footer(canvas, doc):
-            canvas.saveState()
-            canvas.setFillColor(navy)
-            canvas.rect(0, A4[1]-1.05*cm, A4[0], 1.05*cm, fill=1, stroke=0)
-            canvas.setFillColor(gold)
-            canvas.setFont("Helvetica-Bold", 8)
-            canvas.drawString(2*cm, A4[1]-0.65*cm, "AQUA GESTÃO — LIMPEZA E MANUTENÇÃO DE PISCINAS")
-            canvas.setFillColor(colors.HexColor("#536B7C"))
-            canvas.setFont("Helvetica", 7)
-            canvas.drawCentredString(A4[0]/2, 0.8*cm, "Aqua Gestão Controle Técnico Ltda | CNPJ 66.008.795/0001-92 | Uberlândia/MG")
-            canvas.restoreState()
-
-        doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.8*cm, bottomMargin=1.5*cm)
-        doc.build(story, onFirstPage=lambda c,d: None, onLaterPages=_header_footer)
-        return buf.getvalue()
-
-
-
-    with st.expander("📋 Preencher e gerar contrato de limpeza", expanded=False):
-        c_upd, c_info = st.columns([1, 3])
-        with c_upd:
-            if st.button("🔄 Atualizar clientes", key="btn_atualizar_aq_limpeza"):
-                _clientes_aqua_limpeza_cache.clear()
-                st.rerun()
-
-        _clientes_aq_lim = _clientes_aqua_limpeza_cache() or []
-        _nomes_aq_lim = ["— selecione ou preencha manualmente —"] + [c.get("nome", "") for c in _clientes_aq_lim if c.get("nome")]
-        _sel_aq_lim = st.selectbox("Carregar cliente Aqua cadastrado", _nomes_aq_lim, key="aq_limpeza_cliente_sel")
-
-        if st.button("📂 Carregar dados do cliente", key="btn_aq_limpeza_carregar"):
-            _d = next((c for c in _clientes_aq_lim if c.get("nome") == _sel_aq_lim), {})
-            if _d:
-                st.session_state["aq_limpeza_nome"] = _d.get("nome", "")
-                st.session_state["aq_limpeza_cnpj"] = _d.get("cnpj", "")
-                st.session_state["aq_limpeza_endereco"] = _d.get("endereco", "")
-                st.session_state["aq_limpeza_representante"] = _d.get("contato", "")
-                st.session_state["aq_limpeza_telefone"] = _d.get("telefone", "")
-                vols = []
-                if _d.get("vol_adulto"): vols.append(f"Piscina adulto: {_d.get('vol_adulto')} m³")
-                if _d.get("vol_infantil"): vols.append(f"Piscina infantil: {_d.get('vol_infantil')} m³")
-                if _d.get("vol_family"): vols.append(f"Family/SPA: {_d.get('vol_family')} m³")
-                st.session_state["aq_limpeza_piscinas"] = " | ".join(vols)
-                st.success("✅ Dados carregados.")
-                st.rerun()
-
-        a1, a2 = st.columns(2)
-        with a1:
-            aq_lim_nome = st.text_input("Nome / Razão social *", key="aq_limpeza_nome")
-            aq_lim_cnpj = st.text_input("CNPJ / CPF", key="aq_limpeza_cnpj")
-            aq_lim_end = st.text_area("Endereço completo", key="aq_limpeza_endereco", height=70)
-        with a2:
-            aq_lim_rep = st.text_input("Síndico / representante", key="aq_limpeza_representante")
-            aq_lim_tel = st.text_input("Telefone", key="aq_limpeza_telefone")
-            aq_lim_pisc = st.text_area("Piscinas atendidas", key="aq_limpeza_piscinas", height=70)
-
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            aq_lim_freq = st.text_input("Frequência de visitas", key="aq_limpeza_frequencia", placeholder="Ex.: segunda, quarta e sexta")
-        with b2:
-            aq_lim_prod = st.radio("Produtos químicos", ["Produtos incluídos no valor mensal", "Produtos não incluídos — por conta do contratante"], key="aq_limpeza_produtos")
-        with b3:
-            aq_lim_valor = st.text_input("Valor mensal (R$) *", key="aq_limpeza_valor", placeholder="Ex.: 3.300,00")
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            aq_lim_venc = st.text_input("Dia de vencimento", key="aq_limpeza_vencimento", placeholder="Ex.: 10")
-        with c2:
-            aq_lim_pgto = st.selectbox("Forma de pagamento", ["Pix", "Boleto", "Transferência bancária", "Dinheiro", "Outro"], key="aq_limpeza_pagamento")
-        with c3:
-            aq_lim_inicio = st.text_input("Data de início", key="aq_limpeza_inicio", value=hoje_br(), placeholder="dd/mm/aaaa")
-        with c4:
-            aq_lim_fim = st.text_input("Data de término", key="aq_limpeza_fim", placeholder="dd/mm/aaaa ou Indeterminado")
-        aq_lim_local_data = st.text_input("Local e data de assinatura", key="aq_limpeza_local_data", value=f"Uberlândia/MG, {hoje_br()}")
-
-        if st.button("📄 Gerar Contrato Aqua Limpeza (PDF)", type="primary", use_container_width=True, key="btn_gerar_aq_limpeza"):
-            if not (st.session_state.get("aq_limpeza_nome","")).strip():
-                st.error("Informe o nome/razão social do contratante.")
-            elif not (st.session_state.get("aq_limpeza_valor","")).strip():
-                st.error("Informe o valor mensal.")
-            else:
-                try:
-                    dados = {
-                        "nome": st.session_state.get("aq_limpeza_nome", ""),
-                        "cnpj": st.session_state.get("aq_limpeza_cnpj", ""),
-                        "endereco": st.session_state.get("aq_limpeza_endereco", ""),
-                        "representante": st.session_state.get("aq_limpeza_representante", ""),
-                        "telefone": st.session_state.get("aq_limpeza_telefone", ""),
-                        "piscinas": st.session_state.get("aq_limpeza_piscinas", ""),
-                        "frequencia": st.session_state.get("aq_limpeza_frequencia", ""),
-                        "produtos": st.session_state.get("aq_limpeza_produtos", ""),
-                        "valor": valor_para_template(st.session_state.get("aq_limpeza_valor", "")),
-                        "vencimento": st.session_state.get("aq_limpeza_vencimento", ""),
-                        "pagamento": st.session_state.get("aq_limpeza_pagamento", ""),
-                        "inicio": st.session_state.get("aq_limpeza_inicio", ""),
-                        "fim": st.session_state.get("aq_limpeza_fim", ""),
-                        "local_data": st.session_state.get("aq_limpeza_local_data", ""),
-                    }
-                    pdf_bytes = gerar_contrato_limpeza_aqua_pdf(dados)
-                    nome_arq = limpar_nome_arquivo(f"Contrato_Aqua_Limpeza_{dados['nome']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
-                    st.success("✅ Contrato de limpeza Aqua gerado com sucesso.")
-                    st.download_button("⬇️ Baixar contrato de limpeza PDF", data=pdf_bytes, file_name=nome_arq, mime="application/pdf", use_container_width=True, key="dl_aq_limpeza_pdf")
-                except Exception as e:
-                    st.error(f"Erro ao gerar contrato de limpeza: {e}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # DOSSIÊ DE SEGURANÇA QUÍMICA — FDS / GHS / NR-26 / NR-06
@@ -18349,13 +18563,20 @@ def _importar_lancamentos(lancamentos):
             lc_dados = piscinas[0]  # primeira piscina para o relatório principal
         else:
             lc_dados = lc
+        def _fmt_antes_apos(_antes, _apos):
+            _antes = str(_antes or "").strip()
+            _apos = str(_apos or "").strip()
+            if _antes and _apos:
+                return f"{_antes.replace('.', ',')} / {_apos.replace('.', ',')}"
+            return (_antes or _apos).replace(".", ",")
+
         st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
-        st.session_state[f"rel_analise_ph_{i}"]        = lc_dados.get("ph", lc.get("ph",""))
-        st.session_state[f"rel_analise_cl_{i}"]        = lc_dados.get("cloro_livre", lc.get("cloro_livre",""))
-        st.session_state[f"rel_analise_ct_{i}"]        = lc_dados.get("cloro_total", lc.get("cloro_total",""))
-        st.session_state[f"rel_analise_alc_{i}"]       = lc_dados.get("alcalinidade", lc.get("alcalinidade",""))
-        st.session_state[f"rel_analise_dc_{i}"]        = lc_dados.get("dureza", lc.get("dureza",""))
-        st.session_state[f"rel_analise_cya_{i}"]       = lc_dados.get("cianurico", lc.get("cianurico",""))
+        st.session_state[f"rel_analise_ph_{i}"]        = _fmt_antes_apos(lc_dados.get("ph", lc.get("ph","")), lc_dados.get("ph_apos", lc.get("ph_apos", "")))
+        st.session_state[f"rel_analise_cl_{i}"]        = _fmt_antes_apos(lc_dados.get("cloro_livre", lc.get("cloro_livre","")), lc_dados.get("cloro_livre_apos", lc.get("cloro_livre_apos", "")))
+        st.session_state[f"rel_analise_ct_{i}"]        = _fmt_antes_apos(lc_dados.get("cloro_total", lc.get("cloro_total","")), lc_dados.get("cloro_total_apos", lc.get("cloro_total_apos", "")))
+        st.session_state[f"rel_analise_alc_{i}"]       = _fmt_antes_apos(lc_dados.get("alcalinidade", lc.get("alcalinidade","")), lc_dados.get("alcalinidade_apos", lc.get("alcalinidade_apos", "")))
+        st.session_state[f"rel_analise_dc_{i}"]        = _fmt_antes_apos(lc_dados.get("dureza", lc.get("dureza","")), lc_dados.get("dureza_apos", lc.get("dureza_apos", "")))
+        st.session_state[f"rel_analise_cya_{i}"]       = _fmt_antes_apos(lc_dados.get("cianurico", lc.get("cianurico","")), lc_dados.get("cianurico_apos", lc.get("cianurico_apos", "")))
         st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
     # Preenche campo operador responsavel com o mais frequente dos lancamentos
     _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
@@ -18387,6 +18608,7 @@ if lancamentos_disponiveis:
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
+            "parametros_antes_apos_v2",
             str(nome_rel_atual),
             str(mes_ref),
             str(ano_ref),
