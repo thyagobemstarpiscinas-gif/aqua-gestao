@@ -16375,6 +16375,7 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         "emergencial."))
     story.append(P("Este documento não substitui o rótulo, a FDS integral do fabricante, o treinamento da "
         "equipe, a avaliação de risco do local ou a obrigação de fornecimento, conservação e uso adequado de EPIs."))
+    story.append(P("Integração com POPs: este dossiê deve ser consultado especialmente nos procedimentos de dosagem segura, uso de EPIs, organização da casa de máquinas, controle de acesso, resposta a ocorrências químicas e destinação de resíduos/embalagens."))
 
     story.append(Paragraph("2. O que deve ficar junto aos produtos", styles["Secao"]))
     for item in [
@@ -16570,6 +16571,7 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
             ("Derramamento", extra["derramamento"]),
             ("Armazenamento/incompatíveis", prod.get("armazenamento","")),
             ("Emergência", extra["emergencia"]),
+            ("POPs relacionados", "POP 07 — Dosagem segura; POP 08 — EPIs e segurança química; POP 09 — Organização da casa de máquinas; POP 17 — Resíduos, embalagens e sobras químicas."),
         ]
         ficha = [[Paragraph(esc(lab), styles["TabelaLabel"]),
                   Paragraph(esc(val), styles["Tabela"])] for lab, val in rows]
@@ -16609,6 +16611,7 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
         "e levar a FDS/rótulo ao atendimento médico.",
         "A administração deve manter as FDS completas arquivadas e disponíveis à equipe operacional, "
         "à fiscalização e ao atendimento emergencial.",
+        "Toda ocorrência química relevante deve ser vinculada ao registro operacional ou relatório de campo, com foto quando possível e comunicação rastreável ao responsável local e/ou ao RT.",
     ]:
         story.append(bullet(regra))
 
@@ -16623,6 +16626,7 @@ def gerar_dossie_fds_ghs_aqua_pdf(dados: dict) -> bytes:
     story.append(P(f"A administração do {esc(nome)} declara ciência do recebimento deste Dossiê de "
         "Segurança Química, comprometendo-se a disponibilizar seu conteúdo ao responsável local e à equipe "
         "operacional designada, própria ou terceirizada, mantendo as FDS completas arquivadas para consulta."))
+    story.append(P("A administração declara ciência de que este dossiê deve ser utilizado em conjunto com o Caderno de POPs vigente e com os registros operacionais gerados no sistema Aqua Gestão."))
     story.append(Spacer(1, 8))
     story.append(P(f"Uberlândia/MG, {data_emissao}."))
     story.append(Spacer(1, 18))
@@ -17404,7 +17408,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não liberar uso da piscina quando houver suspeita de risco sanitário, ausência de cloro residual ou condição visual insegura.",
                 "Comunicar ao síndico/responsável local e ao RT situações críticas ou fora da rotina.",
             ],
-            "registros": "Registrar data, horário, responsável pela visita e observações iniciais."
+            "registros": "Registrar data, horário, responsável pela visita e observações iniciais.",
+            "documentos_apoio": "Relatório de campo do operador, registro fotográfico e relatório RT quando houver anormalidade."
         },
         {
             "codigo": "POP 02",
@@ -17422,7 +17427,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não registrar valores estimados ou aproximados sem medição real.",
                 "Quando houver dúvida no resultado, repetir a análise antes de dosar produto.",
             ],
-            "registros": "Registrar todos os parâmetros na planilha, aplicativo ou formulário oficial do condomínio."
+            "registros": "Registrar todos os parâmetros na planilha, aplicativo ou formulário oficial do condomínio.",
+            "documentos_apoio": "Relatório de campo do operador e faixas operacionais adotadas pelo sistema."
         },
         {
             "codigo": "POP 03",
@@ -17440,7 +17446,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "A ausência de registro compromete a rastreabilidade técnica e poderá ser apontada como não conformidade.",
                 "Não alterar registros anteriores sem justificativa formal.",
             ],
-            "registros": "Planilha diária, ficha de visita, aplicativo ou outro meio definido pela CONTRATANTE e validado pelo RT."
+            "registros": "Planilha diária, ficha de visita, aplicativo ou outro meio definido pela CONTRATANTE e validado pelo RT.",
+            "documentos_apoio": "Relatório de campo do operador, campos de dosagem, observações e registro fotográfico."
         },
         {
             "codigo": "POP 04",
@@ -17458,7 +17465,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não realizar aspiração ou manobras hidráulicas sem conhecimento do sistema.",
                 "Comunicar excesso recorrente de sujeira, areia, folhas ou material orgânico.",
             ],
-            "registros": "Registrar se houve peneiração, escovação, aspiração e qualquer anormalidade observada."
+            "registros": "Registrar se houve peneiração, escovação, aspiração e qualquer anormalidade observada.",
+            "documentos_apoio": "Relatório de campo do operador e registro fotográfico quando houver sujidade ou anormalidade."
         },
         {
             "codigo": "POP 05",
@@ -17476,7 +17484,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Nunca abrir pré-filtro com sistema pressurizado ou bomba em funcionamento.",
                 "Comunicar vazamentos, tampa danificada, anel de vedação comprometido ou ruído anormal.",
             ],
-            "registros": "Registrar limpeza realizada e anormalidades no conjunto hidráulico."
+            "registros": "Registrar limpeza realizada e anormalidades no conjunto hidráulico.",
+            "documentos_apoio": "Relatório de campo do operador, observações de equipamento e registro fotográfico quando aplicável."
         },
         {
             "codigo": "POP 06",
@@ -17495,7 +17504,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Nunca mudar a válvula seletora com a bomba ligada.",
                 "Comunicar aumento recorrente de pressão, baixa vazão ou necessidade excessiva de retrolavagem.",
             ],
-            "registros": "Registrar data, execução de retrolavagem, enxágue e qualquer observação do filtro."
+            "registros": "Registrar data, execução de retrolavagem, enxágue e qualquer observação do filtro.",
+            "documentos_apoio": "Relatório de campo do operador, observações de pressão/vazão e ocorrência quando houver falha."
         },
         {
             "codigo": "POP 07",
@@ -17515,7 +17525,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não aplicar produto sem identificação, vencido, contaminado ou armazenado inadequadamente.",
                 "Não executar dosagem corretiva sem registro.",
             ],
-            "registros": "Registro obrigatório de todos os produtos aplicados ou recomendados."
+            "registros": "Registro obrigatório de todos os produtos aplicados ou recomendados.",
+            "documentos_apoio": "Dossiê de Segurança Química, FDS do fabricante, rótulo do produto e relatório de campo."
         },
         {
             "codigo": "POP 08",
@@ -17533,7 +17544,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Interromper a atividade se não houver condição segura ou EPI mínimo disponível.",
                 "Comunicar vazamentos, derramamentos, produto sem rótulo, odor forte ou condição insegura.",
             ],
-            "registros": "Registrar não conformidades de EPI ou segurança química quando identificadas."
+            "registros": "Registrar não conformidades de EPI ou segurança química quando identificadas.",
+            "documentos_apoio": "Dossiê de Segurança Química, matriz produto x EPI, FDS do fabricante e NR-06."
         },
         {
             "codigo": "POP 09",
@@ -17551,7 +17563,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não armazenar produtos incompatíveis juntos.",
                 "Comunicar ausência de identificação, embalagem comprometida ou condição de risco.",
             ],
-            "registros": "Registrar não conformidades na casa de máquinas, quando existentes."
+            "registros": "Registrar não conformidades na casa de máquinas, quando existentes.",
+            "documentos_apoio": "Dossiê de Segurança Química, registro fotográfico e ocorrência no sistema."
         },
         {
             "codigo": "POP 10",
@@ -17569,7 +17582,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não ocultar não conformidade operacional.",
                 "Não liberar uso da piscina quando houver recomendação técnica de restrição.",
             ],
-            "registros": "Registrar comunicação por meio rastreável: aplicativo, mensagem, e-mail, ficha ou relatório."
+            "registros": "Registrar comunicação por meio rastreável: aplicativo, mensagem, e-mail, ficha ou relatório.",
+            "documentos_apoio": "Relatório de campo, relatório RT, mensagem rastreável, e-mail ou notificação formal."
         },
         {
             "codigo": "POP 11",
@@ -17586,7 +17600,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Esta verificação não substitui análise técnica nem rotina operacional completa.",
                 "Em caso de suspeita de risco, evitar o uso até orientação do responsável técnico ou administrativo.",
             ],
-            "registros": "Registrar a ocorrência e comunicação quando houver anormalidade."
+            "registros": "Registrar a ocorrência e comunicação quando houver anormalidade.",
+            "documentos_apoio": "Ocorrência no sistema, mensagem rastreável e registro fotográfico quando possível."
         },
         {
             "codigo": "POP 12",
@@ -17604,7 +17619,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não priorizar liberação da piscina em detrimento da segurança sanitária.",
                 "A decisão administrativa cabe à CONTRATANTE, sem prejuízo da recomendação técnica do RT.",
             ],
-            "registros": "Notificação, relatório, mensagem rastreável e/ou checklist de ocorrência."
+            "registros": "Notificação, relatório, mensagem rastreável e/ou checklist de ocorrência.",
+            "documentos_apoio": "Relatório de campo, relatório RT, ocorrência, decisão administrativa e comunicação formal."
         },
         {
             "codigo": "POP 13",
@@ -17622,7 +17638,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "Não armazenar produtos em áreas de circulação comum.",
                 "Não permitir que pessoa não orientada manipule produto químico.",
             ],
-            "registros": "Registrar acesso indevido, ausência de identificação ou condição insegura."
+            "registros": "Registrar acesso indevido, ausência de identificação ou condição insegura.",
+            "documentos_apoio": "Dossiê de Segurança Química, registro fotográfico e ocorrência de acesso/condição insegura."
         },
         {
             "codigo": "POP 14",
@@ -17640,7 +17657,8 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "A ausência de registro ou dado incompleto limita a análise técnica.",
                 "A auditoria técnica não substitui a execução operacional diária pela equipe designada pela CONTRATANTE.",
             ],
-            "registros": "Relatório técnico, checklist, notificação ou observação em sistema."
+            "registros": "Relatório técnico, checklist, notificação ou observação em sistema.",
+            "documentos_apoio": "Relatórios de campo, dosagens, fotos, ocorrências, dossiê e histórico de revisões."
         },
         {
             "codigo": "POP 15",
@@ -17657,7 +17675,46 @@ def _lista_pops_adaptativos(executor: str, frequencia: str) -> list[dict]:
                 "POPs desatualizados podem gerar falhas de execução e rastreabilidade.",
                 "A CONTRATANTE deve garantir que a equipe operacional tenha acesso à versão vigente.",
             ],
-            "registros": "Controle de versão do Caderno de POPs e termos de ciência relacionados."
+            "registros": "Controle de versão do Caderno de POPs e termos de ciência relacionados.",
+            "documentos_apoio": "Controle documental do Caderno de POPs, histórico de alterações e termos de ciência."
+        },
+        {
+            "codigo": "POP 16",
+            "titulo": "Manutenção preventiva e anomalias de equipamentos",
+            "responsavel": "CONTRATANTE, prestador de manutenção ou responsável local designado",
+            "frequencia": "Conforme rotina preventiva do condomínio e sempre que houver sinal de falha, vazamento, ruído, aquecimento, baixa vazão ou equipamento parado.",
+            "objetivo": "Padronizar a identificação, comunicação e rastreabilidade de falhas em bombas, filtros, registros, quadro elétrico e demais componentes da instalação.",
+            "procedimento": [
+                "Observar ruídos anormais, aquecimento, vibração, vazamentos, baixa vazão, perda de escorva, pressão fora do padrão e equipamentos desligados.",
+                "Não intervir em componentes elétricos, motobombas ou sistemas pressurizados sem qualificação específica.",
+                "Comunicar o síndico/responsável local e acionar prestador habilitado quando houver risco operacional ou paralisação do sistema.",
+                "Registrar data, equipamento, sintoma observado, providência adotada e responsável acionado.",
+            ],
+            "cuidados": [
+                "Não improvisar reparos em instalação elétrica, hidráulica pressurizada ou equipamento crítico.",
+                "Quando a falha puder comprometer a segurança sanitária ou a circulação/filtração, comunicar o RT para avaliação documental e orientação técnica.",
+            ],
+            "registros": "Ocorrência no sistema, relatório de campo, registro fotográfico quando possível e comprovante da manutenção executada.",
+            "documentos_apoio": "Relatório de campo, relatório RT quando aplicável, registro fotográfico e comprovantes do prestador de manutenção."
+        },
+        {
+            "codigo": "POP 17",
+            "titulo": "Resíduos, embalagens e sobras de produtos químicos",
+            "responsavel": "CONTRATANTE e equipe operacional designada",
+            "frequencia": "Sempre que houver embalagem vazia, sobra, produto vencido, derramamento, contaminação ou necessidade de destinação.",
+            "objetivo": "Evitar descarte inadequado, reutilização insegura de embalagens, mistura de resíduos químicos e exposição de usuários ou trabalhadores.",
+            "procedimento": [
+                "Manter resíduos, embalagens vazias e produtos vencidos identificados e separados de produtos em uso.",
+                "Não reutilizar embalagens químicas para outra finalidade e não transferir produto para recipiente sem identificação.",
+                "Consultar rótulo e FDS do fabricante antes de qualquer destinação, contenção ou limpeza de derramamento.",
+                "Registrar produto, condição da embalagem, quantidade aproximada quando aplicável e providência adotada.",
+            ],
+            "cuidados": [
+                "Não descartar produtos químicos em solo, ralos, rede pluvial ou locais não autorizados.",
+                "Não misturar sobras de produtos diferentes nem armazenar embalagens contaminadas em área de circulação comum.",
+            ],
+            "registros": "Registro de ocorrência/destinação, foto quando aplicável, identificação do produto e orientação seguida.",
+            "documentos_apoio": "Dossiê de Segurança Química, FDS do fabricante, rótulo do produto e registro fotográfico quando aplicável."
         },
     ]
 
@@ -17695,6 +17752,10 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
     executor = val("executor_operacional", "Prestador externo")
     frequencia = val("frequencia_operacional", "3 vezes por semana")
     obs = val("observacao_pops", "")
+    versao_pops = val("versao_pops", "1.0")
+    revisao_pops = val("revisao_pops", "00")
+    proxima_revisao_pops = val("proxima_revisao_pops", "Em até 12 meses ou quando houver alteração relevante")
+    motivo_revisao_pops = val("motivo_revisao_pops", "Emissão/atualização documental de rotina operacional")
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(
@@ -17756,8 +17817,8 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
     dados_table = [
         [Paragraph("<b>Condomínio</b>", styles["PopsTableHead"]), Paragraph("<b>Rotina operacional</b>", styles["PopsTableHead"])],
         [
-            Paragraph(f"{nome_cond}<br/>CNPJ: {cnpj}<br/>Endereço: {endereco}<br/>Representante: {sindico} — {cargo_sindico}", styles["PopsTable"]),
-            Paragraph(f"Executor informado: {executor}<br/>Frequência operacional: {frequencia}<br/>Piscinas/volumes: {volumes}<br/>Data: {data_ass}", styles["PopsTable"]),
+            Paragraph(f"{nome_cond}<br/>CNPJ: {cnpj}<br/>Endereço: {endereco}<br/>Representante: {sindico} — {cargo_sindico}<br/>Versão: {versao_pops} | Revisão: {revisao_pops}", styles["PopsTable"]),
+            Paragraph(f"Executor informado: {executor}<br/>Frequência operacional: {frequencia}<br/>Piscinas/volumes: {volumes}<br/>Data: {data_ass}<br/>Próxima revisão: {proxima_revisao_pops}", styles["PopsTable"]),
         ],
     ]
     t = Table(dados_table, colWidths=[8.4 * cm, 8.6 * cm])
@@ -17781,6 +17842,7 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
     p("Este caderno integra a documentação técnica de Responsabilidade Técnica do condomínio e estabelece procedimentos mínimos recomendados para a rotina operacional de piscinas de uso coletivo.")
     p("A execução dos procedimentos caberá à equipe operacional designada pela CONTRATANTE, seja funcionário próprio, zelador, piscineiro, empresa terceirizada ou prestador de manutenção, competindo à Aqua Gestão a orientação técnica, supervisão documental e registro de não conformidades no âmbito da Responsabilidade Técnica contratada.")
     p("A Aqua Gestão não assume, por este documento, a execução operacional diária da limpeza, dosagem, manutenção física ou operação contínua dos equipamentos, salvo contratação específica em instrumento próprio.")
+    p(f"Controle documental: versão {versao_pops}, revisão {revisao_pops}, motivo da emissão/revisão: {motivo_revisao_pops}. A próxima revisão deve ocorrer {proxima_revisao_pops.lower()}.")
 
     if obs and obs != "Dado não informado":
         story.append(Paragraph("Observação específica informada", styles["PopsMiniH"]))
@@ -17796,6 +17858,27 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
     story.append(box)
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph("Matriz mínima de rastreabilidade", styles["PopsMiniH"]))
+    matriz_registros = [
+        [Paragraph("<b>Tema</b>", styles["PopsTableHead"]), Paragraph("<b>Evidência mínima</b>", styles["PopsTableHead"]), Paragraph("<b>Responsável pelo registro</b>", styles["PopsTableHead"])],
+        [Paragraph("Visita, inspeção e parâmetros", styles["PopsTable"]), Paragraph("Relatório de campo com data, horário, executor, parâmetros antes/depois, observações e dosagens.", styles["PopsTable"]), Paragraph("Executor operacional designado", styles["PopsTable"])],
+        [Paragraph("Produtos químicos e EPI", styles["PopsTable"]), Paragraph("Produto, quantidade, finalidade, condição insegura, EPI ausente e foto quando aplicável.", styles["PopsTable"]), Paragraph("Executor operacional ou responsável local", styles["PopsTable"])],
+        [Paragraph("Não conformidades e restrição", styles["PopsTable"]), Paragraph("Ocorrência, comunicação rastreável, decisão administrativa, orientação técnica e registro fotográfico quando possível.", styles["PopsTable"]), Paragraph("Responsável local, executor ou RT", styles["PopsTable"])],
+        [Paragraph("Auditoria e revisão", styles["PopsTable"]), Paragraph("Relatório técnico, versão, data, motivo da revisão e ciência da CONTRATANTE/equipe operacional.", styles["PopsTable"]), Paragraph("Responsável Técnico", styles["PopsTable"])],
+    ]
+    tm_reg = Table(matriz_registros, colWidths=[4.5 * cm, 8.2 * cm, 4.3 * cm], repeatRows=1)
+    tm_reg.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_MEDIO),
+        ("GRID", (0, 0), (-1, -1), 0.35, BORDA),
+        ("BACKGROUND", (0, 1), (-1, -1), CINZA_CLARO),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(tm_reg)
     story.append(PageBreak())
 
     def bullet_list(items):
@@ -17838,6 +17921,8 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
             bloco.append(Paragraph(f"• {item}", styles["PopsBullet"]))
         bloco.append(Paragraph("<b>Registro obrigatório</b>", styles["PopsMiniH"]))
         bloco.append(Paragraph(pop["registros"], styles["PopsBody"]))
+        if pop.get("documentos_apoio"):
+            bloco.append(Paragraph(f"Documento de apoio: {pop['documentos_apoio']}", styles["PopsBody"]))
         bloco.append(Spacer(1, 4 * mm))
         story.append(KeepTogether(bloco))
 
@@ -17845,6 +17930,7 @@ def _gerar_pdf_caderno_pops(dados: dict) -> bytes:
     story.append(Paragraph("Termo de recebimento dos POPs", styles["PopsTitle"]))
     p("A CONTRATANTE declara ciência de que recebeu este Caderno de Procedimentos Operacionais Padrão — POPs, comprometendo-se a disponibilizar seu conteúdo à equipe operacional própria ou terceirizada responsável pela rotina da piscina.")
     p("A equipe operacional designada pela CONTRATANTE deverá seguir os procedimentos aqui descritos, registrar as ações executadas e comunicar não conformidades ao síndico/responsável local e/ou ao Responsável Técnico quando aplicável.")
+    p(f"Documento recebido na versão {versao_pops}, revisão {revisao_pops}, com próxima revisão prevista: {proxima_revisao_pops}.")
     story.append(Spacer(1, 12 * mm))
     story.append(Paragraph(f"Uberlândia/MG, {data_ass}.", styles["PopsBody"]))
     story.append(Spacer(1, 15 * mm))
