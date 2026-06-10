@@ -2152,6 +2152,15 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
         "assinatura_responsavel_data": st.session_state.get("op_assinatura_responsavel_data", ""),
         "piscinas": [],
         "dosagens": [],
+        "op_apos_ativo": bool(st.session_state.get("op_apos_ativo", False)),
+        "parametros_apos": {
+            "ph_apos":           re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_ph_apos", ""))).replace(",", "."),
+            "cloro_livre_apos":  re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_crl_apos", ""))).replace(",", "."),
+            "cloro_total_apos":  re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_ct_apos", ""))).replace(",", "."),
+            "alcalinidade_apos": re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_alc_apos", ""))).replace(",", "."),
+            "dureza_apos":       re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_dc_apos", ""))).replace(",", "."),
+            "cianurico_apos":    re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_cya_apos", ""))).replace(",", "."),
+        },
     }
     # Parâmetros por piscina
     for pisc_nome in piscinas_ativas:
@@ -2159,7 +2168,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
         abrev = ("adulto" if "adulto" in _slug else
                  "infantil" if "infantil" in _slug else
                  "family" if "family" in _slug else "outra")
-        dados["piscinas"].append({
+        _pisc_rasc = {
             "nome":        pisc_nome,
             "ph":          st.session_state.get(f"op_{abrev}_ph", ""),
             "cloro_livre": st.session_state.get(f"op_{abrev}_crl", ""),
@@ -2167,7 +2176,12 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
             "alcalinidade":st.session_state.get(f"op_{abrev}_alc", ""),
             "dureza":      st.session_state.get(f"op_{abrev}_dc", ""),
             "cianurico":   st.session_state.get(f"op_{abrev}_cya", ""),
-        })
+        }
+        # Parâmetros pós-tratamento são globais no formulário do operador;
+        # também ficam dentro da piscina para o PDF e reprocessamentos futuros.
+        if dados.get("op_apos_ativo") or any(dados.get("parametros_apos", {}).values()):
+            _pisc_rasc.update(dados.get("parametros_apos", {}))
+        dados["piscinas"].append(_pisc_rasc)
     # Dosagens por piscina
     _slug_map_r = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
     for pisc_nome in piscinas_ativas:
@@ -2224,6 +2238,21 @@ def restaurar_rascunho_operador(rascunho: dict):
         st.session_state["op_assinatura_responsavel_b64"] = rascunho.get("assinatura_responsavel_b64", "")
     if rascunho.get("assinatura_responsavel_data"):
         st.session_state["op_assinatura_responsavel_data"] = rascunho.get("assinatura_responsavel_data", "")
+    if "op_apos_ativo" in rascunho:
+        st.session_state["op_apos_ativo"] = bool(rascunho.get("op_apos_ativo"))
+    _param_apos = rascunho.get("parametros_apos", {}) if isinstance(rascunho.get("parametros_apos", {}), dict) else {}
+    _map_restore_apos = {
+        "ph_apos": "op_ph_apos",
+        "cloro_livre_apos": "op_crl_apos",
+        "cloro_total_apos": "op_ct_apos",
+        "alcalinidade_apos": "op_alc_apos",
+        "dureza_apos": "op_dc_apos",
+        "cianurico_apos": "op_cya_apos",
+    }
+    for _campo_apos, _key_apos in _map_restore_apos.items():
+        _valor_apos = _param_apos.get(_campo_apos) or rascunho.get(_campo_apos, "")
+        if _valor_apos not in (None, ""):
+            st.session_state[_key_apos] = str(_valor_apos).replace(".", ",")
     # Parâmetros por piscina
     for p in rascunho.get("piscinas", []):
         _slug = slugify_nome(p.get("nome","")).lower()
@@ -2237,6 +2266,10 @@ def restaurar_rascunho_operador(rascunho: dict):
         ]:
             if p.get(campo):
                 st.session_state[key] = p[campo]
+        # Compatibilidade: rascunhos salvos com os campos pós-tratamento dentro da piscina.
+        for _campo_apos, _key_apos in _map_restore_apos.items():
+            if p.get(_campo_apos) and not st.session_state.get(_key_apos):
+                st.session_state[_key_apos] = str(p.get(_campo_apos)).replace(".", ",")
     # Dosagens
     for i, d in enumerate(rascunho.get("dosagens", [])[:5]):
         st.session_state[f"op_dos_prod_{i}"] = d.get("produto", "")
@@ -7327,7 +7360,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.units import cm
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage, PageBreak
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     import base64 as _b64
 
@@ -7370,19 +7403,59 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     data_hoje = date.today().strftime("%d/%m/%Y")
     operador  = lancamento.get("operador","") or "—"
 
-    hdr_data = [
-        [Paragraph("<b>AQUA GESTÃO</b>", estilo("hdr1", fontSize=14, textColor=AZUL_ESCURO, fontName="Helvetica-Bold")),
-         Paragraph(f"<b>Relatório de Visita</b><br/><font size=8 color='#8a9ab0'>Emitido em {data_hoje}</font>", estilo("hdr2", fontSize=11, textColor=AZUL_MEDIO, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
-        [Paragraph("Controle Técnico de Piscinas", s_sub), ""],
-    ]
-    t_hdr = Table(hdr_data, colWidths=["60%","40%"])
+    def _logo_relatorio_visita():
+        """Retorna a logo da Aqua Gestão para o PDF, usando arquivo local ou logo oficial embutida."""
+        try:
+            _logo_path = encontrar_logo()
+        except Exception:
+            _logo_path = None
+        if _logo_path:
+            try:
+                return RLImage(str(_logo_path), width=2.35*cm, height=1.35*cm, kind="proportional")
+            except Exception:
+                pass
+        try:
+            _logo_b64 = globals().get("LOGO_AQUA_OFICIAL_B64", "")
+            if _logo_b64:
+                _img_bytes = _b64.b64decode(str(_logo_b64).strip())
+                return RLImage(io.BytesIO(_img_bytes), width=2.55*cm, height=1.35*cm, kind="proportional")
+        except Exception:
+            pass
+        return Paragraph("<b>AQUA<br/>GESTÃO</b>", estilo("logo_fallback", fontSize=11, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", leading=12, alignment=TA_CENTER))
+
+    _logo_pdf = _logo_relatorio_visita()
+    _logo_pdf.hAlign = "LEFT"
+    marca_bloco = Table([[
+        _logo_pdf,
+        Paragraph("<b>AQUA GESTÃO</b><br/><font size=8 color='#8a9ab0'>Controle Técnico de Piscinas</font>", estilo("hdr_brand", fontSize=14, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", leading=15)),
+    ]], colWidths=[2.75*cm, 7.6*cm])
+    marca_bloco.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+    ]))
+
+    doc_bloco = Paragraph(
+        f"<b>Relatório de Visita</b><br/><font size=8 color='#8a9ab0'>Controle operacional de piscina • Emitido em {data_hoje}</font>",
+        estilo("hdr_doc", fontSize=12, textColor=AZUL_MEDIO, fontName="Helvetica-Bold", alignment=TA_RIGHT, leading=14)
+    )
+
+    hdr_data = [[marca_bloco, doc_bloco]]
+    t_hdr = Table(hdr_data, colWidths=["64%","36%"])
     t_hdr.setStyle(TableStyle([
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("LINEBELOW", (0,1), (-1,1), 0.5, BORDA),
-        ("BOTTOMPADDING", (0,1), (-1,1), 8),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f8fafd")),
+        ("BOX", (0,0), (-1,-1), 0.45, BORDA),
+        ("LINEBELOW", (0,0), (-1,0), 1.2, AZUL_MEDIO),
+        ("LEFTPADDING", (0,0), (-1,-1), 9),
+        ("RIGHTPADDING", (0,0), (-1,-1), 9),
+        ("TOPPADDING", (0,0), (-1,-1), 8),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 8),
     ]))
     elems.append(t_hdr)
-    elems.append(Spacer(1, 6))
+    elems.append(Spacer(1, 8))
 
     # Info básica
     info_data = [
@@ -7424,44 +7497,63 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         elems.append(Paragraph(f"🏊 {pisc.get('nome','Piscina')} — Parâmetros analisados", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
 
+        def _valor_apos_pdf(_key: str) -> str:
+            _map_top = {
+                "ph": "ph_apos",
+                "cloro_livre": "cloro_livre_apos",
+                "cloro_total": "cloro_total_apos",
+                "alcalinidade": "alcalinidade_apos",
+                "dureza": "dureza_apos",
+                "cianurico": "cianurico_apos",
+            }
+            _campo = _map_top.get(_key, f"{_key}_apos")
+            _param_apos = lancamento.get("parametros_apos", {})
+            if not isinstance(_param_apos, dict):
+                _param_apos = {}
+            return str(
+                pisc.get(_campo, "")
+                or _param_apos.get(_campo, "")
+                or lancamento.get(_campo, "")
+                or ""
+            ).strip()
+
         param_rows = []
         header_row = [Paragraph("<b>Parâmetro</b>", s_body_sm),
-                      Paragraph("<b>Valor</b>", s_body_sm),
+                      Paragraph("<b>Antes</b>", s_body_sm),
+                      Paragraph("<b>Após</b>", s_body_sm),
                       Paragraph("<b>Faixa ideal</b>", s_body_sm),
-                      Paragraph("<b>Status</b>", s_body_sm),
-                      Paragraph("<b>Obs</b>", s_body_sm)]
+                      Paragraph("<b>Status</b>", s_body_sm)]
         param_rows.append(header_row)
 
         faixas_txt = {"pH":"7,2–7,8","CRL mg/L":"0,5–3,0","CT mg/L":"0,5–5,0","Alc. mg/L":"80–120","Dureza mg/L":"150–300","CYA mg/L":"30–50"}
         row_colors = []
 
         for label, key, mn, mx, quinzenal in PARAMS:
-            val_raw = pisc.get(key, "")
-            v = valor_float(val_raw)
+            val_raw = str(pisc.get(key, "") or "").strip()
+            apos_raw = _valor_apos_pdf(key)
+            valor_status = apos_raw or val_raw
+            v = valor_float(valor_status)
             q_txt = " (15d)" if quinzenal else ""
             if v is None:
                 status_txt = "Não medido"
-                val_fmt = "—"
                 bg = colors.white
             elif v < mn or v > mx:
                 status_txt = "⚠ Fora da faixa"
-                val_fmt = str(val_raw).replace(".", ",")
                 bg = LARANJA_BG
             else:
                 status_txt = "✓ Conforme"
-                val_fmt = str(val_raw).replace(".", ",")
                 bg = VERDE_BG
             row_colors.append(bg)
             param_rows.append([
                 Paragraph(f"{label}{q_txt}", s_body_sm),
-                Paragraph(f"<b>{val_fmt}</b>", s_body),
+                Paragraph(f"<b>{(val_raw or '—').replace('.', ',')}</b>", s_body),
+                Paragraph(f"<b>{(apos_raw or '—').replace('.', ',')}</b>", s_body),
                 Paragraph(faixas_txt.get(label,"—"), s_body_sm),
                 Paragraph(status_txt, s_ok if "Conforme" in status_txt else (s_alerta if "Fora" in status_txt else s_body_sm)),
-                Paragraph("", s_body_sm),
             ])
 
-        # Cloraminas
-        clor_raw = pisc.get("cloraminas","")
+        # Cloraminas: parâmetro calculado no momento da medição inicial.
+        clor_raw = str(pisc.get("cloraminas","") or "").strip()
         v_cl = valor_float(clor_raw)
         if v_cl is not None:
             bg_cl = VERDE_BG if v_cl <= 0.2 else LARANJA_BG
@@ -7469,13 +7561,13 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             row_colors.append(bg_cl)
             param_rows.append([
                 Paragraph("Cloraminas", s_body_sm),
-                Paragraph(f"<b>{str(clor_raw).replace('.', ',')}</b>", s_body),
+                Paragraph(f"<b>{clor_raw.replace('.', ',')}</b>", s_body),
+                Paragraph("—", s_body),
                 Paragraph("≤ 0,2", s_body_sm),
                 Paragraph(st_cl, s_ok if "Conforme" in st_cl else s_alerta),
-                Paragraph("", s_body_sm),
             ])
 
-        t_param = Table(param_rows, colWidths=["22%","15%","20%","28%","15%"])
+        t_param = Table(param_rows, colWidths=["22%","16%","16%","20%","26%"])
         ts = [
             ("GRID", (0,0), (-1,-1), 0.3, BORDA),
             ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
@@ -7489,68 +7581,34 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         t_param.setStyle(TableStyle(ts))
         elems.append(t_param)
 
-        # Tabela comparativa: parâmetros antes x após o tratamento.
-        # Os campos "após" são capturados no modo operador e salvos no lançamento.
-        # Mantém a tabela principal original intacta e só aparece quando houver
-        # pelo menos um valor pós-tratamento preenchido.
-        def _valor_apos_pdf(_key: str) -> str:
-            _map_top = {
-                "ph": "ph_apos",
-                "cloro_livre": "cloro_livre_apos",
-                "cloro_total": "cloro_total_apos",
-                "alcalinidade": "alcalinidade_apos",
-                "dureza": "dureza_apos",
-                "cianurico": "cianurico_apos",
-            }
-            return str(
-                pisc.get(_map_top.get(_key, f"{_key}_apos"), "")
-                or lancamento.get(_map_top.get(_key, f"{_key}_apos"), "")
-                or ""
-            ).strip()
-
-        _tem_apos_pdf = any(_valor_apos_pdf(_k) for _, _k, _, _, _ in PARAMS)
-        if _tem_apos_pdf:
-            elems.append(Spacer(1, 6))
-            elems.append(Paragraph("Parâmetros antes x após o tratamento", s_sec))
-            comp_rows = [[
-                Paragraph("<b>Parâmetro</b>", s_body_sm),
-                Paragraph("<b>Antes</b>", s_body_sm),
-                Paragraph("<b>Após</b>", s_body_sm),
-                Paragraph("<b>Faixa ideal</b>", s_body_sm),
-            ]]
-            for label, key, mn, mx, quinzenal in PARAMS:
-                _antes = str(pisc.get(key, lancamento.get(key, "")) or "").strip()
-                _apos = _valor_apos_pdf(key)
-                if _antes or _apos:
-                    comp_rows.append([
-                        Paragraph(label, s_body_sm),
-                        Paragraph((_antes or "—").replace(".", ","), s_body),
-                        Paragraph((_apos or "—").replace(".", ","), s_body),
-                        Paragraph(faixas_txt.get(label, "—"), s_body_sm),
-                    ])
-            if len(comp_rows) > 1:
-                t_comp = Table(comp_rows, colWidths=["28%", "22%", "22%", "28%"])
-                t_comp.setStyle(TableStyle([
-                    ("GRID", (0,0), (-1,-1), 0.3, BORDA),
-                    ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
-                    ("TEXTCOLOR", (0,0), (-1,0), AZUL_MEDIO),
-                    ("PADDING", (0,0), (-1,-1), 5),
-                    ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafd")]),
-                ]))
-                elems.append(t_comp)
-
         elems.append(Spacer(1, 10))
 
     # ── ALERTAS ───────────────────────────────────────────────────────────────
     alertas_gerais = []
+    _map_apos_alerta = {
+        "ph": "ph_apos",
+        "cloro_livre": "cloro_livre_apos",
+        "alcalinidade": "alcalinidade_apos",
+        "dureza": "dureza_apos",
+        "cianurico": "cianurico_apos",
+    }
+    _parametros_apos_alerta = lancamento.get("parametros_apos", {})
+    if not isinstance(_parametros_apos_alerta, dict):
+        _parametros_apos_alerta = {}
     for pisc in piscinas_lista:
-        for val_r, mn, mx, rot in [
-            (pisc.get("ph",""), 7.2, 7.8, "pH"),
-            (pisc.get("cloro_livre",""), 0.5, 3.0, "CRL"),
-            (pisc.get("alcalinidade",""), 80, 120, "Alcalinidade"),
-            (pisc.get("dureza",""), 150, 300, "Dureza DC"),
-            (pisc.get("cianurico",""), 30, 50, "CYA"),
+        for key, mn, mx, rot in [
+            ("ph", 7.2, 7.8, "pH"),
+            ("cloro_livre", 0.5, 3.0, "CRL"),
+            ("alcalinidade", 80, 120, "Alcalinidade"),
+            ("dureza", 150, 300, "Dureza DC"),
+            ("cianurico", 30, 50, "CYA"),
         ]:
+            _campo_apos_alerta = _map_apos_alerta.get(key, f"{key}_apos")
+            val_r = (
+                pisc.get(_campo_apos_alerta, "")
+                or _parametros_apos_alerta.get(_campo_apos_alerta, "")
+                or pisc.get(key, "")
+            )
             v = valor_float(val_r)
             if v is not None and (v < mn or v > mx):
                 alertas_gerais.append(f"⚠ {pisc.get('nome','Piscina')} — {rot}: {str(val_r).replace('.', ',')} — fora da faixa ideal.")
@@ -7620,13 +7678,14 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     def _add_fotos_b64(b64_list, titulo):
         """Adiciona fotos ao PDF a partir de lista de base64 — 1 por linha, tamanho máximo."""
         if not b64_list:
-            return
+            return 0
         import io as _io
         from reportlab.platypus import Image as RLImage
         from PIL import Image as _PILR, ImageOps as _IOps
+        qtd_inserida = 0
         elems.append(Paragraph(titulo, s_body_sm))
         LARGURA_MAX = 15 * cm   # largura útil da página
-        ALTURA_MAX  = 18 * cm   # altura máxima por foto
+        ALTURA_MAX  = 15.5 * cm # altura máxima por foto, preservando espaço para legenda e assinatura
         for b64_str in b64_list[:6]:
             try:
                 fb = _b64.b64decode(b64_str)
@@ -7653,12 +7712,16 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
                 t_foto.setStyle(TableStyle([
                     ("ALIGN",   (0,0), (-1,-1), "CENTER"),
                     ("VALIGN",  (0,0), (-1,-1), "MIDDLE"),
-                    ("PADDING", (0,0), (-1,-1), 2),
+                    ("BOX",     (0,0), (-1,-1), 0.35, BORDA),
+                    ("BACKGROUND", (0,0), (-1,-1), colors.white),
+                    ("PADDING", (0,0), (-1,-1), 4),
                 ]))
                 elems.append(t_foto)
                 elems.append(Spacer(1, 8))
+                qtd_inserida += 1
             except Exception:
                 pass
+        return qtd_inserida
 
     fotos_resolvidas = _resolver_fotos_visita_para_relatorio(lancamento)
     fotos_antes_b64  = fotos_resolvidas.get("antes", [])
@@ -7666,14 +7729,34 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     fotos_cmaq_b64   = fotos_resolvidas.get("cmaq", [])
     fotos_extras_b64 = fotos_resolvidas.get("extras", [])
 
-    if fotos_antes_b64 or fotos_depois_b64 or fotos_cmaq_b64 or fotos_extras_b64:
-        elems.append(Paragraph("Registro fotográfico", s_sec))
-        elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+    tem_fotos_relatorio = bool(fotos_antes_b64 or fotos_depois_b64 or fotos_cmaq_b64 or fotos_extras_b64)
+    if tem_fotos_relatorio:
+        elems.append(PageBreak())
+    elems.append(Paragraph("Registro fotográfico", s_sec))
+    elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
+    if tem_fotos_relatorio:
         _add_fotos_b64(fotos_antes_b64,  "Antes do tratamento:")
-        _add_fotos_b64(fotos_depois_b64, "Depois do tratamento:")
+        _add_fotos_b64(fotos_depois_b64, "Após o tratamento:")
         _add_fotos_b64(fotos_cmaq_b64,   "Casa de máquinas:")
         _add_fotos_b64(fotos_extras_b64, "Outras fotos:")
-        elems.append(Spacer(1, 6))
+    else:
+        fotos_placeholder = Table([
+            [Paragraph("<b>Categoria</b>", s_body_sm), Paragraph("<b>Status</b>", s_body_sm)],
+            [Paragraph("Antes do tratamento", s_body_sm), Paragraph("Sem imagem anexada neste lançamento.", s_body_sm)],
+            [Paragraph("Após o tratamento", s_body_sm), Paragraph("Sem imagem anexada neste lançamento.", s_body_sm)],
+            [Paragraph("Casa de máquinas", s_body_sm), Paragraph("Sem imagem anexada neste lançamento.", s_body_sm)],
+            [Paragraph("Outras fotos", s_body_sm), Paragraph("Sem imagem anexada neste lançamento.", s_body_sm)],
+        ], colWidths=["35%", "65%"])
+        fotos_placeholder.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.3, BORDA),
+            ("BACKGROUND", (0,0), (-1,0), AZUL_CLARO),
+            ("TEXTCOLOR", (0,0), (-1,0), AZUL_MEDIO),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafd")]),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("PADDING", (0,0), (-1,-1), 5),
+        ]))
+        elems.append(fotos_placeholder)
+    elems.append(Spacer(1, 6))
 
     assinatura_resp_b64 = _normalizar_assinatura_b64(lancamento.get("assinatura_responsavel_b64", ""))
     if assinatura_resp_b64:
@@ -12671,12 +12754,25 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     _salvar_assinatura_local(assinatura_responsavel_b64, pasta_assinaturas / assinatura_responsavel_arquivo)
 
                 dados_ex = carregar_dados_condominio(pasta_op) or {}
+                _parametros_apos_lanc = {
+                    "ph_apos":           re.sub(r"[^0-9.,]", "", st.session_state.get("op_ph_apos", "")).replace(",", "."),
+                    "cloro_livre_apos":  re.sub(r"[^0-9.,]", "", st.session_state.get("op_crl_apos", "")).replace(",", "."),
+                    "cloro_total_apos":  re.sub(r"[^0-9.,]", "", st.session_state.get("op_ct_apos", "")).replace(",", "."),
+                    "alcalinidade_apos": re.sub(r"[^0-9.,]", "", st.session_state.get("op_alc_apos", "")).replace(",", "."),
+                    "dureza_apos":       re.sub(r"[^0-9.,]", "", st.session_state.get("op_dc_apos", "")).replace(",", "."),
+                    "cianurico_apos":    re.sub(r"[^0-9.,]", "", st.session_state.get("op_cya_apos", "")).replace(",", "."),
+                }
+                if st.session_state.get("op_apos_ativo") or any(_parametros_apos_lanc.values()):
+                    for _p_lanc in op_piscinas_dados:
+                        _p_lanc.update(_parametros_apos_lanc)
+
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
                     "cloraminas": str(op_cloraminas) if op_cloraminas is not None else "",
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
                     "piscinas": op_piscinas_dados,
+                    "parametros_apos": _parametros_apos_lanc,
                     "problemas": op_problemas.strip(),
                     "servicos_executados": [
                         s for s, k in [
@@ -12718,12 +12814,12 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "fotos_extras_b64": fotos_extras_b64,
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": _agora_brasilia(),
-                    "ph_apos":           re.sub(r"[^0-9.,]","",st.session_state.get("op_ph_apos","")).replace(",","."),
-                    "cloro_livre_apos":  re.sub(r"[^0-9.,]","",st.session_state.get("op_crl_apos","")).replace(",","."),
-                    "cloro_total_apos":  re.sub(r"[^0-9.,]","",st.session_state.get("op_ct_apos","")).replace(",","."),
-                    "alcalinidade_apos": re.sub(r"[^0-9.,]","",st.session_state.get("op_alc_apos","")).replace(",","."),
-                    "dureza_apos":       re.sub(r"[^0-9.,]","",st.session_state.get("op_dc_apos","")).replace(",","."),
-                    "cianurico_apos":    re.sub(r"[^0-9.,]","",st.session_state.get("op_cya_apos","")).replace(",","."),
+                    "ph_apos":           _parametros_apos_lanc.get("ph_apos", ""),
+                    "cloro_livre_apos":  _parametros_apos_lanc.get("cloro_livre_apos", ""),
+                    "cloro_total_apos":  _parametros_apos_lanc.get("cloro_total_apos", ""),
+                    "alcalinidade_apos": _parametros_apos_lanc.get("alcalinidade_apos", ""),
+                    "dureza_apos":       _parametros_apos_lanc.get("dureza_apos", ""),
+                    "cianurico_apos":    _parametros_apos_lanc.get("cianurico_apos", ""),
                 }
                 # Marca sync pendente para reenvio automático se Sheets falhar
                 lancamento["sheets_sync"] = "pendente"
