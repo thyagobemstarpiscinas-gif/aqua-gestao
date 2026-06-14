@@ -2177,6 +2177,14 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
             "dureza":      st.session_state.get(f"op_{abrev}_dc", ""),
             "cianurico":   st.session_state.get(f"op_{abrev}_cya", ""),
         }
+        _eh_rt_rasc = bool((st.session_state.get("op_dados_atual") or {}).get("is_rt", False))
+        if _eh_rt_rasc:
+            _pisc_rasc.update({
+                "turbidez":    st.session_state.get(f"op_{abrev}_turbidez", ""),
+                "orp":         st.session_state.get(f"op_{abrev}_orp", ""),
+                "tds":         st.session_state.get(f"op_{abrev}_tds", ""),
+                "temperatura": st.session_state.get(f"op_{abrev}_temperatura", ""),
+            })
         # Parâmetros pós-tratamento são globais no formulário do operador;
         # também ficam dentro da piscina para o PDF e reprocessamentos futuros.
         if dados.get("op_apos_ativo") or any(dados.get("parametros_apos", {}).values()):
@@ -2263,6 +2271,8 @@ def restaurar_rascunho_operador(rascunho: dict):
             ("ph", f"op_{abrev}_ph"), ("cloro_livre", f"op_{abrev}_crl"),
             ("cloro_total", f"op_{abrev}_ct"), ("alcalinidade", f"op_{abrev}_alc"),
             ("dureza", f"op_{abrev}_dc"), ("cianurico", f"op_{abrev}_cya"),
+            ("turbidez", f"op_{abrev}_turbidez"), ("orp", f"op_{abrev}_orp"),
+            ("tds", f"op_{abrev}_tds"), ("temperatura", f"op_{abrev}_temperatura"),
         ]:
             if p.get(campo):
                 st.session_state[key] = p[campo]
@@ -5202,8 +5212,12 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         alc = _pegar_alias(item, "alcalinidade", "alc", "AT")
         dc = _pegar_alias(item, "dureza", "dc", "dureza_calcica", "DC")
         cya = _pegar_alias(item, "cianurico", "cya", "acido_cianurico", "CYA")
+        turbidez = _pegar_alias(item, "turbidez", "ntu", "Turbidez")
+        orp = _pegar_alias(item, "orp", "ORP")
+        tds = _pegar_alias(item, "tds", "TDS")
+        temperatura = _pegar_alias(item, "temperatura", "temp", "Temperatura")
         operador = _pegar_alias(item, "operador", "responsavel", "Operador")
-        if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, operador]):
+        if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, turbidez, orp, tds, temperatura, operador]):
             linhas.append([
                 _rl_valor(normalizar_data_visita(data) if data else "", "—"),
                 _rl_f(ph),
@@ -5212,6 +5226,10 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
                 _rl_f(alc),
                 _rl_f(dc),
                 _rl_f(cya),
+                _rl_f(turbidez),
+                _rl_f(orp),
+                _rl_f(tds),
+                _rl_f(temperatura),
                 _rl_valor(operador, "—"),
             ])
     return linhas
@@ -5491,12 +5509,12 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         ], widths=[82*mm, 42*mm, 28*mm, 28*mm]))
 
         story.append(P("4. CONTROLE OPERACIONAL – MONITORAMENTO IN LOCO", "AqH1"))
-        story.append(P("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da ABNT NBR 10339.", "AqBody"))
+        story.append(P("Análises realizadas com Photometer Color Q e, nas visitas semanais de RT, turbidímetro, medidor de ORP, TDS e temperatura. Todos os resultados são confrontados com os limites operacionais aplicáveis.", "AqBody"))
         story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         if linhas_a:
-            story.append(table([["Data", "pH", "CRL (ppm)", "Cl. Total (ppm)", "Alcalinidade (ppm)", "Dureza Cálcica (ppm)", "Ác. Cianúrico (ppm)", "Operador"]] + linhas_a,
-                widths=[22*mm, 16*mm, 19*mm, 22*mm, 27*mm, 27*mm, 28*mm, 19*mm]))
+            story.append(table([["Data", "pH", "CRL", "CT", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"]] + linhas_a,
+                widths=[18*mm, 12*mm, 13*mm, 13*mm, 15*mm, 15*mm, 14*mm, 15*mm, 14*mm, 14*mm, 15*mm, 22*mm]))
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
@@ -5905,7 +5923,7 @@ def garantir_campos_analises(qtd: int):
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
-        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "operador"]:
+        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador"]:
             chave = f"rel_analise_{sufixo}_{i}"
             if chave not in st.session_state:
                 st.session_state[chave] = ""
@@ -5929,6 +5947,10 @@ def coletar_analises_relatorio() -> list[dict]:
             "alcalinidade": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
             "dureza": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
             "cianurico": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
+            "turbidez": (st.session_state.get(f"rel_analise_turbidez_{i}") or "").strip(),
+            "orp": (st.session_state.get(f"rel_analise_orp_{i}") or "").strip(),
+            "tds": (st.session_state.get(f"rel_analise_tds_{i}") or "").strip(),
+            "temperatura": (st.session_state.get(f"rel_analise_temperatura_{i}") or "").strip(),
             "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
         })
     return itens
@@ -8250,7 +8272,7 @@ def gerar_relatorio_visita_docx(
             _r_sub.font.size = Pt(10)
             _r_sub.font.color.rgb = _RGB(0x0d, 0x3d, 0x75)
 
-            cabecalho = ["Data", "pH", "CRL mg/L", "CT mg/L", "Clor. mg/L", "Alc. mg/L", "Dureza mg/L", "CYA mg/L", "Operador"]
+            cabecalho = ["Data", "pH", "CRL", "CT", "Clor.", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"]
             t = doc.add_table(rows=1 + len(dados_linhas), cols=len(cabecalho))
             t.style = "Table Grid"
 
@@ -8313,6 +8335,10 @@ def gerar_relatorio_visita_docx(
                                 p.get("alcalinidade",""),
                                 p.get("dureza",""),
                                 p.get("cianurico",""),
+                                p.get("turbidez",""),
+                                p.get("orp",""),
+                                p.get("tds",""),
+                                p.get("temperatura",""),
                                 lc.get("operador",""),
                             ])
                 elif _pisc_nome == "Piscina":
@@ -8328,6 +8354,10 @@ def gerar_relatorio_visita_docx(
                         lc.get("alcalinidade",""),
                         lc.get("dureza",""),
                         lc.get("cianurico",""),
+                        lc.get("turbidez",""),
+                        lc.get("orp",""),
+                        lc.get("tds",""),
+                        lc.get("temperatura",""),
                         lc.get("operador",""),
                     ])
             if _linhas_pisc:
@@ -12091,7 +12121,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # Limpa campos SE houver limpeza pendente
         if st.session_state.pop("op_limpar_campos", False):
             for pisc in ["adulto","infantil","family","outra"]:
-                for k in ["ph","crl","ct","alc","dc","cya"]:
+                for k in ["ph","crl","ct","alc","dc","cya","turbidez","orp","tds","temperatura"]:
                     st.session_state[f"op_{pisc}_{k}"] = ""
             for i in range(5):
                 for s in ["prod","qtd","un","fin"]:
@@ -12157,6 +12187,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 p_ct  = _num_op(f"op_{pisc_slug}_ct",  "Cloro Total CT mg/L", "ex: 1.8")
                 p_cya = _num_op(f"op_{pisc_slug}_cya", "CYA mg/L",            "ex: 40",  quinzenal=True)
 
+            # Parâmetros complementares exclusivos do Responsável Técnico.
+            # Não entram no motor de dosagem; servem para monitoramento semanal do RT.
+            p_turbidez = p_orp = p_tds = p_temperatura = ""
+            if _op_is_rt:
+                st.markdown("**🔬 Parâmetros complementares RT — medição semanal**")
+                rt1, rt2 = st.columns(2)
+                with rt1:
+                    p_turbidez = _num_op(f"op_{pisc_slug}_turbidez", "Turbidez NTU", "ex: 0,8")
+                    p_tds = _num_op(f"op_{pisc_slug}_tds", "TDS ppm", "ex: 450")
+                with rt2:
+                    p_orp = _num_op(f"op_{pisc_slug}_orp", "ORP mV", "ex: 720")
+                    p_temperatura = _num_op(f"op_{pisc_slug}_temperatura", "Temperatura °C", "ex: 28")
+
             # Alertas em tempo real
             for val, mn, mx, rot in [
                 (p_ph, 7.2, 7.8, "pH"), (p_crl, 0.5, 3.0, "CRL"),
@@ -12173,12 +12216,20 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 p_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
                 st.markdown(f"{'⚠️' if p_cloraminas > 0.2 else '✅'} **Cloraminas: {p_cloraminas} mg/L**")
 
-            op_piscinas_dados.append({
+            _dados_piscina_op = {
                 "nome": pisc_nome,
                 "ph": p_ph, "cloro_livre": p_crl, "cloro_total": p_ct,
                 "cloraminas": str(p_cloraminas) if p_cloraminas is not None else "",
                 "alcalinidade": p_alc, "dureza": p_dc, "cianurico": p_cya,
-            })
+            }
+            if _op_is_rt:
+                _dados_piscina_op.update({
+                    "turbidez": p_turbidez,
+                    "orp": p_orp,
+                    "tds": p_tds,
+                    "temperatura": p_temperatura,
+                })
+            op_piscinas_dados.append(_dados_piscina_op)
 
             # ── Sugestões de dosagem em tempo real ───────────────────────────
             _v_ph  = valor_float(p_ph)
@@ -12768,9 +12819,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
+                    "visita_rt_semanal": bool(_op_is_rt),
+                    "tipo_visita": "RT semanal" if _op_is_rt else "Operador",
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
                     "cloraminas": str(op_cloraminas) if op_cloraminas is not None else "",
                     "alcalinidade": op_alc, "dureza": op_dc, "cianurico": op_cya,
+                    "turbidez": op_piscinas_dados[0].get("turbidez", "") if (_op_is_rt and op_piscinas_dados) else "",
+                    "orp": op_piscinas_dados[0].get("orp", "") if (_op_is_rt and op_piscinas_dados) else "",
+                    "tds": op_piscinas_dados[0].get("tds", "") if (_op_is_rt and op_piscinas_dados) else "",
+                    "temperatura": op_piscinas_dados[0].get("temperatura", "") if (_op_is_rt and op_piscinas_dados) else "",
                     "piscinas": op_piscinas_dados,
                     "parametros_apos": _parametros_apos_lanc,
                     "problemas": op_problemas.strip(),
@@ -19057,6 +19114,10 @@ def _importar_lancamentos(lancamentos):
         st.session_state[f"rel_analise_alc_{i}"]       = _fmt_antes_apos(lc_dados.get("alcalinidade", lc.get("alcalinidade","")), lc_dados.get("alcalinidade_apos", lc.get("alcalinidade_apos", "")))
         st.session_state[f"rel_analise_dc_{i}"]        = _fmt_antes_apos(lc_dados.get("dureza", lc.get("dureza","")), lc_dados.get("dureza_apos", lc.get("dureza_apos", "")))
         st.session_state[f"rel_analise_cya_{i}"]       = _fmt_antes_apos(lc_dados.get("cianurico", lc.get("cianurico","")), lc_dados.get("cianurico_apos", lc.get("cianurico_apos", "")))
+        st.session_state[f"rel_analise_turbidez_{i}"]  = str(lc_dados.get("turbidez", lc.get("turbidez", "")) or "").replace(".", ",")
+        st.session_state[f"rel_analise_orp_{i}"]       = str(lc_dados.get("orp", lc.get("orp", "")) or "").replace(".", ",")
+        st.session_state[f"rel_analise_tds_{i}"]       = str(lc_dados.get("tds", lc.get("tds", "")) or "").replace(".", ",")
+        st.session_state[f"rel_analise_temperatura_{i}"] = str(lc_dados.get("temperatura", lc.get("temperatura", "")) or "").replace(".", ",")
         st.session_state[f"rel_analise_operador_{i}"]  = lc.get("operador", "")
     # Preenche campo operador responsavel com o mais frequente dos lancamentos
     _ops_import = [lc.get("operador","").strip() for lc in lancamentos if lc.get("operador","").strip()]
@@ -19148,9 +19209,15 @@ if lancamentos_disponiveis:
                 piscinas = lc.get("piscinas",[])
                 if piscinas:
                     for p in piscinas:
-                        st.caption(f"📅 {lc.get('data','?')} | {p.get('nome','Piscina')} | pH:{p.get('ph','–')} CRL:{p.get('cloro_livre','–')}")
+                        _extras_rt = ""
+                        if any(str(p.get(k, "")).strip() for k in ["turbidez", "orp", "tds", "temperatura"]):
+                            _extras_rt = f" | Turb:{p.get('turbidez','–')} ORP:{p.get('orp','–')} TDS:{p.get('tds','–')} Temp:{p.get('temperatura','–')}"
+                        st.caption(f"📅 {lc.get('data','?')} | {p.get('nome','Piscina')} | pH:{p.get('ph','–')} CRL:{p.get('cloro_livre','–')}{_extras_rt}")
                 else:
-                    st.caption(f"📅 {lc.get('data','?')} | Op:{lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}")
+                    _extras_rt = ""
+                    if any(str(lc.get(k, "")).strip() for k in ["turbidez", "orp", "tds", "temperatura"]):
+                        _extras_rt = f" | Turb:{lc.get('turbidez','–')} ORP:{lc.get('orp','–')} TDS:{lc.get('tds','–')} Temp:{lc.get('temperatura','–')}"
+                    st.caption(f"📅 {lc.get('data','?')} | Op:{lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{_extras_rt}")
                 if lc.get("problemas","").strip():
                     st.caption(f"   ⚠️ {lc['problemas']}")
                 if lc.get("observacao","").strip():
@@ -19320,23 +19387,27 @@ with ctrl_a2:
 with ctrl_a3:
     st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
 # Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
-cab_cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
+cab_cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
 for _col, _label in zip(
     cab_cols,
-    ["Data", "pH", "Cloro livre", "Cloro total", "Alcalinidade", "Dureza", "Ácido cianúrico", "Operador"],
+    ["Data", "pH", "CRL", "CT", "Alcalin.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"],
 ):
     _col.caption(f"**{_label}**")
 
 for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
-    cols = st.columns([1.05,0.7,0.8,0.95,1.15,0.95,1.25,1.1])
+    cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
     cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
-    cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="Cloro livre")
-    cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="Cloro total")
-    cols[4].text_input(f"Alcalinidade {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alcalinidade")
+    cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
+    cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
+    cols[4].text_input(f"Alcalinidade {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alc.")
     cols[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="Dureza")
-    cols[6].text_input(f"Ácido cianúrico {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="Ácido cianúrico")
-    cols[7].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
+    cols[6].text_input(f"Ácido cianúrico {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="CYA")
+    cols[7].text_input(f"Turbidez {i+1}", key=f"rel_analise_turbidez_{i}", label_visibility="collapsed", placeholder="NTU")
+    cols[8].text_input(f"ORP {i+1}", key=f"rel_analise_orp_{i}", label_visibility="collapsed", placeholder="mV")
+    cols[9].text_input(f"TDS {i+1}", key=f"rel_analise_tds_{i}", label_visibility="collapsed", placeholder="ppm")
+    cols[10].text_input(f"Temperatura {i+1}", key=f"rel_analise_temperatura_{i}", label_visibility="collapsed", placeholder="°C")
+    cols[11].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
 
 # _AUTOSAVE_RELATORIO_RT_APOS_LINHAS_V1_
 try:
