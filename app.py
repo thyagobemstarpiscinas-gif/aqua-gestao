@@ -27,6 +27,13 @@ from utils.formatacao import (
     validar_email,
 )
 from utils.validacao import validar_cpf, validar_cnpj, validar_data_br
+from utils.datas import (
+    hoje_br,
+    formatar_data_hora_arquivo,
+    parse_data_br,
+    formatar_data_br,
+    adicionar_um_ano,
+)
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -2588,15 +2595,6 @@ def deduplicar_fotos(lista):
     return resultado
 
 
-def hoje_br() -> str:
-    return date.today().strftime("%d/%m/%Y")
-
-
-def formatar_data_hora_arquivo(ts: float) -> str:
-    dt = datetime.fromtimestamp(ts)
-    return dt.strftime("%d/%m/%Y %H:%M")
-
-
 def classificar_arquivo(nome_arquivo: str) -> tuple[str, str]:
     nome_lower = nome_arquivo.lower()
 
@@ -2621,24 +2619,6 @@ def classificar_arquivo(nome_arquivo: str) -> tuple[str, str]:
 
 def chave_segura(texto: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]+", "_", texto)
-
-
-def parse_data_br(texto: str):
-    try:
-        return datetime.strptime((texto or "").strip(), "%d/%m/%Y").date()
-    except Exception:
-        return None
-
-
-def formatar_data_br(dt: date) -> str:
-    return dt.strftime("%d/%m/%Y")
-
-
-def adicionar_um_ano(dt: date) -> date:
-    try:
-        return dt.replace(year=dt.year + 1)
-    except ValueError:
-        return dt.replace(month=2, day=28, year=dt.year + 1)
 
 
 def calcular_renovacao_anual(data_fim_texto: str):
