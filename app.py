@@ -25,6 +25,10 @@ from utils.formatacao import (
     formatar_cnpj,
     formatar_telefone,
     validar_email,
+    formatar_data_digitada,
+    moeda_br_sem_prefixo,
+    moeda_br,
+    valor_para_template,
 )
 from utils.validacao import validar_cpf, validar_cnpj, validar_data_br
 from utils.datas import (
@@ -2699,49 +2703,6 @@ def diagnostico_sistema() -> dict:
 # =========================================
 # MÁSCARAS / FORMATAÇÃO
 # =========================================
-
-def formatar_data_digitada(texto: str) -> str:
-    dig = apenas_digitos(texto)[:8]
-    if len(dig) <= 2:
-        return dig
-    if len(dig) <= 4:
-        return f"{dig[:2]}/{dig[2:]}"
-    return f"{dig[:2]}/{dig[2:4]}/{dig[4:]}"
-
-
-def moeda_br_sem_prefixo(texto: str) -> str:
-    if not texto:
-        return ""
-
-    dig = apenas_digitos(str(texto))
-    if not dig:
-        return ""
-
-    if len(dig) == 1:
-        valor = float(f"0.0{dig}")
-    elif len(dig) == 2:
-        valor = float(f"0.{dig}")
-    else:
-        valor = float(f"{dig[:-2]}.{dig[-2:]}")
-
-    inteiro = int(valor)
-    centavos = int(round((valor - inteiro) * 100))
-    inteiro_fmt = f"{inteiro:,}".replace(",", ".")
-    return f"{inteiro_fmt},{centavos:02d}"
-
-
-def moeda_br(texto: str) -> str:
-    fmt = moeda_br_sem_prefixo(texto)
-    return f"R$ {fmt}" if fmt else ""
-
-
-def valor_para_template(texto: str) -> str:
-    texto = (texto or "").strip()
-    if texto.startswith("R$"):
-        return texto
-    fmt = moeda_br_sem_prefixo(texto)
-    return f"R$ {fmt}" if fmt else ""
-
 
 def on_change_nome_condominio():
     """Salva automaticamente o JSON quando o usuário sai do campo nome_condominio."""
