@@ -4,11 +4,15 @@ from utils.formatacao import (
     apenas_digitos,
     formatar_cnpj,
     formatar_cpf,
+    formatar_data_digitada,
     formatar_telefone,
     humanizar_nome_pasta,
     limpar_nome_arquivo,
+    moeda_br,
+    moeda_br_sem_prefixo,
     slugify_nome,
     validar_email,
+    valor_para_template,
 )
 
 
@@ -55,6 +59,26 @@ class FormatacaoTests(unittest.TestCase):
         self.assertEqual(formatar_telefone("11987654321"), "(11) 98765-4321")
         self.assertEqual(formatar_telefone("5511987654321"), "(11) 98765-4321")
         self.assertEqual(formatar_telefone("123"), "(12) 3")
+
+    def test_formatar_data_digitada_parcial_e_completa(self):
+        self.assertEqual(formatar_data_digitada("12"), "12")
+        self.assertEqual(formatar_data_digitada("1203"), "12/03")
+        self.assertEqual(formatar_data_digitada("12032024"), "12/03/2024")
+
+    def test_moeda_br_sem_prefixo_valor_inteiro_e_com_virgula_e_ponto(self):
+        self.assertEqual(moeda_br_sem_prefixo("1000"), "10,00")
+        self.assertEqual(moeda_br_sem_prefixo("1234,56"), "1.234,56")
+        self.assertEqual(moeda_br_sem_prefixo("1234.56"), "1.234,56")
+
+    def test_moeda_br_valor_ja_formatado_vazio_e_caracteres_invalidos(self):
+        self.assertEqual(moeda_br("R$ 1.234,56"), "R$ 1.234,56")
+        self.assertEqual(moeda_br(""), "")
+        self.assertEqual(moeda_br("abc"), "")
+
+    def test_valor_para_template(self):
+        self.assertEqual(valor_para_template("1000"), "R$ 10,00")
+        self.assertEqual(valor_para_template("R$ 1.234,56"), "R$ 1.234,56")
+        self.assertEqual(valor_para_template(""), "")
 
     def test_validar_email(self):
         self.assertTrue(validar_email("usuario@email.com"))
