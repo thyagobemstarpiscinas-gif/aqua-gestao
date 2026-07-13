@@ -96,6 +96,39 @@ def filtrar_lancamentos_rt_tercas(lancamentos: list[dict]) -> list[dict]:
     return resultado
 
 
+def _eh_verdadeiro_equivalente(valor) -> bool:
+    if isinstance(valor, bool):
+        return valor is True
+    if valor is None:
+        return False
+    texto = str(valor).strip().casefold()
+    return texto in {"true", "1", "sim"}
+
+
+def filtrar_lancamentos_visitas_rt(lancamentos: list[dict]) -> list[dict]:
+    """Filtra apenas lançamentos de RT para alimentar tabela de parâmetros do relatório mensal."""
+    if not lancamentos:
+        return []
+
+    resultado: list[dict] = []
+    for item in lancamentos:
+        if not isinstance(item, dict):
+            continue
+
+        visita_rt_semanal = item.get("visita_rt_semanal")
+        tipo_visita = item.get("tipo_visita")
+
+        if _eh_verdadeiro_equivalente(visita_rt_semanal):
+            resultado.append(item)
+            continue
+
+        if isinstance(tipo_visita, str) and tipo_visita.strip().casefold() == "rt semanal":
+            resultado.append(item)
+            continue
+
+    return resultado
+
+
 def gerar_datas_tercas_mes(mes: str, ano: str) -> list[str]:
     """Gera todas as terças-feiras do mês/ano fornecidos no formato dd/mm/aaaa.
 

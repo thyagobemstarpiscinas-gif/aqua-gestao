@@ -6,6 +6,7 @@ from utils.datas_visitas import (
     normalizar_data_visita,
     lancamento_pertence_mes_ano,
     filtrar_lancamentos_rt_tercas,
+    filtrar_lancamentos_visitas_rt,
     gerar_datas_tercas_mes,
 )
 
@@ -115,6 +116,61 @@ class DatasVisitasTests(unittest.TestCase):
 
         # Dicionários originais não foram modificados
         self.assertEqual(original_list, originals_copy)
+
+    def test_filtrar_lancamentos_visitas_rt_condicoes_de_rt(self):
+        a = {"data": "07/07/2026", "visita_rt_semanal": False, "tipo_visita": "Operador"}
+        b = {"data": "14/07/2026", "visita_rt_semanal": True, "tipo_visita": "RT semanal"}
+        c = {"data": "15/07/2026", "visita_rt_semanal": "true", "tipo_visita": "Operador"}
+        d = {"data": "16/07/2026", "visita_rt_semanal": "1", "tipo_visita": "operador"}
+        e = {"data": "17/07/2026", "visita_rt_semanal": "sim", "tipo_visita": "Operador"}
+        f = {"data": "18/07/2026", "visita_rt_semanal": "TRUE", "tipo_visita": "Operador"}
+        g = {"data": "19/07/2026", "visita_rt_semanal": False, "tipo_visita": "  Rt SeMaNaL  "}
+        h = {"data": "20/07/2026", "visita_rt_semanal": False, "tipo_visita": "Operador"}
+        i = {"data": "21/07/2026", "visita_rt_semanal": "no", "tipo_visita": "Operador"}
+        j = {"data": "22/07/2026", "visita_rt_semanal": None, "tipo_visita": "RT"}
+        k = {"data": "23/07/2026", "tipo_visita": "RT semanal"}
+        l = {"data": "24/07/2026", "visita_rt_semanal": "0", "tipo_visita": "Operador"}
+        m = {"data": "25/07/2026", "visita_rt_semanal": "false", "tipo_visita": "Operador"}
+        n = {"data": "26/07/2026", "visita_rt_semanal": "não", "tipo_visita": "Operador"}
+        o = "nao_e_dicionario"
+
+        original_list = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o]
+        import copy
+        originals_copy = copy.deepcopy(original_list)
+
+        filtrados = filtrar_lancamentos_visitas_rt(original_list)
+
+        self.assertEqual(filtrados, [b, c, d, e, f, g, k])
+        self.assertEqual(original_list, originals_copy)
+        self.assertTrue(all(isinstance(item, dict) for item in filtrados))
+        self.assertEqual(filtrados[0], b)
+        self.assertEqual(filtrados[-1], k)
+
+    def test_filtrar_lancamentos_visitas_rt_rejeita_valores_falsos(self):
+        casos = [False, "false", "0", "não", ""]
+        lista = [{"data": "07/07/2026", "visita_rt_semanal": valor, "tipo_visita": "Operador"} for valor in casos]
+        self.assertEqual(filtrar_lancamentos_visitas_rt(lista), [])
+
+    def test_filtrar_lancamentos_visitas_rt_none_e_lista_vazia(self):
+        self.assertEqual(filtrar_lancamentos_visitas_rt(None), [])
+        self.assertEqual(filtrar_lancamentos_visitas_rt([]), [])
+
+    def test_filtrar_lancamentos_visitas_rt_preserva_ordem_e_objetos(self):
+        a = {"data": "07/07/2026", "visita_rt_semanal": True}
+        b = {"data": "08/07/2026", "tipo_visita": "rt semanal"}
+        c = {"data": "09/07/2026", "visita_rt_semanal": False, "tipo_visita": "Operador"}
+        original_list = [a, b, c]
+        import copy
+        originals_copy = copy.deepcopy(original_list)
+        filtrados = filtrar_lancamentos_visitas_rt(original_list)
+        self.assertEqual(filtrados, [a, b])
+        self.assertEqual(original_list, originals_copy)
+        self.assertIs(filtrados[0], a)
+        self.assertIs(filtrados[1], b)
+
+    def test_filtrar_lancamentos_visitas_rt_nao_considera_operador_thyago_sem_rt(self):
+        item = {"data": "07/07/2026", "visita_rt_semanal": False, "tipo_visita": "Operador", "operador": "Thyago"}
+        self.assertEqual(filtrar_lancamentos_visitas_rt([item]), [])
 
     def test_filtrar_lancamentos_rt_tercas_none_e_lista_vazia(self):
         self.assertEqual(filtrar_lancamentos_rt_tercas(None), [])
