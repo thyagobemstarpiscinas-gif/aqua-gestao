@@ -45,7 +45,7 @@ from utils.vencimentos import (
 )
 from utils.arquivos import classificar_arquivo, chave_segura
 from utils.normalizacao import normalizar_texto_busca, nomes_condominio_equivalentes
-from utils.datas_visitas import normalizar_data_visita, lancamento_pertence_mes_ano
+from utils.datas_visitas import normalizar_data_visita, lancamento_pertence_mes_ano, filtrar_lancamentos_rt_tercas
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -18771,11 +18771,32 @@ for lc in lancamentos_local + lancamentos_sheets:
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
 
+# Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
+lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
+
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
     _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
     _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
     garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    # Limpa campos antigos de análises para evitar que visitas de outros dias permaneçam
+    # Apenas zera os campos específicos; não chama clear() no session_state
+    for idx in range(ANALISES_MAX_SUGERIDO):
+        for pref in (
+            "rel_analise_data_",
+            "rel_analise_ph_",
+            "rel_analise_cl_",
+            "rel_analise_ct_",
+            "rel_analise_alc_",
+            "rel_analise_dc_",
+            "rel_analise_cya_",
+            "rel_analise_turbidez_",
+            "rel_analise_orp_",
+            "rel_analise_tds_",
+            "rel_analise_temperatura_",
+            "rel_analise_operador_",
+        ):
+            st.session_state[pref + str(idx)] = ""
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -18832,7 +18853,7 @@ if lancamentos_disponiveis:
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
-            "parametros_antes_apos_v2",
+            "parametros_rt_tercas_v1",
             str(nome_rel_atual),
             str(mes_ref),
             str(ano_ref),
@@ -18866,7 +18887,8 @@ if lancamentos_disponiveis:
     <div style="border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;
     background:rgba(20,120,60,0.07);margin-bottom:12px;">
     <strong>📱 {_total} lançamento(s) de campo disponível(is) — {_fonte}</strong><br>
-    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span>
+    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span><br>
+    <span style="font-size:0.8rem;color:#2f5f2f;">Observação: a tabela de parâmetros importa somente visita(s) de RT realizada(s) na terça-feira; as demais visitas continuam registradas no controle operacional.</span>
     </div>
     """, unsafe_allow_html=True)
 
