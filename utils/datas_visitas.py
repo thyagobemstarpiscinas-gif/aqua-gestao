@@ -49,3 +49,47 @@ def lancamento_pertence_mes_ano(data_lancamento: str, mes: str, ano: str) -> boo
     except Exception:
         return False
     return dt.month == mes_int and dt.year == ano_int
+
+
+def filtrar_lancamentos_rt_tercas(lancamentos: list[dict]) -> list[dict]:
+    """Filtra lançamentos mantendo apenas aqueles com data válida em terça-feira.
+
+    Regras:
+    - aceita lista de lançamentos; retorna [] para None ou lista vazia
+    - lê a data nas chaves, na prioridade: 'data', 'data_visita', 'Data'
+    - normaliza a data usando `normalizar_data_visita`
+    - mantém somente datas válidas cujo weekday() seja 1 (terça)
+    - preserva a ordem original
+    - ignora itens que não sejam dicionários
+    - ignora datas vazias ou inválidas
+    - não modifica os dicionários recebidos
+    """
+    if not lancamentos:
+        return []
+
+    resultado: list[dict] = []
+    for item in lancamentos:
+        if not isinstance(item, dict):
+            continue
+
+        # Prioridade de chaves
+        if "data" in item:
+            valor = item.get("data")
+        elif "data_visita" in item:
+            valor = item.get("data_visita")
+        else:
+            valor = item.get("Data") if "Data" in item else None
+
+        data_norm = normalizar_data_visita(valor)
+        if not data_norm:
+            continue
+
+        try:
+            dt = datetime.strptime(data_norm, "%d/%m/%Y")
+        except Exception:
+            continue
+
+        if dt.weekday() == 1:
+            resultado.append(item)
+
+    return resultado
