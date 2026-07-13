@@ -1,5 +1,6 @@
 import re
-from datetime import datetime
+import calendar
+from datetime import datetime, date
 
 
 def normalizar_data_visita(valor) -> str:
@@ -92,4 +93,36 @@ def filtrar_lancamentos_rt_tercas(lancamentos: list[dict]) -> list[dict]:
         if dt.weekday() == 1:
             resultado.append(item)
 
+    return resultado
+
+
+def gerar_datas_tercas_mes(mes: str, ano: str) -> list[str]:
+    """Gera todas as terças-feiras do mês/ano fornecidos no formato dd/mm/aaaa.
+
+    - `mes`: string numérica de 1 a 12 (aceita '7' ou '07')
+    - `ano`: string com 4 dígitos
+    Retorna lista ordenada cronologicamente. Para entradas inválidas retorna [].
+    """
+    try:
+        if mes is None or ano is None:
+            return []
+        mes_int = int(str(mes).zfill(2))
+        ano_str = str(ano)
+        if len(ano_str) != 4 or not ano_str.isdigit():
+            return []
+        ano_int = int(ano_str)
+        if mes_int < 1 or mes_int > 12:
+            return []
+    except Exception:
+        return []
+
+    _, dias_no_mes = calendar.monthrange(ano_int, mes_int)
+    resultado: list[str] = []
+    for d in range(1, dias_no_mes + 1):
+        try:
+            dt = date(ano_int, mes_int, d)
+        except Exception:
+            continue
+        if dt.weekday() == 1:  # terça-feira
+            resultado.append(dt.strftime("%d/%m/%Y"))
     return resultado

@@ -1,9 +1,12 @@
 import unittest
 
+from datetime import datetime
+
 from utils.datas_visitas import (
     normalizar_data_visita,
     lancamento_pertence_mes_ano,
     filtrar_lancamentos_rt_tercas,
+    gerar_datas_tercas_mes,
 )
 
 
@@ -116,6 +119,50 @@ class DatasVisitasTests(unittest.TestCase):
     def test_filtrar_lancamentos_rt_tercas_none_e_lista_vazia(self):
         self.assertEqual(filtrar_lancamentos_rt_tercas(None), [])
         self.assertEqual(filtrar_lancamentos_rt_tercas([]), [])
+
+    def test_gerar_datas_tercas_mes_julho_2026(self):
+        esperadas = ["07/07/2026", "14/07/2026", "21/07/2026", "28/07/2026"]
+        self.assertEqual(gerar_datas_tercas_mes("7", "2026"), esperadas)
+        self.assertEqual(gerar_datas_tercas_mes("07", "2026"), esperadas)
+
+    def test_gerar_datas_tercas_mes_setembro_2026(self):
+        esperadas = [
+            "01/09/2026",
+            "08/09/2026",
+            "15/09/2026",
+            "22/09/2026",
+            "29/09/2026",
+        ]
+        self.assertEqual(gerar_datas_tercas_mes("9", "2026"), esperadas)
+
+    def test_gerar_datas_tercas_fevereiro_bissexto_e_comum(self):
+        # Fevereiro 2021 (comum)
+        feb2021 = gerar_datas_tercas_mes("2", "2021")
+        # Deve conter 4 terças
+        self.assertTrue(all(d.endswith("/2021") for d in feb2021))
+        self.assertEqual(len(feb2021), 4)
+
+        # Fevereiro 2024 (bissexto)
+        feb2024 = gerar_datas_tercas_mes("02", "2024")
+        self.assertTrue(all(d.endswith("/2024") for d in feb2024))
+        self.assertEqual(len(feb2024), 4)
+
+    def test_gerar_datas_tercas_meses_invalidos_e_edge_cases(self):
+        self.assertEqual(gerar_datas_tercas_mes("0", "2026"), [])
+        self.assertEqual(gerar_datas_tercas_mes("13", "2026"), [])
+        self.assertEqual(gerar_datas_tercas_mes("", "2026"), [])
+        self.assertEqual(gerar_datas_tercas_mes(None, "2026"), [])
+        self.assertEqual(gerar_datas_tercas_mes("7", ""), [])
+        self.assertEqual(gerar_datas_tercas_mes("7", None), [])
+        self.assertEqual(gerar_datas_tercas_mes("7", "26"), [])
+
+    def test_gerar_datas_tercas_ordem_e_formato(self):
+        res = gerar_datas_tercas_mes("9", "2026")
+        # Ordem cronológica
+        self.assertEqual(res, sorted(res, key=lambda s: datetime.strptime(s, "%d/%m/%Y")))
+        # Formato dd/mm/aaaa
+        for s in res:
+            self.assertRegex(s, r"^\d{2}/\d{2}/\d{4}$")
 
 
 if __name__ == "__main__":
