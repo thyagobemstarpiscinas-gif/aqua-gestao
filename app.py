@@ -11420,6 +11420,72 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     if _op_is_rt:
         st.info("🔬 **Modo RT ativo** — Thyago Fernando da Silveira | CRQ-MG 2ª Região 024025748")
 
+    # ---- Área exclusiva Relatórios RT (visível apenas para PIN RT) ----
+    if _op_is_rt:
+        st.markdown("---")
+        st.markdown("## Relatórios Técnicos — Responsável Técnico")
+
+        # Condóminos liberados pelo PIN do RT
+        _conds_rt = _op_conds_permitidos or []
+        _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, index=0 if _conds_rt else 0)
+
+        # Mês / Ano de referência (usa chaves já existentes no relatório mensal)
+        _mes_opts = [str(i).zfill(2) for i in range(1, 13)]
+        _ano_atual = datetime.now().year
+        _ano_opts = [str(y) for y in range(_ano_atual - 2, _ano_atual + 2)]
+        colm1, colm2, colm3 = st.columns([1, 1, 1])
+        with colm1:
+            _sel_mes = st.selectbox("Mês", options=_mes_opts, index=_mes_opts.index(st.session_state.get("rel_mes_referencia", datetime.now().strftime("%m"))))
+        with colm2:
+            _sel_ano = st.selectbox("Ano", options=_ano_opts, index=_ano_opts.index(str(st.session_state.get("rel_ano_referencia", str(_ano_atual)))))
+        with colm3:
+            _data_emissao = st.date_input("Data de emissão", value=date.today())
+
+        # Botões de ação: pré-visualizar registros técnicos e gerar PDF
+        preview_col, gerar_col = st.columns([1, 1])
+        registros_preview = st.empty()
+
+        def _buscar_registros_rt(cond_nome, mes, ano):
+            # Obtém lançamentos do Sheets e filtra por mês/ano e por origem RT
+            try:
+                todos_sheets = sheets_listar_lancamentos(cond_nome) or []
+            except Exception:
+                todos_sheets = []
+            # Também busca lançamentos locais armazenados no cadastro (se houver)
+            registros = list(todos_sheets)
+            # Filtra mês/ano
+            registros = [r for r in registros if lancamento_pertence_mes_ano(r.get("data", ""), mes, ano)]
+            # Mantém somente visitas identificadas como RT
+            registros = filtrar_lancamentos_visitas_rt(registros)
+            return registros
+
+        if preview_col.button("🔎 Pré-visualizar registros técnicos"):
+            regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
+            if not regs:
+                registros_preview.info("Nenhum registro técnico (RT) encontrado para o período selecionado.")
+            else:
+                registros_preview.write(f"{len(regs)} registro(s) técnico(s) encontrado(s)")
+                for r in regs:
+                    registros_preview.caption(f"{r.get('data','?')} | RT: {r.get('operador','–')} | ID: {r.get('id_visita','–')}")
+
+        if gerar_col.button("📄 Gerar Relatório RT em PDF", use_container_width=True):
+            # Preenche chaves de sessão utilizadas pelo gerador existente
+            st.session_state["rel_nome_condominio"] = _sel_cond_rt
+            st.session_state["rel_mes_referencia"] = _sel_mes
+            st.session_state["rel_ano_referencia"] = _sel_ano
+            st.session_state["rel_data_emissao"] = _data_emissao.strftime("%d/%m/%Y")
+
+            try:
+                resultado = _renderizar_relatorio_rt(preview=False)
+                if resultado.get("ok"):
+                    st.success("Relatório RT gerado com sucesso. Verifique a pasta de saída.")
+                else:
+                    st.warning(f"Relatório não gerado: {resultado.get('mensagem')}")
+            except Exception as e:
+                st.error(f"Erro ao gerar relatório RT: {e}")
+
+        st.markdown("---")
+
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
         st.session_state["op_pin_ok"] = False
         st.session_state.pop("op_dados_atual", None)
