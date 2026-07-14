@@ -46,6 +46,16 @@ from utils.vencimentos import (
 from utils.arquivos import classificar_arquivo, chave_segura
 from utils.normalizacao import normalizar_texto_busca, nomes_condominio_equivalentes
 from utils.datas_visitas import normalizar_data_visita, lancamento_pertence_mes_ano, filtrar_lancamentos_rt_tercas
+from rt_monthly_report import (
+    normalize_rt_records,
+    select_records_by_condominium,
+    select_records_by_month_year,
+    exclude_operator_records,
+    sort_records_chronologically,
+    safe_report_filename,
+    build_monthly_rt_pdf_bytes,
+    validate_generation_selection,
+)
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -2319,6 +2329,89 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
             if _tem_servico_rt or _is_aqua or _sem_definicao:
                 resultado.append(c)
     return resultado
+
+
+def _cliente_vinculado_aqua_gestao_strict(cliente: dict | None) -> bool:
+    """Retorna True somente quando o vínculo de empresa inclui Aqua Gestão.
+
+    Regras para seleção RT:
+    - usa exclusivamente o campo de vínculo de empresa do cadastro;
+    - não usa serviço executado/visita RT como critério de inclusão;
+    - não considera vínculo vazio como Aqua.
+    """
+    cliente = cliente or {}
+    empresa_original = str(cliente.get("empresa", "") or "")
+    if not empresa_original.strip():
+        return False
+
+    empresa_norm = normalizar_texto_busca(empresa_original)
+    if not empresa_norm:
+        return False
+    if "aqua" in empresa_norm:
+        return True
+    if "ambas" in empresa_norm:
+        return True
+    return False
+
+
+def _resolver_condominios_rt_permitidos_exatos(condominios_permitidos: list[str], condominios_aqua_exatos: list[str]) -> list[str]:
+    """Resolve permissões de condomínio preservando o nome original cadastrado."""
+    return _resolver_condominios_permitidos_exatos(
+        condominios_permitidos or [],
+        list(condominios_aqua_exatos or []),
+    )
+
+
+def _listar_condominios_rt_aqua(clientes: list[dict] | None, condominios_permitidos: list[str] | None = None,
+                                incluir_todos_preview: bool = True) -> list[str]:
+    """Lista condomínios do modo RT usando vínculo estrito com Aqua Gestão.
+
+    Preserva exatamente o nome original cadastrado em `clientes[*]["nome"]`.
+    """
+    nomes_aqua = []
+    vistos = set()
+
+    for cliente in clientes or []:
+        nome_original = str((cliente or {}).get("nome", "") or "")
+        if not nome_original.strip():
+            continue
+
+        status_cliente = normalizar_texto_busca((cliente or {}).get("status", "Ativo"))
+        if status_cliente in ("inativo", "desativado", "excluido", "cancelado"):
+            continue
+
+        if not _cliente_vinculado_aqua_gestao_strict(cliente):
+            continue
+
+        chave_nome = normalizar_texto_busca(nome_original)
+        if chave_nome in vistos:
+            continue
+        vistos.add(chave_nome)
+        nomes_aqua.append(nome_original)
+
+    permitidos = []
+    acesso_total = False
+    for nome_perm in condominios_permitidos or []:
+        nome_perm = str(nome_perm or "")
+        if not nome_perm.strip():
+            continue
+        if _normalizar_chave_acesso(nome_perm).strip() == "todos":
+            acesso_total = True
+            continue
+        permitidos.append(nome_perm)
+
+    if acesso_total:
+        nomes_filtrados = list(nomes_aqua)
+    elif permitidos:
+        nomes_filtrados = _resolver_condominios_rt_permitidos_exatos(permitidos, nomes_aqua)
+    else:
+        nomes_filtrados = list(nomes_aqua)
+
+    nomes_filtrados = sorted(nomes_filtrados, key=lambda n: normalizar_texto_busca(n))
+
+    if incluir_todos_preview and nomes_filtrados:
+        return ["TODOS"] + nomes_filtrados
+    return nomes_filtrados
 
 
 def _empresa_ativa_codigo() -> str:
@@ -11425,9 +11518,32 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown("---")
         st.markdown("## Relatórios Técnicos — Responsável Técnico")
 
-        # Condóminos liberados pelo PIN do RT
-        _conds_rt = _op_conds_permitidos or []
-        _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, index=0 if _conds_rt else 0)
+        try:
+            _clientes_rt_base = sheets_listar_clientes_completo() or []
+        except Exception:
+            _clientes_rt_base = []
+
+        _clientes_rt_aqua = [
+            c for c in (_clientes_rt_base or [])
+            if _cliente_vinculado_aqua_gestao_strict(c)
+            and normalizar_texto_busca(c.get("status", "Ativo")) not in ("inativo", "desativado", "excluido", "cancelado")
+            and str(c.get("nome", "") or "").strip()
+        ]
+        _mapa_cli_rt = {str(c.get("nome", "")): c for c in _clientes_rt_aqua}
+
+        # Modo RT: lista estrita apenas da base Aqua Gestão.
+        # Se mantida, "TODOS" representa somente os clientes Aqua disponíveis.
+        _conds_rt = _listar_condominios_rt_aqua(
+            _clientes_rt_base,
+            condominios_permitidos=_op_conds_permitidos,
+            incluir_todos_preview=True,
+        )
+
+        if not _conds_rt:
+            st.warning("Nenhum condomínio disponível para o PIN RT neste momento.")
+            _sel_cond_rt = ""
+        else:
+            _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, index=0)
 
         # Mês / Ano de referência (usa chaves já existentes no relatório mensal)
         _mes_opts = [str(i).zfill(2) for i in range(1, 13)]
@@ -11446,18 +11562,28 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         registros_preview = st.empty()
 
         def _buscar_registros_rt(cond_nome, mes, ano):
-            # Obtém lançamentos do Sheets e filtra por mês/ano e por origem RT
-            try:
-                todos_sheets = sheets_listar_lancamentos(cond_nome) or []
-            except Exception:
-                todos_sheets = []
-            # Também busca lançamentos locais armazenados no cadastro (se houver)
-            registros = list(todos_sheets)
-            # Filtra mês/ano
-            registros = [r for r in registros if lancamento_pertence_mes_ano(r.get("data", ""), mes, ano)]
-            # Mantém somente visitas identificadas como RT
-            registros = filtrar_lancamentos_visitas_rt(registros)
-            return registros
+            # Obtem lancamentos do Sheets e filtra por condominio/periodo/origem RT.
+            # "TODOS" (quando disponível) representa somente condominios Aqua desta lista.
+            nomes_consulta = []
+            if normalizar_texto_busca(cond_nome) == "todos":
+                nomes_consulta = [c for c in _conds_rt if normalizar_texto_busca(c) != "todos"]
+            else:
+                nomes_consulta = [str(cond_nome or "")]
+
+            consolidado = []
+            for nome_consulta in nomes_consulta:
+                try:
+                    todos_sheets = sheets_listar_lancamentos(nome_consulta) or []
+                except Exception:
+                    todos_sheets = []
+
+                normalizados = normalize_rt_records(list(todos_sheets))
+                filtrados = select_records_by_condominium(normalizados, nome_consulta)
+                filtrados = select_records_by_month_year(filtrados, mes, ano)
+                filtrados = exclude_operator_records(filtrados)
+                consolidado.extend(filtrados)
+
+            return sort_records_chronologically(consolidado)
 
         if preview_col.button("🔎 Pré-visualizar registros técnicos"):
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
@@ -11466,21 +11592,53 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             else:
                 registros_preview.write(f"{len(regs)} registro(s) técnico(s) encontrado(s)")
                 for r in regs:
-                    registros_preview.caption(f"{r.get('data','?')} | RT: {r.get('operador','–')} | ID: {r.get('id_visita','–')}")
+                    _idv = (r.get("raw") or {}).get("id_visita", "-")
+                    registros_preview.caption(f"{r.get('data','?')} | Origem: RT | ID: {_idv}")
 
         if gerar_col.button("📄 Gerar Relatório RT em PDF", use_container_width=True):
-            # Preenche chaves de sessão utilizadas pelo gerador existente
+            erro_sel = validate_generation_selection(_sel_cond_rt)
+            if erro_sel:
+                st.warning(erro_sel)
+                st.stop()
+
+            regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
+            if not regs:
+                st.info("Não há registros técnicos de RT no período selecionado. O relatório não foi gerado.")
+                st.stop()
+
+            # Mantem compatibilidade das chaves ja usadas no restante da tela.
             st.session_state["rel_nome_condominio"] = _sel_cond_rt
             st.session_state["rel_mes_referencia"] = _sel_mes
             st.session_state["rel_ano_referencia"] = _sel_ano
             st.session_state["rel_data_emissao"] = _data_emissao.strftime("%d/%m/%Y")
 
             try:
-                resultado = _renderizar_relatorio_rt(preview=False)
-                if resultado.get("ok"):
-                    st.success("Relatório RT gerado com sucesso. Verifique a pasta de saída.")
-                else:
-                    st.warning(f"Relatório não gerado: {resultado.get('mensagem')}")
+                _dados_cli = _mapa_cli_rt.get(_sel_cond_rt, {})
+                _art_num = str(st.session_state.get("rel_art_numero") or "").strip()
+                _obs_rt = str(st.session_state.get("rel_diagnostico") or "").strip()
+
+                pdf_bytes = build_monthly_rt_pdf_bytes(
+                    records=[r.get("raw", {}) for r in regs],
+                    condominium=_sel_cond_rt,
+                    month=_sel_mes,
+                    year=_sel_ano,
+                    issue_date=_data_emissao.strftime("%d/%m/%Y"),
+                    address=str(_dados_cli.get("endereco") or st.session_state.get("rel_endereco_condominio") or "").strip(),
+                    art_number=_art_num,
+                    rt_notes=_obs_rt,
+                    representative_name=str(st.session_state.get("rel_representante") or "").strip(),
+                )
+
+                _nome_pdf = safe_report_filename(_sel_cond_rt, _sel_mes, _sel_ano)
+                st.success("Relatório RT gerado com sucesso.")
+                st.download_button(
+                    "⬇️ Baixar Relatório RT em PDF",
+                    data=pdf_bytes,
+                    file_name=_nome_pdf,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"dl_rt_mensal_{_sel_cond_rt}_{_sel_mes}_{_sel_ano}",
+                )
             except Exception as e:
                 st.error(f"Erro ao gerar relatório RT: {e}")
 
