@@ -1593,6 +1593,38 @@ def calcular_linhas_analises_por_frequencia(verificacoes_semanais: int | str | N
     return max(ANALISES_PADRAO, min(freq * 4, ANALISES_MAX_SUGERIDO))
 
 
+def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None = None, mes: str | None = None, ano: str | None = None) -> int:
+    """Calcula linhas de análises para RT no mês selecionado (sem mínimo fixo de 12)."""
+    try:
+        freq = int(float(str(verificacoes_semanais or "").replace(",", ".")))
+    except Exception:
+        freq = 1
+    freq = max(1, min(freq, 7))
+
+    try:
+        mes_i = int(str(mes or "").strip())
+        ano_i = int(str(ano or "").strip())
+        if mes_i < 1 or mes_i > 12:
+            raise ValueError("mes fora da faixa")
+    except Exception:
+        hoje = datetime.now()
+        mes_i = hoje.month
+        ano_i = hoje.year
+
+    try:
+        primeiro_dia = date(ano_i, mes_i, 1)
+        if mes_i == 12:
+            proximo_mes = date(ano_i + 1, 1, 1)
+        else:
+            proximo_mes = date(ano_i, mes_i + 1, 1)
+        dias_no_mes = max((proximo_mes - primeiro_dia).days, 28)
+    except Exception:
+        dias_no_mes = 30
+
+    semanas_no_mes = max(1, (dias_no_mes + 6) // 7)
+    return max(1, min(freq * semanas_no_mes, ANALISES_MAX_SUGERIDO))
+
+
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
     """Obtém a frequência semanal cadastrada para o cliente, com fallback para 3x/semana."""
     dados = cliente_ou_dados or {}
@@ -1616,6 +1648,8 @@ ASSINATURA_RT_CANDIDATOS = [
 ]
 
 LOGO_CANDIDATOS = [
+    # Logo oficial atual enviada pelo usuário. Mantida em primeiro lugar para o PDF refletir a identidade Aqua Gestão.
+    BASE_DIR / "aqua_gestao_logo.png.png",
     BASE_DIR / "aqua_gestao_logo.png",
     BASE_DIR / "aqua_gestao_logo.jpg",
     BASE_DIR / "aqua_gestao_logo.jpeg",
@@ -1631,6 +1665,443 @@ LOGO_CANDIDATOS = [
 ]
 
 GENERATED_DIR.mkdir(exist_ok=True)
+
+
+def garantir_logo_oficial_aqua() -> None:
+    """Garante que a logo oficial enviada esteja disponível no nome esperado pelos geradores de PDF.
+
+    Alguns geradores procuram por aqua_gestao_logo.png. O arquivo oficial atual pode chegar ao
+    projeto como aqua_gestao_logo.png.png. Esta rotina copia a logo oficial para o nome padrão
+    antes de gerar documentos, sem depender de secrets ou de Google Sheets.
+    """
+    try:
+        origem = BASE_DIR / "aqua_gestao_logo.png.png"
+        destino = BASE_DIR / "aqua_gestao_logo.png"
+        if origem.exists():
+            destino.write_bytes(origem.read_bytes())
+    except Exception:
+        pass
+
+
+# ================================================================
+# PDF RT MENSAL — IDENTIDADE VISUAL OFICIAL AQUA GESTÃO
+# ================================================================
+def build_monthly_rt_pdf_bytes(
+    records: list[dict],
+    condominium: str,
+    month: str,
+    year: str,
+    issue_date: str,
+    address: str = "",
+    art_number: str = "",
+    rt_notes: str = "",
+    representative_name: str = "",
+) -> bytes:
+    """Gera o relatório mensal RT com a identidade visual oficial da Aqua Gestão.
+
+    Esta implementação local sobrescreve o import de rt_monthly_report para o fluxo
+    RT2025, mantendo o conteúdo técnico padrão e aplicando a paleta da logo oficial
+    (azul escuro, azul luminoso e dourado).
+    """
+    import io
+    import html as _html
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage,
+        KeepTogether
+    )
+
+    garantir_logo_oficial_aqua()
+
+    # Paleta extraída da identidade visual enviada: navy, azul luminoso e dourado.
+    NAVY = colors.HexColor("#061A33")
+    NAVY_2 = colors.HexColor("#0B2D52")
+    BLUE = colors.HexColor("#006FBF")
+    BLUE_SOFT = colors.HexColor("#EAF6FF")
+    GOLD = colors.HexColor("#D4AF37")
+    GOLD_SOFT = colors.HexColor("#FFF7E0")
+    GRID = colors.HexColor("#D7DEE8")
+    TEXT = colors.HexColor("#1F2A36")
+    MUTED = colors.HexColor("#5E6B78")
+    ALERT_BG = colors.HexColor("#FDECEC")
+    OK_BG = colors.HexColor("#ECF7EF")
+    WHITE = colors.white
+
+    def _esc(v) -> str:
+        return _html.escape(str(v if v is not None else "").strip())
+
+    def _p(v, style):
+        return Paragraph(_esc(v).replace("\n", "<br/>"), style)
+
+    def _to_float(v):
+        s = str(v if v is not None else "").strip()
+        if not s or s in {"—", "-", "None"}:
+            return None
+        s = s.replace(" ", "").replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    def _fmt(v, casas=2):
+        f = _to_float(v)
+        if f is None:
+            s = str(v if v is not None else "").strip()
+            return s if s else "—"
+        if abs(f - int(f)) < 1e-9:
+            return str(int(f))
+        return f"{f:.{casas}f}".replace(".", ",")
+
+    def _fmt_data_br(v, curta: bool = False) -> str:
+        s = str(v if v is not None else "").strip()
+        s = normalizar_data_visita(s)
+        m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)[2:]}" if curta else s
+        return s or "—"
+
+    def _mes_nome(mm: str) -> str:
+        nomes = {
+            "01": "Janeiro", "02": "Fevereiro", "03": "Março", "04": "Abril",
+            "05": "Maio", "06": "Junho", "07": "Julho", "08": "Agosto",
+            "09": "Setembro", "10": "Outubro", "11": "Novembro", "12": "Dezembro",
+        }
+        return nomes.get(str(mm).zfill(2), str(mm))
+
+    def _limpar_records(recs):
+        out = []
+        for r in recs or []:
+            if not isinstance(r, dict):
+                continue
+            raw = r.get("raw") if isinstance(r.get("raw"), dict) else r
+            rr = dict(raw)
+            # Nunca usar observação técnica como legenda fotográfica.
+            if "observacao" in rr and str(rr.get("observacao") or "").lower().startswith("importância técnica"):
+                rr["observacao"] = ""
+            out.append(rr)
+        return out
+
+    recs = _limpar_records(records)
+
+    def _desvios_record(r):
+        desv = []
+        ph = _to_float(r.get("ph"))
+        crl = _to_float(r.get("cloro_livre") or r.get("crl"))
+        ct = _to_float(r.get("cloro_total") or r.get("ct"))
+        alc = _to_float(r.get("alcalinidade") or r.get("alc"))
+        dur = _to_float(r.get("dureza") or r.get("dc"))
+        cya = _to_float(r.get("cianurico") or r.get("cya"))
+        turb = _to_float(r.get("turbidez") or r.get("ntu"))
+        orp = _to_float(r.get("orp"))
+        if ph is not None and not (7.2 <= ph <= 7.8): desv.append("pH")
+        if crl is not None and not (0.5 <= crl <= 3.0): desv.append("CRL")
+        if ct is not None and not (0.5 <= ct <= 3.0): desv.append("CT")
+        if alc is not None and not (80 <= alc <= 120): desv.append("alcalinidade")
+        if dur is not None and not (150 <= dur <= 300): desv.append("dureza")
+        if cya is not None and not (30 <= cya <= 50): desv.append("CYA")
+        if turb is not None and turb > 0.5: desv.append("turbidez")
+        if orp is not None and orp < 650: desv.append("ORP")
+        return desv
+
+    desvios_linhas = []
+    tem_desvios = False
+    for r in recs:
+        ds = _desvios_record(r)
+        if ds:
+            tem_desvios = True
+            desvios_linhas.append(f"{_fmt_data_br(r.get('data'))} — {', '.join(ds)} fora das faixas operacionais.")
+
+    if tem_desvios:
+        situacao_geral = "ATENÇÃO — HÁ DESVIOS NO PERÍODO"
+        sintese = "Foram identificados desvios que exigem ação corretiva com rastreabilidade."
+    else:
+        situacao_geral = "CONFORME"
+        sintese = "As leituras registradas indicam condição satisfatória no período avaliado."
+
+    recs_validos = [r for r in recs if any(str(r.get(k) or "").strip() for k in ["data", "ph", "cloro_livre", "crl", "cloro_total", "ct", "alcalinidade", "dureza", "cianurico", "cya", "turbidez", "orp", "tds", "temperatura"])]
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.25 * cm,
+        rightMargin=1.25 * cm,
+        topMargin=1.25 * cm,
+        bottomMargin=1.15 * cm,
+    )
+
+    styles = getSampleStyleSheet()
+    st_title = ParagraphStyle("AquaTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=19, leading=22, alignment=TA_CENTER, textColor=NAVY, spaceAfter=2)
+    st_sub = ParagraphStyle("AquaSub", parent=styles["Normal"], fontName="Helvetica", fontSize=9.5, leading=12, alignment=TA_CENTER, textColor=GOLD, spaceAfter=8)
+    st_h = ParagraphStyle("AquaH", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=11.5, leading=14, textColor=NAVY, spaceBefore=8, spaceAfter=5)
+    st_body = ParagraphStyle("AquaBody", parent=styles["Normal"], fontName="Helvetica", fontSize=8.6, leading=11.6, textColor=TEXT, alignment=TA_JUSTIFY)
+    st_small = ParagraphStyle("AquaSmall", parent=styles["Normal"], fontName="Helvetica", fontSize=7.2, leading=9.2, textColor=MUTED)
+    st_tab = ParagraphStyle("AquaTable", parent=styles["Normal"], fontName="Helvetica", fontSize=6.9, leading=8.0, textColor=TEXT, alignment=TA_CENTER)
+    st_tab_left = ParagraphStyle("AquaTableLeft", parent=styles["Normal"], fontName="Helvetica", fontSize=7.5, leading=9.2, textColor=TEXT, alignment=TA_LEFT)
+    st_tab_head = ParagraphStyle("AquaTableHead", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=6.8, leading=8.0, textColor=WHITE, alignment=TA_CENTER)
+
+    story = []
+
+    def _logo_path():
+        for cand in [
+            BASE_DIR / "aqua_gestao_logo.png",
+            BASE_DIR / "aqua_gestao_logo.png.png",
+            BASE_DIR / "assets" / "aqua_gestao_logo.png",
+            BASE_DIR / "images" / "aqua_gestao_logo.png",
+        ]:
+            try:
+                if cand.exists():
+                    return cand
+            except Exception:
+                pass
+        return None
+
+    logo = _logo_path()
+    if logo:
+        try:
+            story.append(RLImage(str(logo), width=4.0 * cm, height=4.0 * cm, kind="proportional"))
+        except Exception:
+            pass
+
+    story.append(_p("RELATÓRIO MENSAL DE ACOMPANHAMENTO TÉCNICO", st_title))
+    story.append(_p("Controle da Qualidade da Água de Piscinas", st_sub))
+
+    # Identificação
+    ident = [
+        ["Condomínio", condominium or "—"],
+        ["Endereço", address or "—"],
+        ["Mês/ano de referência", f"{_mes_nome(month)}/{year}"],
+        ["Data de emissão", issue_date or "—"],
+        ["Responsável Técnico", RESPONSAVEL_TÉCNICO],
+        ["Qualificação", QUALIFICACAO_RT],
+        ["Registro", "CRQ-MG 2ª Região nº 024025748"],
+        ["ART", art_number or "Em tramitação administrativa"],
+    ]
+    t_ident = Table([[ _p(a, st_tab_left), _p(b, st_tab_left)] for a, b in ident], colWidths=[4.7 * cm, 13.1 * cm])
+    t_ident.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.35, GRID),
+        ("BACKGROUND", (0,0), (0,-1), BLUE_SOFT),
+        ("TEXTCOLOR", (0,0), (0,-1), NAVY),
+        ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+    ]))
+    story.append(t_ident)
+    story.append(Spacer(1, 5 * mm))
+
+    # Resumo executivo
+    resumo = [
+        ["Resumo Executivo", ""],
+        ["Visitas técnicas do RT", str(len(recs_validos))],
+        ["Leituras avaliadas", str(len(recs_validos))],
+        ["Situação geral", situacao_geral],
+        ["Principais desvios", " ; ".join(desvios_linhas[:5]) if desvios_linhas else "Não foram identificados desvios relevantes nas leituras informadas."],
+    ]
+    t_res = Table([[ _p(a, st_tab_left), _p(b, st_tab_left)] for a, b in resumo], colWidths=[4.7 * cm, 13.1 * cm])
+    t_res.setStyle(TableStyle([
+        ("SPAN", (0,0), (-1,0)),
+        ("BACKGROUND", (0,0), (-1,0), NAVY),
+        ("TEXTCOLOR", (0,0), (-1,0), WHITE),
+        ("BACKGROUND", (0,1), (0,-1), BLUE_SOFT),
+        ("BACKGROUND", (1,3), (1,3), ALERT_BG if tem_desvios else OK_BG),
+        ("GRID", (0,0), (-1,-1), 0.35, GRID),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
+    story.append(t_res)
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(_p("2. Monitoramento Técnico", st_h))
+    head = ["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb. (NTU)", "ORP (mV)", "TDS (ppm)", "Temp. (°C)"]
+    rows = [[_p(x, st_tab_head) for x in head]]
+    for r in recs_validos:
+        crl = _to_float(r.get("cloro_livre") or r.get("crl"))
+        ct = _to_float(r.get("cloro_total") or r.get("ct"))
+        cc = ""
+        if crl is not None and ct is not None:
+            cc = max(0, ct - crl)
+        rows.append([
+            _p(_fmt_data_br(r.get("data"), curta=True), st_tab),
+            _p(_fmt(r.get("ph")), st_tab),
+            _p(_fmt(r.get("cloro_livre") or r.get("crl")), st_tab),
+            _p(_fmt(r.get("cloro_total") or r.get("ct")), st_tab),
+            _p(_fmt(cc), st_tab),
+            _p(_fmt(r.get("alcalinidade") or r.get("alc")), st_tab),
+            _p(_fmt(r.get("dureza") or r.get("dc")), st_tab),
+            _p(_fmt(r.get("cianurico") or r.get("cya")), st_tab),
+            _p(_fmt(r.get("turbidez") or r.get("ntu")), st_tab),
+            _p(_fmt(r.get("orp")), st_tab),
+            _p(_fmt(r.get("tds")), st_tab),
+            _p(_fmt(r.get("temperatura")), st_tab),
+        ])
+
+    # Larguras ajustadas para A4 retrato: evita quebra da data.
+    widths = [1.62*cm, 1.08*cm, 1.08*cm, 1.08*cm, 1.0*cm, 1.1*cm, 1.25*cm, 1.08*cm, 1.35*cm, 1.35*cm, 1.35*cm, 1.25*cm]
+    t_mon = Table(rows, colWidths=widths, repeatRows=1)
+    style_cmds = [
+        ("BACKGROUND", (0,0), (-1,0), NAVY),
+        ("GRID", (0,0), (-1,-1), 0.28, GRID),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("LEFTPADDING", (0,0), (-1,-1), 2.5),
+        ("RIGHTPADDING", (0,0), (-1,-1), 2.5),
+        ("TOPPADDING", (0,0), (-1,-1), 3),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#F7FAFE")]),
+    ]
+    for row_i, r in enumerate(recs_validos, start=1):
+        if _desvios_record(r):
+            style_cmds.append(("BACKGROUND", (1,row_i), (-1,row_i), colors.HexColor("#FFF6F6")))
+    t_mon.setStyle(TableStyle(style_cmds))
+    story.append(t_mon)
+    story.append(Spacer(1, 2.5 * mm))
+    story.append(_p("CC: cloro combinado calculado como CT − CRL.", st_small))
+    story.append(_p(f"Síntese dos resultados: {sintese}", st_body))
+    if desvios_linhas:
+        story.append(_p("Desvios relevantes: " + " ; ".join(desvios_linhas), st_body))
+
+    # Nota técnica valorizando turbidez e ORP, sem virar legenda de foto.
+    nota_turb_orp = (
+        "<b>Importância técnica da turbidez:</b> a turbidez (NTU) indica partículas em suspensão, matéria orgânica, sólidos finos, "
+        "produtos de oxidação e possível perda de eficiência da filtração. Valores elevados podem reduzir a eficácia do desinfetante, "
+        "prejudicar a visibilidade do fundo da piscina e sinalizar necessidade de intervenção operacional.<br/>"
+        "<b>Importância técnica do ORP:</b> o ORP (mV) expressa o potencial de oxirredução da água e auxilia na interpretação da "
+        "capacidade efetiva de oxidação/desinfecção. Esse indicador complementa as leituras de cloro, pH, estabilizante e carga orgânica."
+    )
+    story.append(Spacer(1, 2 * mm))
+    box_nota = Table([[Paragraph(nota_turb_orp, st_body)]], colWidths=[17.8 * cm])
+    box_nota.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), GOLD_SOFT),
+        ("BOX", (0,0), (-1,-1), 0.55, GOLD),
+        ("LEFTPADDING", (0,0), (-1,-1), 7),
+        ("RIGHTPADDING", (0,0), (-1,-1), 7),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+    ]))
+    story.append(box_nota)
+
+    # Complemento do RT, se informado, extraído de rt_notes.
+    complemento = ""
+    if rt_notes:
+        for parte in str(rt_notes).splitlines():
+            if "Complemento do parecer técnico do RT:" in parte:
+                complemento = parte.split("Complemento do parecer técnico do RT:", 1)[1].strip()
+                break
+
+    story.append(_p("3. Parecer e Recomendações", st_h))
+    recomendacoes = []
+    desvios_texto = " ; ".join(desvios_linhas) if desvios_linhas else "Não foram identificadas não conformidades relevantes no período."
+    if any("CRL" in d or "CT" in d for d in desvios_linhas):
+        recomendacoes.append("Reavaliar desinfecção (CRL/CT), revisar demanda oxidante e confirmar residual após recirculação.")
+    if any("alcalinidade" in d for d in desvios_linhas):
+        recomendacoes.append("Corrigir alcalinidade total para melhorar estabilidade do pH e reduzir oscilações operacionais.")
+    if any("dureza" in d for d in desvios_linhas):
+        recomendacoes.append("Ajustar dureza cálcica para mitigar risco de corrosão ou incrustação.")
+    if any("CYA" in d for d in desvios_linhas):
+        recomendacoes.append("Revisar estabilizante (CYA) e considerar renovação parcial de água quando tecnicamente indicado.")
+    if any("turbidez" in d for d in desvios_linhas):
+        recomendacoes.append("Verificar eficiência de filtração, retrolavagem e carga orgânica associada à turbidez.")
+    if any("ORP" in d for d in desvios_linhas):
+        recomendacoes.append("Correlacionar ORP com pH, cloro e CYA para confirmar a efetividade oxidante da água.")
+    if not recomendacoes:
+        recomendacoes.append("Manter rotina de monitoramento técnico, registros semanais e acompanhamento do RT.")
+
+    parecer_linhas = [
+        f"1. Avaliação técnica do período: {sintese}",
+        f"2. Não conformidades identificadas: {desvios_texto}",
+        "3. Recomendações técnicas: " + " ".join(recomendacoes),
+        "4. Prazos sugeridos: Imediato para desvios críticos e até a próxima rotina para ajustes preventivos.",
+        "5. Responsável pela ação: Operação local com acompanhamento do Responsável Técnico.",
+        "6. Conclusão técnica: " + ("No período avaliado, foram identificadas não conformidades pontuais e recomenda-se executar plano corretivo com reavaliação técnica sequencial." if tem_desvios else "No período avaliado, os registros indicam controle técnico satisfatório, mantendo-se a rotina de monitoramento e rastreabilidade."),
+    ]
+    if complemento:
+        parecer_linhas.append("7. Complemento do RT: " + complemento)
+    for linha in parecer_linhas:
+        story.append(_p(linha, st_body))
+        story.append(Spacer(1, 1.2 * mm))
+
+    story.append(Spacer(1, 2 * mm))
+    refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025; ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
+    story.append(_p(refs, st_small))
+
+    assinatura = [
+        [_p("Responsável Técnico", st_tab_left), _p("Representante do estabelecimento", st_tab_left)],
+        [_p(f"{RESPONSAVEL_TÉCNICO}<br/>Técnico em Química<br/>CRQ-MG 2ª Região nº 024025748<br/>Responsável Técnico<br/><br/>Data de emissão: {issue_date or '—'}", st_tab_left),
+         _p(f"<br/><br/><br/>Assinatura: ___________________________<br/>Nome: {representative_name or '____________________________'}", st_tab_left)],
+    ]
+    t_ass = Table(assinatura, colWidths=[8.9 * cm, 8.9 * cm])
+    t_ass.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), BLUE_SOFT),
+        ("GRID", (0,0), (-1,-1), 0.35, GRID),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 5),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+    ]))
+    story.append(Spacer(1, 4 * mm))
+    story.append(t_ass)
+    story.append(_p("Aviso: análises microbiológicas dependem de coleta e laboratório competente, quando aplicável.", st_small))
+
+    # Registro fotográfico — só foto + legenda limpa.
+    fotos = []
+    for r in recs:
+        for f in r.get("fotos") or r.get("imagens") or []:
+            if f and f not in fotos:
+                fotos.append(f)
+
+    if fotos:
+        story.append(_p("Registro Fotográfico", st_h))
+        for idx_f, foto in enumerate(fotos[:4], start=1):
+            try:
+                fp = Path(foto)
+                if fp.exists():
+                    story.append(RLImage(str(fp), width=9.0 * cm, height=7.0 * cm, kind="proportional"))
+                    legenda_padrao = "Registro técnico do período"
+                    if idx_f == 1:
+                        legenda_padrao = "Casa de máquinas / sistema de filtragem" if len(fotos) > 1 else "Registro técnico do período"
+                    elif idx_f == 2:
+                        legenda_padrao = "Vista geral da piscina no período de referência"
+                    story.append(_p(f"{_fmt_data_br(recs_validos[-1].get('data') if recs_validos else '')} — {legenda_padrao}", st_small))
+                    story.append(Spacer(1, 2 * mm))
+            except Exception:
+                continue
+
+    def _header_footer(canvas, doc_obj):
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, h - 1.05 * cm, w, 1.05 * cm, fill=1, stroke=0)
+        canvas.setFillColor(GOLD)
+        canvas.rect(0, h - 1.10 * cm, w, 0.07 * cm, fill=1, stroke=0)
+        canvas.setFillColor(WHITE)
+        canvas.setFont("Helvetica-Bold", 8.5)
+        canvas.drawRightString(w - 1.2 * cm, h - 0.43 * cm, "Relatório Mensal de Acompanhamento Técnico")
+        canvas.setFont("Helvetica", 7)
+        canvas.drawRightString(w - 1.2 * cm, h - 0.75 * cm, f"{condominium or 'Condomínio'} | {_mes_nome(month)}/{year}")
+        canvas.setStrokeColor(GRID)
+        canvas.setLineWidth(0.35)
+        canvas.line(1.2 * cm, 1.0 * cm, w - 1.2 * cm, 1.0 * cm)
+        canvas.setFillColor(MUTED)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(1.25 * cm, 0.65 * cm, "Aqua Gestão — Controle Técnico de Piscinas")
+        canvas.drawRightString(w - 1.25 * cm, 0.65 * cm, f"Emissão: {issue_date or '—'} | Página {doc_obj.page}")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    out = buffer.getvalue()
+    buffer.close()
+    return out
+
 
 # Fallback global — sobrescrito pelo Modo Operador quando necessário
 def _autosave_rascunho():
@@ -11518,6 +11989,18 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown("---")
         st.markdown("## Relatórios Técnicos — Responsável Técnico")
 
+        def _obter_frequencia_rt_cliente(cliente_ou_dados: dict | None) -> int:
+            dados = cliente_ou_dados or {}
+            for chave in ["verificacoes_semanais", "frequencia_verificacoes_semanais", "visitas_semanais", "frequencia_semanal"]:
+                valor = dados.get(chave)
+                try:
+                    iv = int(float(str(valor or "").replace(",", ".")))
+                    if iv > 0:
+                        return max(1, min(iv, 7))
+                except Exception:
+                    pass
+            return 1
+
         try:
             _clientes_rt_base = sheets_listar_clientes_completo() or []
         except Exception:
@@ -11557,6 +12040,145 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         with colm3:
             _data_emissao = st.date_input("Data de emissão", value=date.today())
 
+        st.session_state["rel_mes_referencia"] = _sel_mes
+        st.session_state["rel_ano_referencia"] = _sel_ano
+        _data_emissao_padrao = _data_emissao.strftime("%d/%m/%Y")
+        if not str(st.session_state.get("rel_data_emissao") or "").strip():
+            st.session_state["rel_data_emissao"] = _data_emissao_padrao
+
+        if _sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos":
+            _cli_sel_rt = _mapa_cli_rt.get(_sel_cond_rt, {})
+            st.session_state["rel_nome_condominio"] = _sel_cond_rt
+            if not str(st.session_state.get("rel_cnpj_condominio") or "").strip():
+                st.session_state["rel_cnpj_condominio"] = str(_cli_sel_rt.get("cnpj") or "").strip()
+            if not str(st.session_state.get("rel_endereco_condominio") or "").strip():
+                st.session_state["rel_endereco_condominio"] = str(_cli_sel_rt.get("endereco") or "").strip()
+            if not str(st.session_state.get("rel_representante") or "").strip():
+                st.session_state["rel_representante"] = str(_cli_sel_rt.get("nome_sindico") or "").strip()
+
+        _dados_cliente_rt = _mapa_cli_rt.get(_sel_cond_rt, {}) if (_sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos") else {}
+        _freq_rt = _obter_frequencia_rt_cliente(_dados_cliente_rt)
+        _linhas_esperadas_rt = calcular_linhas_analises_rt_mensal(_freq_rt, _sel_mes, _sel_ano)
+        _ctx_rt = f"{_sel_cond_rt}|{_sel_mes}|{_sel_ano}|{_freq_rt}"
+        if st.session_state.get("_rt2025_ctx_linhas") != _ctx_rt:
+            st.session_state["_rt2025_ctx_linhas"] = _ctx_rt
+            st.session_state["_rt2025_qtd_registros_auto"] = 0
+            st.session_state["rel_analises_total"] = _linhas_esperadas_rt
+
+        st.caption(
+            "Quando não houver registros automáticos no período, complete os dados no fluxo padrão do relatório mensal RT "
+            "(mesmos campos e mesmo modelo PDF oficial)."
+        )
+
+        st.markdown("**Identificação do documento**")
+        rid1, rid2 = st.columns(2)
+        with rid1:
+            st.text_input("Cliente / Estabelecimento", key="rel_nome_condominio", disabled=True)
+            st.text_area("Endereço do Local", key="rel_endereco_condominio", height=80)
+        with rid2:
+            _art_opcoes_rt = [
+                "Em tramitação administrativa",
+                "Não emitida",
+                "Informar número da ART",
+            ]
+            _art_num_atual = str(st.session_state.get("rel_art_numero") or "").strip()
+            _art_status_atual = str(st.session_state.get("rel_art_status") or "").strip()
+            if _art_num_atual in _art_opcoes_rt[:2]:
+                _art_padrao_rt = _art_num_atual
+            elif _art_num_atual:
+                _art_padrao_rt = "Informar número da ART"
+            elif _art_status_atual == "Em tramitação":
+                _art_padrao_rt = "Em tramitação administrativa"
+            elif _art_status_atual == "Não emitida":
+                _art_padrao_rt = "Não emitida"
+            else:
+                _art_padrao_rt = "Informar número da ART"
+
+            _art_sel_rt = st.selectbox(
+                "Nº ART – CRQ",
+                options=_art_opcoes_rt,
+                index=_art_opcoes_rt.index(_art_padrao_rt),
+                key="rel_art_modo_rt2025",
+            )
+            if _art_sel_rt == "Informar número da ART":
+                _art_num_pre = _art_num_atual if _art_num_atual not in _art_opcoes_rt[:2] else ""
+                _art_num_rt = st.text_input("Informar número da ART", value=_art_num_pre, key="rel_art_numero_rt2025")
+                st.session_state["rel_art_numero"] = formatar_art_numero(_art_num_rt)
+                st.session_state["rel_art_status"] = "Emitida"
+            else:
+                st.session_state["rel_art_numero"] = _art_sel_rt
+                st.session_state["rel_art_status"] = "Em tramitação" if _art_sel_rt == "Em tramitação administrativa" else "Não emitida"
+            st.text_input("Data de Emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: st.session_state.__setitem__("rel_data_emissao", normalizar_data_visita(st.session_state.get("rel_data_emissao", ""))))
+
+        st.markdown("**Registro de análises físico-químicas**")
+        _qtd_regs_auto = int(st.session_state.get("_rt2025_qtd_registros_auto", 0) or 0)
+        _qtd_linhas_rt = max(_linhas_esperadas_rt, _qtd_regs_auto)
+        st.session_state["rel_analises_total"] = _qtd_linhas_rt
+        garantir_campos_analises(_qtd_linhas_rt)
+        cab_cols_rt = st.columns([0.95, 0.55, 0.65, 0.65, 0.85, 0.75, 0.75, 0.75, 0.65, 0.65, 0.75, 1.0])
+        for _col, _label in zip(
+            cab_cols_rt,
+            ["Data", "pH", "CRL", "CT", "Alcalinidade", "Dureza", "CYA", "Turbidez", "ORP", "TDS", "Temp.", "Operador"],
+        ):
+            _col.caption(f"**{_label}**")
+
+        for i in range(_qtd_linhas_rt):
+            cols_rt = st.columns([0.95, 0.55, 0.65, 0.65, 0.85, 0.75, 0.75, 0.75, 0.65, 0.65, 0.75, 1.0])
+            cols_rt[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda k=f"rel_analise_data_{i}": st.session_state.__setitem__(k, normalizar_data_visita(st.session_state.get(k, ""))))
+            cols_rt[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
+            cols_rt[2].text_input(f"CRL {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
+            cols_rt[3].text_input(f"CT {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
+            cols_rt[4].text_input(f"Alcalinidade {i+1}", key=f"rel_analise_alc_{i}", label_visibility="collapsed", placeholder="Alcalinidade")
+            cols_rt[5].text_input(f"Dureza {i+1}", key=f"rel_analise_dc_{i}", label_visibility="collapsed", placeholder="Dureza")
+            cols_rt[6].text_input(f"CYA {i+1}", key=f"rel_analise_cya_{i}", label_visibility="collapsed", placeholder="CYA")
+            cols_rt[7].text_input(f"Turbidez {i+1}", key=f"rel_analise_turbidez_{i}", label_visibility="collapsed", placeholder="NTU")
+            cols_rt[8].text_input(f"ORP {i+1}", key=f"rel_analise_orp_{i}", label_visibility="collapsed", placeholder="mV")
+            cols_rt[9].text_input(f"TDS {i+1}", key=f"rel_analise_tds_{i}", label_visibility="collapsed", placeholder="ppm")
+            cols_rt[10].text_input(f"Temperatura {i+1}", key=f"rel_analise_temperatura_{i}", label_visibility="collapsed", placeholder="°C")
+            cols_rt[11].text_input(f"Operador {i+1}", key=f"rel_analise_operador_{i}", label_visibility="collapsed", placeholder="Operador")
+
+        with st.expander("ℹ️ Importância técnica da Turbidez e do ORP", expanded=True):
+            st.markdown(
+                """
+                **Turbidez (NTU)** indica a presença de partículas em suspensão, matéria orgânica, sólidos finos
+                e produtos de oxidação. Ela ajuda a demonstrar a eficiência da filtração e a segurança visual da
+                piscina, pois água turva pode reduzir a ação do desinfetante e prejudicar a visibilidade do fundo.
+
+                **ORP (mV)** indica o potencial de oxirredução da água, ou seja, a capacidade real de oxidação e
+                desinfecção naquele momento. Ele complementa pH, cloro e estabilizante, mostrando se o residual
+                medido está efetivamente ativo diante da carga orgânica e das condições operacionais.
+                """
+            )
+
+        st.text_area(
+            "Complemento opcional do parecer técnico do RT",
+            key="rel_parecer_complemento_rt",
+            height=95,
+            help=(
+                "Opcional. O parecer, as não conformidades e as recomendações continuam sendo gerados "
+                "automaticamente a partir dos parâmetros. Use este campo apenas para complementar o julgamento técnico."
+            ),
+        )
+        st.info(
+            "O parecer técnico, as observações de não conformidade e as recomendações serão gerados automaticamente "
+            "no PDF a partir dos parâmetros físico-químicos preenchidos. O RT não lança dosagens nesta tela."
+        )
+
+        st.markdown("**Registro fotográfico**")
+        st.file_uploader(
+            "Fotos do relatório RT",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="rel_fotos_upload",
+            help="As fotos podem ser inseridas no registro fotográfico do relatório mensal RT.",
+        )
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            st.text_input("Legenda — Foto casa de máquinas", key="rel_foto_legenda_cmaq")
+        with fcol2:
+            st.text_input("Legenda — Foto vista geral da piscina", key="rel_foto_legenda_piscina")
+        st.caption("Use Pré-visualizar para importar automaticamente as leituras do período e edite os campos acima quando necessário.")
+
         # Botões de ação: pré-visualizar registros técnicos e gerar PDF
         preview_col, gerar_col = st.columns([1, 1])
         registros_preview = st.empty()
@@ -11585,12 +12207,191 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
             return sort_records_chronologically(consolidado)
 
+        def _preencher_campos_rt_por_registros(registros: list[dict]):
+            if not registros:
+                return
+            qtd = max(_linhas_esperadas_rt, len(registros))
+            garantir_campos_analises(qtd)
+            st.session_state["rel_analises_total"] = qtd
+            st.session_state["_rt2025_qtd_registros_auto"] = len(registros)
+
+            for idx, reg in enumerate(registros[:qtd]):
+                raw = reg.get("raw", {}) or {}
+                st.session_state[f"rel_analise_data_{idx}"] = str(raw.get("data") or reg.get("data") or "").strip()
+                st.session_state[f"rel_analise_ph_{idx}"] = str(raw.get("ph") or "").strip()
+                st.session_state[f"rel_analise_cl_{idx}"] = str(raw.get("cloro_livre") or "").strip()
+                st.session_state[f"rel_analise_ct_{idx}"] = str(raw.get("cloro_total") or "").strip()
+                st.session_state[f"rel_analise_alc_{idx}"] = str(raw.get("alcalinidade") or "").strip()
+                st.session_state[f"rel_analise_dc_{idx}"] = str(raw.get("dureza") or "").strip()
+                st.session_state[f"rel_analise_cya_{idx}"] = str(raw.get("cianurico") or "").strip()
+                st.session_state[f"rel_analise_turbidez_{idx}"] = str(raw.get("turbidez") or "").strip()
+                st.session_state[f"rel_analise_orp_{idx}"] = str(raw.get("orp") or "").strip()
+                st.session_state[f"rel_analise_tds_{idx}"] = str(raw.get("tds") or "").strip()
+                st.session_state[f"rel_analise_temperatura_{idx}"] = str(raw.get("temperatura") or "").strip()
+                st.session_state[f"rel_analise_operador_{idx}"] = str(raw.get("operador") or "").strip()
+
+            _ultimo_raw = (registros[-1].get("raw", {}) or {}) if registros else {}
+            if not str(st.session_state.get("rel_diagnostico") or "").strip():
+                st.session_state["rel_diagnostico"] = str(_ultimo_raw.get("parecer") or _ultimo_raw.get("observacao") or "").strip()
+
+        def _montar_notas_rt_fluxo_padrao() -> str:
+            """Monta observações técnicas complementares sem substituir o parecer automático do PDF."""
+            linhas = [
+                (
+                    "Importância técnica da turbidez: a turbidez (NTU) indica partículas em suspensão, "
+                    "matéria orgânica, sólidos finos, produtos de oxidação e possível perda de eficiência da filtração. "
+                    "Valores elevados podem reduzir a eficácia do desinfetante, prejudicar a visibilidade do fundo da piscina "
+                    "e sinalizar necessidade de intervenção operacional."
+                ),
+                (
+                    "Importância técnica do ORP: o ORP (mV) expressa o potencial de oxirredução da água e auxilia na "
+                    "interpretação da capacidade efetiva de oxidação/desinfecção. Esse indicador complementa as leituras de "
+                    "cloro, pH, estabilizante e carga orgânica, valorizando a análise técnica do período."
+                ),
+            ]
+
+            _parecer_comp = str(st.session_state.get("rel_parecer_complemento_rt") or "").strip()
+            if _parecer_comp:
+                linhas.append("Complemento do parecer técnico do RT: " + _parecer_comp)
+
+            # As legendas das fotos não entram nas observações técnicas.
+            # Isso evita que texto técnico ou legendas sejam repetidos indevidamente
+            # abaixo do registro fotográfico no PDF.
+            return "\n".join([l for l in linhas if l]).strip()
+
+        def _salvar_fotos_rt_upload(cond_nome: str, mes: str, ano: str) -> list[str]:
+            arquivos = st.session_state.get("rel_fotos_upload") or []
+            if not arquivos or not cond_nome:
+                return []
+
+            pasta_fotos = GENERATED_DIR / slugify_nome(cond_nome) / "fotos_relatorio_rt_manual"
+            pasta_fotos.mkdir(parents=True, exist_ok=True)
+
+            salvos = []
+            for idx, arq in enumerate(arquivos):
+                _nome_base = limpar_nome_arquivo(Path(arq.name).stem) or f"foto_rt_{idx+1}"
+                _suf = (Path(arq.name).suffix or ".jpg").lower()
+                destino = pasta_fotos / f"{ano}{mes}_{_nome_base}_{idx+1}{_suf}"
+                try:
+                    destino.write_bytes(arq.getbuffer())
+                    salvos.append(str(destino))
+                except Exception:
+                    continue
+            return salvos
+
+        def _montar_registros_rt_do_fluxo_padrao(cond_nome, mes, ano):
+            """Monta registros manuais RT2025 diretamente da tabela exibida na tela.
+
+            Não depende de registros automáticos do Sheets. Se o RT preencheu pelo
+            menos uma linha de parâmetros, o relatório mensal deve gerar no mesmo
+            motor oficial build_monthly_rt_pdf_bytes.
+            """
+            registros = []
+            _notas_rt = _montar_notas_rt_fluxo_padrao()
+            _fotos_rt = _salvar_fotos_rt_upload(cond_nome, mes, ano)
+
+            try:
+                _qtd_total = int(st.session_state.get("rel_analises_total") or _linhas_esperadas_rt or 0)
+            except Exception:
+                _qtd_total = int(_linhas_esperadas_rt or 0)
+            _qtd_total = max(_qtd_total, int(_linhas_esperadas_rt or 0), 1)
+
+            def _v(chave: str) -> str:
+                return str(st.session_state.get(chave) or "").strip()
+
+            for idx_linha in range(_qtd_total):
+                item = {
+                    "data": _v(f"rel_analise_data_{idx_linha}"),
+                    "ph": _v(f"rel_analise_ph_{idx_linha}"),
+                    "cloro_livre": _v(f"rel_analise_cl_{idx_linha}"),
+                    "cloro_total": _v(f"rel_analise_ct_{idx_linha}"),
+                    "alcalinidade": _v(f"rel_analise_alc_{idx_linha}"),
+                    "dureza": _v(f"rel_analise_dc_{idx_linha}"),
+                    "cianurico": _v(f"rel_analise_cya_{idx_linha}"),
+                    "turbidez": _v(f"rel_analise_turbidez_{idx_linha}"),
+                    "orp": _v(f"rel_analise_orp_{idx_linha}"),
+                    "tds": _v(f"rel_analise_tds_{idx_linha}"),
+                    "temperatura": _v(f"rel_analise_temperatura_{idx_linha}"),
+                    "operador": _v(f"rel_analise_operador_{idx_linha}"),
+                }
+
+                tem_dado = any(
+                    item.get(ch)
+                    for ch in [
+                        "data",
+                        "ph",
+                        "cloro_livre",
+                        "cloro_total",
+                        "alcalinidade",
+                        "dureza",
+                        "cianurico",
+                        "turbidez",
+                        "orp",
+                        "tds",
+                        "temperatura",
+                    ]
+                )
+                if not tem_dado:
+                    continue
+
+                _data_item = normalizar_data_visita(item.get("data") or "")
+                if not _data_item:
+                    _data_item = f"15/{str(mes).zfill(2)}/{ano}"
+
+                registro = {
+                    "id_visita": f"RT-MANUAL-{idx_linha+1:02d}",
+                    "nome_condominio": cond_nome,
+                    "condominio": cond_nome,
+                    "data": _data_item,
+                    "origem": "RT",
+                    "fonte": "RT Manual",
+                    "tipo_visita": "Relatório mensal RT",
+                    "operador": item.get("operador") or RESPONSAVEL_TÉCNICO,
+                    "responsavel_tecnico": RESPONSAVEL_TÉCNICO,
+                    "responsavel_tecnico_pdf": RESPONSAVEL_TÉCNICO,
+                    "is_rt": True,
+                    "rt": True,
+                    "visita_rt": True,
+                    "visita_rt_semanal": True,
+                    "ph": item.get("ph", ""),
+                    "cloro_livre": item.get("cloro_livre", ""),
+                    "crl": item.get("cloro_livre", ""),
+                    "cloro_total": item.get("cloro_total", ""),
+                    "ct": item.get("cloro_total", ""),
+                    "alcalinidade": item.get("alcalinidade", ""),
+                    "dureza": item.get("dureza", ""),
+                    "cianurico": item.get("cianurico", ""),
+                    "cya": item.get("cianurico", ""),
+                    "turbidez": item.get("turbidez", ""),
+                    "orp": item.get("orp", ""),
+                    "tds": item.get("tds", ""),
+                    "temperatura": item.get("temperatura", ""),
+                    "observacao": "",
+                    # O complemento não substitui o parecer automático; entra via rt_notes no PDF.
+                    "parecer": "",
+                    "dosagens": [],
+                }
+                # Alguns normalizadores esperam o payload bruto dentro de raw.
+                registro["raw"] = dict(registro)
+                registros.append(registro)
+
+            if registros and _fotos_rt:
+                registros[-1]["fotos"] = _fotos_rt
+                registros[-1]["raw"]["fotos"] = _fotos_rt
+
+            return registros
+
         if preview_col.button("🔎 Pré-visualizar registros técnicos"):
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
             if not regs:
+                st.session_state["_rt2025_qtd_registros_auto"] = 0
+                st.session_state["rel_analises_total"] = _linhas_esperadas_rt
+                garantir_campos_analises(_linhas_esperadas_rt)
                 registros_preview.info("Nenhum registro técnico (RT) encontrado para o período selecionado.")
             else:
+                _preencher_campos_rt_por_registros(regs)
                 registros_preview.write(f"{len(regs)} registro(s) técnico(s) encontrado(s)")
+                registros_preview.caption("Campos de análises pré-preenchidos com os registros automáticos do período.")
                 for r in regs:
                     _idv = (r.get("raw") or {}).get("id_visita", "-")
                     registros_preview.caption(f"{r.get('data','?')} | Origem: RT | ID: {_idv}")
@@ -11602,31 +12403,49 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.stop()
 
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
-            if not regs:
-                st.info("Não há registros técnicos de RT no período selecionado. O relatório não foi gerado.")
-                st.stop()
 
-            # Mantem compatibilidade das chaves ja usadas no restante da tela.
-            st.session_state["rel_nome_condominio"] = _sel_cond_rt
-            st.session_state["rel_mes_referencia"] = _sel_mes
-            st.session_state["rel_ano_referencia"] = _sel_ano
-            st.session_state["rel_data_emissao"] = _data_emissao.strftime("%d/%m/%Y")
+            # Evita alterar session_state de widgets já instanciados no Streamlit.
+            # O nome, mês e ano usados no PDF vêm das variáveis locais selecionadas acima.
+
+            _data_emissao_txt = str(st.session_state.get("rel_data_emissao") or "").strip()
+            if not validar_data_br(_data_emissao_txt):
+                _data_emissao_txt = _data_emissao.strftime("%d/%m/%Y")
+                st.session_state["rel_data_emissao"] = _data_emissao_txt
 
             try:
                 _dados_cli = _mapa_cli_rt.get(_sel_cond_rt, {})
+                _endereco_cond = str(st.session_state.get("rel_endereco_condominio") or _dados_cli.get("endereco") or "").strip()
+                _representante_cond = str(st.session_state.get("rel_representante") or "").strip()
                 _art_num = str(st.session_state.get("rel_art_numero") or "").strip()
-                _obs_rt = str(st.session_state.get("rel_diagnostico") or "").strip()
+                _obs_rt = _montar_notas_rt_fluxo_padrao()
+
+                _records_pdf_manual = _montar_registros_rt_do_fluxo_padrao(_sel_cond_rt, _sel_mes, _sel_ano)
+
+                _records_pdf = [r.get("raw", {}) for r in regs]
+                if _records_pdf_manual:
+                    _records_pdf = _records_pdf_manual
+                elif not _records_pdf:
+                    _records_pdf = []
+
+                if not _records_pdf:
+                    st.warning(
+                        "Não há registros automáticos no período. "
+                        "Preencha/edite os dados no fluxo padrão (mesmos campos) e gere novamente."
+                    )
+                    st.stop()
+
+                garantir_logo_oficial_aqua()
 
                 pdf_bytes = build_monthly_rt_pdf_bytes(
-                    records=[r.get("raw", {}) for r in regs],
+                    records=_records_pdf,
                     condominium=_sel_cond_rt,
                     month=_sel_mes,
                     year=_sel_ano,
-                    issue_date=_data_emissao.strftime("%d/%m/%Y"),
-                    address=str(_dados_cli.get("endereco") or st.session_state.get("rel_endereco_condominio") or "").strip(),
+                    issue_date=_data_emissao_txt,
+                    address=_endereco_cond,
                     art_number=_art_num,
                     rt_notes=_obs_rt,
-                    representative_name=str(st.session_state.get("rel_representante") or "").strip(),
+                    representative_name=_representante_cond,
                 )
 
                 _nome_pdf = safe_report_filename(_sel_cond_rt, _sel_mes, _sel_ano)
@@ -12849,6 +13668,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 for lc in reversed(pend_hc[-3:]):
                     ft = f" | 📸 {len(lc.get('fotos',[]))} foto(s)" if lc.get("fotos") else ""
                     st.caption(f"📅 {lc.get('data','')} | {lc.get('operador','–')} | pH:{lc.get('ph','–')} CRL:{lc.get('cloro_livre','–')}{ft}")
+
+    # Para RT, não prender no Modo Campo: enviar para a área de relatório mensal.
+    if _op_is_rt:
+        st.markdown("---")
+        if st.button("📄 Abrir relatório mensal RT", use_container_width=True, key="btn_rt_abrir_relatorio_mensal"):
+            st.session_state["modo_atual"] = "escritorio"
+            st.session_state["admin_logado"] = True
+            st.session_state["empresa_ativa"] = "aqua_gestao"
+            st.session_state["admin_empresa_fixa"] = "aqua_gestao"
+            st.rerun()
 
     # Para o restante da página não renderizar no modo operador
     st.stop()
