@@ -1653,6 +1653,39 @@ def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None =
     return max(1, min(freq * semanas_no_mes, ANALISES_MAX_SUGERIDO))
 
 
+def obter_tercas_feiras_mes(mes: str | int | None = None, ano: str | int | None = None) -> list[date]:
+    """Retorna todas as terças-feiras do mês/ano informado para as visitas do RT."""
+    try:
+        mes_i = int(str(mes or "").strip())
+        ano_i = int(str(ano or "").strip())
+        if not 1 <= mes_i <= 12:
+            raise ValueError("mês fora da faixa")
+    except Exception:
+        hoje = date.today()
+        mes_i, ano_i = hoje.month, hoje.year
+
+    primeiro = date(ano_i, mes_i, 1)
+    primeira_terca = primeiro + timedelta(days=(1 - primeiro.weekday()) % 7)
+    tercas = []
+    atual = primeira_terca
+    while atual.month == mes_i:
+        tercas.append(atual)
+        atual += timedelta(days=7)
+    return tercas
+
+
+def lancamento_eh_visita_rt_terca(lancamento: dict | None) -> bool:
+    """Confirma se a data de um lançamento corresponde a uma terça-feira."""
+    valor = str((lancamento or {}).get("data", "") or "").strip()
+    valor = normalizar_data_visita(valor) if "normalizar_data_visita" in globals() else valor
+    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(valor, formato).weekday() == 1
+        except Exception:
+            continue
+    return False
+
+
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
     """Obtém a frequência semanal cadastrada para o cliente, com fallback para 3x/semana."""
     dados = cliente_ou_dados or {}
@@ -6401,6 +6434,17 @@ def garantir_campos_analises(qtd: int):
                 st.session_state[chave] = ""
 
 
+def garantir_campos_analises_rt(qtd: int):
+    """Inicializa exatamente as linhas semanais do RT, sem o mínimo operacional de 12."""
+    qtd = max(1, min(int(qtd or 1), ANALISES_MAX_SUGERIDO))
+    st.session_state.rel_analises_total = qtd
+    for i in range(qtd):
+        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador"]:
+            chave = f"rel_analise_{sufixo}_{i}"
+            if chave not in st.session_state:
+                st.session_state[chave] = ""
+
+
 def adicionar_analise_extra():
     atual = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     garantir_campos_analises(atual + 1)
@@ -6409,7 +6453,7 @@ def adicionar_analise_extra():
 def coletar_analises_relatorio() -> list[dict]:
     itens = []
     qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
-    garantir_campos_analises(qtd)
+    garantir_campos_analises_rt(qtd)
     for i in range(qtd):
         itens.append({
             "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
@@ -11424,7 +11468,7 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "empresa_ativa": "aqua_gestao",
-        "rel_analises_total": max(total, ANALISES_PADRAO),
+        "rel_analises_total": max(total, 1),
         "campos": {},
     }
     for k, v in st.session_state.items():
@@ -11518,7 +11562,7 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         if not campos:
             return False
         total = int(dados.get("rel_analises_total", campos.get("rel_analises_total", ANALISES_PADRAO)) or ANALISES_PADRAO)
-        st.session_state["rel_analises_total"] = max(total, ANALISES_PADRAO)
+        st.session_state["rel_analises_total"] = max(total, 1)
         for k, v in campos.items():
             if str(k).startswith("_"):
                 continue
@@ -19851,9 +19895,10 @@ if _clientes_rel:
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
                     st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
                     st.session_state["rel_cpf_cnpj_representante"] = ""
-                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
-                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
-                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
+                    st.session_state["rel_analises_total"] = len(obter_tercas_feiras_mes(
+                        st.session_state.get("rel_mes_referencia"),
+                        st.session_state.get("rel_ano_referencia"),
+                    ))
                     st.session_state["_rel_auto_importar_cliente"] = True
                     st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
                     st.rerun()
@@ -20048,12 +20093,13 @@ for lc in lancamentos_local + lancamentos_sheets:
 
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+# O relatório administrativo de RT recebe somente as visitas semanais do RT, feitas às terças-feiras.
+lancamentos_disponiveis = [lc for lc in lancamentos_disponiveis if lancamento_eh_visita_rt_terca(lc)]
 
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
-    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    _tercas_rt = obter_tercas_feiras_mes(st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises_rt(len(_tercas_rt))
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -20305,15 +20351,17 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
-_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
-with _freq_rel_col1:
-    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
-with _freq_rel_col2:
-    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
-if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
-    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+_tercas_relatorio_rt = obter_tercas_feiras_mes(
+    st.session_state.get("rel_mes_referencia"),
+    st.session_state.get("rel_ano_referencia"),
+)
+garantir_campos_analises_rt(len(_tercas_relatorio_rt))
+for _indice_terca, _data_terca in enumerate(_tercas_relatorio_rt):
+    st.session_state[f"rel_analise_data_{_indice_terca}"] = _data_terca.strftime("%d/%m/%Y")
+st.caption(
+    f"Visitas semanais do RT: {len(_tercas_relatorio_rt)} terça(s)-feira(s) em "
+    f"{st.session_state.get('rel_mes_referencia')}/{st.session_state.get('rel_ano_referencia')}."
+)
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -20328,13 +20376,8 @@ st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
-_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
-ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
-with ctrl_a1:
-    if st.button("Adicionar análise extra", use_container_width=True):
-        adicionar_analise_extra()
-        st.rerun()
+garantir_campos_analises_rt(len(_tercas_relatorio_rt))
+ctrl_a2, ctrl_a3 = st.columns([1.35, 2.25])
 with ctrl_a2:
     if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
         nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
@@ -20346,7 +20389,7 @@ with ctrl_a2:
             aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
         st.rerun()
 with ctrl_a3:
-    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
+    st.caption(f"{len(_tercas_relatorio_rt)} linha(s), uma para cada visita de terça-feira. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
 # Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
 cab_cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
 for _col, _label in zip(
@@ -20355,9 +20398,9 @@ for _col, _label in zip(
 ):
     _col.caption(f"**{_label}**")
 
-for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
+for i in range(len(_tercas_relatorio_rt)):
     cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
-    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
+    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", disabled=True)
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
     cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
     cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
@@ -21893,6 +21936,3 @@ st.markdown("---")
 st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
-
-
-
