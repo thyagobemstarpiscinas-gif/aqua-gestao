@@ -1,5 +1,6 @@
 
 
+
 import os
 import re
 import json
@@ -1701,6 +1702,8 @@ def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
 
 
 ASSINATURA_RT_CANDIDATOS = [
+    BASE_DIR / "assinatura_thyago_silveira.png",
+    BASE_DIR / "assinatura_thyago_silveira_transparente.png",
     BASE_DIR / "assinatura_rt.png",
     BASE_DIR / "assinatura_rt.jpg",
     BASE_DIR / "assinatura_rt.jpeg",
@@ -2095,25 +2098,6 @@ def build_monthly_rt_pdf_bytes(
     refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025; ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
     story.append(_p(refs, st_small))
 
-    assinatura = [
-        [_p("Responsável Técnico", st_tab_left), _p("Representante do estabelecimento", st_tab_left)],
-        [_p(f"{RESPONSAVEL_TÉCNICO}<br/>Técnico em Química<br/>CRQ-MG 2ª Região nº 024025748<br/>Responsável Técnico<br/><br/>Data de emissão: {issue_date or '—'}", st_tab_left),
-         _p(f"<br/><br/><br/>Assinatura: ___________________________<br/>Nome: {representative_name or '____________________________'}", st_tab_left)],
-    ]
-    t_ass = Table(assinatura, colWidths=[8.9 * cm, 8.9 * cm])
-    t_ass.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), BLUE_SOFT),
-        ("GRID", (0,0), (-1,-1), 0.35, GRID),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 5),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-    ]))
-    story.append(Spacer(1, 4 * mm))
-    story.append(t_ass)
-    story.append(_p("Aviso: análises microbiológicas dependem de coleta e laboratório competente, quando aplicável.", st_small))
-
     # Registro fotográfico — só foto + legenda limpa.
     fotos = []
     for r in recs:
@@ -2137,6 +2121,47 @@ def build_monthly_rt_pdf_bytes(
                     story.append(Spacer(1, 2 * mm))
             except Exception:
                 continue
+
+    # Encerramento institucional: deve permanecer depois do registro fotográfico.
+    assinatura_path = None
+    for cand in ASSINATURA_RT_CANDIDATOS:
+        try:
+            if cand.exists() and cand.is_file():
+                assinatura_path = cand
+                break
+        except Exception:
+            continue
+
+    bloco_rt = []
+    if assinatura_path:
+        try:
+            bloco_rt.append(RLImage(str(assinatura_path), width=4.4 * cm, height=1.45 * cm, kind="proportional"))
+        except Exception:
+            pass
+    bloco_rt.append(_p("_________________________________<br/><b>Thyago Silveira</b><br/>Técnico em Química | Responsável Técnico<br/>CRQ-MG 2ª Região nº 024025748<br/>Aqua Gestão — Controle Técnico de Piscinas<br/>Data de emissão: " + (issue_date or "—"), st_tab_left))
+
+    bloco_representante = [
+        Spacer(1, 1.45 * cm),
+        _p("_________________________________<br/><b>Representante do estabelecimento</b><br/>Nome: " + (representative_name or "____________________________") + "<br/>Assinatura / ciência", st_tab_left),
+    ]
+    assinatura = [
+        [_p("Validação do Responsável Técnico", st_tab_left), _p("Ciência do estabelecimento", st_tab_left)],
+        [bloco_rt, bloco_representante],
+    ]
+    t_ass = Table(assinatura, colWidths=[8.9 * cm, 8.9 * cm])
+    t_ass.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), BLUE_SOFT),
+        ("GRID", (0,0), (-1,-1), 0.35, GRID),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("ALIGN", (0,1), (-1,-1), "CENTER"),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 5),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+    ]))
+    story.append(Spacer(1, 4 * mm))
+    story.append(KeepTogether([_p("Encerramento e Validação Técnica", st_h), t_ass]))
+    story.append(_p("Aviso: análises microbiológicas dependem de coleta e laboratório competente, quando aplicável. A assinatura gráfica possui caráter visual e institucional; não equivale a assinatura digital ICP-Brasil.", st_small))
 
     def _header_footer(canvas, doc_obj):
         canvas.saveState()
