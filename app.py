@@ -1675,6 +1675,60 @@ def obter_tercas_feiras_mes(mes: str | int | None = None, ano: str | int | None 
     return tercas
 
 
+def sincronizar_periodo_relatorio_rt(nome_condominio: str | None = None) -> bool:
+    """Sincroniza as linhas do RT com condomínio, mês e ano selecionados.
+
+    Ao trocar o período, remove medições mantidas pelo ``session_state`` para
+    impedir que dados de um mês sejam associados silenciosamente a outro.
+    Rascunhos válidos do próprio período são preservados na primeira carga.
+    """
+    mes = str(st.session_state.get("rel_mes_referencia") or "").strip().zfill(2)
+    ano = str(st.session_state.get("rel_ano_referencia") or "").strip()
+    nome = str(nome_condominio or st.session_state.get("rel_nome_condominio") or "").strip()
+    try:
+        tercas = obter_tercas_feiras_mes(mes, ano)
+    except Exception:
+        return False
+
+    contexto = f"{normalizar_texto_busca(nome)}|{mes}|{ano}"
+    contexto_anterior = st.session_state.get("_rel_rt_contexto_periodo")
+    datas_atuais = [
+        str(st.session_state.get(f"rel_analise_data_{i}") or "").strip()
+        for i in range(ANALISES_MAX_SUGERIDO)
+    ]
+    datas_preenchidas = [valor for valor in datas_atuais if valor]
+    datas_validas_periodo = bool(datas_preenchidas) and all(
+        lancamento_pertence_mes_ano(valor, mes, ano) for valor in datas_preenchidas
+    )
+
+    # Na primeira renderização, conserva um rascunho coerente com o período.
+    # Em qualquer troca real de contexto, limpa todos os parâmetros das linhas.
+    deve_limpar = (
+        (contexto_anterior is not None and contexto_anterior != contexto)
+        or (contexto_anterior is None and datas_preenchidas and not datas_validas_periodo)
+    )
+    if deve_limpar:
+        campos = (
+            "data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez",
+            "orp", "tds", "temperatura", "operador",
+        )
+        for i in range(ANALISES_MAX_SUGERIDO):
+            for campo in campos:
+                st.session_state[f"rel_analise_{campo}_{i}"] = ""
+        st.session_state.pop("_rel_autoimport_assinatura", None)
+
+    st.session_state["rel_analises_total"] = len(tercas)
+    garantir_campos_analises_rt(len(tercas))
+    for i, data_terca in enumerate(tercas):
+        st.session_state[f"rel_analise_data_{i}"] = data_terca.strftime("%d/%m/%Y")
+    # Elimina datas excedentes quando o mês passa de cinco para quatro terças.
+    for i in range(len(tercas), ANALISES_MAX_SUGERIDO):
+        st.session_state[f"rel_analise_data_{i}"] = ""
+
+    st.session_state["_rel_rt_contexto_periodo"] = contexto
+    return deve_limpar
+
+
 def lancamento_eh_visita_rt_terca(lancamento: dict | None) -> bool:
     """Confirma se a data de um lançamento corresponde a uma terça-feira."""
     valor = str((lancamento or {}).get("data", "") or "").strip()
@@ -11303,6 +11357,15 @@ def limpar_formulario():
 RASCUNHO_JSON_NAME = "rascunho_relatorio.json"
 
 
+def caminho_rascunho_relatorio_periodo(pasta_condominio: Path) -> Path:
+    """Retorna um rascunho exclusivo para o mês/ano atualmente selecionado."""
+    mes = re.sub(r"\D", "", str(st.session_state.get("rel_mes_referencia") or ""))[:2].zfill(2)
+    ano = re.sub(r"\D", "", str(st.session_state.get("rel_ano_referencia") or ""))[:4]
+    if len(ano) != 4 or mes == "00":
+        return pasta_condominio / RASCUNHO_JSON_NAME
+    return pasta_condominio / f"rascunho_relatorio_{mes}_{ano}.json"
+
+
 def salvar_rascunho_relatorio(pasta_condominio: Path):
     """Salva o estado atual do formulário de relatório como rascunho no JSON."""
     qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
@@ -11358,13 +11421,28 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
             "cya": (st.session_state.get(f"rel_analise_cya_{i}") or ""),
             "operador": (st.session_state.get(f"rel_analise_operador_{i}") or ""),
         })
-    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    caminho = caminho_rascunho_relatorio_periodo(pasta_condominio)
     caminho.write_text(json.dumps(rascunho, ensure_ascii=False, indent=2), encoding="utf-8")
     return rascunho
 
 
 def carregar_rascunho_relatorio(pasta_condominio: Path) -> dict | None:
-    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    caminho = caminho_rascunho_relatorio_periodo(pasta_condominio)
+    # Compatibilidade segura com o nome antigo: só carrega se o período coincidir.
+    if not caminho.exists():
+        legado = pasta_condominio / RASCUNHO_JSON_NAME
+        if legado.exists():
+            try:
+                dados_legado = json.loads(legado.read_text(encoding="utf-8"))
+                mes_atual = str(st.session_state.get("rel_mes_referencia") or "").strip().zfill(2)
+                ano_atual = str(st.session_state.get("rel_ano_referencia") or "").strip()
+                if (
+                    str(dados_legado.get("rel_mes_referencia") or "").strip().zfill(2) == mes_atual
+                    and str(dados_legado.get("rel_ano_referencia") or "").strip() == ano_atual
+                ):
+                    return dados_legado
+            except Exception:
+                pass
     if not caminho.exists():
         return None
     try:
@@ -11422,9 +11500,22 @@ def aplicar_rascunho_no_formulario(rascunho: dict):
 
 
 def excluir_rascunho_relatorio(pasta_condominio: Path):
-    caminho = pasta_condominio / RASCUNHO_JSON_NAME
+    caminho = caminho_rascunho_relatorio_periodo(pasta_condominio)
     if caminho.exists():
         caminho.unlink()
+    legado = pasta_condominio / RASCUNHO_JSON_NAME
+    if legado.exists():
+        try:
+            dados_legado = json.loads(legado.read_text(encoding="utf-8"))
+            if (
+                str(dados_legado.get("rel_mes_referencia") or "").strip().zfill(2)
+                == str(st.session_state.get("rel_mes_referencia") or "").strip().zfill(2)
+                and str(dados_legado.get("rel_ano_referencia") or "").strip()
+                == str(st.session_state.get("rel_ano_referencia") or "").strip()
+            ):
+                legado.unlink()
+        except Exception:
+            pass
 
 
 inicializar_campos()
@@ -12350,9 +12441,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if not str(st.session_state.get("rel_representante") or "").strip():
                 st.session_state["rel_representante"] = str(_cli_sel_rt.get("nome_sindico") or "").strip()
 
+        _periodo_rt_limpo = sincronizar_periodo_relatorio_rt(_sel_cond_rt)
+        if _periodo_rt_limpo:
+            st.warning(
+                "O condomínio ou período foi alterado. As medições do contexto anterior foram limpas "
+                "e as datas das terças-feiras foram recalculadas."
+            )
+
         _dados_cliente_rt = _mapa_cli_rt.get(_sel_cond_rt, {}) if (_sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos") else {}
         _freq_rt = _obter_frequencia_rt_cliente(_dados_cliente_rt)
-        _linhas_esperadas_rt = calcular_linhas_analises_rt_mensal(_freq_rt, _sel_mes, _sel_ano)
+        _linhas_esperadas_rt = len(obter_tercas_feiras_mes(_sel_mes, _sel_ano))
         _ctx_rt = f"{_sel_cond_rt}|{_sel_mes}|{_sel_ano}|{_freq_rt}"
         if st.session_state.get("_rt2025_ctx_linhas") != _ctx_rt:
             st.session_state["_rt2025_ctx_linhas"] = _ctx_rt
@@ -20375,6 +20473,15 @@ with r8:
 
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
+
+_periodo_rel_limpo = sincronizar_periodo_relatorio_rt(
+    st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio")
+)
+if _periodo_rel_limpo:
+    st.warning(
+        "O condomínio ou período foi alterado. As medições anteriores foram limpas para evitar "
+        "associar dados ao mês incorreto; as terças-feiras foram recalculadas automaticamente."
+    )
 
 _tercas_relatorio_rt = obter_tercas_feiras_mes(
     st.session_state.get("rel_mes_referencia"),
