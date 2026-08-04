@@ -6057,11 +6057,31 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         if linhas_a:
-            story.append(table([["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]] + linhas_a,
-                widths=[16*mm, 10*mm, 11*mm, 11*mm, 11*mm, 13*mm, 14*mm, 12*mm, 13*mm, 13*mm, 13*mm, 13*mm, 20*mm]))
+            dados_tabela_analises = [
+                ["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]
+            ] + linhas_a
+            tabela_analises = table(
+                dados_tabela_analises,
+                widths=[20*mm, 9*mm, 10*mm, 10*mm, 10*mm, 12*mm, 13*mm,
+                        11*mm, 12*mm, 12*mm, 12*mm, 11*mm, 28*mm],
+            )
+            # Esta tabela tem muitas colunas. Margens internas menores evitam
+            # que a data e o nome do responsável quebrem verticalmente, sem
+            # comprometer a leitura dos parâmetros numéricos.
+            tabela_analises.setStyle(TableStyle([
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("ALIGN", (0, 0), (-2, -1), "CENTER"),
+                ("ALIGN", (-1, 1), (-1, -1), "LEFT"),
+            ]))
+            story.append(tabela_analises)
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
 
+        # Mantém o quadro explicativo visualmente separado da borda da tabela.
+        story.append(Spacer(1, 3*mm))
         story.append(P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"))
         story.append(P(
             "A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva "
