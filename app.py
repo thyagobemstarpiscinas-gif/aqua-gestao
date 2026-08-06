@@ -16,6 +16,46 @@ from docx import Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from PIL import Image, ImageOps
+from utils.formatacao import (
+    slugify_nome,
+    humanizar_nome_pasta,
+    limpar_nome_arquivo,
+    apenas_digitos,
+    formatar_cpf,
+    formatar_cnpj,
+    formatar_telefone,
+    validar_email,
+    formatar_data_digitada,
+    moeda_br_sem_prefixo,
+    moeda_br,
+    valor_para_template,
+)
+from utils.validacao import validar_cpf, validar_cnpj, validar_data_br
+from utils.datas import (
+    hoje_br,
+    formatar_data_hora_arquivo,
+    parse_data_br,
+    formatar_data_br,
+    adicionar_um_ano,
+)
+from utils.vencimentos import (
+    calcular_renovacao_anual,
+    status_vencimento,
+    texto_dias_restantes,
+)
+from utils.arquivos import classificar_arquivo, chave_segura
+from utils.normalizacao import normalizar_texto_busca, nomes_condominio_equivalentes
+from utils.datas_visitas import normalizar_data_visita, lancamento_pertence_mes_ano, filtrar_lancamentos_rt_tercas
+from rt_monthly_report import (
+    normalize_rt_records,
+    select_records_by_condominium,
+    select_records_by_month_year,
+    exclude_operator_records,
+    sort_records_chronologically,
+    safe_report_filename,
+    build_monthly_rt_pdf_bytes,
+    validate_generation_selection,
+)
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -145,74 +185,6 @@ def _normalizar_chave_acesso(texto: str) -> str:
     """Normaliza nomes para comparação exata de PINs, operadores e condomínios."""
     texto = re.sub(r"\s+", " ", str(texto or "").strip())
     return texto.casefold()
-
-
-def normalizar_texto_busca(valor: str) -> str:
-    """Normaliza texto para comparação robusta: remove acento, caixa, espaços e símbolos."""
-    valor = str(valor or "").strip().lower()
-    valor = unicodedata.normalize("NFKD", valor)
-    valor = "".join(c for c in valor if not unicodedata.combining(c))
-    valor = re.sub(r"[^a-z0-9]+", " ", valor)
-    valor = re.sub(r"\s+", " ", valor).strip()
-    return valor
-
-
-def nomes_condominio_equivalentes(a: str, b: str) -> bool:
-    """Compara nomes de condomínios tolerando acentos, espaços e pequenas variações."""
-    na = normalizar_texto_busca(a)
-    nb = normalizar_texto_busca(b)
-    if not na or not nb:
-        return False
-    return na == nb or na in nb or nb in na
-
-
-def normalizar_data_visita(valor) -> str:
-    """Converte datas como 17/04/26, 170426, 2026-04-17 para dd/mm/aaaa."""
-    texto = str(valor or "").strip()
-    if not texto:
-        return ""
-
-    formatos = [
-        "%d/%m/%Y", "%d/%m/%y",
-        "%d-%m-%Y", "%d-%m-%y",
-        "%Y-%m-%d",
-        "%d%m%Y", "%d%m%y",
-    ]
-    for fmt in formatos:
-        try:
-            dt = datetime.strptime(texto, fmt)
-            return dt.strftime("%d/%m/%Y")
-        except Exception:
-            pass
-
-    digitos = re.sub(r"\D", "", texto)
-    if len(digitos) == 6:
-        try:
-            dt = datetime.strptime(digitos, "%d%m%y")
-            return dt.strftime("%d/%m/%Y")
-        except Exception:
-            pass
-    if len(digitos) == 8:
-        for fmt in ("%d%m%Y", "%Y%m%d"):
-            try:
-                dt = datetime.strptime(digitos, fmt)
-                return dt.strftime("%d/%m/%Y")
-            except Exception:
-                pass
-
-    return texto
-
-
-def lancamento_pertence_mes_ano(data_lancamento: str, mes: str, ano: str) -> bool:
-    """Confere se uma visita pertence ao mês/ano do relatório."""
-    data_norm = normalizar_data_visita(data_lancamento)
-    try:
-        dt = datetime.strptime(data_norm, "%d/%m/%Y")
-        mes_int = int(str(mes).zfill(2))
-        ano_int = int(str(ano))
-    except Exception:
-        return False
-    return dt.month == mes_int and dt.year == ano_int
 
 
 def _montar_resumo_dosagens_lancamento(lancamento: dict) -> str:
@@ -977,7 +949,7 @@ def salvar_operadores(lista: list):
 
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global 2940 (acesso total) e PIN do RT via secrets [rt] pin."""
+    Também aceita PIN global XXXX_PIN_MESTRE (acesso total) e PIN do RT via secrets [rt] pin."""
     pin_limpo = str(pin or "").strip()
     # PIN do Responsável Técnico — lido do secrets [rt] pin
     try:
@@ -1653,39 +1625,6 @@ def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None =
     return max(1, min(freq * semanas_no_mes, ANALISES_MAX_SUGERIDO))
 
 
-def obter_tercas_feiras_mes(mes: str | int | None = None, ano: str | int | None = None) -> list[date]:
-    """Retorna todas as terças-feiras do mês/ano informado para as visitas do RT."""
-    try:
-        mes_i = int(str(mes or "").strip())
-        ano_i = int(str(ano or "").strip())
-        if not 1 <= mes_i <= 12:
-            raise ValueError("mês fora da faixa")
-    except Exception:
-        hoje = date.today()
-        mes_i, ano_i = hoje.month, hoje.year
-
-    primeiro = date(ano_i, mes_i, 1)
-    primeira_terca = primeiro + timedelta(days=(1 - primeiro.weekday()) % 7)
-    tercas = []
-    atual = primeira_terca
-    while atual.month == mes_i:
-        tercas.append(atual)
-        atual += timedelta(days=7)
-    return tercas
-
-
-def lancamento_eh_visita_rt_terca(lancamento: dict | None) -> bool:
-    """Confirma se a data de um lançamento corresponde a uma terça-feira."""
-    valor = str((lancamento or {}).get("data", "") or "").strip()
-    valor = normalizar_data_visita(valor) if "normalizar_data_visita" in globals() else valor
-    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(valor, formato).weekday() == 1
-        except Exception:
-            continue
-    return False
-
-
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
     """Obtém a frequência semanal cadastrada para o cliente, com fallback para 3x/semana."""
     dados = cliente_ou_dados or {}
@@ -1853,20 +1792,19 @@ def build_monthly_rt_pdf_bytes(
         ph = _to_float(r.get("ph"))
         crl = _to_float(r.get("cloro_livre") or r.get("crl"))
         ct = _to_float(r.get("cloro_total") or r.get("ct"))
-        cc = max(0.0, ct - crl) if crl is not None and ct is not None else None
         alc = _to_float(r.get("alcalinidade") or r.get("alc"))
         dur = _to_float(r.get("dureza") or r.get("dc"))
         cya = _to_float(r.get("cianurico") or r.get("cya"))
         turb = _to_float(r.get("turbidez") or r.get("ntu"))
         orp = _to_float(r.get("orp"))
         if ph is not None and not (7.2 <= ph <= 7.8): desv.append("pH")
-        if crl is not None and not (1.0 <= crl <= 3.0): desv.append("CRL")
-        if cc is not None and cc > 0.4: desv.append("CC")
+        if crl is not None and not (0.5 <= crl <= 3.0): desv.append("CRL")
+        if ct is not None and not (0.5 <= ct <= 3.0): desv.append("CT")
         if alc is not None and not (80 <= alc <= 120): desv.append("alcalinidade")
-        if dur is not None and not (200 <= dur <= 400): desv.append("dureza")
+        if dur is not None and not (150 <= dur <= 300): desv.append("dureza")
         if cya is not None and not (30 <= cya <= 50): desv.append("CYA")
         if turb is not None and turb > 0.5: desv.append("turbidez")
-        if orp is not None and orp < 600: desv.append("ORP")
+        if orp is not None and orp < 650: desv.append("ORP")
         return desv
 
     desvios_linhas = []
@@ -2062,8 +2000,8 @@ def build_monthly_rt_pdf_bytes(
     story.append(_p("3. Parecer e Recomendações", st_h))
     recomendacoes = []
     desvios_texto = " ; ".join(desvios_linhas) if desvios_linhas else "Não foram identificadas não conformidades relevantes no período."
-    if any("CRL" in d or "CC" in d for d in desvios_linhas):
-        recomendacoes.append("Reavaliar desinfecção (CRL/CC), revisar demanda oxidante e confirmar residual após recirculação.")
+    if any("CRL" in d or "CT" in d for d in desvios_linhas):
+        recomendacoes.append("Reavaliar desinfecção (CRL/CT), revisar demanda oxidante e confirmar residual após recirculação.")
     if any("alcalinidade" in d for d in desvios_linhas):
         recomendacoes.append("Corrigir alcalinidade total para melhorar estabilidade do pH e reduzir oscilações operacionais.")
     if any("dureza" in d for d in desvios_linhas):
@@ -2864,6 +2802,89 @@ def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
     return resultado
 
 
+def _cliente_vinculado_aqua_gestao_strict(cliente: dict | None) -> bool:
+    """Retorna True somente quando o vínculo de empresa inclui Aqua Gestão.
+
+    Regras para seleção RT:
+    - usa exclusivamente o campo de vínculo de empresa do cadastro;
+    - não usa serviço executado/visita RT como critério de inclusão;
+    - não considera vínculo vazio como Aqua.
+    """
+    cliente = cliente or {}
+    empresa_original = str(cliente.get("empresa", "") or "")
+    if not empresa_original.strip():
+        return False
+
+    empresa_norm = normalizar_texto_busca(empresa_original)
+    if not empresa_norm:
+        return False
+    if "aqua" in empresa_norm:
+        return True
+    if "ambas" in empresa_norm:
+        return True
+    return False
+
+
+def _resolver_condominios_rt_permitidos_exatos(condominios_permitidos: list[str], condominios_aqua_exatos: list[str]) -> list[str]:
+    """Resolve permissões de condomínio preservando o nome original cadastrado."""
+    return _resolver_condominios_permitidos_exatos(
+        condominios_permitidos or [],
+        list(condominios_aqua_exatos or []),
+    )
+
+
+def _listar_condominios_rt_aqua(clientes: list[dict] | None, condominios_permitidos: list[str] | None = None,
+                                incluir_todos_preview: bool = True) -> list[str]:
+    """Lista condomínios do modo RT usando vínculo estrito com Aqua Gestão.
+
+    Preserva exatamente o nome original cadastrado em `clientes[*]["nome"]`.
+    """
+    nomes_aqua = []
+    vistos = set()
+
+    for cliente in clientes or []:
+        nome_original = str((cliente or {}).get("nome", "") or "")
+        if not nome_original.strip():
+            continue
+
+        status_cliente = normalizar_texto_busca((cliente or {}).get("status", "Ativo"))
+        if status_cliente in ("inativo", "desativado", "excluido", "cancelado"):
+            continue
+
+        if not _cliente_vinculado_aqua_gestao_strict(cliente):
+            continue
+
+        chave_nome = normalizar_texto_busca(nome_original)
+        if chave_nome in vistos:
+            continue
+        vistos.add(chave_nome)
+        nomes_aqua.append(nome_original)
+
+    permitidos = []
+    acesso_total = False
+    for nome_perm in condominios_permitidos or []:
+        nome_perm = str(nome_perm or "")
+        if not nome_perm.strip():
+            continue
+        if _normalizar_chave_acesso(nome_perm).strip() == "todos":
+            acesso_total = True
+            continue
+        permitidos.append(nome_perm)
+
+    if acesso_total:
+        nomes_filtrados = list(nomes_aqua)
+    elif permitidos:
+        nomes_filtrados = _resolver_condominios_rt_permitidos_exatos(permitidos, nomes_aqua)
+    else:
+        nomes_filtrados = list(nomes_aqua)
+
+    nomes_filtrados = sorted(nomes_filtrados, key=lambda n: normalizar_texto_busca(n))
+
+    if incluir_todos_preview and nomes_filtrados:
+        return ["TODOS"] + nomes_filtrados
+    return nomes_filtrados
+
+
 def _empresa_ativa_codigo() -> str:
     """Retorna o painel administrativo ativo.
 
@@ -3016,26 +3037,6 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
     return cliente_final
 
 
-def slugify_nome(texto: str) -> str:
-    texto = (texto or "").strip()
-    texto = re.sub(r"[^\w\s-]", "", texto, flags=re.UNICODE)
-    texto = re.sub(r"\s+", "_", texto)
-    return texto[:120] if texto else "condominio"
-
-
-def humanizar_nome_pasta(texto: str) -> str:
-    texto = (texto or "").strip()
-    texto = texto.replace("_", " ").replace("-", " ")
-    texto = re.sub(r"\s+", " ", texto).strip()
-    return texto
-
-
-def limpar_nome_arquivo(texto: str) -> str:
-    texto = re.sub(r'[<>:"/\\\\|?*]+', "", texto)
-    texto = re.sub(r"\s+", "_", texto.strip())
-    return texto[:150]
-
-
 def carregar_imagem_corrigida_orientacao(origem):
     """Corrige orientação EXIF para preview no Streamlit sem alterar o upload original."""
     try:
@@ -3102,123 +3103,6 @@ def deduplicar_fotos(lista):
     return resultado
 
 
-def hoje_br() -> str:
-    return date.today().strftime("%d/%m/%Y")
-
-
-def apenas_digitos(texto: str) -> str:
-    return re.sub(r"\D", "", texto or "")
-
-
-def formatar_data_hora_arquivo(ts: float) -> str:
-    dt = datetime.fromtimestamp(ts)
-    return dt.strftime("%d/%m/%Y %H:%M")
-
-
-def classificar_arquivo(nome_arquivo: str) -> tuple[str, str]:
-    nome_lower = nome_arquivo.lower()
-
-    if "contrato" in nome_lower:
-        tipo_doc = "Contrato"
-    elif "aditivo" in nome_lower:
-        tipo_doc = "Aditivo"
-    elif "relatorio" in nome_lower:
-        tipo_doc = "Relatório"
-    else:
-        tipo_doc = "Documento"
-
-    if nome_lower.endswith(".pdf"):
-        tipo_ext = "PDF"
-    elif nome_lower.endswith(".docx"):
-        tipo_ext = "DOCX"
-    else:
-        tipo_ext = "Arquivo"
-
-    return tipo_doc, tipo_ext
-
-
-def chave_segura(texto: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_]+", "_", texto)
-
-
-def parse_data_br(texto: str):
-    try:
-        return datetime.strptime((texto or "").strip(), "%d/%m/%Y").date()
-    except Exception:
-        return None
-
-
-def formatar_data_br(dt: date) -> str:
-    return dt.strftime("%d/%m/%Y")
-
-
-def adicionar_um_ano(dt: date) -> date:
-    try:
-        return dt.replace(year=dt.year + 1)
-    except ValueError:
-        return dt.replace(month=2, day=28, year=dt.year + 1)
-
-
-def calcular_renovacao_anual(data_fim_texto: str):
-    fim_atual = parse_data_br(data_fim_texto)
-    if not fim_atual:
-        return None, None
-
-    novo_inicio = fim_atual + timedelta(days=1)
-    novo_fim = adicionar_um_ano(novo_inicio) - timedelta(days=1)
-    return novo_inicio, novo_fim
-
-
-def status_vencimento(data_fim_texto: str, alerta_dias: int = 30):
-    fim = parse_data_br(data_fim_texto)
-    if not fim:
-        return {
-            "codigo": "indefinido",
-            "rotulo": "Sem vigência válida",
-            "mensagem": "Data final ausente ou inválida.",
-            "dias": None,
-            "css": "status-indefinido",
-        }
-
-    hoje = date.today()
-    dias = (fim - hoje).days
-
-    if dias < 0:
-        return {
-            "codigo": "vencido",
-            "rotulo": "Vencido",
-            "mensagem": f"Contrato vencido há {abs(dias)} dia(s).",
-            "dias": dias,
-            "css": "status-vencido",
-        }
-
-    if dias <= alerta_dias:
-        return {
-            "codigo": "vencendo",
-            "rotulo": "Vence em breve",
-            "mensagem": f"Contrato vence em {dias} dia(s).",
-            "dias": dias,
-            "css": "status-vencendo",
-        }
-
-    return {
-        "codigo": "vigente",
-        "rotulo": "Vigente",
-        "mensagem": f"Contrato vigente. Restam {dias} dia(s) para o vencimento.",
-        "dias": dias,
-        "css": "status-vigente",
-    }
-
-
-def texto_dias_restantes(status: dict) -> str:
-    dias = status.get("dias")
-    if dias is None:
-        return "Dias restantes: não disponível"
-    if dias < 0:
-        return f"Atrasado há {abs(dias)} dia(s)"
-    return f"Restam {dias} dia(s)"
-
-
 def sistema_e_windows() -> bool:
     return platform.system().lower().startswith("win")
 
@@ -3237,90 +3121,6 @@ def diagnostico_sistema() -> dict:
 # =========================================
 # MÁSCARAS / FORMATAÇÃO
 # =========================================
-
-def formatar_cpf(texto: str) -> str:
-    dig = apenas_digitos(texto)[:11]
-    if len(dig) <= 3:
-        return dig
-    if len(dig) <= 6:
-        return f"{dig[:3]}.{dig[3:]}"
-    if len(dig) <= 9:
-        return f"{dig[:3]}.{dig[3:6]}.{dig[6:]}"
-    return f"{dig[:3]}.{dig[3:6]}.{dig[6:9]}-{dig[9:]}"
-
-
-def formatar_cnpj(texto: str) -> str:
-    dig = apenas_digitos(texto)[:14]
-    if len(dig) <= 2:
-        return dig
-    if len(dig) <= 5:
-        return f"{dig[:2]}.{dig[2:]}"
-    if len(dig) <= 8:
-        return f"{dig[:2]}.{dig[2:5]}.{dig[5:]}"
-    if len(dig) <= 12:
-        return f"{dig[:2]}.{dig[2:5]}.{dig[5:8]}/{dig[8:]}"
-    return f"{dig[:2]}.{dig[2:5]}.{dig[5:8]}/{dig[8:12]}-{dig[12:]}"
-
-
-def formatar_telefone(texto: str) -> str:
-    dig = apenas_digitos(texto)
-
-    if dig.startswith("55") and len(dig) > 11:
-        dig = dig[2:]
-
-    dig = dig[:11]
-
-    if len(dig) <= 2:
-        return dig
-    if len(dig) <= 6:
-        return f"({dig[:2]}) {dig[2:]}"
-    if len(dig) <= 10:
-        return f"({dig[:2]}) {dig[2:6]}-{dig[6:]}"
-    return f"({dig[:2]}) {dig[2:7]}-{dig[7:]}"
-
-
-def formatar_data_digitada(texto: str) -> str:
-    dig = apenas_digitos(texto)[:8]
-    if len(dig) <= 2:
-        return dig
-    if len(dig) <= 4:
-        return f"{dig[:2]}/{dig[2:]}"
-    return f"{dig[:2]}/{dig[2:4]}/{dig[4:]}"
-
-
-def moeda_br_sem_prefixo(texto: str) -> str:
-    if not texto:
-        return ""
-
-    dig = apenas_digitos(str(texto))
-    if not dig:
-        return ""
-
-    if len(dig) == 1:
-        valor = float(f"0.0{dig}")
-    elif len(dig) == 2:
-        valor = float(f"0.{dig}")
-    else:
-        valor = float(f"{dig[:-2]}.{dig[-2:]}")
-
-    inteiro = int(valor)
-    centavos = int(round((valor - inteiro) * 100))
-    inteiro_fmt = f"{inteiro:,}".replace(",", ".")
-    return f"{inteiro_fmt},{centavos:02d}"
-
-
-def moeda_br(texto: str) -> str:
-    fmt = moeda_br_sem_prefixo(texto)
-    return f"R$ {fmt}" if fmt else ""
-
-
-def valor_para_template(texto: str) -> str:
-    texto = (texto or "").strip()
-    if texto.startswith("R$"):
-        return texto
-    fmt = moeda_br_sem_prefixo(texto)
-    return f"R$ {fmt}" if fmt else ""
-
 
 def on_change_nome_condominio():
     """Salva automaticamente o JSON quando o usuário sai do campo nome_condominio."""
@@ -3416,64 +3216,6 @@ def on_change_rel_documento_representante():
 # =========================================
 # VALIDAÇÕES REAIS
 # =========================================
-
-def validar_cpf(cpf: str) -> bool:
-    cpf = apenas_digitos(cpf)
-
-    if len(cpf) != 11:
-        return False
-    if cpf == cpf[0] * 11:
-        return False
-
-    soma = sum(int(cpf[i]) * (10 - i) for i in range(9))
-    dig1 = (soma * 10) % 11
-    dig1 = 0 if dig1 == 10 else dig1
-    if dig1 != int(cpf[9]):
-        return False
-
-    soma = sum(int(cpf[i]) * (11 - i) for i in range(10))
-    dig2 = (soma * 10) % 11
-    dig2 = 0 if dig2 == 10 else dig2
-    return dig2 == int(cpf[10])
-
-
-def validar_cnpj(cnpj: str) -> bool:
-    cnpj = apenas_digitos(cnpj)
-
-    if len(cnpj) != 14:
-        return False
-    if cnpj == cnpj[0] * 14:
-        return False
-
-    pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-    soma1 = sum(int(cnpj[i]) * pesos1[i] for i in range(12))
-    resto1 = soma1 % 11
-    dig1 = 0 if resto1 < 2 else 11 - resto1
-    if dig1 != int(cnpj[12]):
-        return False
-
-    pesos2 = [6] + pesos1
-    soma2 = sum(int(cnpj[i]) * pesos2[i] for i in range(13))
-    resto2 = soma2 % 11
-    dig2 = 0 if resto2 < 2 else 11 - resto2
-    return dig2 == int(cnpj[13])
-
-
-def validar_data_br(texto: str) -> bool:
-    try:
-        datetime.strptime(texto.strip(), "%d/%m/%Y")
-        return True
-    except Exception:
-        return False
-
-
-def validar_email(email: str) -> bool:
-    email = (email or "").strip()
-    if not email:
-        return True
-    padrao = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
-    return re.match(padrao, email) is not None
-
 
 def validar_campos_formato(dados: dict, email_cliente: str) -> list[str]:
     erros = []
@@ -5656,7 +5398,6 @@ def garantir_logo_aqua_oficial() -> Path | None:
     """Garante um arquivo de logo oficial local para uso nos PDFs premium."""
     try:
         candidatos = [
-            BASE_DIR / "aqua_gestao_logo.png.png",
             BASE_DIR / "Logo Aqua.jpeg",
             BASE_DIR / "Logo_Aqua.jpeg",
             BASE_DIR / "logo_aqua.jpeg",
@@ -5667,22 +5408,6 @@ def garantir_logo_aqua_oficial() -> Path | None:
         ]
         for p in candidatos:
             if p.exists():
-                if p.suffix.lower() == ".png":
-                    try:
-                        from PIL import Image as _PILImage, ImageDraw as _ImageDraw
-                        destino = BASE_DIR / "aqua_gestao_logo_pdf.png"
-                        origem = _PILImage.open(p).convert("RGBA")
-                        lado = min(origem.size)
-                        esquerda = (origem.width - lado) // 2
-                        topo = (origem.height - lado) // 2
-                        origem = origem.crop((esquerda, topo, esquerda + lado, topo + lado))
-                        mascara = _PILImage.new("L", (lado, lado), 0)
-                        _ImageDraw.Draw(mascara).ellipse((3, 3, lado - 4, lado - 4), fill=255)
-                        origem.putalpha(mascara)
-                        origem.save(destino, "PNG", optimize=True)
-                        return destino
-                    except Exception:
-                        pass
                 return p
         p = BASE_DIR / "Logo Aqua.jpeg"
         import base64 as _b64
@@ -5738,17 +5463,13 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         orp = _pegar_alias(item, "orp", "ORP")
         tds = _pegar_alias(item, "tds", "TDS")
         temperatura = _pegar_alias(item, "temperatura", "temp", "Temperatura")
-        operador = _pegar_alias(item, "operador", "responsavel", "Operador", padrao="Thyago Silveira - RT")
-        cl_num = valor_float(crl)
-        ct_num = valor_float(ct)
-        cc = round(max(ct_num - cl_num, 0), 2) if cl_num is not None and ct_num is not None else ""
+        operador = _pegar_alias(item, "operador", "responsavel", "Operador")
         if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, turbidez, orp, tds, temperatura, operador]):
             linhas.append([
                 _rl_valor(normalizar_data_visita(data) if data else "", "—"),
                 _rl_f(ph),
                 _rl_f(crl),
                 _rl_f(ct),
-                _rl_f(cc),
                 _rl_f(alc),
                 _rl_f(dc),
                 _rl_f(cya),
@@ -5828,30 +5549,18 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
             Image as RLImage, PageBreak, HRFlowable
         )
         from PIL import Image as PILImage
 
-        fonte_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        fonte_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        try:
-            pdfmetrics.registerFont(TTFont("AquaRegular", fonte_regular))
-            pdfmetrics.registerFont(TTFont("AquaBold", fonte_bold))
-            FONT_REGULAR, FONT_BOLD = "AquaRegular", "AquaBold"
-        except Exception:
-            FONT_REGULAR, FONT_BOLD = "Helvetica", "Helvetica-Bold"
-
         pdf_path = Path(pdf_path)
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
-        azul = colors.HexColor("#061A33")
-        azul2 = colors.HexColor("#0077B6")
-        azul_claro = colors.HexColor("#EAF6FF")
-        dourado = colors.HexColor("#D4AF37")
+        azul = colors.HexColor("#173A5E")
+        azul2 = colors.HexColor("#1D78A8")
+        azul_claro = colors.HexColor("#D9EAF4")
         cinza = colors.HexColor("#4D5661")
         verde = colors.HexColor("#2E7D32")
         laranja = colors.HexColor("#C96B2C")
@@ -5862,17 +5571,15 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         logo_path = garantir_logo_aqua_oficial()
 
         styles = getSampleStyleSheet()
-        styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName=FONT_BOLD, fontSize=17, leading=21, textColor=azul, alignment=TA_CENTER, spaceAfter=2))
-        styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName=FONT_REGULAR, fontSize=10.5, leading=13, textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
-        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName=FONT_BOLD, fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4))
-        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName=FONT_BOLD, fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4))
-        styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName=FONT_REGULAR, fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
-        styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName=FONT_REGULAR, fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
-        styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName=FONT_REGULAR, fontSize=7.4, leading=9.2, textColor=preto))
-        styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName=FONT_BOLD, fontSize=7.5, leading=9.2, textColor=azul))
-        styles.add(ParagraphStyle("AqCellHeader", parent=styles["BodyText"], fontName=FONT_BOLD, fontSize=7.2, leading=8.6, textColor=branco, alignment=TA_CENTER))
-        styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName=FONT_REGULAR, fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
-        styles.add(ParagraphStyle("AqSignature", parent=styles["BodyText"], fontName=FONT_REGULAR, fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_CENTER, spaceAfter=0))
+        styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=azul, alignment=TA_CENTER, spaceAfter=2))
+        styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10.5, leading=13, textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
+        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4))
+        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4))
+        styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
+        styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
+        styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=9.2, textColor=preto))
+        styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.5, leading=9.2, textColor=azul))
+        styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
 
         def P(texto, style="AqBody"):
             texto = _limpar_texto_pdf(str(texto or ""))
@@ -5887,7 +5594,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     if isinstance(c, Paragraph):
                         out.append(c)
                     else:
-                        out.append(P(c, "AqCellHeader" if (header and r == 0) else "AqCell"))
+                        out.append(P(c, "AqCellBold" if (header and r == 0) else "AqCell"))
                 conv.append(out)
             t = Table(conv, colWidths=widths, repeatRows=1 if header else 0, hAlign="LEFT")
             cmds = [
@@ -5902,7 +5609,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 cmds += [
                     ("BACKGROUND", (0,0), (-1,0), azul),
                     ("TEXTCOLOR", (0,0), (-1,0), branco),
-                    ("FONTNAME", (0,0), (-1,0), FONT_BOLD),
+                    ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
                     ("ALIGN", (0,0), (-1,0), "CENTER"),
                 ]
             for i in range(1 if header else 0, len(data)):
@@ -5927,21 +5634,21 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     canvas.drawImage(str(logo_path), 15*mm, h-19*mm, width=23*mm, height=16*mm, preserveAspectRatio=True, mask="auto")
                 except Exception:
                     pass
-            canvas.setStrokeColor(dourado)
+            canvas.setStrokeColor(azul2)
             canvas.setLineWidth(1.1)
             canvas.line(14*mm, h-22*mm, w-14*mm, h-22*mm)
-            canvas.setFont(FONT_BOLD, 8.7)
+            canvas.setFont("Helvetica-Bold", 8.7)
             canvas.setFillColor(azul)
             canvas.drawRightString(w-15*mm, h-14*mm, "RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA")
-            canvas.setFont(FONT_REGULAR, 7.2)
+            canvas.setFont("Helvetica", 7.2)
             canvas.setFillColor(cinza)
             canvas.drawRightString(w-15*mm, h-18*mm, f"RT: {dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)} | CRQ 024025748 | Técnico em Química")
-            canvas.setStrokeColor(dourado)
+            canvas.setStrokeColor(azul2)
             canvas.setLineWidth(0.8)
             canvas.line(14*mm, 13*mm, w-14*mm, 13*mm)
-            canvas.setFont(FONT_REGULAR, 7)
+            canvas.setFont("Helvetica", 7)
             canvas.setFillColor(cinza)
-            canvas.drawString(14*mm, 8.5*mm, "Aqua Gestão - Controle Técnico de Piscinas")
+            canvas.drawString(14*mm, 8.5*mm, "Aqua Gestão – Controle Técnico de Piscinas")
             canvas.drawRightString(w-14*mm, 8.5*mm, f"Página {doc_obj.page}")
             canvas.restoreState()
 
@@ -5955,7 +5662,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 pass
         story.append(P("RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA", "AqTitle"))
         story.append(P("Controle Técnico-Operacional de Piscinas", "AqSubtitle"))
-        story.append(HRFlowable(width="100%", thickness=1.2, color=dourado, spaceBefore=2, spaceAfter=8))
+        story.append(HRFlowable(width="100%", thickness=1.2, color=azul2, spaceBefore=2, spaceAfter=8))
 
         ident = [
             ["IDENTIFICAÇÃO DO DOCUMENTO", ""],
@@ -5972,7 +5679,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         t_ident = table(ident, widths=[55*mm, 125*mm], header=False)
         t_ident.setStyle(TableStyle([
             ("SPAN", (0,0), (1,0)), ("BACKGROUND", (0,0), (1,0), azul), ("TEXTCOLOR", (0,0), (1,0), branco),
-            ("FONTNAME", (0,0), (1,0), FONT_BOLD), ("ALIGN", (0,0), (1,0), "CENTER"),
+            ("FONTNAME", (0,0), (1,0), "Helvetica-Bold"), ("ALIGN", (0,0), (1,0), "CENTER"),
             ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#EAF3F8")),
             ("BACKGROUND", (0,2), (1,2), azul_claro), ("BACKGROUND", (0,4), (1,4), azul_claro),
             ("BACKGROUND", (0,6), (1,6), azul_claro), ("BACKGROUND", (0,8), (1,8), azul_claro),
@@ -6010,31 +5717,30 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "AqH2"))
         conf = dados_relatorio.get("conformidades", {}) or {}
         nbr_status = conf.get("nbr_11238_status", {}) or {}
-        nbr_obs = conf.get("nbr_11238", "") or "Sem observações adicionais registradas."
-        nbr_evidencias = conf.get("nbr_11238_evidencias", {}) or {}
+        nbr_complemento = _complemento_manual_nbr11238(conf.get("nbr_11238", ""))
+        evidencia_profundidade = _evidencia_automatica_nbr11238("profundidade", nbr_status.get("profundidade", ""))
+        if nbr_complemento:
+            evidencia_profundidade += f"\nComplemento do RT: {nbr_complemento}"
         story.append(table([
             ["Requisito NBR 11238", "Evidência / Observação", "Conforme?"],
-            ["Sinalização de profundidade visível", nbr_evidencias.get("profundidade", nbr_obs), _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
-            ["Retrolavagem do sistema de filtragem", nbr_evidencias.get("retrolavagem", "Rotina operacional informada como realizada."), _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
-            ["Limpeza de skimmers e decantadores", nbr_evidencias.get("skimmers", "Rotina de limpeza informada como realizada."), _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
-            ["Área de circulação antiderrapante", nbr_evidencias.get("circulacao", "Condição informada como adequada."), _texto_sim_nao_marcado(nbr_status.get("circulacao", ""))],
-            ["Chuveiro obrigatório antes do acesso", nbr_evidencias.get("chuveiro", "Disponibilidade informada no acesso à piscina."), _texto_sim_nao_marcado(nbr_status.get("chuveiro", ""))],
+            ["Sinalização de profundidade visível", evidencia_profundidade, _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
+            ["Retrolavagem do sistema de filtragem", _evidencia_automatica_nbr11238("retrolavagem", nbr_status.get("retrolavagem", "")), _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
+            ["Limpeza de skimmers e decantadores", _evidencia_automatica_nbr11238("skimmers", nbr_status.get("skimmers", "")), _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
+            ["Área de circulação antiderrapante", _evidencia_automatica_nbr11238("circulacao", nbr_status.get("circulacao", "")), _texto_sim_nao_marcado(nbr_status.get("circulacao", ""))],
+            ["Chuveiro obrigatório antes do acesso", _evidencia_automatica_nbr11238("chuveiro", nbr_status.get("chuveiro", "")), _texto_sim_nao_marcado(nbr_status.get("chuveiro", ""))],
         ], widths=[78*mm, 78*mm, 24*mm]))
 
         story.append(P("3. GESTÃO DE RISCOS E SEGURANÇA DO TRABALHO", "AqH1"))
         story.append(P("3.1 NR-26 – Sinalização / GHS – Produtos Químicos", "AqH2"))
+        nr26_obs = conf.get("nr_26", "") or "Checklist de GHS/FDS/FISPQ sem observações adicionais registradas."
         story.append(table([
             ["Item de Verificação – NR-26 / GHS", "Observação", "Status"],
-            ["FDS disponíveis e atualizadas para os produtos", "Manter as fichas dos fabricantes acessíveis à equipe no local de trabalho.", "ORIENTADO"],
-            ["Rótulos GHS nos recipientes", "Conservar rótulos originais legíveis; recipientes fracionados também devem ser identificados.", "ORIENTADO"],
-            ["Sinalização de perigo no estoque de produtos químicos", "Identificar os riscos, restringir o acesso e manter a sinalização visível.", "ORIENTADO"],
-            ["Separação de produtos incompatíveis", "Armazenar clorados/oxidantes separados de ácidos e de outros produtos incompatíveis.", "ORIENTADO"],
-            ["Procedimento de emergência / derramamento", "Manter instruções, meios de contenção e contatos de emergência disponíveis.", "ORIENTADO"],
+            ["FISPQs disponíveis e atualizadas para os produtos", nr26_obs, "OK"],
+            ["Rótulos GHS nos recipientes", "", "OK / Pend."],
+            ["Sinalização de perigo no estoque de produtos químicos", "", "OK / Pend."],
+            ["Separação de oxidantes e ácidos", "", "OK / Pend."],
+            ["Procedimento de emergência / derramamento disponível", "", "OK / Pend."],
         ], widths=[83*mm, 72*mm, 25*mm]))
-        story.append(P(
-            "ORIENTAÇÃO AO CONDOMÍNIO: para atendimento à NR-26, os produtos químicos devem permanecer identificados e rotulados conforme o GHS, com suas FDS disponíveis aos trabalhadores. O local de armazenamento deve ter acesso controlado, ventilação, sinalização de riscos e separação de produtos incompatíveis. A equipe deve receber orientação sobre manuseio seguro e resposta a emergências. A verificação documental e física desses itens deve ser mantida pela administração.",
-            "AqWarn",
-        ))
         story.append(P("3.2 NR-06 – Equipamentos de Proteção Individual (EPI)", "AqH2"))
         epis = dados_relatorio.get("epis", {}) or {}
         def epi_status(base):
@@ -6057,42 +5763,10 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         if linhas_a:
-            dados_tabela_analises = [
-                ["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]
-            ] + linhas_a
-            tabela_analises = table(
-                dados_tabela_analises,
-                widths=[20*mm, 9*mm, 10*mm, 10*mm, 10*mm, 12*mm, 13*mm,
-                        11*mm, 12*mm, 12*mm, 12*mm, 11*mm, 28*mm],
-            )
-            # Esta tabela tem muitas colunas. Margens internas menores evitam
-            # que a data e o nome do responsável quebrem verticalmente, sem
-            # comprometer a leitura dos parâmetros numéricos.
-            tabela_analises.setStyle(TableStyle([
-                ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("ALIGN", (0, 0), (-2, -1), "CENTER"),
-                ("ALIGN", (-1, 1), (-1, -1), "LEFT"),
-            ]))
-            story.append(tabela_analises)
+            story.append(table([["Data", "pH", "CRL", "CT", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"]] + linhas_a,
+                widths=[18*mm, 12*mm, 13*mm, 13*mm, 15*mm, 15*mm, 14*mm, 15*mm, 14*mm, 14*mm, 15*mm, 22*mm]))
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
-
-        # Mantém o quadro explicativo visualmente separado da borda da tabela.
-        story.append(Spacer(1, 3*mm))
-        story.append(P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"))
-        story.append(P(
-            "A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva "
-            "partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. "
-            "Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações "
-            "que podem reduzir a transparência da água e prejudicar a ação do desinfetante. Este controle técnico "
-            "complementar está alinhado aos requisitos de qualidade e limpidez da ABNT NBR 10818:2016 e às boas "
-            "práticas de operação, recirculação e filtração previstas na ABNT NBR 10339:2018.",
-            "AqWarn",
-        ))
-
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
         if linhas_d:
@@ -6120,8 +5794,6 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             for d in detalhes[:10]:
                 story.append(P(f"• {d}", "AqSmall"))
         obs = [o for o in (dados_relatorio.get("observacoes", []) or []) if str(o or "").strip()]
-        detalhes_norm = {normalizar_texto(d) for d in detalhes}
-        obs = [o for o in obs if normalizar_texto(o) not in detalhes_norm]
         if obs:
             story.append(P("Observações técnicas complementares:", "AqH2"))
             for o in obs[:8]:
@@ -6136,10 +5808,18 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             recs = [["1", "Manter rotina de monitoramento e registrar as leituras no sistema.", "Próxima rotina", "Operação / RT"]]
         story.append(table([["Nº", "Recomendação Técnica", "Prazo", "Responsável"]] + recs, widths=[13*mm, 100*mm, 32*mm, 35*mm]))
 
+        story.append(P("6. ASSINATURAS E VALIDAÇÃO", "AqH1"))
+        assinatura = [
+            ["RESPONSÁVEL TÉCNICO", "REPRESENTANTE DO ESTABELECIMENTO"],
+            [f"\n\n{dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)}\nCRQ 024025748 – Técnico em Química\nData: ______ / ______ / __________", "\n\nNome: _________________________________\nCPF / CNPJ: ___________________________\nData: ______ / ______ / __________"],
+        ]
+        story.append(table(assinatura, widths=[90*mm, 90*mm], header=True))
+        story.append(P("Documento de uso profissional. Emitido sob responsabilidade técnica do RT identificado neste relatório. Análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.", "AqWarn"))
+
         fotos = [Path(f) for f in (fotos or []) if f and Path(f).exists()]
         if fotos:
             story.append(PageBreak())
-            story.append(P("6. REGISTRO FOTOGRÁFICO", "AqH1"))
+            story.append(P("7. REGISTRO FOTOGRÁFICO", "AqH1"))
             story.append(P("Registros visuais do período de referência, inseridos para rastreabilidade técnica e comprovação documental.", "AqBody"))
             for idx, fp in enumerate(fotos[:12], start=1):
                 try:
@@ -6155,57 +5835,6 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 except Exception:
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
-        # A validação técnica encerra o documento, inclusive quando houver fotografias.
-        numero_secao_assinatura = "7" if fotos else "6"
-        if fotos:
-            # Evita deixar apenas o título da validação no fim da página fotográfica.
-            story.append(PageBreak())
-        story.append(P(f"{numero_secao_assinatura}. ASSINATURA E VALIDAÇÃO TÉCNICA", "AqH1"))
-        nome_rt_assinatura = _limpar_texto_pdf(
-            dados_relatorio.get("responsavel_tecnico", RESPONSAVEL_TÉCNICO)
-        ).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        # Assinatura gráfica institucional. É um elemento visual do relatório e
-        # não substitui uma assinatura digital qualificada ICP-Brasil.
-        assinatura_path = next((
-            p for p in (
-                Path("assinatura_thyago_silveira.png"),
-                Path("assinatura_thyago_silveira_transparente.png"),
-                Path(BASE_DIR) / "assinatura_thyago_silveira.png",
-                Path(BASE_DIR) / "assinatura_thyago_silveira_transparente.png",
-            ) if p.exists()
-        ), None)
-        conteudo_assinatura = []
-        if assinatura_path:
-            conteudo_assinatura.extend([
-                RLImage(str(assinatura_path), width=72*mm, height=32*mm,
-                        kind="proportional", hAlign="CENTER"),
-                Spacer(1, -5*mm),
-            ])
-        conteudo_assinatura.append(Paragraph(
-            "____________________________________________<br/>"
-            f"<b>{nome_rt_assinatura}</b><br/>"
-            "Técnico em Química | Responsável Técnico<br/>"
-            "CRQ-MG 2ª Região | CRQ 024025748<br/>"
-            "Aqua Gestão — Controle Técnico de Piscinas<br/>"
-            f"Data de emissão: {_limpar_texto_pdf(dados_relatorio.get('data_emissao', hoje_br()))}",
-            styles["AqSignature"],
-        ))
-        assinatura_rt = [[conteudo_assinatura]]
-        t_assinatura_rt = Table(assinatura_rt, colWidths=[120*mm], hAlign="CENTER")
-        t_assinatura_rt.setStyle(TableStyle([
-            ("ALIGN", (0,0), (-1,-1), "CENTER"),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ("BOX", (0,0), (-1,-1), 0.8, dourado),
-            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7FBFD")),
-            ("LEFTPADDING", (0,0), (-1,-1), 10),
-            ("RIGHTPADDING", (0,0), (-1,-1), 10),
-            ("TOPPADDING", (0,0), (-1,-1), 10),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 10),
-        ]))
-        story.append(t_assinatura_rt)
-        story.append(Spacer(1, 2*mm))
-        story.append(P("Documento de uso profissional, emitido sob responsabilidade técnica do RT acima identificado. Análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.", "AqWarn"))
-
         doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
     except Exception as e:
@@ -6216,12 +5845,9 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 LIMITES_RELATORIO = {
     "ph": (7.2, 7.8, "pH"),
     "cloro_livre": (0.5, 3.0, "cloro residual livre"),
-    "cloro_total": (0.5, 3.0, "cloro total"),
     "alcalinidade": (80.0, 120.0, "alcalinidade total"),
     "dureza": (150.0, 300.0, "dureza cálcica"),
     "cianurico": (30.0, 50.0, "ácido cianúrico"),
-    "turbidez": (0.0, 0.5, "turbidez"),
-    "orp": (650.0, 900.0, "ORP"),
 }
 
 
@@ -6230,7 +5856,7 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
     houve_leitura = False
     cloraminas_altas = []
     for idx, item in enumerate(analises, start=1):
-        linha_tem = any(str(item.get(k) or "").strip() for k in LIMITES_RELATORIO)
+        linha_tem = any((item.get(k) or "").strip() for k in ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico"])
         if not linha_tem:
             continue
         houve_leitura = True
@@ -6239,8 +5865,7 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
             if v is None:
                 continue
             if v < mn or v > mx:
-                data_ref = normalizar_data_visita(item.get("data", "")) or f"visita {idx}"
-                nao_conformes.append(f"Em {data_ref}: {rotulo}={v} fora da faixa {mn}-{mx}")
+                nao_conformes.append(f"Linha {idx}: {rotulo}={v} fora da faixa {mn}–{mx}")
         cl = valor_float(item.get("cloro_livre", ""))
         ct = valor_float(item.get("cloro_total", ""))
         if cl is not None and ct is not None:
@@ -6257,10 +5882,6 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
         "detalhes": nao_conformes,
         "houve_leitura": houve_leitura,
         "cloraminas_altas": cloraminas_altas,
-        "orp_leituras": [
-            (normalizar_data_visita(i.get("data", "")) or f"visita {n}", valor_float(i.get("orp", "")))
-            for n, i in enumerate(analises, start=1) if valor_float(i.get("orp", "")) is not None
-        ],
     }
 
 
@@ -6349,10 +5970,82 @@ def _texto_sim_nao_marcado(valor) -> str:
     """Converte bool/texto em marcação visual para o relatório."""
     v = str(valor or "").strip().lower()
     if v in ("sim", "true", "1", "ok", "conforme"):
-        return "SIM"
+        return "☑ Sim   ☐ Não"
     if v in ("não", "nao", "false", "0", "pendente", "não conforme", "nao conforme"):
-        return "NÃO"
-    return "NÃO INFORMADO"
+        return "☐ Sim   ☑ Não"
+    return "☐ Sim   ☐ Não"
+
+
+NBR11238_REQUISITOS = {
+    "profundidade": {
+        "rotulo": "Sinalização de profundidade",
+        "sim": "Sinalização de profundidade visível e preservada.",
+        "nao": "Sinalização de profundidade ausente ou sem visibilidade adequada. Recomenda-se regularização.",
+    },
+    "retrolavagem": {
+        "rotulo": "Retrolavagem",
+        "sim": "Retrolavagem do sistema de filtragem realizada.",
+        "nao": "Retrolavagem não realizada ou não comprovada. Recomenda-se executar e registrar o procedimento.",
+    },
+    "skimmers": {
+        "rotulo": "Skimmers e decantadores",
+        "sim": "Skimmers e decantadores verificados e limpos.",
+        "nao": "Limpeza de skimmers e decantadores pendente. Recomenda-se higienização.",
+    },
+    "circulacao": {
+        "rotulo": "Área antiderrapante",
+        "sim": "Área de circulação com condição antiderrapante preservada.",
+        "nao": "Área de circulação sem condição antiderrapante adequada. Recomenda-se avaliação e correção.",
+    },
+    "chuveiro": {
+        "rotulo": "Chuveiro",
+        "sim": "Chuveiro disponível antes do acesso à piscina.",
+        "nao": "Chuveiro ausente ou indisponível antes do acesso. Recomenda-se adequação.",
+    },
+}
+
+
+def _evidencia_automatica_nbr11238(chave: str, valor) -> str:
+    """Gera a evidência da linha somente quando o requisito foi verificado."""
+    item = NBR11238_REQUISITOS.get(chave, {})
+    v = str(valor or "").strip().lower()
+    if v == "sim":
+        return item.get("sim", "")
+    if v in ("não", "nao"):
+        return item.get("nao", "")
+    return "Não verificado."
+
+
+def _bloco_automatico_nbr11238(status: dict) -> str:
+    linhas = []
+    for chave, item in NBR11238_REQUISITOS.items():
+        valor = status.get(chave, "")
+        if str(valor or "").strip():
+            linhas.append(f"[{item['rotulo']}] {_evidencia_automatica_nbr11238(chave, valor)}")
+    return "\n".join(linhas)
+
+
+def _complemento_manual_nbr11238(texto: str) -> str:
+    """Separa do campo editável apenas as linhas que não foram geradas pelo app."""
+    prefixos = tuple(f"[{item['rotulo']}]" for item in NBR11238_REQUISITOS.values())
+    return "\n".join(
+        linha for linha in str(texto or "").splitlines()
+        if linha.strip() and not linha.strip().startswith(prefixos)
+    ).strip()
+
+
+def _atualizar_observacao_nbr11238():
+    """Atualiza as frases automáticas sem apagar complementos digitados pelo RT."""
+    atual = st.session_state.get("rel_nbr_11238", "")
+    complemento = _complemento_manual_nbr11238(atual)
+    status = {
+        chave: st.session_state.get(f"rel_nbr11238_{chave}", "")
+        for chave in NBR11238_REQUISITOS
+    }
+    automatico = _bloco_automatico_nbr11238(status)
+    st.session_state["rel_nbr_11238"] = "\n".join(
+        parte for parte in (automatico, complemento) if parte
+    )
 
 
 def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> str:
@@ -6376,13 +6069,23 @@ def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> s
 def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
     tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
     if tabela_nbr is not None and len(tabela_nbr.rows) > 1:
-        observacao = dados_relatorio["conformidades"].get("nbr_11238", "") or "Sem observações adicionais registradas."
+        conformidades = dados_relatorio.get("conformidades", {}) or {}
+        status_nbr = conformidades.get("nbr_11238_status", {}) or {}
+        complemento = _complemento_manual_nbr11238(conformidades.get("nbr_11238", ""))
         for idx in range(1, len(tabela_nbr.rows)):
             row = tabela_nbr.rows[idx]
             if len(row.cells) > 1:
-                # Mantém a observação geral preenchida em todas as linhas em branco,
-                # evitando relatório com campo vazio quando o modelo tiver várias linhas.
-                set_cell_text(row.cells[1], observacao if idx == 1 else "")
+                requisito = row.cells[0].text
+                chave = next((ch for pedaco, ch in [
+                    ("profundidade", "profundidade"), ("retrolavagem", "retrolavagem"),
+                    ("skimmers", "skimmers"), ("decantadores", "skimmers"),
+                    ("circulacao", "circulacao"), ("antiderrapante", "circulacao"),
+                    ("chuveiro", "chuveiro"),
+                ] if pedaco in normalizar_texto(requisito)), "")
+                evidencia = _evidencia_automatica_nbr11238(chave, status_nbr.get(chave, ""))
+                if idx == 1 and complemento:
+                    evidencia = f"{evidencia}\nComplemento do RT: {complemento}"
+                set_cell_text(row.cells[1], evidencia)
             if len(row.cells) > 2:
                 set_cell_text(row.cells[2], _status_nbr11238_por_texto(row.cells[0].text, dados_relatorio))
 
@@ -6558,17 +6261,6 @@ def garantir_campos_analises(qtd: int):
                 st.session_state[chave] = ""
 
 
-def garantir_campos_analises_rt(qtd: int):
-    """Inicializa exatamente as linhas semanais do RT, sem o mínimo operacional de 12."""
-    qtd = max(1, min(int(qtd or 1), ANALISES_MAX_SUGERIDO))
-    st.session_state.rel_analises_total = qtd
-    for i in range(qtd):
-        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador"]:
-            chave = f"rel_analise_{sufixo}_{i}"
-            if chave not in st.session_state:
-                st.session_state[chave] = ""
-
-
 def adicionar_analise_extra():
     atual = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     garantir_campos_analises(atual + 1)
@@ -6577,7 +6269,7 @@ def adicionar_analise_extra():
 def coletar_analises_relatorio() -> list[dict]:
     itens = []
     qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
-    garantir_campos_analises_rt(qtd)
+    garantir_campos_analises(qtd)
     for i in range(qtd):
         itens.append({
             "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
@@ -6628,11 +6320,11 @@ def coletar_conformidades_relatorio() -> dict:
     return {
         "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
         "nbr_11238_status": {
-            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "Sim").strip(),
-            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "Sim").strip(),
-            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "Sim").strip(),
-            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "Sim").strip(),
-            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "Sim").strip(),
+            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "").strip(),
+            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "").strip(),
+            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "").strip(),
+            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "").strip(),
+            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "").strip(),
         },
         "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
         "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
@@ -6657,19 +6349,12 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
     recomendacoes = []
     detalhes = avaliacao.get("detalhes", [])
     if detalhes:
-        observacoes.extend(detalhes[:5])
+        for detalhe in detalhes[:3]:
+            observacoes.append(detalhe.replace("Linha", "Leitura"))
     if avaliacao.get("cloraminas_altas"):
-        for idx, valor in avaliacao["cloraminas_altas"]:
-            data_ref = normalizar_data_visita(analises[idx - 1].get("data", "")) or f"visita {idx}"
-            observacoes.append(f"Em {data_ref}: cloro combinado estimado em {valor} mg/L, sugerindo formação de cloraminas e maior carga orgânica.")
+        idx, valor = avaliacao["cloraminas_altas"][0]
+        observacoes.append(f"Leitura {idx}: cloro combinado estimado em {valor} mg/L, sugerindo formação de cloraminas e maior carga orgânica.")
         recomendacoes.append("Executar oxidação complementar / supercloração controlada e reavaliar CT, CL e cloro combinado.")
-    orp_leituras = avaliacao.get("orp_leituras", []) or []
-    if len(orp_leituras) >= 3:
-        valores_orp = [v for _, v in orp_leituras]
-        if valores_orp[-1] < valores_orp[0] and (valores_orp[0] - valores_orp[-1]) >= 80:
-            sequencia = " → ".join(f"{v:.0f}" for v in valores_orp)
-            observacoes.append(f"Tendência de queda do ORP no período: {sequencia} mV; a última leitura requer investigação operacional.")
-            recomendacoes.append("Investigar a queda do ORP, conferindo pH, demanda oxidante, circulação, filtração, estabilizante e resposta após correção.")
     if any("ph=" in d for d in detalhes):
         recomendacoes.append("Ajustar pH para a faixa operacional de 7,2 a 7,8 e repetir a leitura após estabilização.")
     if any("cloro residual livre" in d for d in detalhes):
@@ -6698,8 +6383,6 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
     if detalhes:
         diagnostico.append("Resumo automático dos desvios: " + "; ".join(detalhes[:5]) + ".")
 
-    observacoes = list(dict.fromkeys(observacoes))
-    recomendacoes = list(dict.fromkeys(recomendacoes))
     return {
         "diagnostico": " ".join(diagnostico),
         "observacoes": observacoes[:5],
@@ -11431,6 +11114,11 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_status_agua": (st.session_state.get("rel_status_agua") or "CONFORME"),
         "rel_diagnostico": (st.session_state.get("rel_diagnostico") or ""),
         "rel_nbr_11238": (st.session_state.get("rel_nbr_11238") or ""),
+        "rel_nbr11238_profundidade": (st.session_state.get("rel_nbr11238_profundidade") or ""),
+        "rel_nbr11238_retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or ""),
+        "rel_nbr11238_skimmers": (st.session_state.get("rel_nbr11238_skimmers") or ""),
+        "rel_nbr11238_circulacao": (st.session_state.get("rel_nbr11238_circulacao") or ""),
+        "rel_nbr11238_chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or ""),
         "rel_nr_26": (st.session_state.get("rel_nr_26") or ""),
         "rel_nr_06": (st.session_state.get("rel_nr_06") or ""),
         "rel_epi_luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme"),
@@ -11601,7 +11289,7 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "empresa_ativa": "aqua_gestao",
-        "rel_analises_total": max(total, 1),
+        "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
     }
     for k, v in st.session_state.items():
@@ -11695,7 +11383,7 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         if not campos:
             return False
         total = int(dados.get("rel_analises_total", campos.get("rel_analises_total", ANALISES_PADRAO)) or ANALISES_PADRAO)
-        st.session_state["rel_analises_total"] = max(total, 1)
+        st.session_state["rel_analises_total"] = max(total, ANALISES_PADRAO)
         for k, v in campos.items():
             if str(k).startswith("_"):
                 continue
@@ -12164,7 +11852,7 @@ with st.sidebar:
 # =========================================
 
 # PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "2940"
+PIN_OPERADOR = "XXXX_PIN_MESTRE"
 
 # =========================================
 # v5 — BLINDAGEM DO SESSION STATE DO OPERADOR
@@ -14351,7 +14039,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("👷 Gestão de Operadores")
 st.caption("Tela administrativa segura para cadastrar, editar, ativar/inativar operadores e definir exatamente quais condomínios cada PIN pode acessar.")
-st.info("🔐 PIN geral 2940 mantido como acesso mestre do sistema. Ele continua reservado e não pode ser usado no cadastro de operadores comuns.")
+st.info("🔐 PIN geral XXXX_PIN_MESTRE mantido como acesso mestre do sistema. Ele continua reservado e não pode ser usado no cadastro de operadores comuns.")
 
 _col_op_top1, _col_op_top2 = st.columns([1, 1.35])
 with _col_op_top1:
@@ -14576,7 +14264,7 @@ if ops_cadastrados:
         st.caption("Exportação administrativa em CSV com status, PIN mascarado e condomínios permitidos/localizados para conferência.")
 
 if not ops_cadastrados:
-    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN 2940 continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN XXXX_PIN_MESTRE continua funcionando como acesso geral.")
 
 _tab_ops1, _tab_ops2 = st.tabs(["🛡️ Administrar operadores", "➕ Cadastrar novo operador"])
 
@@ -14638,7 +14326,7 @@ with _tab_ops1:
             with _sum2:
                 st.caption("Status")
                 st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
-                st.caption("PIN geral 2940 não aparece aqui por segurança.")
+                st.caption("PIN geral XXXX_PIN_MESTRE não aparece aqui por segurança.")
             with _sum3:
                 st.caption("Escopo de acesso")
                 if _op_total_sel:
@@ -14802,8 +14490,8 @@ with _tab_ops1:
 
                 if not _pin_final_edit or len(_pin_final_edit) < 4:
                     st.error("PIN deve ter pelo menos 4 caracteres.")
-                elif _pin_final_edit == "2940":
-                    st.error("O PIN 2940 é reservado para acesso geral. Escolha outro para este operador.")
+                elif _pin_final_edit == "XXXX_PIN_MESTRE":
+                    st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro para este operador.")
                 elif _pin_operador_em_uso(_pin_final_edit, nome_ignorar=_op_nome_sel):
                     st.error(f"O PIN {_pin_final_edit} já está em uso por outro operador.")
                 elif not _acesso_total_edit and not _conds_final_edit:
@@ -14888,7 +14576,7 @@ with _tab_ops2:
                 placeholder="Ex.: 1234",
                 max_chars=10,
                 type="password",
-                help="Mínimo 4 caracteres. Não use 2940, pois este PIN é reservado para o acesso geral do sistema.",
+                help="Mínimo 4 caracteres. Não use XXXX_PIN_MESTRE, pois este PIN é reservado para o acesso geral do sistema.",
             )
         with _novo2:
             op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
@@ -14935,8 +14623,8 @@ with _tab_ops2:
             st.error("Informe o nome do operador.")
         elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif _pin_op_limpo == "2940":
-            st.error("O PIN 2940 é reservado para acesso geral. Escolha outro.")
+        elif _pin_op_limpo == "XXXX_PIN_MESTRE":
+            st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro.")
         elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
             st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
         elif not op_acesso_total_novo and not _conds_op_final:
@@ -20028,10 +19716,9 @@ if _clientes_rel:
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
                     st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
                     st.session_state["rel_cpf_cnpj_representante"] = ""
-                    st.session_state["rel_analises_total"] = len(obter_tercas_feiras_mes(
-                        st.session_state.get("rel_mes_referencia"),
-                        st.session_state.get("rel_ano_referencia"),
-                    ))
+                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
+                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
+                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
                     st.session_state["_rel_auto_importar_cliente"] = True
                     st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
                     st.rerun()
@@ -20226,13 +19913,33 @@ for lc in lancamentos_local + lancamentos_sheets:
 
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
-# O relatório administrativo de RT recebe somente as visitas semanais do RT, feitas às terças-feiras.
-lancamentos_disponiveis = [lc for lc in lancamentos_disponiveis if lancamento_eh_visita_rt_terca(lc)]
+
+# Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
+lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
 
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    _tercas_rt = obter_tercas_feiras_mes(st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    garantir_campos_analises_rt(len(_tercas_rt))
+    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
+    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    # Limpa campos antigos de análises para evitar que visitas de outros dias permaneçam
+    # Apenas zera os campos específicos; não chama clear() no session_state
+    for idx in range(ANALISES_MAX_SUGERIDO):
+        for pref in (
+            "rel_analise_data_",
+            "rel_analise_ph_",
+            "rel_analise_cl_",
+            "rel_analise_ct_",
+            "rel_analise_alc_",
+            "rel_analise_dc_",
+            "rel_analise_cya_",
+            "rel_analise_turbidez_",
+            "rel_analise_orp_",
+            "rel_analise_tds_",
+            "rel_analise_temperatura_",
+            "rel_analise_operador_",
+        ):
+            st.session_state[pref + str(idx)] = ""
     for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
         # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
         piscinas = lc.get("piscinas", [])
@@ -20289,7 +19996,7 @@ if lancamentos_disponiveis:
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
-            "parametros_antes_apos_v2",
+            "parametros_rt_tercas_v1",
             str(nome_rel_atual),
             str(mes_ref),
             str(ano_ref),
@@ -20323,7 +20030,8 @@ if lancamentos_disponiveis:
     <div style="border:1px solid rgba(20,120,60,0.3);border-radius:12px;padding:12px 16px;
     background:rgba(20,120,60,0.07);margin-bottom:12px;">
     <strong>📱 {_total} lançamento(s) de campo disponível(is) — {_fonte}</strong><br>
-    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span>
+    <span style="font-size:0.85rem;color:#3a6a3a;">Período: {_periodo}</span><br>
+    <span style="font-size:0.8rem;color:#2f5f2f;">Observação: a tabela de parâmetros importa somente visita(s) de RT realizada(s) na terça-feira; as demais visitas continuam registradas no controle operacional.</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -20484,17 +20192,15 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-_tercas_relatorio_rt = obter_tercas_feiras_mes(
-    st.session_state.get("rel_mes_referencia"),
-    st.session_state.get("rel_ano_referencia"),
-)
-garantir_campos_analises_rt(len(_tercas_relatorio_rt))
-for _indice_terca, _data_terca in enumerate(_tercas_relatorio_rt):
-    st.session_state[f"rel_analise_data_{_indice_terca}"] = _data_terca.strftime("%d/%m/%Y")
-st.caption(
-    f"Visitas semanais do RT: {len(_tercas_relatorio_rt)} terça(s)-feira(s) em "
-    f"{st.session_state.get('rel_mes_referencia')}/{st.session_state.get('rel_ano_referencia')}."
-)
+st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
+_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
+with _freq_rel_col1:
+    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
+with _freq_rel_col2:
+    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
+if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
+    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -20509,8 +20215,13 @@ st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
-garantir_campos_analises_rt(len(_tercas_relatorio_rt))
-ctrl_a2, ctrl_a3 = st.columns([1.35, 2.25])
+_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
+ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
+with ctrl_a1:
+    if st.button("Adicionar análise extra", use_container_width=True):
+        adicionar_analise_extra()
+        st.rerun()
 with ctrl_a2:
     if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
         nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
@@ -20522,7 +20233,7 @@ with ctrl_a2:
             aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
         st.rerun()
 with ctrl_a3:
-    st.caption(f"{len(_tercas_relatorio_rt)} linha(s), uma para cada visita de terça-feira. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
+    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
 # Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
 cab_cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
 for _col, _label in zip(
@@ -20531,9 +20242,9 @@ for _col, _label in zip(
 ):
     _col.caption(f"**{_label}**")
 
-for i in range(len(_tercas_relatorio_rt)):
+for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
     cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
-    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", disabled=True)
+    cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
     cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
     cols[3].text_input(f"Cloro total {i+1}", key=f"rel_analise_ct_{i}", label_visibility="collapsed", placeholder="CT")
@@ -20585,18 +20296,18 @@ for i in range(5):
     cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
 
 st.markdown("**NBR 11238 — Segurança e higiene operacional**")
-st.caption("Marque os requisitos verificados. Esses campos alimentam a coluna ‘Conforme?’ do relatório final.")
+st.caption("Marque os requisitos verificados. A evidência é preenchida automaticamente e pode ser complementada pelo RT.")
 _nbr_cols = st.columns([1.6, 1.2, 1.6, 1.6, 1.2])
 with _nbr_cols[0]:
-    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True)
+    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
 with _nbr_cols[1]:
-    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True)
+    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
 with _nbr_cols[2]:
-    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True)
+    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
 with _nbr_cols[3]:
-    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True)
+    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
 with _nbr_cols[4]:
-    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True)
+    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
 
 cx1, cx2, cx3 = st.columns(3)
 with cx1:
