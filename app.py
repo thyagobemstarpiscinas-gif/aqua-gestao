@@ -19913,7 +19913,7 @@ for lc in lancamentos_local + lancamentos_sheets:
 
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
-    lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
+lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
 
 # Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
 lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
