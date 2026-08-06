@@ -1625,6 +1625,27 @@ def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None =
     return max(1, min(freq * semanas_no_mes, ANALISES_MAX_SUGERIDO))
 
 
+def listar_tercas_feiras_do_mes(mes: str | int | None = None, ano: str | int | None = None) -> list[str]:
+    """Retorna as datas (dd/mm/aaaa) das visitas semanais do RT às terças-feiras."""
+    try:
+        mes_i = int(str(mes or "").strip())
+        ano_i = int(str(ano or "").strip())
+        if not 1 <= mes_i <= 12:
+            raise ValueError("mês fora da faixa")
+    except Exception:
+        hoje = datetime.now()
+        mes_i, ano_i = hoje.month, hoje.year
+
+    primeiro_dia = date(ano_i, mes_i, 1)
+    dias_ate_terca = (1 - primeiro_dia.weekday()) % 7
+    data_terca = primeiro_dia + timedelta(days=dias_ate_terca)
+    datas = []
+    while data_terca.month == mes_i:
+        datas.append(data_terca.strftime("%d/%m/%Y"))
+        data_terca += timedelta(days=7)
+    return datas
+
+
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
     """Obtém a frequência semanal cadastrada para o cliente, com fallback para 3x/semana."""
     dados = cliente_ou_dados or {}
@@ -5717,17 +5738,14 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "AqH2"))
         conf = dados_relatorio.get("conformidades", {}) or {}
         nbr_status = conf.get("nbr_11238_status", {}) or {}
-        nbr_complemento = _complemento_manual_nbr11238(conf.get("nbr_11238", ""))
-        evidencia_profundidade = _evidencia_automatica_nbr11238("profundidade", nbr_status.get("profundidade", ""))
-        if nbr_complemento:
-            evidencia_profundidade += f"\nComplemento do RT: {nbr_complemento}"
+        nbr_obs = conf.get("nbr_11238", "") or "Sem observações adicionais registradas."
         story.append(table([
             ["Requisito NBR 11238", "Evidência / Observação", "Conforme?"],
-            ["Sinalização de profundidade visível", evidencia_profundidade, _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
-            ["Retrolavagem do sistema de filtragem", _evidencia_automatica_nbr11238("retrolavagem", nbr_status.get("retrolavagem", "")), _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
-            ["Limpeza de skimmers e decantadores", _evidencia_automatica_nbr11238("skimmers", nbr_status.get("skimmers", "")), _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
-            ["Área de circulação antiderrapante", _evidencia_automatica_nbr11238("circulacao", nbr_status.get("circulacao", "")), _texto_sim_nao_marcado(nbr_status.get("circulacao", ""))],
-            ["Chuveiro obrigatório antes do acesso", _evidencia_automatica_nbr11238("chuveiro", nbr_status.get("chuveiro", "")), _texto_sim_nao_marcado(nbr_status.get("chuveiro", ""))],
+            ["Sinalização de profundidade visível", nbr_obs, _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
+            ["Retrolavagem do sistema de filtragem", "", _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
+            ["Limpeza de skimmers e decantadores", "", _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
+            ["Área de circulação antiderrapante", "", _texto_sim_nao_marcado(nbr_status.get("circulacao", ""))],
+            ["Chuveiro obrigatório antes do acesso", "", _texto_sim_nao_marcado(nbr_status.get("chuveiro", ""))],
         ], widths=[78*mm, 78*mm, 24*mm]))
 
         story.append(P("3. GESTÃO DE RISCOS E SEGURANÇA DO TRABALHO", "AqH1"))
@@ -5976,78 +5994,6 @@ def _texto_sim_nao_marcado(valor) -> str:
     return "☐ Sim   ☐ Não"
 
 
-NBR11238_REQUISITOS = {
-    "profundidade": {
-        "rotulo": "Sinalização de profundidade",
-        "sim": "Sinalização de profundidade visível e preservada.",
-        "nao": "Sinalização de profundidade ausente ou sem visibilidade adequada. Recomenda-se regularização.",
-    },
-    "retrolavagem": {
-        "rotulo": "Retrolavagem",
-        "sim": "Retrolavagem do sistema de filtragem realizada.",
-        "nao": "Retrolavagem não realizada ou não comprovada. Recomenda-se executar e registrar o procedimento.",
-    },
-    "skimmers": {
-        "rotulo": "Skimmers e decantadores",
-        "sim": "Skimmers e decantadores verificados e limpos.",
-        "nao": "Limpeza de skimmers e decantadores pendente. Recomenda-se higienização.",
-    },
-    "circulacao": {
-        "rotulo": "Área antiderrapante",
-        "sim": "Área de circulação com condição antiderrapante preservada.",
-        "nao": "Área de circulação sem condição antiderrapante adequada. Recomenda-se avaliação e correção.",
-    },
-    "chuveiro": {
-        "rotulo": "Chuveiro",
-        "sim": "Chuveiro disponível antes do acesso à piscina.",
-        "nao": "Chuveiro ausente ou indisponível antes do acesso. Recomenda-se adequação.",
-    },
-}
-
-
-def _evidencia_automatica_nbr11238(chave: str, valor) -> str:
-    """Gera a evidência da linha somente quando o requisito foi verificado."""
-    item = NBR11238_REQUISITOS.get(chave, {})
-    v = str(valor or "").strip().lower()
-    if v == "sim":
-        return item.get("sim", "")
-    if v in ("não", "nao"):
-        return item.get("nao", "")
-    return "Não verificado."
-
-
-def _bloco_automatico_nbr11238(status: dict) -> str:
-    linhas = []
-    for chave, item in NBR11238_REQUISITOS.items():
-        valor = status.get(chave, "")
-        if str(valor or "").strip():
-            linhas.append(f"[{item['rotulo']}] {_evidencia_automatica_nbr11238(chave, valor)}")
-    return "\n".join(linhas)
-
-
-def _complemento_manual_nbr11238(texto: str) -> str:
-    """Separa do campo editável apenas as linhas que não foram geradas pelo app."""
-    prefixos = tuple(f"[{item['rotulo']}]" for item in NBR11238_REQUISITOS.values())
-    return "\n".join(
-        linha for linha in str(texto or "").splitlines()
-        if linha.strip() and not linha.strip().startswith(prefixos)
-    ).strip()
-
-
-def _atualizar_observacao_nbr11238():
-    """Atualiza as frases automáticas sem apagar complementos digitados pelo RT."""
-    atual = st.session_state.get("rel_nbr_11238", "")
-    complemento = _complemento_manual_nbr11238(atual)
-    status = {
-        chave: st.session_state.get(f"rel_nbr11238_{chave}", "")
-        for chave in NBR11238_REQUISITOS
-    }
-    automatico = _bloco_automatico_nbr11238(status)
-    st.session_state["rel_nbr_11238"] = "\n".join(
-        parte for parte in (automatico, complemento) if parte
-    )
-
-
 def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> str:
     """Retorna status Sim/Não para cada requisito da NBR 11238."""
     status = (dados_relatorio.get("conformidades", {}) or {}).get("nbr_11238_status", {}) or {}
@@ -6069,23 +6015,13 @@ def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> s
 def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
     tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
     if tabela_nbr is not None and len(tabela_nbr.rows) > 1:
-        conformidades = dados_relatorio.get("conformidades", {}) or {}
-        status_nbr = conformidades.get("nbr_11238_status", {}) or {}
-        complemento = _complemento_manual_nbr11238(conformidades.get("nbr_11238", ""))
+        observacao = dados_relatorio["conformidades"].get("nbr_11238", "") or "Sem observações adicionais registradas."
         for idx in range(1, len(tabela_nbr.rows)):
             row = tabela_nbr.rows[idx]
             if len(row.cells) > 1:
-                requisito = row.cells[0].text
-                chave = next((ch for pedaco, ch in [
-                    ("profundidade", "profundidade"), ("retrolavagem", "retrolavagem"),
-                    ("skimmers", "skimmers"), ("decantadores", "skimmers"),
-                    ("circulacao", "circulacao"), ("antiderrapante", "circulacao"),
-                    ("chuveiro", "chuveiro"),
-                ] if pedaco in normalizar_texto(requisito)), "")
-                evidencia = _evidencia_automatica_nbr11238(chave, status_nbr.get(chave, ""))
-                if idx == 1 and complemento:
-                    evidencia = f"{evidencia}\nComplemento do RT: {complemento}"
-                set_cell_text(row.cells[1], evidencia)
+                # Mantém a observação geral preenchida em todas as linhas em branco,
+                # evitando relatório com campo vazio quando o modelo tiver várias linhas.
+                set_cell_text(row.cells[1], observacao if idx == 1 else "")
             if len(row.cells) > 2:
                 set_cell_text(row.cells[2], _status_nbr11238_por_texto(row.cells[0].text, dados_relatorio))
 
@@ -6320,11 +6256,11 @@ def coletar_conformidades_relatorio() -> dict:
     return {
         "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
         "nbr_11238_status": {
-            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "").strip(),
-            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "").strip(),
-            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "").strip(),
-            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "").strip(),
-            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "").strip(),
+            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "Sim").strip(),
+            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "Sim").strip(),
+            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "Sim").strip(),
+            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "Sim").strip(),
+            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "Sim").strip(),
         },
         "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
         "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
@@ -11114,11 +11050,6 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_status_agua": (st.session_state.get("rel_status_agua") or "CONFORME"),
         "rel_diagnostico": (st.session_state.get("rel_diagnostico") or ""),
         "rel_nbr_11238": (st.session_state.get("rel_nbr_11238") or ""),
-        "rel_nbr11238_profundidade": (st.session_state.get("rel_nbr11238_profundidade") or ""),
-        "rel_nbr11238_retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or ""),
-        "rel_nbr11238_skimmers": (st.session_state.get("rel_nbr11238_skimmers") or ""),
-        "rel_nbr11238_circulacao": (st.session_state.get("rel_nbr11238_circulacao") or ""),
-        "rel_nbr11238_chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or ""),
         "rel_nr_26": (st.session_state.get("rel_nr_26") or ""),
         "rel_nr_06": (st.session_state.get("rel_nr_06") or ""),
         "rel_epi_luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme"),
@@ -19913,15 +19844,20 @@ for lc in lancamentos_local + lancamentos_sheets:
 
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
 
 # Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
 lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
 
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
-    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    _linhas_base = len(listar_tercas_feiras_do_mes(
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    ))
+    _qtd_linhas_rt = max(len(lancamentos), _linhas_base, 1)
+    st.session_state["rel_analises_total"] = _qtd_linhas_rt
+    garantir_campos_analises(_qtd_linhas_rt)
     # Limpa campos antigos de análises para evitar que visitas de outros dias permaneçam
     # Apenas zera os campos específicos; não chama clear() no session_state
     for idx in range(ANALISES_MAX_SUGERIDO):
@@ -20192,15 +20128,18 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
-_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
-with _freq_rel_col1:
-    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
-with _freq_rel_col2:
-    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
-if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
-    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+_datas_visitas_rt = listar_tercas_feiras_do_mes(
+    st.session_state.get("rel_mes_referencia"),
+    st.session_state.get("rel_ano_referencia"),
+)
+_qtd_visitas_rt = max(len(_datas_visitas_rt), 1)
+st.session_state["rel_verificacoes_semanais"] = 1
+st.session_state["rel_analises_total"] = _qtd_visitas_rt
+garantir_campos_analises(_qtd_visitas_rt)
+st.info(
+    f"Visitas do RT: semanalmente às terças-feiras. "
+    f"Para o período selecionado, o relatório terá {_qtd_visitas_rt} linha(s) de parâmetros."
+)
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -20215,13 +20154,9 @@ st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
-_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
-ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
-with ctrl_a1:
-    if st.button("Adicionar análise extra", use_container_width=True):
-        adicionar_analise_extra()
-        st.rerun()
+st.session_state["rel_analises_total"] = _qtd_visitas_rt
+garantir_campos_analises(_qtd_visitas_rt)
+ctrl_a2, ctrl_a3 = st.columns([1.35, 2.25])
 with ctrl_a2:
     if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
         nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
@@ -20233,7 +20168,7 @@ with ctrl_a2:
             aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
         st.rerun()
 with ctrl_a3:
-    st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
+    st.caption(f"{_qtd_visitas_rt} visita(s) de RT prevista(s), todas às terças-feiras. Ao gerar o relatório, os parâmetros ficam salvos como usados pela última vez.")
 # Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
 cab_cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
 for _col, _label in zip(
@@ -20242,7 +20177,9 @@ for _col, _label in zip(
 ):
     _col.caption(f"**{_label}**")
 
-for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
+for i in range(_qtd_visitas_rt):
+    if i < len(_datas_visitas_rt) and not str(st.session_state.get(f"rel_analise_data_{i}") or "").strip():
+        st.session_state[f"rel_analise_data_{i}"] = _datas_visitas_rt[i]
     cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
     cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
@@ -20296,18 +20233,18 @@ for i in range(5):
     cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
 
 st.markdown("**NBR 11238 — Segurança e higiene operacional**")
-st.caption("Marque os requisitos verificados. A evidência é preenchida automaticamente e pode ser complementada pelo RT.")
+st.caption("Marque os requisitos verificados. Esses campos alimentam a coluna ‘Conforme?’ do relatório final.")
 _nbr_cols = st.columns([1.6, 1.2, 1.6, 1.6, 1.2])
 with _nbr_cols[0]:
-    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
+    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True)
 with _nbr_cols[1]:
-    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
+    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True)
 with _nbr_cols[2]:
-    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
+    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True)
 with _nbr_cols[3]:
-    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
+    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True)
 with _nbr_cols[4]:
-    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True, index=None, on_change=_atualizar_observacao_nbr11238)
+    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True)
 
 cx1, cx2, cx3 = st.columns(3)
 with cx1:
@@ -21780,3 +21717,4 @@ st.markdown("---")
 st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
+
