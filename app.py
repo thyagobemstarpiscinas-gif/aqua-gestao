@@ -21732,4 +21732,3 @@ st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
 
-
