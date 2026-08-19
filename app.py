@@ -46,6 +46,8 @@ from utils.vencimentos import (
 from utils.arquivos import classificar_arquivo, chave_segura
 from utils.normalizacao import normalizar_texto_busca, nomes_condominio_equivalentes
 from utils.datas_visitas import normalizar_data_visita, lancamento_pertence_mes_ano, filtrar_lancamentos_rt_tercas
+import agua_consumo
+
 from rt_monthly_report import (
     normalize_rt_records,
     select_records_by_condominium,
@@ -11851,6 +11853,17 @@ if _modo_interno == "entrada":
             st.session_state["op_pin_ok"] = False
             st.rerun()
 
+        if st.button(
+            "💧 Água para Consumo Humano",
+            use_container_width=True,
+            key="btn_agua_consumo",
+        ):
+            # Módulo isolado. Não altera empresa ativa, RT ou Bem Star.
+            st.session_state["admin_logado"] = False
+            st.session_state["modo_atual"] = "agua_consumo"
+            st.session_state.setdefault("agua_logado", False)
+            st.rerun()
+
         if st.button("🔐 Acesso administrativo", use_container_width=True, key="btn_admin_limpo"):
             st.session_state["mostrar_pin_admin"] = not st.session_state.get("mostrar_pin_admin", False)
 
@@ -11862,6 +11875,18 @@ if _modo_interno == "entrada":
             _admin_render_login_empresa()
 
 
+    st.stop()
+
+
+# ============================================================
+# MÓDULO ISOLADO — ÁGUA PARA CONSUMO HUMANO
+# Não participa de empresa_ativa e não altera RT/Bem Star.
+# ============================================================
+if _modo_interno == "agua_consumo":
+    agua_consumo.agua_render_modulo(
+        conectar_sheets,
+        obter_aba_sheets,
+    )
     st.stop()
 
 
