@@ -5437,24 +5437,10 @@ LOGO_AQUA_APROVADA_B64 = """iVBORw0KGgoAAAANSUhEUgAAAggAAAIICAYAAAAL/BZjAACAAElE
 def garantir_logo_aqua_oficial() -> Path | None:
     """Garante um arquivo de logo oficial local para uso nos PDFs premium."""
     try:
-        candidatos = [
-            # Identidade visual aprovada para os relatórios RT mensais.
-            BASE_DIR / "aqua_logo_aprovada.png",
-            BASE_DIR / "assets" / "aqua_logo_aprovada.png",
-            BASE_DIR / "Logo Aqua.jpeg",
-            BASE_DIR / "Logo_Aqua.jpeg",
-            BASE_DIR / "logo_aqua.jpeg",
-            BASE_DIR / "aqua_gestao_logo.png",
-            BASE_DIR / "aqua_gestao_logo.jpg",
-            BASE_DIR / "assets" / "Logo Aqua.jpeg",
-            BASE_DIR / "assets" / "aqua_gestao_logo.png",
-        ]
-        for p in candidatos:
-            if p.exists():
-                return p
-        # Fallback autocontido: nunca retorna à identidade antiga quando o
-        # arquivo de imagem não estiver presente no Streamlit Cloud.
-        p = BASE_DIR / "aqua_logo_aprovada.png"
+        # A identidade RT aprovada fica incorporada ao código. O arquivo é
+        # reconstruído em todas as execuções para impedir que imagens antigas
+        # existentes no repositório (como "Logo Aqua.jpeg") tenham prioridade.
+        p = BASE_DIR / "aqua_logo_rt_aprovada.png"
         import base64 as _b64
         p.write_bytes(_b64.b64decode(LOGO_AQUA_APROVADA_B64))
         return p if p.exists() else None
