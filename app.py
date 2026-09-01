@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
-from docx cp "01-app_para_chatgpt (2).py" app.py
+from docx import Document
 python -m py_compile app.py
 git add app.py
 git commit -m "Corrige importacao completa dos clientes Bem Star"
