@@ -792,9 +792,11 @@ def sheets_listar_clientes_completo() -> list[dict]:
             vol_family   = _vol(row, 11)
             vol_total    = _vol(row, 3) or (vol_adulto + vol_infantil + vol_family)
 
-            _empresa_cl = str(row[12]).strip() if len(row) > 12 else "Aqua Gestão"
-            if not _empresa_cl:
-                _empresa_cl = "Aqua Gestão"
+            # Preserve vazio para cadastros legados. O filtro por empresa trata
+            # cliente sem vínculo definido como legado e o disponibiliza nos
+            # dois painéis; convertê-lo aqui para Aqua Gestão escondia esses
+            # clientes do relatório Bem Star.
+            _empresa_cl = str(row[12]).strip() if len(row) > 12 else ""
             _cnpj_cl = str(row[13]).strip() if len(row) > 13 else ""  # _CNPJ_LER_COLUNA_N_
             cliente_base = {
                 "id":           id_val,
@@ -6165,10 +6167,8 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
         return []
 
 
-def garantir_campos_analises(qtd: int, minimo: int = ANALISES_PADRAO):
-    """Garante os campos da tabela sem impor 12 linhas aos fluxos RT semanais."""
-    minimo = max(1, int(minimo or 1))
-    qtd = max(minimo, int(qtd or minimo))
+def garantir_campos_analises(qtd: int):
+    qtd = max(ANALISES_PADRAO, int(qtd or ANALISES_PADRAO))
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
@@ -9223,6 +9223,15 @@ def _bs_fmt_num(valor, casas=2):
         return "—"
 
 
+def _bs_eh_segunda(data_visita: str) -> bool:
+    """Indica se a visita ocorreu em uma segunda-feira."""
+    try:
+        data_normalizada = normalizar_data_visita(data_visita)
+        return datetime.strptime(data_normalizada, "%d/%m/%Y").weekday() == 0
+    except Exception:
+        return False
+
+
 def _bs_stats_valores(lancamentos, campo):
     vals = []
     for lc in lancamentos or []:
@@ -9294,17 +9303,18 @@ def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", m
     """
     lancamentos = [lc for lc in (lancamentos or []) if isinstance(lc, dict)]
     total_visitas = len(lancamentos)
+    lancamentos_analise = [lc for lc in lancamentos if _bs_eh_segunda(lc.get("data", ""))]
     freq_txt = _bs_dia_semana_resumo()
 
-    ph = _bs_stats_valores(lancamentos, "ph")
-    crl = _bs_stats_valores(lancamentos, "cloro_livre")
-    ct = _bs_stats_valores(lancamentos, "cloro_total")
-    alc = _bs_stats_valores(lancamentos, "alcalinidade")
-    dc = _bs_stats_valores(lancamentos, "dureza")
-    cya = _bs_stats_valores(lancamentos, "cianurico")
+    ph = _bs_stats_valores(lancamentos_analise, "ph")
+    crl = _bs_stats_valores(lancamentos_analise, "cloro_livre")
+    ct = _bs_stats_valores(lancamentos_analise, "cloro_total")
+    alc = _bs_stats_valores(lancamentos_analise, "alcalinidade")
+    dc = _bs_stats_valores(lancamentos_analise, "dureza")
+    cya = _bs_stats_valores(lancamentos_analise, "cianurico")
 
     cl_comb_vals = []
-    for lc in lancamentos:
+    for lc in lancamentos_analise:
         piscinas = lc.get("piscinas", [])
         base = piscinas[0] if piscinas and isinstance(piscinas[0], dict) else lc
         v_ct = _bs_float(base.get("cloro_total", lc.get("cloro_total", "")))
@@ -9319,7 +9329,8 @@ def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", m
         linhas.append(
             f"Durante o período de {periodo}, foram registradas {total_visitas} visita(s) de manutenção "
             f"na piscina de {cliente or 'cliente selecionado'}, em frequência {freq_txt}. "
-            "Os parâmetros físico-químicos foram aferidos conforme rotina operacional, com aplicação de produtos de tratamento conforme a demanda observada em campo."
+            "As análises completas dos parâmetros da água foram consolidadas a partir das visitas realizadas às segundas-feiras. "
+            "As demais visitas do período correspondem ao acompanhamento e à manutenção operacional."
         )
     else:
         linhas.append(
@@ -9812,6 +9823,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
                 return datetime.max
 
         lancamentos = sorted(lancamentos, key=_data_ordem)
+        lancamentos_analise = [lc for lc in lancamentos if _bs_eh_segunda(lc.get("data", ""))]
 
         def _base_lanc(lc):
             ps = lc.get("piscinas", [])
@@ -9841,7 +9853,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         def _vals(campo):
             vals = []
-            for lc in lancamentos:
+            for lc in lancamentos_analise:
                 b = _base_lanc(lc)
                 v = _f(b.get(campo, lc.get(campo, "")))
                 if v is not None:
@@ -9866,14 +9878,14 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         alc_vals = _vals("alcalinidade")
         dc_vals = _vals("dureza")
         cya_vals = _vals("cianurico")
-        clc_vals = [v for v in [_cl_comb(lc) for lc in lancamentos] if v is not None]
+        clc_vals = [v for v in [_cl_comb(lc) for lc in lancamentos_analise] if v is not None]
 
         ph_ok, ph_tot, ph_pct = _conformidade(ph_vals, 7.2, 7.8)
         crl_ok, crl_tot, crl_pct = _conformidade(crl_vals, 1.0, 3.0)
         clc_ok, clc_tot, clc_pct = _conformidade(clc_vals, menor_que=0.40)
 
-        total_leituras = sum(1 for lc in lancamentos if _tem_leitura(lc))
-        total_sem_leitura = max(len(lancamentos) - total_leituras, 0)
+        total_leituras = sum(1 for lc in lancamentos_analise if _tem_leitura(lc))
+        total_sem_leitura = max(len(lancamentos_analise) - total_leituras, 0)
 
         total_dosagens = 0
         for lc in lancamentos:
@@ -10296,7 +10308,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         info_rows = [
             [P("Cliente", "BS_TableMuted"), P(nome_cliente, "BS_Table"), P("Operador", "BS_TableMuted"), P(operador, "BS_Table")],
-            [P("Período", "BS_TableMuted"), P(f"{periodo_ini} a {periodo_fim}", "BS_Table"), P("Visitas sem leitura", "BS_TableMuted"), P(str(total_sem_leitura), "BS_Table")],
+            [P("Período", "BS_TableMuted"), P(f"{periodo_ini} a {periodo_fim}", "BS_Table"), P("Segundas sem análise", "BS_TableMuted"), P(str(total_sem_leitura), "BS_Table")],
             [P("Prestador", "BS_TableMuted"), P(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", "BS_Table"), P("Responsável", "BS_TableMuted"), P(RESPONSAVEL_TÉCNICO, "BS_Table")],
         ]
         info_tbl = Table(info_rows, colWidths=[2.4*cm, 6.0*cm, 2.7*cm, 6.0*cm])
@@ -10313,8 +10325,12 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         story.append(Spacer(1, 5 * mm))
 
         # Tabela de visitas com design dashboard
-        story.append(P("Registros de Visita — Parâmetros Físico-Químicos", "BS_H1"))
-        story.append(P("Linhas em tom mais claro indicam visita programada sem leitura química registrada, normalmente associada à rotina física/operacional.", "BS_BodySmall"))
+        story.append(P("Análises Semanais dos Parâmetros", "BS_H1"))
+        story.append(P(
+            "Este relatório mensal consolida as análises completas dos parâmetros da água realizadas às segundas-feiras. "
+            "As demais visitas do período correspondem ao acompanhamento e à manutenção operacional.",
+            "BS_BodySmall"
+        ))
 
         rows = [[
             P("#", "BS_TableHead"), P("Data", "BS_TableHead"), P("Dia", "BS_TableHead"),
@@ -10323,7 +10339,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         ]]
 
         empty_rows_idx = []
-        for idx, lc in enumerate(lancamentos, 1):
+        for idx, lc in enumerate(lancamentos_analise, 1):
             b = _base_lanc(lc)
             clc = _cl_comb(lc)
             tem_leitura = _tem_leitura(lc)
@@ -10369,7 +10385,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             elif r % 2 == 0:
                 style_vis.append(("BACKGROUND", (0,r), (-1,r), CINZA_LINHA))
 
-        for r_i, lc in enumerate(lancamentos, 1):
+        for r_i, lc in enumerate(lancamentos_analise, 1):
             b = _base_lanc(lc)
             checks = [
                 (3, _f(b.get("ph", lc.get("ph", ""))), lambda v: 7.2 <= v <= 7.8),
@@ -10388,7 +10404,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         story.append(Spacer(1, 5 * mm))
 
         # Estatística em tabela compacta
-        story.append(P("Análise Estatística do Mês", "BS_H1"))
+        story.append(P("Análise Estatística das Segundas-feiras", "BS_H1"))
 
         stats = [
             ("pH", ph_vals, "7,2–7,8", lambda v: 7.2 <= v <= 7.8, 2),
@@ -10442,7 +10458,8 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
                 P(f"<b>{titulo}</b><br/>{texto}", "BS_Body")
             ])
 
-        _bullet("Visitas do mês", f"Foram registradas <b>{len(lancamentos)}</b> visita(s), com frequência <b>{freq_curta}</b>. Leituras químicas preenchidas em <b>{total_leituras}</b> visita(s).")
+        _bullet("Visitas do mês", f"Foram registradas <b>{len(lancamentos)}</b> visita(s), com frequência <b>{freq_curta}</b>.")
+        _bullet("Análises semanais", f"Foram preenchidas análises completas em <b>{total_leituras}</b> segunda(s)-feira(s). As demais visitas correspondem ao acompanhamento e à manutenção operacional.")
         _bullet("pH", f"Conformidade de <b>{ph_pct}%</b> ({ph_ok}/{ph_tot}). Média: <b>{_fmt(sum(ph_vals)/len(ph_vals) if ph_vals else None)}</b>. Faixa de referência: <b>7,2 a 7,8</b>.")
         _bullet("Cloro livre", f"Conformidade de <b>{crl_pct}%</b> ({crl_ok}/{crl_tot}). Média: <b>{_fmt(sum(crl_vals)/len(crl_vals) if crl_vals else None)} mg/L</b>. Faixa de referência: <b>1,0 a 3,0 mg/L</b>.")
         _bullet("Cloro combinado", f"Conformidade de <b>{clc_pct}%</b> ({clc_ok}/{clc_tot}) abaixo de <b>0,40 mg/L</b>. Média: <b>{_fmt(sum(clc_vals)/len(clc_vals) if clc_vals else None)} mg/L</b>.")
@@ -10522,8 +10539,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             ], [
                 P(
                     f"_______________________________________________<br/>{RESPONSAVEL_TÉCNICO}<br/>"
-                    f"Sócio-Administrador — Bem Star Piscinas Ltda<br/>"
-                    f"Quím. CRQ-MG 02ª Região nº {CRQ_NUMERO}<br/>"
+                    f"Sócio-Administrador / Responsável pela operação — Bem Star Piscinas Ltda<br/>"
                     f"Operador responsável: {operador}<br/>Uberlândia/MG, {hoje_br()}",
                     "BS_Body"
                 )
@@ -10586,38 +10602,11 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
                 story.append(_t_fotos)
                 story.append(Spacer(1, 4 * mm))
 
-        # Anexo RT compacto
-        story.append(PageBreak())
-        story.append(P("Anexo — Diferença entre Relatório Operacional e RT", "BS_H1"))
-        story.append(P(
-            "Este documento é um dashboard operacional de manutenção emitido pela Bem Star Piscinas. "
-            "Ele registra visitas, leituras, dosagens e recomendações operacionais, mas não substitui relatório técnico de Responsabilidade Técnica quando este for aplicável.",
-            "BS_Body"
-        ))
-
-        comp = [
-            [P("Item", "BS_TableHead"), P("Operacional — Bem Star", "BS_TableHead"), P("Técnico RT — Aqua Gestão", "BS_TableHead")],
-            [P("Natureza", "BS_Table"), P("Registro operacional de manutenção", "BS_Table"), P("Documento técnico formal", "BS_Table")],
-            [P("Responsável", "BS_Table"), P("Operador e responsável da empresa", "BS_Table"), P("Químico Responsável Técnico registrado no CRQ", "BS_Table")],
-            [P("Substitui RT?", "BS_Table"), P("Não", "BS_Table"), P("Sim, quando contratado e emitido no escopo técnico", "BS_Table")],
-        ]
-        t_comp = Table(comp, colWidths=[38*mm, 67*mm, 73*mm], repeatRows=1)
-        t_comp.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), AZUL_ESCURO),
-            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, CINZA_LINHA]),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ("LEFTPADDING", (0,0), (-1,-1), 5),
-            ("RIGHTPADDING", (0,0), (-1,-1), 5),
-            ("TOPPADDING", (0,0), (-1,-1), 5),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-        ]))
-        story.append(t_comp)
         story.append(Spacer(1, 5 * mm))
-        story.append(P("Aqua Gestão — Responsabilidade Técnica em Química", "BS_H2"))
         story.append(P(
-            "A Aqua Gestão é a parceira especializada em Responsabilidade Técnica para piscinas coletivas, com atuação em relatórios técnicos, planos de controle, documentação e suporte de conformidade.",
-            "BS_Body"
+            "Documento de caráter exclusivamente operacional, destinado ao registro mensal dos serviços de manutenção executados. "
+            "Não constitui laudo, parecer técnico ou documento de Responsabilidade Técnica.",
+            "BS_BodySmall"
         ))
 
         doc = SimpleDocTemplate(
@@ -15833,6 +15822,21 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             return sheets_listar_clientes_completo()
     
         _cls_sheets = filtrar_clientes_por_empresa(_clientes_sheets_csr(), "bem_star")
+
+        # O Google Sheets é a fonte persistente. O JSON local permanece apenas
+        # como fallback para cadastros ainda não sincronizados (o filesystem do
+        # Streamlit Cloud pode ser recriado a qualquer reinício).
+        _clientes_bem_star_exibicao = list(_cls_sheets)
+        _nomes_bem_star_exibicao = {
+            normalizar_texto_busca(c.get("nome", ""))
+            for c in _clientes_bem_star_exibicao
+            if c.get("nome")
+        }
+        for _cliente_local in clientes_sem_rt:
+            _nome_local = normalizar_texto_busca(_cliente_local.get("nome", ""))
+            if _nome_local and _nome_local not in _nomes_bem_star_exibicao:
+                _clientes_bem_star_exibicao.append(_cliente_local)
+                _nomes_bem_star_exibicao.add(_nome_local)
         if _cls_sheets:
             _opcoes_csr_imp = ["— Importar do cadastro principal (Sheets) —"] + [c["nome"] for c in _cls_sheets]
             _sel_csr_imp = st.selectbox(
@@ -15962,9 +15966,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 salvar_dados_condominio(pasta_csr, _dados_csr_local)
                 st.rerun()
     
-        if clientes_sem_rt:
-            st.markdown(f"**{len(clientes_sem_rt)} cliente(s) cadastrado(s) sem RT:**")
-            for c in clientes_sem_rt:
+        if _clientes_bem_star_exibicao:
+            st.markdown(f"**{len(_clientes_bem_star_exibicao)} cliente(s) Bem Star disponível(is):**")
+            for c in sorted(
+                _clientes_bem_star_exibicao,
+                key=lambda item: normalizar_texto_busca(item.get("nome", "")),
+            ):
                 st.caption(f"📍 {c['nome']} | {c.get('contato','–')} | {c.get('endereco','–')[:50]}")
     
     # ---- GERAÇÃO DO RELATÓRIO TÉCNICO SIMPLES ----
@@ -16200,7 +16207,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
 
         st.checkbox(
             "Incluir no relatório as visitas programadas mesmo sem parâmetros preenchidos",
-            value=bool(st.session_state.get("bs_rel_incluir_visitas_vazias", True)),
+            value=bool(st.session_state.get("bs_rel_incluir_visitas_vazias", False)),
             key="bs_rel_incluir_visitas_vazias",
             help="Use marcado para o relatório mostrar todos os dias programados do mês. Desmarque se quiser listar apenas visitas preenchidas."
         )
@@ -16236,16 +16243,20 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 with st.expander(_titulo_exp, expanded=False):
                     st.text_input("Piscina / setor", key=f"bs_agenda_piscina_{_kbs}", placeholder="ex: Piscina principal")
 
-                    _pa, _pb, _pc = st.columns(3)
-                    with _pa:
-                        st.text_input("pH", key=f"bs_agenda_ph_{_kbs}", placeholder="ex: 7,4")
-                        st.text_input("Alcalinidade mg/L", key=f"bs_agenda_alc_{_kbs}", placeholder="ex: 90")
-                    with _pb:
-                        st.text_input("Cloro livre mg/L", key=f"bs_agenda_crl_{_kbs}", placeholder="ex: 1,5")
-                        st.text_input("Dureza cálcica mg/L", key=f"bs_agenda_dc_{_kbs}", placeholder="ex: 200")
-                    with _pc:
-                        st.text_input("Cloro total mg/L", key=f"bs_agenda_ct_{_kbs}", placeholder="ex: 1,8")
-                        st.text_input("Ácido cianúrico mg/L", key=f"bs_agenda_cya_{_kbs}", placeholder="ex: 40")
+                    if _bs_eh_segunda(_data_visita_bs):
+                        st.markdown("**Análise semanal completa dos parâmetros**")
+                        _pa, _pb, _pc = st.columns(3)
+                        with _pa:
+                            st.text_input("pH", key=f"bs_agenda_ph_{_kbs}", placeholder="ex: 7,4")
+                            st.text_input("Alcalinidade mg/L", key=f"bs_agenda_alc_{_kbs}", placeholder="ex: 90")
+                        with _pb:
+                            st.text_input("Cloro livre mg/L", key=f"bs_agenda_crl_{_kbs}", placeholder="ex: 1,5")
+                            st.text_input("Dureza cálcica mg/L", key=f"bs_agenda_dc_{_kbs}", placeholder="ex: 200")
+                        with _pc:
+                            st.text_input("Cloro total mg/L", key=f"bs_agenda_ct_{_kbs}", placeholder="ex: 1,8")
+                            st.text_input("Ácido cianúrico mg/L", key=f"bs_agenda_cya_{_kbs}", placeholder="ex: 40")
+                    else:
+                        st.caption("Visita de acompanhamento e manutenção operacional. A análise completa é consolidada às segundas-feiras.")
 
                     st.text_area("Observação da visita", key=f"bs_agenda_obs_{_kbs}", height=70)
 
@@ -19829,54 +19840,11 @@ lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref
 # Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
 lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
 
-def _datas_tercas_do_mes(mes, ano):
-    """Retorna todas as terças-feiras do mês/ano informado, em dd/mm/aaaa."""
-    try:
-        mes_i = int(str(mes or "").strip())
-        ano_i = int(str(ano or "").strip())
-        atual = date(ano_i, mes_i, 1)
-    except (TypeError, ValueError):
-        return []
-
-    datas = []
-    while atual.month == mes_i:
-        if atual.weekday() == 1:  # segunda=0, terça=1
-            datas.append(atual.strftime("%d/%m/%Y"))
-        atual += timedelta(days=1)
-    return datas
-
-
-_datas_rt_tercas = _datas_tercas_do_mes(mes_ref, ano_ref)
-
-# Uma única visita por terça. Se houver duplicata local/Sheets, preserva o registro
-# mais completo, em vez de abrir duas linhas para a mesma data.
-_visita_rt_por_data = {}
-for _lc_rt in lancamentos_disponiveis:
-    _data_rt = normalizar_data_visita(_lc_rt.get("data", ""))
-    if _data_rt not in _datas_rt_tercas:
-        continue
-    _anterior_rt = _visita_rt_por_data.get(_data_rt)
-    _pontuacao_rt = sum(bool(str(v or "").strip()) for v in _lc_rt.values())
-    _pontuacao_anterior_rt = sum(bool(str(v or "").strip()) for v in (_anterior_rt or {}).values())
-    if _anterior_rt is None or _pontuacao_rt > _pontuacao_anterior_rt:
-        _visita_rt_por_data[_data_rt] = _lc_rt
-
-lancamentos_disponiveis = [
-    _visita_rt_por_data[data_rt]
-    for data_rt in _datas_rt_tercas
-    if data_rt in _visita_rt_por_data
-]
-
-# A grade contém exatamente as terças do mês. Terças ainda sem visita ficam apenas
-# com a data prevista; nunca reutilizam dados do mês anterior.
-_grade_rt_tercas = [
-    _visita_rt_por_data.get(data_rt, {"data": data_rt})
-    for data_rt in _datas_rt_tercas
-]
-
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    garantir_campos_analises(max(len(lancamentos), 1), minimo=1)
+    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
+    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
     # Limpa campos antigos de análises para evitar que visitas de outros dias permaneçam
     # Apenas zera os campos específicos; não chama clear() no session_state
     for idx in range(ANALISES_MAX_SUGERIDO):
@@ -19947,7 +19915,7 @@ def _importar_lancamentos(lancamentos):
 # Autoimportação real para o relatório mensal.
 # Se houver lançamentos de campo no período, o relatório é alimentado automaticamente
 # uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
-if _grade_rt_tercas:
+if lancamentos_disponiveis:
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
@@ -19962,10 +19930,10 @@ if _grade_rt_tercas:
         ])
 
         if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
-            _importar_lancamentos(_grade_rt_tercas)
+            _importar_lancamentos(lancamentos_disponiveis)
             st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
             st.session_state["_rel_autoimport_msg"] = (
-                f"✅ Grade de terças-feiras atualizada; {len(lancamentos_disponiveis)} visita(s) encontrada(s) "
+                f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
                 f"para o relatório {mes_ref}/{ano_ref}."
             )
             st.rerun()
@@ -20147,11 +20115,15 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-st.markdown("**Visitas de RT consideradas no relatório**")
-st.caption(
-    f"A tabela contém somente as {len(_datas_rt_tercas)} terça(s)-feira(s) de {mes_ref}/{ano_ref}. "
-    "Datas sem lançamento permanecem com os parâmetros vazios."
-)
+st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
+_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
+with _freq_rel_col1:
+    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
+with _freq_rel_col2:
+    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
+if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
+    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -20166,8 +20138,8 @@ st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
-_linhas_minimas_rel = max(len(_datas_rt_tercas), 1)
-garantir_campos_analises(_linhas_minimas_rel, minimo=1)
+_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
@@ -21731,4 +21703,3 @@ st.markdown("---")
 st.caption(
     f"{APP_TITLE} • {RESPONSAVEL_TÉCNICO} • {CRQ} • Versão v5_relatorio_premium_aqua"
 )
-
