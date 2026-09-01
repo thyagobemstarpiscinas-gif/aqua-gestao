@@ -13,10 +13,6 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as components
 from docx import Document
-python -m py_compile app.py
-git add app.py
-git commit -m "Corrige importacao completa dos clientes Bem Star"
-git push origin mainimport Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from PIL import Image, ImageOps
