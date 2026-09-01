@@ -1601,12 +1601,14 @@ def calcular_linhas_analises_por_frequencia(verificacoes_semanais: int | str | N
 
 
 def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None = None, mes: str | None = None, ano: str | None = None) -> int:
-    """Calcula linhas de análises para RT no mês selecionado (sem mínimo fixo de 12)."""
-    try:
-        freq = int(float(str(verificacoes_semanais or "").replace(",", ".")))
-    except Exception:
-        freq = 1
-    freq = max(1, min(freq, 7))
+    """Calcula as linhas do relatório RT: exatamente um lançamento por semana.
+
+    O parâmetro ``verificacoes_semanais`` é mantido apenas por compatibilidade com
+    chamadas antigas. A frequência operacional do cliente não deve dimensionar o
+    relatório de RT, pois limpeza/manutenção e supervisão técnica são rotinas
+    independentes.
+    """
+    freq = 1
 
     try:
         mes_i = int(str(mes or "").strip())
@@ -1625,11 +1627,17 @@ def calcular_linhas_analises_rt_mensal(verificacoes_semanais: int | str | None =
         else:
             proximo_mes = date(ano_i, mes_i + 1, 1)
         dias_no_mes = max((proximo_mes - primeiro_dia).days, 28)
+        # As visitas semanais do RT são lançadas às terças-feiras.
+        # Conta as terças reais do mês, evitando abrir uma quinta linha em meses
+        # com 31 dias que possuam somente quatro terças.
+        qtd_tercas = sum(
+            1 for dia in range(1, dias_no_mes + 1)
+            if date(ano_i, mes_i, dia).weekday() == 1
+        )
     except Exception:
-        dias_no_mes = 30
+        qtd_tercas = 4
 
-    semanas_no_mes = max(1, (dias_no_mes + 6) // 7)
-    return max(1, min(freq * semanas_no_mes, ANALISES_MAX_SUGERIDO))
+    return max(1, min(qtd_tercas, ANALISES_MAX_SUGERIDO))
 
 
 def obter_verificacoes_semanais_cliente(cliente_ou_dados: dict | None) -> int:
@@ -3408,9 +3416,14 @@ def sincronizar_relatorio_com_cadastro():
 def carregar_dados_cadastro_no_relatorio():
     _nome_base_cad = (st.session_state.get("nome_condominio") or "").strip()
     _dados_locais_cad = _carregar_dados_cliente_local(_nome_base_cad) if _nome_base_cad else {}
-    _freq_cad = obter_verificacoes_semanais_cliente(_dados_locais_cad)
-    st.session_state["rel_verificacoes_semanais"] = _freq_cad
-    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_cad)
+    # Cadastro pode ter várias visitas operacionais, mas o relatório RT mantém
+    # somente um lançamento por semana.
+    st.session_state["rel_verificacoes_semanais"] = 1
+    st.session_state["rel_analises_total"] = calcular_linhas_analises_rt_mensal(
+        1,
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
     st.session_state.rel_nome_condominio = _nome_base_cad
     st.session_state.rel_cnpj_condominio = (st.session_state.get("cnpj_condominio") or "").strip()
     st.session_state.rel_endereco_condominio = (st.session_state.get("endereco_condominio") or "").strip()
@@ -6189,8 +6202,10 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
         return []
 
 
-def garantir_campos_analises(qtd: int):
-    qtd = max(ANALISES_PADRAO, int(qtd or ANALISES_PADRAO))
+def garantir_campos_analises(qtd: int, minimo: int = ANALISES_PADRAO):
+    """Inicializa linhas de análise sem impor 12 linhas ao fluxo semanal de RT."""
+    minimo = max(1, int(minimo or 1))
+    qtd = max(minimo, int(qtd or minimo))
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
@@ -6201,14 +6216,14 @@ def garantir_campos_analises(qtd: int):
 
 
 def adicionar_analise_extra():
-    atual = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
-    garantir_campos_analises(atual + 1)
+    atual = int(st.session_state.get("rel_analises_total", 1) or 1)
+    garantir_campos_analises(atual + 1, minimo=1)
 
 
 def coletar_analises_relatorio() -> list[dict]:
     itens = []
-    qtd = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
-    garantir_campos_analises(qtd)
+    qtd = int(st.session_state.get("rel_analises_total", 1) or 1)
+    garantir_campos_analises(qtd, minimo=1)
     for i in range(qtd):
         itens.append({
             "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
@@ -12070,7 +12085,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.session_state["rel_representante"] = str(_cli_sel_rt.get("nome_sindico") or "").strip()
 
         _dados_cliente_rt = _mapa_cli_rt.get(_sel_cond_rt, {}) if (_sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos") else {}
-        _freq_rt = _obter_frequencia_rt_cliente(_dados_cliente_rt)
+        # Relatório RT: regra fixa e independente da frequência operacional.
+        _freq_rt = 1
         _linhas_esperadas_rt = calcular_linhas_analises_rt_mensal(_freq_rt, _sel_mes, _sel_ano)
         _ctx_rt = f"{_sel_cond_rt}|{_sel_mes}|{_sel_ano}|{_freq_rt}"
         if st.session_state.get("_rt2025_ctx_linhas") != _ctx_rt:
@@ -12127,7 +12143,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _qtd_regs_auto = int(st.session_state.get("_rt2025_qtd_registros_auto", 0) or 0)
         _qtd_linhas_rt = max(_linhas_esperadas_rt, _qtd_regs_auto)
         st.session_state["rel_analises_total"] = _qtd_linhas_rt
-        garantir_campos_analises(_qtd_linhas_rt)
+        garantir_campos_analises(_qtd_linhas_rt, minimo=1)
         cab_cols_rt = st.columns([0.95, 0.55, 0.65, 0.65, 0.85, 0.75, 0.75, 0.75, 0.65, 0.65, 0.75, 1.0])
         for _col, _label in zip(
             cab_cols_rt,
@@ -12224,7 +12240,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if not registros:
                 return
             qtd = max(_linhas_esperadas_rt, len(registros))
-            garantir_campos_analises(qtd)
+            garantir_campos_analises(qtd, minimo=1)
             st.session_state["rel_analises_total"] = qtd
             st.session_state["_rt2025_qtd_registros_auto"] = len(registros)
 
@@ -12399,7 +12415,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if not regs:
                 st.session_state["_rt2025_qtd_registros_auto"] = 0
                 st.session_state["rel_analises_total"] = _linhas_esperadas_rt
-                garantir_campos_analises(_linhas_esperadas_rt)
+                garantir_campos_analises(_linhas_esperadas_rt, minimo=1)
                 registros_preview.info("Nenhum registro técnico (RT) encontrado para o período selecionado.")
             else:
                 _preencher_campos_rt_por_registros(regs)
@@ -19667,9 +19683,15 @@ if _clientes_rel:
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
                     st.session_state["rel_representante"]     = _dados_rel.get("contato", "")
                     st.session_state["rel_cpf_cnpj_representante"] = ""
-                    _freq_rel = obter_verificacoes_semanais_cliente(_dados_rel)
-                    st.session_state["rel_verificacoes_semanais"] = _freq_rel
-                    st.session_state["rel_analises_total"] = calcular_linhas_analises_por_frequencia(_freq_rel)
+                    # O relatório RT aceita somente um lançamento por semana.
+                    # A frequência de limpeza/manutenção cadastrada não interfere aqui.
+                    _freq_rel = 1
+                    st.session_state["rel_verificacoes_semanais"] = 1
+                    st.session_state["rel_analises_total"] = calcular_linhas_analises_rt_mensal(
+                        1,
+                        st.session_state.get("rel_mes_referencia"),
+                        st.session_state.get("rel_ano_referencia"),
+                    )
                     st.session_state["_rel_auto_importar_cliente"] = True
                     st.success(f"✅ Dados de '{_sel_rel}' carregados no relatório! As visitas do mês serão importadas automaticamente se existirem.")
                     st.rerun()
@@ -19853,6 +19875,28 @@ def _filtrar_mes(lancamentos, mes, ano):
         return lancamentos
     return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
 
+def _limitar_lancamentos_rt_um_por_semana(lancamentos):
+    """Mantém somente um lançamento RT em cada semana ISO.
+
+    Preserva a primeira ocorrência válida da semana e descarta duplicidades de
+    importação (local + Sheets) sem alterar os registros de origem.
+    """
+    resultado = []
+    semanas_vistas = set()
+    for lc in lancamentos or []:
+        data_txt = normalizar_data_visita(lc.get("data", ""))
+        try:
+            data_obj = datetime.strptime(data_txt, "%d/%m/%Y").date()
+        except Exception:
+            continue
+        iso = data_obj.isocalendar()
+        chave_semana = (iso.year, iso.week)
+        if chave_semana in semanas_vistas:
+            continue
+        semanas_vistas.add(chave_semana)
+        resultado.append(lc)
+    return resultado
+
 # Une local + Sheets sem duplicar (por data+operador)
 _vistos = set()
 lancamentos_disponiveis = []
@@ -19865,14 +19909,19 @@ for lc in lancamentos_local + lancamentos_sheets:
 # Filtra por mês se informado
 lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
 
-# Manter apenas visitas de RT realizadas às terças-feiras para a tabela de parâmetros
-lancamentos_disponiveis = filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
+# Manter somente a visita semanal de RT (terça-feira) e impedir duplicidade na semana.
+lancamentos_disponiveis = _limitar_lancamentos_rt_um_por_semana(
+    filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
+)
 
 def _importar_lancamentos(lancamentos):
     """Preenche o relatório com os lançamentos de campo."""
-    _freq_base = st.session_state.get("rel_verificacoes_semanais", 3)
-    _linhas_base = calcular_linhas_analises_por_frequencia(_freq_base, st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    garantir_campos_analises(max(len(lancamentos), _linhas_base, ANALISES_PADRAO))
+    _linhas_base = calcular_linhas_analises_rt_mensal(
+        1,
+        st.session_state.get("rel_mes_referencia"),
+        st.session_state.get("rel_ano_referencia"),
+    )
+    garantir_campos_analises(max(len(lancamentos), _linhas_base), minimo=1)
     # Limpa campos antigos de análises para evitar que visitas de outros dias permaneçam
     # Apenas zera os campos específicos; não chama clear() no session_state
     for idx in range(ANALISES_MAX_SUGERIDO):
@@ -20143,15 +20192,17 @@ with r8:
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
 
-st.markdown("**Frequência de verificação para dimensionar linhas do relatório**")
-_freq_rel_col1, _freq_rel_col2 = st.columns([1, 3])
-with _freq_rel_col1:
-    st.number_input("Verificações por semana", min_value=1, max_value=7, value=int(st.session_state.get("rel_verificacoes_semanais", 3) or 3), step=1, key="rel_verificacoes_semanais")
-with _freq_rel_col2:
-    _linhas_freq = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-    st.caption(f"Base automática: {int(st.session_state.get('rel_verificacoes_semanais', 3) or 3)}x/semana → {_linhas_freq} linhas mínimas. O sistema aumenta se houver mais visitas importadas.")
-if int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO) < calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)):
-    garantir_campos_analises(calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3)))
+st.markdown("**Frequência do relatório RT**")
+st.session_state["rel_verificacoes_semanais"] = 1
+_linhas_freq = calcular_linhas_analises_rt_mensal(
+    1,
+    st.session_state.get("rel_mes_referencia"),
+    st.session_state.get("rel_ano_referencia"),
+)
+st.info(f"Regra fixa: 1 lançamento por semana → {_linhas_freq} linha(s) no mês selecionado.")
+if int(st.session_state.get("rel_analises_total", 0) or 0) != _linhas_freq:
+    st.session_state["rel_analises_total"] = _linhas_freq
+    garantir_campos_analises(_linhas_freq, minimo=1)
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
@@ -20166,8 +20217,13 @@ st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
 _relatorio_rt_renderizar_painel_rascunho()
-_linhas_minimas_rel = calcular_linhas_analises_por_frequencia(st.session_state.get("rel_verificacoes_semanais", 3), st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
-garantir_campos_analises(max(st.session_state.get("rel_analises_total", ANALISES_PADRAO), _linhas_minimas_rel))
+_linhas_minimas_rel = calcular_linhas_analises_rt_mensal(
+    1,
+    st.session_state.get("rel_mes_referencia"),
+    st.session_state.get("rel_ano_referencia"),
+)
+st.session_state["rel_analises_total"] = _linhas_minimas_rel
+garantir_campos_analises(_linhas_minimas_rel, minimo=1)
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
