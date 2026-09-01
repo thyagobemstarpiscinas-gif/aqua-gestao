@@ -9920,6 +9920,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         alc_vals = _vals("alcalinidade")
         dc_vals = _vals("dureza")
         cya_vals = _vals("cianurico")
+        turb_vals = _vals("turbidez")
         clc_vals = [v for v in [_cl_comb(lc) for lc in lancamentos_analise] if v is not None]
 
         ph_ok, ph_tot, ph_pct = _conformidade(ph_vals, 7.2, 7.8)
@@ -10351,7 +10352,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         info_rows = [
             [P("Cliente", "BS_TableMuted"), P(nome_cliente, "BS_Table"), P("Operador", "BS_TableMuted"), P(operador, "BS_Table")],
             [P("Período", "BS_TableMuted"), P(f"{periodo_ini} a {periodo_fim}", "BS_Table"), P("Segundas sem análise", "BS_TableMuted"), P(str(total_sem_leitura), "BS_Table")],
-            [P("Prestador", "BS_TableMuted"), P(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", "BS_Table"), P("Responsável", "BS_TableMuted"), P(RESPONSAVEL_TÉCNICO, "BS_Table")],
+            [P("Prestador", "BS_TableMuted"), P(f"Bem Star Piscinas Ltda — CNPJ {CNPJ_BEM_STAR}", "BS_Table"), P("Responsável operacional", "BS_TableMuted"), P(RESPONSAVEL_TÉCNICO, "BS_Table")],
         ]
         info_tbl = Table(info_rows, colWidths=[2.4*cm, 6.0*cm, 2.7*cm, 6.0*cm])
         info_tbl.setStyle(TableStyle([
@@ -10489,6 +10490,63 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         story.append(t_stats)
 
         story.append(PageBreak())
+
+        # Bloco educativo e comercial exclusivo do relatório Bem Star sem RT.
+        # A NBR 10818:2016 exige limpidez que permita visualizar a parte mais
+        # profunda da piscina, mas não fixa nesta edição um limite numérico em
+        # NTU. Por isso, não classificamos conformidade sem medição instrumental.
+        story.append(P("Avaliação Complementar da Turbidez", "BS_H1"))
+
+        if turb_vals:
+            situacao_turbidez = (
+                f"Foram registradas <b>{len(turb_vals)}</b> medição(ões) instrumental(is) no período, "
+                f"com média de <b>{_fmt(sum(turb_vals) / len(turb_vals))} NTU</b>. "
+                "O resultado deve ser analisado em conjunto com a transparência visual, a filtração "
+                "e as condições operacionais observadas nas visitas."
+            )
+        else:
+            situacao_turbidez = (
+                "Neste período, a turbidez <b>não foi determinada instrumentalmente</b>. "
+                "A aparência transparente da água é uma observação importante, porém não quantifica "
+                "as partículas finas que permanecem em suspensão."
+            )
+
+        turbidez_box = Table(
+            [[P(
+                "<b>Por que analisar?</b><br/>"
+                "A medição da turbidez, expressa em NTU, complementa a inspeção visual e auxilia na "
+                "avaliação da eficiência da filtração, na identificação de partículas em suspensão "
+                "e na definição de intervenções operacionais.",
+                "BS_Body"
+            )], [P(
+                situacao_turbidez,
+                "BS_Body"
+            )], [P(
+                "<b>Análise avulsa disponível</b><br/>"
+                "A Bem Star Piscinas disponibiliza pacote avulso de análises complementares, incluindo "
+                "medição instrumental da turbidez, registro dos resultados e orientação operacional. "
+                "Consulte nossa equipe para verificar disponibilidade e valores.",
+                "BS_Body"
+            )], [P(
+                "<b>Referências técnicas:</b> ABNT NBR 10818:2016 - Qualidade da água de piscina - "
+                "Procedimento; ABNT NBR 10339:2018 - Piscina - Projeto, execução e manutenção.",
+                "BS_BodySmall"
+            )]],
+            colWidths=[17.1 * cm]
+        )
+        turbidez_box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 1), AZUL_CLARO),
+            ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#E4F5F8")),
+            ("BACKGROUND", (0, 3), (-1, 3), CINZA_BG),
+            ("BOX", (0, 0), (-1, -1), 0.55, TURQUESA),
+            ("LINEBELOW", (0, 0), (-1, 2), 0.25, BORDA),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 9),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(KeepTogether([turbidez_box, Spacer(1, 5 * mm)]))
 
         # Observações técnicas em bullet points, não texto corrido
         story.append(P("Observações Técnicas e Recomendações", "BS_H1"))
