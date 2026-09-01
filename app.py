@@ -12,7 +12,11 @@ from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
-from docx import Document
+from docx cp "01-app_para_chatgpt (2).py" app.py
+python -m py_compile app.py
+git add app.py
+git commit -m "Corrige importacao completa dos clientes Bem Star"
+git push origin mainimport Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from PIL import Image, ImageOps
@@ -650,7 +654,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "Aqua Gestão"):
+                           empresa: str = "Aqua Gestão", cep: str = ""):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
@@ -707,6 +711,7 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             str(vol_family) if vol_family else "", # L - Vol Family m3
             empresa,                               # M - Empresa
             cnpj,                                  # N - CNPJ # _CNPJ_COLUNA_N_
+            cep,                                   # O - CEP
         ]
 
         # Determina posicao alfabetica dentro do bloco de clientes
@@ -798,10 +803,12 @@ def sheets_listar_clientes_completo() -> list[dict]:
             # clientes do relatório Bem Star.
             _empresa_cl = str(row[12]).strip() if len(row) > 12 else ""
             _cnpj_cl = str(row[13]).strip() if len(row) > 13 else ""  # _CNPJ_LER_COLUNA_N_
+            _cep_cl = str(row[14]).strip() if len(row) > 14 else ""
             cliente_base = {
                 "id":           id_val,
                 "nome":         nome,
                 "cnpj":         _cnpj_cl,
+                "cep":          _cep_cl,
                 "telefone":     telefone,
                 "contato":      contato,
                 "email":        email,
@@ -824,7 +831,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "") -> bool:
+                           empresa: str = "", cep: str = "") -> bool:
     """Edita cliente existente na aba Clientes pelo ID."""
     import re as _re
     try:
@@ -854,8 +861,10 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     str(vol_infantil) if vol_infantil else "",
                     str(vol_family) if vol_family else "",
                     _empresa_final,                # M - Empresa
+                    cnpj,                          # N - CNPJ
+                    cep,                           # O - CEP
                 ]
-                aba.update(range_name=f"A{linha_sheets}:M{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                aba.update(range_name=f"A{linha_sheets}:O{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -3026,6 +3035,23 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
         valor_local = dados_locais.get(chave)
         if valor_local not in (None, ""):
             cliente_final[chave] = valor_local
+
+    # Compatibilidade com nomes usados por versões anteriores do cadastro.
+    _aliases_cliente = {
+        "cnpj": ["cnpj_condominio", "documento_cliente", "cpf_cnpj"],
+        "cep": ["cep_condominio", "codigo_postal"],
+        "telefone": ["telefone_sindico", "celular", "whatsapp"],
+        "contato": ["nome_sindico", "responsavel", "responsavel_contato"],
+        "endereco": ["endereco_condominio", "endereco_completo"],
+    }
+    for _destino, _origens in _aliases_cliente.items():
+        if cliente_final.get(_destino) not in (None, ""):
+            continue
+        for _origem in _origens:
+            _valor_alias = dados_locais.get(_origem)
+            if _valor_alias not in (None, ""):
+                cliente_final[_destino] = _valor_alias
+                break
 
     if dados_locais.get("endereco_condominio"):
         cliente_final["endereco"] = dados_locais.get("endereco_condominio", cliente_final.get("endereco", ""))
@@ -14974,6 +15000,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
+                    cep=cc_cep.strip(),
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
@@ -14983,6 +15010,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
+                    cep=cc_cep.strip(),
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
 
@@ -15851,6 +15879,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     if _d:
                         st.session_state["csr_nome"]     = _d.get("nome", "")
                         st.session_state["csr_cnpj"]     = formatar_cnpj(_d.get("cnpj", ""))
+                        st.session_state["csr_cep"]      = _d.get("cep", "")
                         st.session_state["csr_endereco"] = _d.get("endereco", "")
                         st.session_state["csr_contato"]  = _d.get("contato", "")
                         st.session_state["csr_telefone"] = formatar_telefone(_d.get("telefone", ""))
@@ -15934,6 +15963,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                             contato=csr_contato.strip(),
                             telefone=formatar_telefone(csr_telefone.strip()),
                             empresa="Bem Star Piscinas",
+                            cep=st.session_state.get("csr_cep", "").strip(),
                         )
                     else:
                         sheets_salvar_cliente(
@@ -15943,6 +15973,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                             contato=csr_contato.strip(),
                             telefone=formatar_telefone(csr_telefone.strip()),
                             empresa="Bem Star Piscinas",
+                            cep=st.session_state.get("csr_cep", "").strip(),
                         )
                 st.cache_data.clear()
                 # Cria pasta do cliente no generated
@@ -15953,6 +15984,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     "nome_condominio": csr_nome.strip(),
                     "cnpj_condominio": csr_cnpj.strip(),
                     "cnpj": csr_cnpj.strip(),
+                    "cep": st.session_state.get("csr_cep", "").strip(),
                     "endereco_condominio": csr_endereco.strip(),
                     "endereco": csr_endereco.strip(),
                     "nome_sindico": csr_contato.strip(),
