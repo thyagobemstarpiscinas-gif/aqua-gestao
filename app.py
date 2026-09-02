@@ -637,6 +637,220 @@ def _crm_moeda(valor: float) -> str:
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _crm_numero_proposta(id_oportunidade: str, empresa_codigo: str) -> str:
+    """Gera uma referência legível e única sem depender de outras abas."""
+    prefixo = "AG" if empresa_codigo == "aqua_gestao" else "BS"
+    digitos = re.sub(r"\D", "", _crm_texto(id_oportunidade))
+    sufixo = digitos[-8:] if digitos else datetime.now().strftime("%m%d%H%M")
+    return f"{prefixo}-{date.today().year}-{sufixo}"
+
+
+def _crm_escopo_proposta(empresa_codigo: str, servico: str) -> list[str]:
+    """Retorna um escopo comercial orientativo conforme empresa e serviço."""
+    servico_norm = normalizar_texto_busca(servico)
+    if empresa_codigo == "aqua_gestao":
+        if "responsabilidade tecnica" in servico_norm:
+            return [
+                "Acompanhamento técnico especializado da operação da piscina coletiva.",
+                "Orientações técnicas, registros, documentos e relatórios previstos na proposta.",
+                "Suporte ao controle de parâmetros e à organização dos procedimentos operacionais.",
+                "Condições de ART, visitas e documentos conforme detalhamento comercial contratado.",
+            ]
+        if "manutencao operacional" in servico_norm:
+            return [
+                "Limpeza física e manutenção operacional periódica da piscina coletiva.",
+                "Verificação e ajuste operacional dos parâmetros previstos para cada visita.",
+                "Registro dos serviços executados e comunicação de ocorrências ao contratante.",
+                "Serviço operacional sem inclusão automática de Responsabilidade Técnica ou ART.",
+            ]
+        if "consumo humano" in servico_norm:
+            return [
+                "Avaliação técnica da qualidade da água nos pontos definidos com o contratante.",
+                "Medições de campo e organização dos registros de coleta e rastreabilidade.",
+                "Encaminhamento laboratorial quando previsto nas condições comerciais.",
+                "Emissão de relatório ou registro técnico conforme o serviço contratado.",
+            ]
+        if "diagnostico" in servico_norm:
+            return [
+                "Inspeção técnica do local, equipamentos, operação e condições da água.",
+                "Identificação das causas prováveis das não conformidades observadas.",
+                "Recomendações de correção, prioridades e próximos passos.",
+                "Entrega técnica conforme a abrangência definida nesta proposta.",
+            ]
+        if "relatorio" in servico_norm or "parecer" in servico_norm:
+            return [
+                "Levantamento e análise das informações disponibilizadas pelo contratante.",
+                "Organização das evidências, resultados e registros aplicáveis.",
+                "Elaboração do documento técnico correspondente ao escopo contratado.",
+            ]
+        if "treinamento" in servico_norm or "pop" in servico_norm:
+            return [
+                "Levantamento da rotina e das necessidades da equipe operacional.",
+                "Orientação prática sobre procedimentos, segurança e registros.",
+                "Elaboração ou revisão dos POPs previstos nas condições comerciais.",
+            ]
+    else:
+        if "produto" in servico_norm or "equipamento" in servico_norm:
+            return [
+                "Fornecimento dos produtos ou equipamentos descritos nas condições comerciais.",
+                "Orientações básicas de utilização, instalação ou conservação, quando aplicáveis.",
+                "Garantias conforme fabricante e condições indicadas na proposta.",
+            ]
+        if "cerca" in servico_norm:
+            return [
+                "Fornecimento e instalação da cerca de proteção conforme medidas confirmadas no local.",
+                "Definição de acessos, pontos de fixação e acabamento conforme vistoria.",
+                "Condições de prazo, garantia e preparação do piso conforme esta proposta.",
+            ]
+        if "recuperacao" in servico_norm:
+            return [
+                "Avaliação das condições da piscina e definição do tratamento de recuperação.",
+                "Execução dos procedimentos operacionais descritos nas condições comerciais.",
+                "Orientação ao cliente após a conclusão do serviço.",
+            ]
+        if "instalacao" in servico_norm:
+            return [
+                "Instalação dos itens descritos, condicionada à avaliação do local.",
+                "Testes básicos de funcionamento após a execução.",
+                "Garantias e exclusões conforme equipamentos e condições comerciais.",
+            ]
+        if "manutencao" in servico_norm:
+            return [
+                "Limpeza física e manutenção periódica da piscina na frequência contratada.",
+                "Aplicação operacional dos produtos definidos para o tratamento.",
+                "Verificação visual dos equipamentos e comunicação de ocorrências ao cliente.",
+                "Serviço operacional que não constitui Responsabilidade Técnica ou ART.",
+            ]
+    return [
+        "Prestação do serviço descrito nesta proposta conforme alinhamento com o contratante.",
+        "Detalhamento final de atividades, prazos e responsabilidades antes do aceite.",
+    ]
+
+
+def gerar_proposta_crm_pdf(dados: dict) -> bytes:
+    """Gera a proposta diretamente no CRM sem alterar os geradores existentes."""
+    import io
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        PageBreak, KeepTogether,
+    )
+
+    empresa_codigo = _crm_texto(dados.get("empresa_codigo"))
+    aqua = empresa_codigo == "aqua_gestao"
+    empresa = "AQUA GESTÃO — CONTROLE TÉCNICO" if aqua else "BEM STAR PISCINAS"
+    cnpj_empresa = "66.008.795/0001-92" if aqua else "26.799.958/0001-88"
+    cor = colors.HexColor("#0B4A7E") if aqua else colors.HexColor("#123B73")
+    cor_clara = colors.HexColor("#EAF3FA") if aqua else colors.HexColor("#EDF3FC")
+    cinza = colors.HexColor("#4B5563")
+    borda = colors.HexColor("#CBD5E1")
+    styles = getSampleStyleSheet()
+    normal = ParagraphStyle("CRMNormal", parent=styles["BodyText"], fontName="Helvetica", fontSize=9, leading=13, textColor=colors.HexColor("#172033"))
+    pequeno = ParagraphStyle("CRMPequeno", parent=normal, fontSize=7.5, leading=10, textColor=cinza)
+    titulo = ParagraphStyle("CRMTitulo", parent=normal, fontName="Helvetica-Bold", fontSize=18, leading=21, textColor=cor)
+    subtitulo = ParagraphStyle("CRMSubtitulo", parent=normal, fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=cor, spaceAfter=5)
+    centro = ParagraphStyle("CRMCentro", parent=normal, alignment=TA_CENTER)
+    direita = ParagraphStyle("CRMDir", parent=pequeno, alignment=TA_RIGHT)
+
+    def txt(valor, padrao="—"):
+        valor = _crm_texto(valor)
+        return escape(valor) if valor else padrao
+
+    def linha_rotulo(rotulo, valor):
+        return [Paragraph(f"<b>{escape(rotulo)}</b>", normal), Paragraph(txt(valor), normal)]
+
+    def tabela_info(linhas, larguras=(48 * mm, 132 * mm)):
+        tabela = Table(linhas, colWidths=list(larguras), repeatRows=0)
+        tabela.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.6, borda),
+            ("INNERGRID", (0, 0), (-1, -1), 0.35, borda),
+            ("BACKGROUND", (0, 0), (0, -1), cor_clara),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        return tabela
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=16 * mm, bottomMargin=16 * mm,
+        title=f"Proposta Comercial {txt(dados.get('numero'))}", author=empresa,
+    )
+    story = []
+    cab = Table([
+        [Paragraph(f"<b>{empresa}</b><br/><font size='8'>CNPJ {cnpj_empresa} • Uberlândia/MG</font>", normal),
+         Paragraph(f"PROPOSTA COMERCIAL<br/><b>{txt(dados.get('numero'))}</b>", direita)]
+    ], colWidths=[118 * mm, 62 * mm])
+    cab.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), cor_clara),
+        ("BOX", (0, 0), (-1, -1), 1, cor),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story += [cab, Spacer(1, 8 * mm), Paragraph("Proposta Comercial", titulo),
+              Paragraph(f"Emissão: {txt(dados.get('emissao'))} • Validade: {txt(dados.get('validade'))}", pequeno), Spacer(1, 6 * mm)]
+
+    story += [Paragraph("1. IDENTIFICAÇÃO DO CLIENTE", subtitulo), tabela_info([
+        linha_rotulo("Cliente / estabelecimento", dados.get("cliente")),
+        linha_rotulo("CPF / CNPJ", dados.get("documento")),
+        linha_rotulo("Responsável / síndico", dados.get("responsavel")),
+        linha_rotulo("Contato", " | ".join(x for x in [_crm_texto(dados.get("telefone")), _crm_texto(dados.get("email"))] if x)),
+        linha_rotulo("Endereço", " — ".join(x for x in [_crm_texto(dados.get("endereco")), _crm_texto(dados.get("cidade"))] if x)),
+    ]), Spacer(1, 6 * mm)]
+
+    story += [Paragraph("2. OBJETO E ESCOPO", subtitulo), tabela_info([
+        linha_rotulo("Serviço proposto", dados.get("servico")),
+        linha_rotulo("Frequência / prazo", dados.get("frequencia")),
+        linha_rotulo("Piscina(s), volume ou local", dados.get("piscinas")),
+    ]), Spacer(1, 3 * mm)]
+    escopo = _crm_escopo_proposta(empresa_codigo, _crm_texto(dados.get("servico")))
+    for item in escopo:
+        story.append(Paragraph(f"• {escape(item)}", normal))
+        story.append(Spacer(1, 1.2 * mm))
+    story.append(Spacer(1, 4 * mm))
+
+    valor_num = _crm_valor_numero(dados.get("valor"))
+    valor_exibicao = _crm_moeda(valor_num) if valor_num else txt(dados.get("valor"))
+    story += [Paragraph("3. CONDIÇÕES COMERCIAIS", subtitulo), tabela_info([
+        linha_rotulo("Investimento", valor_exibicao),
+        linha_rotulo("Forma de pagamento", dados.get("pagamento")),
+        linha_rotulo("Vencimento", dados.get("vencimento")),
+        linha_rotulo("Produtos / materiais", dados.get("produtos")),
+        linha_rotulo("Validade da proposta", dados.get("validade")),
+    ]), Spacer(1, 6 * mm)]
+
+    observacoes = _crm_texto(dados.get("observacoes"))
+    story += [Paragraph("4. OBSERVAÇÕES", subtitulo)]
+    if observacoes:
+        story.append(Paragraph(escape(observacoes).replace("\n", "<br/>"), normal))
+    else:
+        story.append(Paragraph("O início, o cronograma e os detalhes finais serão confirmados após o aceite desta proposta.", normal))
+    story += [Spacer(1, 7 * mm), Paragraph("5. ACEITE", subtitulo),
+              Paragraph("O aceite desta proposta confirma a concordância com o serviço, o escopo e as condições comerciais acima.", normal),
+              Spacer(1, 14 * mm)]
+
+    assinaturas = Table([
+        [Paragraph("____________________________________<br/>CONTRATANTE<br/><font size='7'>Nome, assinatura e data</font>", centro),
+         Paragraph(f"____________________________________<br/>{empresa}<br/><font size='7'>Responsável comercial</font>", centro)]
+    ], colWidths=[90 * mm, 90 * mm])
+    assinaturas.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story += [KeepTogether(assinaturas), Spacer(1, 8 * mm),
+              Paragraph(f"Documento comercial gerado pelo módulo Gestão Comercial • {empresa} • Proposta {txt(dados.get('numero'))}", pequeno)]
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def limpar_payload_para_sheets(dados: dict) -> dict:
     """Remove campos pesados antes de salvar payload no Google Sheets.
 
@@ -14395,15 +14609,137 @@ with _crm_tab3:
                 else:
                     st.error("Não foi possível atualizar a oportunidade.")
 
-        if st.button("📄 Preparar dados no gerador de proposta", key=f"crm_preparar_prop_{_crm_id_sel}", use_container_width=True):
-            _crm_prefixo = "pa" if _empresa_ativa_codigo() == "aqua_gestao" else "pb"
-            st.session_state[f"{_crm_prefixo}_cliente"] = _crm_texto(_crm_sel.get("Cliente_Lead"))
-            st.session_state[f"{_crm_prefixo}_cnpj"] = _crm_texto(_crm_sel.get("CPF_CNPJ"))
-            st.session_state[f"{_crm_prefixo}_sindico"] = _crm_texto(_crm_sel.get("Responsavel"))
-            st.session_state[f"{_crm_prefixo}_endereco"] = _crm_texto(_crm_sel.get("Endereco"))
-            st.session_state[f"{_crm_prefixo}_valor"] = _crm_texto(_crm_sel.get("Valor_Estimado"))
-            st.session_state["_crm_proposta_preparada"] = _crm_id_sel
-            st.success("Dados preparados. Abra o gerador de proposta deste painel e complete frequência, piscinas e condições comerciais.")
+        st.markdown("#### 📄 Gerar proposta diretamente pelo CRM")
+        st.caption("Os dados do contato já estão preenchidos. Complete apenas as condições comerciais antes de gerar o PDF.")
+        _crm_empresa_codigo_prop = _empresa_ativa_codigo()
+        _crm_numero_padrao = _crm_texto(_crm_sel.get("Numero_Proposta")) or _crm_numero_proposta(_crm_id_sel, _crm_empresa_codigo_prop)
+        _crm_pdf_key = f"_crm_pdf_gerado_{_crm_id_sel}"
+        _crm_pdf_nome_key = f"_crm_pdf_nome_{_crm_id_sel}"
+
+        with st.form(f"crm_gerar_proposta_form_{_crm_id_sel}"):
+            _crm_g1, _crm_g2, _crm_g3 = st.columns(3)
+            with _crm_g1:
+                _crm_g_numero = st.text_input("Número da proposta", value=_crm_numero_padrao, key=f"crm_g_numero_{_crm_id_sel}")
+                _crm_g_frequencia = st.text_input("Frequência, prazo ou entrega", placeholder="Ex.: 2x por semana", key=f"crm_g_freq_{_crm_id_sel}")
+                _crm_g_piscinas = st.text_input("Piscina(s), volume ou local", placeholder="Ex.: Adulto 150 m³ e infantil 40 m³", key=f"crm_g_piscinas_{_crm_id_sel}")
+            with _crm_g2:
+                _crm_g_valor = st.text_input("Investimento (R$)", value=_crm_texto(_crm_sel.get("Valor_Estimado")), placeholder="Ex.: 1.500,00", key=f"crm_g_valor_{_crm_id_sel}")
+                _crm_g_vencimento = st.text_input("Vencimento", value="Dia 10", key=f"crm_g_venc_{_crm_id_sel}")
+                _crm_g_pagamento = st.selectbox(
+                    "Forma de pagamento",
+                    ["PIX / transferência bancária", "Boleto", "PIX", "Transferência bancária", "Cartão", "A combinar"],
+                    key=f"crm_g_pagamento_{_crm_id_sel}",
+                )
+            with _crm_g3:
+                _crm_g_validade = st.date_input(
+                    "Validade da proposta",
+                    value=_crm_data_br_para_date(_crm_sel.get("Validade_Proposta"), date.today() + timedelta(days=15)),
+                    format="DD/MM/YYYY",
+                    key=f"crm_g_validade_{_crm_id_sel}",
+                )
+                _crm_servico_sel_norm = normalizar_texto_busca(_crm_sel.get("Servico"))
+                if _crm_empresa_codigo_prop == "bem_star" or "manutencao operacional" in _crm_servico_sel_norm:
+                    _crm_produtos_opcoes = [
+                        "Não inclusos — fornecidos pelo contratante",
+                        "Inclusos no valor informado",
+                        "Fornecidos e cobrados separadamente",
+                        "Conforme detalhamento abaixo",
+                    ]
+                else:
+                    _crm_produtos_opcoes = ["Não se aplica ao serviço", "Conforme detalhamento abaixo"]
+                _crm_g_produtos = st.selectbox("Produtos / materiais", _crm_produtos_opcoes, key=f"crm_g_produtos_{_crm_id_sel}")
+            _crm_g_observacoes = st.text_area(
+                "Condições e observações adicionais",
+                placeholder="Inclua condições específicas, exclusões, prazos ou informações necessárias.",
+                height=90,
+                key=f"crm_g_obs_{_crm_id_sel}",
+            )
+            _crm_g_gerar = st.form_submit_button("📄 Gerar proposta em PDF", type="primary", use_container_width=True)
+
+        if _crm_g_gerar:
+            if not _crm_g_numero.strip():
+                st.error("Informe o número da proposta.")
+            elif not _crm_g_valor.strip():
+                st.error("Informe o investimento da proposta.")
+            else:
+                try:
+                    _crm_g_dados = {
+                        "empresa_codigo": _crm_empresa_codigo_prop,
+                        "numero": _crm_g_numero,
+                        "emissao": date.today().strftime("%d/%m/%Y"),
+                        "validade": _crm_g_validade.strftime("%d/%m/%Y"),
+                        "cliente": _crm_sel.get("Cliente_Lead"),
+                        "documento": _crm_sel.get("CPF_CNPJ"),
+                        "responsavel": _crm_sel.get("Responsavel"),
+                        "telefone": _crm_sel.get("Telefone"),
+                        "email": _crm_sel.get("Email"),
+                        "endereco": _crm_sel.get("Endereco"),
+                        "cidade": _crm_sel.get("Cidade"),
+                        "servico": _crm_sel.get("Servico"),
+                        "frequencia": _crm_g_frequencia,
+                        "piscinas": _crm_g_piscinas,
+                        "valor": _crm_g_valor,
+                        "vencimento": _crm_g_vencimento,
+                        "pagamento": _crm_g_pagamento,
+                        "produtos": _crm_g_produtos,
+                        "observacoes": _crm_g_observacoes,
+                    }
+                    _crm_pdf_bytes = gerar_proposta_crm_pdf(_crm_g_dados)
+                    _crm_nome_empresa_arquivo = "Aqua_Gestao" if _crm_empresa_codigo_prop == "aqua_gestao" else "Bem_Star"
+                    _crm_pdf_nome = limpar_nome_arquivo(
+                        f"Proposta_{_crm_nome_empresa_arquivo}_{_crm_texto(_crm_sel.get('Cliente_Lead')) or 'Cliente'}_{_crm_g_numero}.pdf"
+                    )
+                    st.session_state[_crm_pdf_key] = _crm_pdf_bytes
+                    st.session_state[_crm_pdf_nome_key] = _crm_pdf_nome
+                    _crm_registrou_prop = sheets_crm_atualizar(_crm_id_sel, {
+                        "Etapa": "Proposta em elaboração",
+                        "Numero_Proposta": _crm_g_numero,
+                        "Validade_Proposta": _crm_g_validade.strftime("%d/%m/%Y"),
+                        "Valor_Estimado": _crm_g_valor,
+                    })
+                    if _crm_registrou_prop:
+                        st.success("✅ Proposta gerada e registrada como 'Proposta em elaboração'.")
+                    else:
+                        st.warning("A proposta foi gerada, mas o registro no Google Sheets precisa ser conferido.")
+                except Exception as _crm_erro_pdf:
+                    st.error(f"Não foi possível gerar a proposta: {_crm_erro_pdf}")
+
+        if st.session_state.get(_crm_pdf_key):
+            _crm_dl1, _crm_dl2 = st.columns([1.5, 1])
+            with _crm_dl1:
+                st.download_button(
+                    "⬇️ Baixar proposta em PDF",
+                    data=st.session_state[_crm_pdf_key],
+                    file_name=st.session_state.get(_crm_pdf_nome_key, "Proposta_Comercial.pdf"),
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"crm_download_prop_{_crm_id_sel}",
+                )
+            with _crm_dl2:
+                if st.button("✅ Marcar como enviada", key=f"crm_marcar_enviada_{_crm_id_sel}", use_container_width=True):
+                    _crm_ok_enviada = sheets_crm_atualizar(_crm_id_sel, {
+                        "Etapa": "Proposta enviada",
+                        "Numero_Proposta": _crm_g_numero,
+                        "Data_Envio_Proposta": date.today().strftime("%d/%m/%Y"),
+                        "Validade_Proposta": _crm_g_validade.strftime("%d/%m/%Y"),
+                    })
+                    if _crm_ok_enviada:
+                        st.success("✅ Proposta marcada como enviada e registrada no CRM.")
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível registrar o envio no CRM.")
+
+        with st.expander("Usar o gerador tradicional deste painel"):
+            st.caption("Esta opção continua disponível para preservar o fluxo anterior.")
+            if st.button("📄 Preparar dados no gerador tradicional", key=f"crm_preparar_prop_{_crm_id_sel}", use_container_width=True):
+                _crm_prefixo = "pa" if _empresa_ativa_codigo() == "aqua_gestao" else "pb"
+                st.session_state[f"{_crm_prefixo}_cliente"] = _crm_texto(_crm_sel.get("Cliente_Lead"))
+                st.session_state[f"{_crm_prefixo}_cnpj"] = _crm_texto(_crm_sel.get("CPF_CNPJ"))
+                st.session_state[f"{_crm_prefixo}_sindico"] = _crm_texto(_crm_sel.get("Responsavel"))
+                st.session_state[f"{_crm_prefixo}_endereco"] = _crm_texto(_crm_sel.get("Endereco"))
+                st.session_state[f"{_crm_prefixo}_valor"] = _crm_texto(_crm_sel.get("Valor_Estimado"))
+                st.session_state["_crm_proposta_preparada"] = _crm_id_sel
+                st.success("Dados preparados. Abra o gerador tradicional deste painel para concluir.")
 
 with _crm_tab4:
     _crm_origens_resumo = {}
