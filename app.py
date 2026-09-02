@@ -499,6 +499,10 @@ CRM_ORIGENS = [
     "Anúncio Meta", "Anúncio Google", "Outro",
 ]
 
+CRM_TIPOS_CLIENTE = [
+    "Condomínio", "Residencial", "Empresa", "Clube", "Academia", "Hotel", "Outro",
+]
+
 
 def _crm_obter_aba(criar: bool = False):
     """Obtém a aba exclusiva do CRM; cria somente quando solicitado."""
@@ -14670,7 +14674,7 @@ with _crm_tab1:
     )
     _crm_n_tipo = st.selectbox(
         "Tipo de cliente",
-        ["Condomínio", "Residencial", "Empresa", "Clube", "Academia", "Hotel", "Outro"],
+        CRM_TIPOS_CLIENTE,
         key=f"crm_n_tipo_{_empresa_ativa_codigo()}",
     )
     _crm_n_residencial = _crm_n_tipo == "Residencial"
@@ -14792,6 +14796,103 @@ with _crm_tab3:
         _crm_id_sel = _crm_texto(_crm_sel.get("ID"))
         _crm_etapa_atual = _crm_texto(_crm_sel.get("Etapa")) or "Novo contato"
         _crm_status_atual = _crm_texto(_crm_sel.get("Status")) or "Ativo"
+
+        st.markdown("#### 👤 Dados do cliente e do serviço")
+        st.caption("Revise ou complete o cadastro antes de atualizar a negociação e emitir a proposta.")
+
+        _crm_d_tipo_atual = _crm_texto(_crm_sel.get("Tipo_Cliente")) or "Condomínio"
+        if _crm_d_tipo_atual not in CRM_TIPOS_CLIENTE:
+            _crm_d_tipo_opcoes = CRM_TIPOS_CLIENTE + [_crm_d_tipo_atual]
+        else:
+            _crm_d_tipo_opcoes = CRM_TIPOS_CLIENTE
+        _crm_d_tipo = st.selectbox(
+            "Tipo de cliente",
+            _crm_d_tipo_opcoes,
+            index=_crm_d_tipo_opcoes.index(_crm_d_tipo_atual),
+            key=f"crm_dados_tipo_{_crm_id_sel}",
+        )
+        _crm_d_residencial = _crm_d_tipo == "Residencial"
+
+        _crm_d_servico_atual = _crm_texto(_crm_sel.get("Servico"))
+        _crm_d_servicos = list(_crm_servicos)
+        if _crm_d_servico_atual and _crm_d_servico_atual not in _crm_d_servicos:
+            _crm_d_servicos.append(_crm_d_servico_atual)
+        _crm_d_servico_indice = (
+            _crm_d_servicos.index(_crm_d_servico_atual)
+            if _crm_d_servico_atual in _crm_d_servicos else 0
+        )
+
+        with st.form(f"crm_dados_cliente_form_{_crm_id_sel}"):
+            _crm_d1, _crm_d2 = st.columns(2)
+            with _crm_d1:
+                _crm_d_cliente = st.text_input(
+                    "Cliente, condomínio ou empresa *",
+                    value=_crm_texto(_crm_sel.get("Cliente_Lead")),
+                )
+                _crm_d_responsavel = st.text_input(
+                    "Responsável / síndico",
+                    value="" if _crm_d_residencial else _crm_texto(_crm_sel.get("Responsavel")),
+                    disabled=_crm_d_residencial,
+                    help="Não se aplica quando o tipo de cliente é Residencial.",
+                )
+                if _crm_d_residencial:
+                    st.caption("Campo não aplicável para piscina residencial.")
+                _crm_d_telefone = st.text_input(
+                    "WhatsApp / telefone",
+                    value=_crm_texto(_crm_sel.get("Telefone")),
+                )
+                _crm_d_email = st.text_input(
+                    "E-mail",
+                    value=_crm_texto(_crm_sel.get("Email")),
+                )
+            with _crm_d2:
+                _crm_d_documento = st.text_input(
+                    "CPF / CNPJ",
+                    value=_crm_texto(_crm_sel.get("CPF_CNPJ")),
+                )
+                _crm_d_servico = st.selectbox(
+                    "Serviço procurado",
+                    _crm_d_servicos,
+                    index=_crm_d_servico_indice,
+                )
+                _crm_d_cidade = st.text_input(
+                    "Cidade",
+                    value=_crm_texto(_crm_sel.get("Cidade")),
+                )
+                _crm_d_endereco = st.text_input(
+                    "Endereço",
+                    value=_crm_texto(_crm_sel.get("Endereco")),
+                )
+            _crm_d_salvar = st.form_submit_button(
+                "💾 Salvar dados do cliente",
+                use_container_width=True,
+            )
+
+        if _crm_d_salvar:
+            if not _crm_d_cliente.strip():
+                st.error("Informe o cliente, condomínio ou empresa.")
+            elif _crm_d_email.strip() and not validar_email(_crm_d_email.strip()):
+                st.error("Informe um e-mail válido ou deixe o campo em branco.")
+            else:
+                _crm_ok_dados = sheets_crm_atualizar(_crm_id_sel, {
+                    "Cliente_Lead": _crm_d_cliente,
+                    "CPF_CNPJ": _crm_d_documento,
+                    "Responsavel": "" if _crm_d_residencial else _crm_d_responsavel,
+                    "Telefone": _crm_d_telefone,
+                    "Email": _crm_d_email,
+                    "Endereco": _crm_d_endereco,
+                    "Cidade": _crm_d_cidade,
+                    "Tipo_Cliente": _crm_d_tipo,
+                    "Servico": _crm_d_servico,
+                })
+                if _crm_ok_dados:
+                    st.success("✅ Dados do cliente atualizados.")
+                    st.rerun()
+                else:
+                    st.error("Não foi possível atualizar os dados do cliente.")
+
+        st.divider()
+        st.markdown("#### ✏️ Andamento e condições comerciais")
 
         with st.form(f"crm_editar_form_{_crm_id_sel}"):
             _crm_e1, _crm_e2, _crm_e3 = st.columns(3)
