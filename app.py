@@ -728,126 +728,326 @@ def _crm_escopo_proposta(empresa_codigo: str, servico: str) -> list[str]:
 
 
 def gerar_proposta_crm_pdf(dados: dict) -> bytes:
-    """Gera a proposta diretamente no CRM sem alterar os geradores existentes."""
+    """Gera proposta comercial premium pelo CRM, preservando os fluxos existentes."""
     import io
     from xml.sax.saxutils import escape
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        PageBreak, KeepTogether,
+        PageBreak, KeepTogether, HRFlowable, Image as RLImage,
     )
 
     empresa_codigo = _crm_texto(dados.get("empresa_codigo"))
     aqua = empresa_codigo == "aqua_gestao"
-    empresa = "AQUA GESTÃO — CONTROLE TÉCNICO" if aqua else "BEM STAR PISCINAS"
+    empresa = "Aqua Gestão" if aqua else "Bem Star Piscinas"
+    assinatura_empresa = "Aqua Gestão - Controle Técnico de Piscinas" if aqua else "Bem Star Piscinas Ltda."
+    subtitulo_empresa = "Controle Técnico de Piscinas" if aqua else "Piscinas limpas e seguras para sua família"
     cnpj_empresa = "66.008.795/0001-92" if aqua else "26.799.958/0001-88"
-    cor = colors.HexColor("#0B4A7E") if aqua else colors.HexColor("#123B73")
-    cor_clara = colors.HexColor("#EAF3FA") if aqua else colors.HexColor("#EDF3FC")
-    cinza = colors.HexColor("#4B5563")
-    borda = colors.HexColor("#CBD5E1")
-    styles = getSampleStyleSheet()
-    normal = ParagraphStyle("CRMNormal", parent=styles["BodyText"], fontName="Helvetica", fontSize=9, leading=13, textColor=colors.HexColor("#172033"))
-    pequeno = ParagraphStyle("CRMPequeno", parent=normal, fontSize=7.5, leading=10, textColor=cinza)
-    titulo = ParagraphStyle("CRMTitulo", parent=normal, fontName="Helvetica-Bold", fontSize=18, leading=21, textColor=cor)
-    subtitulo = ParagraphStyle("CRMSubtitulo", parent=normal, fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=cor, spaceAfter=5)
-    centro = ParagraphStyle("CRMCentro", parent=normal, alignment=TA_CENTER)
-    direita = ParagraphStyle("CRMDir", parent=pequeno, alignment=TA_RIGHT)
+    azul_escuro = colors.HexColor("#07182E") if aqua else colors.HexColor("#082B57")
+    azul = colors.HexColor("#0B4F83") if aqua else colors.HexColor("#12579B")
+    dourado = colors.HexColor("#D7A719")
+    azul_claro = colors.HexColor("#EEF5FB")
+    cinza = colors.HexColor("#526174")
+    borda = colors.HexColor("#C9D5E3")
+    texto_cor = colors.HexColor("#152235")
+    branco = colors.white
 
-    def txt(valor, padrao="—"):
+    fonte = "Helvetica"
+    fonte_bold = "Helvetica-Bold"
+    try:
+        _fonte_regular = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        _fonte_bold = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        if _fonte_regular.exists() and _fonte_bold.exists():
+            if "CRMDejaVu" not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont("CRMDejaVu", str(_fonte_regular)))
+            if "CRMDejaVu-Bold" not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont("CRMDejaVu-Bold", str(_fonte_bold)))
+            fonte = "CRMDejaVu"
+            fonte_bold = "CRMDejaVu-Bold"
+    except Exception:
+        pass
+
+    corpo = ParagraphStyle(
+        "CRMPCorpo", fontName=fonte, fontSize=9.2, leading=14.2,
+        textColor=texto_cor, alignment=TA_JUSTIFY, spaceAfter=2.2 * mm,
+    )
+    corpo_esq = ParagraphStyle("CRMPCEsq", parent=corpo, alignment=TA_LEFT)
+    pequeno = ParagraphStyle(
+        "CRMPCPequeno", parent=corpo_esq, fontSize=7.2, leading=10,
+        textColor=cinza, spaceAfter=0,
+    )
+    rotulo = ParagraphStyle(
+        "CRMPCRotulo", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=8.2, leading=11, textColor=azul_escuro, spaceAfter=0,
+    )
+    rotulo_branco = ParagraphStyle(
+        "CRMPCRotuloBranco", parent=rotulo, textColor=branco,
+        alignment=TA_CENTER,
+    )
+    secao = ParagraphStyle(
+        "CRMPCSecao", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=11.2, leading=14, textColor=azul_escuro,
+        spaceBefore=2.5 * mm, spaceAfter=2 * mm,
+    )
+    titulo_branco = ParagraphStyle(
+        "CRMPCTituloBranco", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=19, leading=22, textColor=branco, alignment=TA_CENTER, spaceAfter=0,
+    )
+    marca_branca = ParagraphStyle(
+        "CRMPCMarcaBranca", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=17, leading=19, textColor=branco, alignment=TA_CENTER, spaceAfter=0,
+    )
+    marca_sub = ParagraphStyle(
+        "CRMPCMarcaSub", parent=corpo_esq, fontName=fonte,
+        fontSize=8.3, leading=11, textColor=dourado, alignment=TA_CENTER, spaceAfter=0,
+    )
+    centro = ParagraphStyle("CRMPCCentro", parent=corpo_esq, alignment=TA_CENTER)
+    direita = ParagraphStyle("CRMPCDireita", parent=pequeno, alignment=TA_RIGHT)
+    valor_estilo = ParagraphStyle(
+        "CRMPCValor", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=17, leading=20, textColor=azul_escuro, alignment=TA_CENTER, spaceAfter=0,
+    )
+
+    def txt(valor, padrao="-"):
         valor = _crm_texto(valor)
         return escape(valor) if valor else padrao
 
-    def linha_rotulo(rotulo, valor):
-        return [Paragraph(f"<b>{escape(rotulo)}</b>", normal), Paragraph(txt(valor), normal)]
+    def secao_titulo(texto):
+        return [
+            Paragraph(texto, secao),
+            HRFlowable(width="100%", thickness=0.9, color=dourado, spaceBefore=0, spaceAfter=3 * mm),
+        ]
 
-    def tabela_info(linhas, larguras=(48 * mm, 132 * mm)):
-        tabela = Table(linhas, colWidths=list(larguras), repeatRows=0)
+    def linha_cliente(rotulo_txt, valor):
+        return [Paragraph(rotulo_txt.upper(), rotulo), Paragraph(txt(valor), corpo_esq)]
+
+    def tabela_cliente():
+        contato = " | ".join(x for x in [_crm_texto(dados.get("telefone")), _crm_texto(dados.get("email"))] if x)
+        endereco = " - ".join(x for x in [_crm_texto(dados.get("endereco")), _crm_texto(dados.get("cidade"))] if x)
+        linhas = [
+            linha_cliente("Cliente", dados.get("cliente")),
+            linha_cliente("CPF / CNPJ", dados.get("documento")),
+            linha_cliente("Responsável / síndico", dados.get("responsavel")),
+            linha_cliente("Endereço", endereco),
+            linha_cliente("Contato", contato),
+            linha_cliente("Data da proposta", dados.get("emissao")),
+            linha_cliente("Validade", f"Até {txt(dados.get('validade'))}"),
+        ]
+        tabela = Table(linhas, colWidths=[52 * mm, 128 * mm])
         tabela.setStyle(TableStyle([
             ("BOX", (0, 0), (-1, -1), 0.6, borda),
             ("INNERGRID", (0, 0), (-1, -1), 0.35, borda),
-            ("BACKGROUND", (0, 0), (0, -1), cor_clara),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BACKGROUND", (0, 0), (0, -1), azul_claro),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 5.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5),
         ]))
         return tabela
+
+    def cabecalho_capa():
+        _logo = None
+        try:
+            _logo_path = encontrar_logo() if aqua else encontrar_logo_bem_star()
+            if _logo_path:
+                _logo = RLImage(str(_logo_path), width=31 * mm, height=22 * mm, kind="proportional")
+        except Exception:
+            _logo = None
+        marca = Paragraph(f"{escape(empresa.upper())}<br/><font size='8' color='#D7A719'>{escape(subtitulo_empresa)}</font>", marca_branca)
+        celula_marca = Table([[_logo, marca]], colWidths=[37 * mm, 77 * mm]) if _logo else marca
+        if isinstance(celula_marca, Table):
+            celula_marca.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+        proposta = Paragraph(
+            f"PROPOSTA COMERCIAL<br/><font size='8'>{txt(dados.get('numero'))}</font>",
+            titulo_branco,
+        )
+        tabela = Table([[celula_marca, proposta]], colWidths=[114 * mm, 66 * mm], rowHeights=[38 * mm])
+        tabela.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), azul_escuro),
+            ("LINEBELOW", (0, 0), (-1, -1), 1.8, dourado),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ]))
+        return tabela
+
+    def apresentacao_texto():
+        cliente = txt(dados.get("cliente"), "cliente")
+        servico = txt(dados.get("servico"), "serviço selecionado")
+        if aqua:
+            return [
+                f"A Aqua Gestão apresenta ao <b>{cliente}</b> esta proposta para <b>{servico}</b>, com atuação organizada, registros digitais e acompanhamento compatível com as necessidades informadas.",
+                "Nosso objetivo é entregar segurança operacional, rastreabilidade e clareza para a administração, mantendo histórico das atividades e comunicação objetiva sobre as condições observadas.",
+            ]
+        return [
+            f"A Bem Star Piscinas apresenta ao <b>{cliente}</b> esta proposta para <b>{servico}</b>, com atendimento profissional, organização operacional e acompanhamento próximo do cliente.",
+            "Nosso objetivo é oferecer uma solução prática, confiável e transparente, com execução cuidadosa e comunicação ágil durante todo o atendimento.",
+        ]
+
+    def escopo_completo():
+        servico_norm = normalizar_texto_busca(dados.get("servico"))
+        frequencia = _crm_texto(dados.get("frequencia"))
+        itens = []
+        if frequencia:
+            itens.append(f"Atendimento previsto: {frequencia}.")
+        if aqua and "manutencao operacional" in servico_norm:
+            itens += [
+                "Limpeza física, aspiração, escovação e cuidados operacionais compatíveis com a rotina contratada.",
+                "Análise e acompanhamento dos parâmetros físico-químicos aplicáveis à piscina.",
+                "Dosagem operacional e ajustes com os produtos disponibilizados conforme a condição comercial.",
+                "Verificação visual da piscina, sistema de filtração e casa de máquinas.",
+                "Registro digital das visitas, serviços realizados e ocorrências identificadas.",
+                "Comunicação à administração quando houver necessidade de correção, manutenção ou intervenção específica.",
+            ]
+        else:
+            itens += _crm_escopo_proposta(empresa_codigo, _crm_texto(dados.get("servico")))
+        return itens
+
+    def diferenciais():
+        if aqua:
+            return [
+                "Atuação especializada em piscinas coletivas e controle técnico da água.",
+                "Profissional habilitado e registrado no CRQ-MG, quando aplicável ao serviço contratado.",
+                "Sistema informatizado próprio, com histórico e rastreabilidade dos atendimentos.",
+                "Relatórios padronizados e comunicação objetiva com síndicos e administradoras.",
+                "Separação clara entre serviço operacional e Responsabilidade Técnica.",
+            ]
+        return [
+            "Experiência prática em manutenção, recuperação e soluções para piscinas.",
+            "Equipe de campo treinada e atendimento próximo ao cliente.",
+            "Registro organizado dos serviços e comunicação ágil sobre ocorrências.",
+            "Suporte na escolha de produtos, equipamentos e soluções adequadas.",
+        ]
+
+    def lista_itens(itens):
+        resultado = []
+        for item in itens:
+            resultado += [Paragraph(f"<font color='#D7A719'>-</font> {escape(item)}", corpo_esq), Spacer(1, 1.2 * mm)]
+        return resultado
+
+    def rodape(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setStrokeColor(dourado)
+        canvas.setLineWidth(0.7)
+        canvas.line(15 * mm, 12 * mm, 195 * mm, 12 * mm)
+        canvas.setFillColor(cinza)
+        canvas.setFont(fonte, 7)
+        canvas.drawString(15 * mm, 8 * mm, f"{assinatura_empresa} | CNPJ {cnpj_empresa} | Uberlândia/MG")
+        canvas.drawRightString(195 * mm, 8 * mm, f"Proposta {txt(dados.get('numero'))} | Página {canvas.getPageNumber()}")
+        canvas.restoreState()
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
-        topMargin=16 * mm, bottomMargin=16 * mm,
-        title=f"Proposta Comercial {txt(dados.get('numero'))}", author=empresa,
+        topMargin=14 * mm, bottomMargin=18 * mm,
+        title=f"Proposta Comercial {_crm_texto(dados.get('numero'))}",
+        author=assinatura_empresa,
     )
-    story = []
-    cab = Table([
-        [Paragraph(f"<b>{empresa}</b><br/><font size='8'>CNPJ {cnpj_empresa} • Uberlândia/MG</font>", normal),
-         Paragraph(f"PROPOSTA COMERCIAL<br/><b>{txt(dados.get('numero'))}</b>", direita)]
-    ], colWidths=[118 * mm, 62 * mm])
-    cab.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), cor_clara),
-        ("BOX", (0, 0), (-1, -1), 1, cor),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    story += [cab, Spacer(1, 8 * mm), Paragraph("Proposta Comercial", titulo),
-              Paragraph(f"Emissão: {txt(dados.get('emissao'))} • Validade: {txt(dados.get('validade'))}", pequeno), Spacer(1, 6 * mm)]
+    story = [cabecalho_capa(), Spacer(1, 7 * mm), tabela_cliente(), Spacer(1, 6 * mm)]
 
-    story += [Paragraph("1. IDENTIFICAÇÃO DO CLIENTE", subtitulo), tabela_info([
-        linha_rotulo("Cliente / estabelecimento", dados.get("cliente")),
-        linha_rotulo("CPF / CNPJ", dados.get("documento")),
-        linha_rotulo("Responsável / síndico", dados.get("responsavel")),
-        linha_rotulo("Contato", " | ".join(x for x in [_crm_texto(dados.get("telefone")), _crm_texto(dados.get("email"))] if x)),
-        linha_rotulo("Endereço", " — ".join(x for x in [_crm_texto(dados.get("endereco")), _crm_texto(dados.get("cidade"))] if x)),
-    ]), Spacer(1, 6 * mm)]
+    story += secao_titulo("APRESENTAÇÃO")
+    for paragrafo in apresentacao_texto():
+        story.append(Paragraph(paragrafo, corpo))
 
-    story += [Paragraph("2. OBJETO E ESCOPO", subtitulo), tabela_info([
-        linha_rotulo("Serviço proposto", dados.get("servico")),
-        linha_rotulo("Frequência / prazo", dados.get("frequencia")),
-        linha_rotulo("Piscina(s), volume ou local", dados.get("piscinas")),
-    ]), Spacer(1, 3 * mm)]
-    escopo = _crm_escopo_proposta(empresa_codigo, _crm_texto(dados.get("servico")))
-    for item in escopo:
-        story.append(Paragraph(f"• {escape(item)}", normal))
-        story.append(Spacer(1, 1.2 * mm))
-    story.append(Spacer(1, 4 * mm))
+    story += secao_titulo("ESCOPO DOS SERVIÇOS")
+    story.append(Paragraph(
+        f"<b>Modalidade:</b> {txt(dados.get('servico'))}<br/>"
+        f"<b>Local / piscina:</b> {txt(dados.get('piscinas'))}",
+        corpo_esq,
+    ))
+    story += lista_itens(escopo_completo())
+    story.append(PageBreak())
 
     valor_num = _crm_valor_numero(dados.get("valor"))
     valor_exibicao = _crm_moeda(valor_num) if valor_num else txt(dados.get("valor"))
-    story += [Paragraph("3. CONDIÇÕES COMERCIAIS", subtitulo), tabela_info([
-        linha_rotulo("Investimento", valor_exibicao),
-        linha_rotulo("Forma de pagamento", dados.get("pagamento")),
-        linha_rotulo("Vencimento", dados.get("vencimento")),
-        linha_rotulo("Produtos / materiais", dados.get("produtos")),
-        linha_rotulo("Validade da proposta", dados.get("validade")),
-    ]), Spacer(1, 6 * mm)]
+    story += secao_titulo("INVESTIMENTO")
+    investimento = Table([
+        [Paragraph("SERVIÇO CONTRATADO", rotulo_branco), Paragraph("INVESTIMENTO", rotulo_branco)],
+        [Paragraph(
+            f"<b>{txt(dados.get('servico'))}</b><br/>"
+            f"<font size='8'>{txt(dados.get('frequencia'))}</font>", corpo_esq),
+         Paragraph(valor_exibicao, valor_estilo)],
+    ], colWidths=[120 * mm, 60 * mm])
+    investimento.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), azul_escuro),
+        ("TEXTCOLOR", (0, 0), (-1, 0), branco),
+        ("BOX", (0, 0), (-1, -1), 0.8, borda),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, borda),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story += [investimento, Spacer(1, 4 * mm)]
 
+    condicoes = Table([
+        linha_cliente("Forma de pagamento", dados.get("pagamento")),
+        linha_cliente("Vencimento", dados.get("vencimento")),
+        linha_cliente("Produtos / materiais", dados.get("produtos")),
+        linha_cliente("Validade da proposta", dados.get("validade")),
+    ], colWidths=[52 * mm, 128 * mm])
+    condicoes.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.6, borda),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, borda),
+        ("BACKGROUND", (0, 0), (0, -1), azul_claro),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5),
+    ]))
+    story += [condicoes, Spacer(1, 5 * mm)]
+
+    story += secao_titulo(f"DIFERENCIAIS {empresa.upper()}")
+    story += lista_itens(diferenciais())
+
+    story += secao_titulo("CONDIÇÕES E OBSERVAÇÕES")
     observacoes = _crm_texto(dados.get("observacoes"))
-    story += [Paragraph("4. OBSERVAÇÕES", subtitulo)]
     if observacoes:
-        story.append(Paragraph(escape(observacoes).replace("\n", "<br/>"), normal))
+        story.append(Paragraph(escape(observacoes).replace("\n", "<br/>"), corpo))
     else:
-        story.append(Paragraph("O início, o cronograma e os detalhes finais serão confirmados após o aceite desta proposta.", normal))
-    story += [Spacer(1, 7 * mm), Paragraph("5. ACEITE", subtitulo),
-              Paragraph("O aceite desta proposta confirma a concordância com o serviço, o escopo e as condições comerciais acima.", normal),
-              Spacer(1, 14 * mm)]
+        story.append(Paragraph(
+            "O início dos serviços, o cronograma e os detalhes finais serão confirmados após o aceite. "
+            "Serviços, materiais ou intervenções não descritos nesta proposta serão avaliados e orçados separadamente.",
+            corpo,
+        ))
+    produtos_txt = normalizar_texto_busca(dados.get("produtos"))
+    servico_norm = normalizar_texto_busca(dados.get("servico"))
+    if "nao inclus" in produtos_txt:
+        story.append(Paragraph("Os produtos químicos, materiais e equipamentos não estão incluídos no investimento apresentado.", corpo))
+    if aqua and "manutencao operacional" in servico_norm:
+        story.append(Paragraph(
+            "Esta modalidade possui caráter operacional e não inclui Responsabilidade Técnica, emissão de ART ou documentos privativos de RT, salvo contratação específica em separado.",
+            corpo,
+        ))
 
-    assinaturas = Table([
-        [Paragraph("____________________________________<br/>CONTRATANTE<br/><font size='7'>Nome, assinatura e data</font>", centro),
-         Paragraph(f"____________________________________<br/>{empresa}<br/><font size='7'>Responsável comercial</font>", centro)]
+    story += [Spacer(1, 3 * mm), Paragraph(
+        "Ficamos à disposição para esclarecimentos e para o planejamento do início dos trabalhos.", corpo_esq,
+    ), Spacer(1, 9 * mm)]
+    assinatura = Table([
+        [Paragraph("________________________________________<br/><b>CONTRATANTE</b><br/><font size='7'>Nome, assinatura e data</font>", centro),
+         Paragraph(f"________________________________________<br/><b>{escape(assinatura_empresa)}</b><br/><font size='7'>Responsável comercial</font>", centro)],
     ], colWidths=[90 * mm, 90 * mm])
-    assinaturas.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    story += [KeepTogether(assinaturas), Spacer(1, 8 * mm),
-              Paragraph(f"Documento comercial gerado pelo módulo Gestão Comercial • {empresa} • Proposta {txt(dados.get('numero'))}", pequeno)]
-    doc.build(story)
+    assinatura.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(KeepTogether(assinatura))
+
+    doc.build(story, onFirstPage=rodape, onLaterPages=rodape)
     return buffer.getvalue()
 
 
