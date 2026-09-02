@@ -736,6 +736,7 @@ def gerar_proposta_crm_pdf(dados: dict) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
+    import reportlab
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import (
@@ -761,8 +762,14 @@ def gerar_proposta_crm_pdf(dados: dict) -> bytes:
     fonte = "Helvetica"
     fonte_bold = "Helvetica-Bold"
     try:
-        _fonte_regular = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-        _fonte_bold = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        # As fontes Vera acompanham o próprio ReportLab. Assim, o PDF sempre
+        # incorpora a fonte mesmo no Streamlit Cloud, evitando letras espaçadas.
+        _reportlab_dir = Path(reportlab.__file__).resolve().parent
+        _fonte_regular = _reportlab_dir / "fonts" / "Vera.ttf"
+        _fonte_bold = _reportlab_dir / "fonts" / "VeraBd.ttf"
+        if not (_fonte_regular.exists() and _fonte_bold.exists()):
+            _fonte_regular = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            _fonte_bold = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         if _fonte_regular.exists() and _fonte_bold.exists():
             if "CRMDejaVu" not in pdfmetrics.getRegisteredFontNames():
                 pdfmetrics.registerFont(TTFont("CRMDejaVu", str(_fonte_regular)))
@@ -830,10 +837,14 @@ def gerar_proposta_crm_pdf(dados: dict) -> bytes:
     def tabela_cliente():
         contato = " | ".join(x for x in [_crm_texto(dados.get("telefone")), _crm_texto(dados.get("email"))] if x)
         endereco = " - ".join(x for x in [_crm_texto(dados.get("endereco")), _crm_texto(dados.get("cidade"))] if x)
+        tipo_cliente_norm = normalizar_texto_busca(dados.get("tipo_cliente"))
         linhas = [
             linha_cliente("Cliente", dados.get("cliente")),
             linha_cliente("CPF / CNPJ", dados.get("documento")),
-            linha_cliente("Responsável / síndico", dados.get("responsavel")),
+        ]
+        if tipo_cliente_norm != "residencial":
+            linhas.append(linha_cliente("Responsável / síndico", dados.get("responsavel")))
+        linhas += [
             linha_cliente("Endereço", endereco),
             linha_cliente("Contato", contato),
             linha_cliente("Data da proposta", dados.get("emissao")),
@@ -14657,16 +14668,27 @@ with _crm_tab1:
         else ["Manutenção residencial", "Manutenção coletiva", "Recuperação de piscina",
               "Produtos / equipamentos", "Instalação", "Cerca de proteção", "Outro"]
     )
+    _crm_n_tipo = st.selectbox(
+        "Tipo de cliente",
+        ["Condomínio", "Residencial", "Empresa", "Clube", "Academia", "Hotel", "Outro"],
+        key=f"crm_n_tipo_{_empresa_ativa_codigo()}",
+    )
+    _crm_n_residencial = _crm_n_tipo == "Residencial"
     with st.form(f"crm_novo_form_{_empresa_ativa_codigo()}", clear_on_submit=True):
         _crm_n1, _crm_n2 = st.columns(2)
         with _crm_n1:
             _crm_n_cliente = st.text_input("Cliente, condomínio ou empresa *")
-            _crm_n_responsavel = st.text_input("Responsável / síndico")
+            _crm_n_responsavel = st.text_input(
+                "Responsável / síndico",
+                disabled=_crm_n_residencial,
+                help="Não se aplica quando o tipo de cliente é Residencial.",
+            )
+            if _crm_n_residencial:
+                st.caption("Campo não aplicável para piscina residencial.")
             _crm_n_telefone = st.text_input("WhatsApp / telefone")
             _crm_n_email = st.text_input("E-mail")
             _crm_n_documento = st.text_input("CPF / CNPJ")
         with _crm_n2:
-            _crm_n_tipo = st.selectbox("Tipo de cliente", ["Condomínio", "Residencial", "Empresa", "Clube", "Academia", "Hotel", "Outro"])
             _crm_n_servico = st.selectbox("Serviço procurado", _crm_servicos)
             _crm_n_origem = st.selectbox("Origem do contato *", CRM_ORIGENS)
             _crm_n_cidade = st.text_input("Cidade", value="Uberlândia/MG")
@@ -14692,7 +14714,7 @@ with _crm_tab1:
                 "Empresa": _crm_empresa_nome,
                 "Cliente_Lead": _crm_n_cliente,
                 "CPF_CNPJ": _crm_n_documento,
-                "Responsavel": _crm_n_responsavel,
+                "Responsavel": "" if _crm_n_residencial else _crm_n_responsavel,
                 "Telefone": _crm_n_telefone,
                 "Email": _crm_n_email,
                 "Endereco": _crm_n_endereco,
@@ -14744,7 +14766,10 @@ with _crm_tab2:
                 _crm_p1, _crm_p2, _crm_p3 = st.columns(3)
                 _crm_p1.write(f"**Serviço:** {_crm_texto(_crm_item.get('Servico')) or '—'}")
                 _crm_p1.write(f"**Origem:** {_crm_texto(_crm_item.get('Origem')) or '—'}")
-                _crm_p2.write(f"**Responsável:** {_crm_texto(_crm_item.get('Responsavel')) or '—'}")
+                if normalizar_texto_busca(_crm_item.get("Tipo_Cliente")) == "residencial":
+                    _crm_p2.write("**Tipo:** Residencial")
+                else:
+                    _crm_p2.write(f"**Responsável:** {_crm_texto(_crm_item.get('Responsavel')) or '—'}")
                 _crm_p2.write(f"**Telefone:** {_crm_texto(_crm_item.get('Telefone')) or '—'}")
                 _crm_p3.write(f"**Valor:** {_crm_texto(_crm_item.get('Valor_Estimado')) or '—'}")
                 _crm_p3.write(f"**Probabilidade:** {_crm_texto(_crm_item.get('Probabilidade')) or '0'}%")
@@ -14869,6 +14894,7 @@ with _crm_tab3:
                         "emissao": date.today().strftime("%d/%m/%Y"),
                         "validade": _crm_g_validade.strftime("%d/%m/%Y"),
                         "cliente": _crm_sel.get("Cliente_Lead"),
+                        "tipo_cliente": _crm_sel.get("Tipo_Cliente"),
                         "documento": _crm_sel.get("CPF_CNPJ"),
                         "responsavel": _crm_sel.get("Responsavel"),
                         "telefone": _crm_sel.get("Telefone"),
