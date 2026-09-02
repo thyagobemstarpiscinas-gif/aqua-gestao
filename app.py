@@ -14236,7 +14236,8 @@ _crm_tab1, _crm_tab2, _crm_tab3, _crm_tab4 = st.tabs([
 
 with _crm_tab1:
     _crm_servicos = (
-        ["Responsabilidade Técnica", "Diagnóstico técnico", "Controle de água para consumo humano",
+        ["Responsabilidade Técnica", "Manutenção operacional de piscinas (sem RT)",
+         "Diagnóstico técnico", "Controle de água para consumo humano",
          "Relatório / parecer técnico", "Treinamento / POP", "Outro"]
         if _empresa_ativa_codigo() == "aqua_gestao"
         else ["Manutenção residencial", "Manutenção coletiva", "Recuperação de piscina",
