@@ -472,6 +472,171 @@ def obter_aba_sheets(nome_aba: str):
         return None
 
 
+# =========================================
+# CRM COMERCIAL — MÓDULO ISOLADO
+# Não altera as abas, regras ou fluxos das áreas RT e Bem Star.
+# =========================================
+
+CRM_ABA = "📈 CRM Comercial"
+CRM_CABECALHOS = [
+    "ID", "Data_Cadastro", "Empresa", "Cliente_Lead", "CPF_CNPJ",
+    "Responsavel", "Telefone", "Email", "Endereco", "Cidade",
+    "Tipo_Cliente", "Servico", "Origem", "Etapa", "Valor_Estimado",
+    "Probabilidade", "Proxima_Acao", "Data_Proxima_Acao", "Observacoes",
+    "Numero_Proposta", "Data_Envio_Proposta", "Validade_Proposta",
+    "Motivo_Perda", "Data_Atualizacao", "Status",
+]
+
+CRM_ETAPAS = [
+    "Novo contato", "Em qualificação", "Vistoria agendada",
+    "Proposta em elaboração", "Proposta enviada", "Aguardando resposta",
+    "Negociação", "Fechado", "Não fechado", "Retomar futuramente",
+]
+
+CRM_ORIGENS = [
+    "Indicação", "Google", "Instagram", "WhatsApp", "Site",
+    "Administradora", "Síndico", "Cliente atual", "CRQ / relacionamento profissional",
+    "Anúncio Meta", "Anúncio Google", "Outro",
+]
+
+
+def _crm_obter_aba(criar: bool = False):
+    """Obtém a aba exclusiva do CRM; cria somente quando solicitado."""
+    try:
+        sh = conectar_sheets()
+        if sh is None:
+            return None
+        try:
+            return sh.worksheet(CRM_ABA)
+        except Exception:
+            if not criar:
+                return None
+            aba = sh.add_worksheet(title=CRM_ABA, rows=2000, cols=len(CRM_CABECALHOS))
+            aba.append_row(CRM_CABECALHOS, value_input_option="RAW")
+            try:
+                aba.format("A1:Y1", {
+                    "backgroundColor": {"red": 0.04, "green": 0.24, "blue": 0.46},
+                    "textFormat": {"foregroundColor": {"red": 1, "green": 1, "blue": 1}, "bold": True},
+                })
+                aba.freeze(rows=1)
+            except Exception:
+                pass
+            return aba
+    except Exception as e:
+        _log_sheets_erro("_crm_obter_aba", e)
+        st.session_state["_crm_ultimo_erro"] = str(e)
+        return None
+
+
+def sheets_crm_inicializar() -> bool:
+    return _crm_obter_aba(criar=True) is not None
+
+
+def _crm_texto(valor) -> str:
+    return str(valor or "").strip()
+
+
+def _crm_valor_numero(valor) -> float:
+    texto = re.sub(r"[^0-9,.-]", "", _crm_texto(valor))
+    if not texto:
+        return 0.0
+    if "," in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    try:
+        return float(texto)
+    except Exception:
+        return 0.0
+
+
+def _crm_novo_id() -> str:
+    return f"CRM-{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}"
+
+
+def sheets_crm_listar() -> list[dict]:
+    """Lista oportunidades sem misturar empresas; o filtro ocorre na tela administrativa."""
+    try:
+        aba = _crm_obter_aba(criar=False)
+        if aba is None:
+            return []
+        valores = aba.get_all_values()
+        if len(valores) <= 1:
+            return []
+        cabecalho = valores[0]
+        resultado = []
+        for numero_linha, linha in enumerate(valores[1:], start=2):
+            linha = list(linha) + [""] * max(0, len(cabecalho) - len(linha))
+            item = {cabecalho[i]: linha[i] for i in range(len(cabecalho))}
+            if _crm_texto(item.get("ID")):
+                item["_linha"] = numero_linha
+                resultado.append(item)
+        return resultado
+    except Exception as e:
+        _log_sheets_erro("sheets_crm_listar", e)
+        st.session_state["_crm_ultimo_erro"] = str(e)
+        return []
+
+
+def sheets_crm_salvar(dados: dict) -> tuple[bool, str]:
+    """Registra nova oportunidade na aba exclusiva do CRM."""
+    try:
+        aba = _crm_obter_aba(criar=True)
+        if aba is None:
+            return False, "Não foi possível acessar a planilha do CRM."
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+        registro = dict(dados or {})
+        registro["ID"] = registro.get("ID") or _crm_novo_id()
+        registro["Data_Cadastro"] = registro.get("Data_Cadastro") or agora
+        registro["Data_Atualizacao"] = agora
+        registro["Status"] = registro.get("Status") or "Ativo"
+        aba.append_row([_crm_texto(registro.get(c)) for c in CRM_CABECALHOS], value_input_option="USER_ENTERED")
+        return True, registro["ID"]
+    except Exception as e:
+        _log_sheets_erro("sheets_crm_salvar", e)
+        st.session_state["_crm_ultimo_erro"] = str(e)
+        return False, str(e)
+
+
+def sheets_crm_atualizar(id_oportunidade: str, alteracoes: dict) -> bool:
+    """Atualiza somente a linha identificada pelo ID; não exclui histórico."""
+    try:
+        aba = _crm_obter_aba(criar=False)
+        if aba is None:
+            return False
+        ids = aba.col_values(1)
+        alvo = _crm_texto(id_oportunidade)
+        if alvo not in ids:
+            return False
+        numero_linha = ids.index(alvo) + 1
+        registro_atual = {c: "" for c in CRM_CABECALHOS}
+        valores_linha = aba.row_values(numero_linha)
+        for i, valor in enumerate(valores_linha[:len(CRM_CABECALHOS)]):
+            registro_atual[CRM_CABECALHOS[i]] = valor
+        registro_atual.update(alteracoes or {})
+        registro_atual["ID"] = alvo
+        registro_atual["Data_Atualizacao"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+        aba.update(
+            range_name=f"A{numero_linha}:Y{numero_linha}",
+            values=[[_crm_texto(registro_atual.get(c)) for c in CRM_CABECALHOS]],
+            value_input_option="USER_ENTERED",
+        )
+        return True
+    except Exception as e:
+        _log_sheets_erro("sheets_crm_atualizar", e)
+        st.session_state["_crm_ultimo_erro"] = str(e)
+        return False
+
+
+def _crm_data_br_para_date(valor: str, padrao: date | None = None) -> date:
+    try:
+        return datetime.strptime(_crm_texto(valor), "%d/%m/%Y").date()
+    except Exception:
+        return padrao or date.today()
+
+
+def _crm_moeda(valor: float) -> str:
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def limpar_payload_para_sheets(dados: dict) -> dict:
     """Remove campos pesados antes de salvar payload no Google Sheets.
 
@@ -14008,6 +14173,259 @@ with b2:
     )
 with b3:
     st.metric("Resultado da busca", len(painel_filtrado))
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# GESTÃO INTELIGENTE — CRM + PROPOSTAS
+# Módulo administrativo isolado por empresa.
+# =========================================
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+_crm_empresa_nome = _empresa_ativa_nome()
+st.subheader(f"📈 Gestão Comercial — {_crm_empresa_nome}")
+st.caption("Organiza contatos, origem, próxima ação, propostas e fechamento. Os dados deste painel não alteram clientes, visitas, dosagens ou relatórios técnicos.")
+
+_crm_todos = sheets_crm_listar()
+_crm_lista = [r for r in _crm_todos if _crm_texto(r.get("Empresa")) == _crm_empresa_nome]
+_crm_lista = sorted(_crm_lista, key=lambda r: _crm_texto(r.get("Data_Atualizacao")), reverse=True)
+
+_crm_encerradas = {"Fechado", "Não fechado"}
+_crm_ativos = [r for r in _crm_lista if _crm_texto(r.get("Etapa")) not in _crm_encerradas and _crm_texto(r.get("Status")) != "Arquivado"]
+_crm_fechados = [r for r in _crm_lista if _crm_texto(r.get("Etapa")) == "Fechado"]
+_crm_perdidos = [r for r in _crm_lista if _crm_texto(r.get("Etapa")) == "Não fechado"]
+_crm_propostas = [r for r in _crm_lista if _crm_texto(r.get("Numero_Proposta")) or _crm_texto(r.get("Etapa")) in {"Proposta enviada", "Aguardando resposta", "Negociação"}]
+_crm_atrasados = []
+for _crm_item in _crm_ativos:
+    _crm_data_txt = _crm_texto(_crm_item.get("Data_Proxima_Acao"))
+    if _crm_data_txt:
+        _crm_data = _crm_data_br_para_date(_crm_data_txt)
+        if _crm_data < date.today():
+            _crm_atrasados.append(_crm_item)
+
+_crm_valor_pipeline = sum(
+    _crm_valor_numero(r.get("Valor_Estimado")) * max(0.0, min(100.0, _crm_valor_numero(r.get("Probabilidade")))) / 100.0
+    for r in _crm_ativos
+)
+_crm_decisoes = len(_crm_fechados) + len(_crm_perdidos)
+_crm_conversao = (len(_crm_fechados) / _crm_decisoes * 100.0) if _crm_decisoes else 0.0
+
+_crm_m1, _crm_m2, _crm_m3, _crm_m4, _crm_m5 = st.columns(5)
+_crm_m1.metric("Oportunidades ativas", len(_crm_ativos))
+_crm_m2.metric("Propostas", len(_crm_propostas))
+_crm_m3.metric("Retornos atrasados", len(_crm_atrasados))
+_crm_m4.metric("Pipeline ponderado", _crm_moeda(_crm_valor_pipeline))
+_crm_m5.metric("Conversão", f"{_crm_conversao:.0f}%")
+
+if st.session_state.get("_crm_ultimo_erro"):
+    st.warning("O CRM não conseguiu acessar a planilha. Verifique a conexão antes de cadastrar ou atualizar oportunidades.")
+
+if not _crm_todos:
+    st.info("Na primeira utilização, inicialize a aba exclusiva do CRM. Essa ação não modifica as abas atuais.")
+    if st.button("🔧 Inicializar CRM no Google Sheets", key=f"crm_inicializar_{_empresa_ativa_codigo()}"):
+        if sheets_crm_inicializar():
+            st.session_state.pop("_crm_ultimo_erro", None)
+            st.success("✅ CRM inicializado com sucesso.")
+            st.rerun()
+        else:
+            st.error("Não foi possível inicializar o CRM.")
+
+_crm_tab1, _crm_tab2, _crm_tab3, _crm_tab4 = st.tabs([
+    "➕ Novo contato", "🗂️ Pipeline", "✏️ Atualizar / proposta", "📊 Origem e desempenho"
+])
+
+with _crm_tab1:
+    _crm_servicos = (
+        ["Responsabilidade Técnica", "Diagnóstico técnico", "Controle de água para consumo humano",
+         "Relatório / parecer técnico", "Treinamento / POP", "Outro"]
+        if _empresa_ativa_codigo() == "aqua_gestao"
+        else ["Manutenção residencial", "Manutenção coletiva", "Recuperação de piscina",
+              "Produtos / equipamentos", "Instalação", "Cerca de proteção", "Outro"]
+    )
+    with st.form(f"crm_novo_form_{_empresa_ativa_codigo()}", clear_on_submit=True):
+        _crm_n1, _crm_n2 = st.columns(2)
+        with _crm_n1:
+            _crm_n_cliente = st.text_input("Cliente, condomínio ou empresa *")
+            _crm_n_responsavel = st.text_input("Responsável / síndico")
+            _crm_n_telefone = st.text_input("WhatsApp / telefone")
+            _crm_n_email = st.text_input("E-mail")
+            _crm_n_documento = st.text_input("CPF / CNPJ")
+        with _crm_n2:
+            _crm_n_tipo = st.selectbox("Tipo de cliente", ["Condomínio", "Residencial", "Empresa", "Clube", "Academia", "Hotel", "Outro"])
+            _crm_n_servico = st.selectbox("Serviço procurado", _crm_servicos)
+            _crm_n_origem = st.selectbox("Origem do contato *", CRM_ORIGENS)
+            _crm_n_cidade = st.text_input("Cidade", value="Uberlândia/MG")
+            _crm_n_endereco = st.text_input("Endereço")
+        _crm_n3, _crm_n4, _crm_n5 = st.columns([1.2, 1, 1.2])
+        with _crm_n3:
+            _crm_n_valor = st.text_input("Valor estimado (R$)", placeholder="Ex.: 1.500,00")
+        with _crm_n4:
+            _crm_n_prob = st.number_input("Probabilidade (%)", min_value=0, max_value=100, value=20, step=5)
+        with _crm_n5:
+            _crm_n_data_acao = st.date_input("Data da próxima ação", value=date.today() + timedelta(days=2), format="DD/MM/YYYY")
+        _crm_n_acao = st.text_input("Próxima ação *", placeholder="Ex.: ligar, agendar vistoria ou enviar proposta")
+        _crm_n_obs = st.text_area("Observações internas", height=90)
+        _crm_n_salvar = st.form_submit_button("💾 Cadastrar oportunidade", type="primary", use_container_width=True)
+
+    if _crm_n_salvar:
+        if not _crm_n_cliente.strip() or not _crm_n_acao.strip():
+            st.error("Informe o cliente e a próxima ação.")
+        elif _crm_n_email.strip() and not validar_email(_crm_n_email.strip()):
+            st.error("Informe um e-mail válido ou deixe o campo em branco.")
+        else:
+            _crm_ok, _crm_msg = sheets_crm_salvar({
+                "Empresa": _crm_empresa_nome,
+                "Cliente_Lead": _crm_n_cliente,
+                "CPF_CNPJ": _crm_n_documento,
+                "Responsavel": _crm_n_responsavel,
+                "Telefone": _crm_n_telefone,
+                "Email": _crm_n_email,
+                "Endereco": _crm_n_endereco,
+                "Cidade": _crm_n_cidade,
+                "Tipo_Cliente": _crm_n_tipo,
+                "Servico": _crm_n_servico,
+                "Origem": _crm_n_origem,
+                "Etapa": "Novo contato",
+                "Valor_Estimado": _crm_n_valor,
+                "Probabilidade": str(_crm_n_prob),
+                "Proxima_Acao": _crm_n_acao,
+                "Data_Proxima_Acao": _crm_n_data_acao.strftime("%d/%m/%Y"),
+                "Observacoes": _crm_n_obs,
+                "Status": "Ativo",
+            })
+            if _crm_ok:
+                st.success(f"✅ Oportunidade cadastrada: {_crm_msg}")
+                st.session_state.pop("_crm_ultimo_erro", None)
+                st.rerun()
+            else:
+                st.error(f"Não foi possível cadastrar: {_crm_msg}")
+
+with _crm_tab2:
+    _crm_f1, _crm_f2 = st.columns([1.5, 1])
+    with _crm_f1:
+        _crm_busca = st.text_input("Buscar oportunidade", key=f"crm_busca_{_empresa_ativa_codigo()}", placeholder="Cliente, responsável, telefone ou serviço")
+    with _crm_f2:
+        _crm_filtro_etapa = st.selectbox("Filtrar etapa", ["Todas"] + CRM_ETAPAS, key=f"crm_filtro_etapa_{_empresa_ativa_codigo()}")
+
+    _crm_busca_norm = normalizar_texto_busca(_crm_busca)
+    _crm_exibir = []
+    for _crm_item in _crm_lista:
+        if _crm_filtro_etapa != "Todas" and _crm_texto(_crm_item.get("Etapa")) != _crm_filtro_etapa:
+            continue
+        _crm_alvo = " | ".join(_crm_texto(_crm_item.get(c)) for c in ["Cliente_Lead", "Responsavel", "Telefone", "Servico", "Origem"])
+        if _crm_busca_norm and _crm_busca_norm not in normalizar_texto_busca(_crm_alvo):
+            continue
+        _crm_exibir.append(_crm_item)
+
+    if not _crm_exibir:
+        st.info("Nenhuma oportunidade encontrada para este painel.")
+    else:
+        for _crm_item in _crm_exibir:
+            _crm_etapa = _crm_texto(_crm_item.get("Etapa")) or "Novo contato"
+            _crm_cliente = _crm_texto(_crm_item.get("Cliente_Lead")) or "Sem nome"
+            _crm_data_acao_txt = _crm_texto(_crm_item.get("Data_Proxima_Acao")) or "Sem data"
+            _crm_alerta = " 🔴" if _crm_item in _crm_atrasados else ""
+            with st.expander(f"{_crm_etapa} • {_crm_cliente}{_crm_alerta}", expanded=False):
+                _crm_p1, _crm_p2, _crm_p3 = st.columns(3)
+                _crm_p1.write(f"**Serviço:** {_crm_texto(_crm_item.get('Servico')) or '—'}")
+                _crm_p1.write(f"**Origem:** {_crm_texto(_crm_item.get('Origem')) or '—'}")
+                _crm_p2.write(f"**Responsável:** {_crm_texto(_crm_item.get('Responsavel')) or '—'}")
+                _crm_p2.write(f"**Telefone:** {_crm_texto(_crm_item.get('Telefone')) or '—'}")
+                _crm_p3.write(f"**Valor:** {_crm_texto(_crm_item.get('Valor_Estimado')) or '—'}")
+                _crm_p3.write(f"**Probabilidade:** {_crm_texto(_crm_item.get('Probabilidade')) or '0'}%")
+                st.write(f"**Próxima ação ({_crm_data_acao_txt}):** {_crm_texto(_crm_item.get('Proxima_Acao')) or '—'}")
+                if _crm_texto(_crm_item.get("Numero_Proposta")):
+                    st.caption(f"Proposta: {_crm_texto(_crm_item.get('Numero_Proposta'))} • Enviada em {_crm_texto(_crm_item.get('Data_Envio_Proposta')) or 'data não informada'}")
+                if _crm_texto(_crm_item.get("Observacoes")):
+                    st.caption(_crm_texto(_crm_item.get("Observacoes")))
+
+with _crm_tab3:
+    if not _crm_lista:
+        st.info("Cadastre a primeira oportunidade para habilitar atualização e preparação de proposta.")
+    else:
+        _crm_opcoes = {
+            f"{_crm_texto(r.get('Cliente_Lead'))} • {_crm_texto(r.get('Etapa'))} • {_crm_texto(r.get('ID'))}": r
+            for r in _crm_lista
+        }
+        _crm_rotulo_sel = st.selectbox("Selecionar oportunidade", list(_crm_opcoes.keys()), key=f"crm_editar_sel_{_empresa_ativa_codigo()}")
+        _crm_sel = _crm_opcoes[_crm_rotulo_sel]
+        _crm_id_sel = _crm_texto(_crm_sel.get("ID"))
+        _crm_etapa_atual = _crm_texto(_crm_sel.get("Etapa")) or "Novo contato"
+        _crm_status_atual = _crm_texto(_crm_sel.get("Status")) or "Ativo"
+
+        with st.form(f"crm_editar_form_{_crm_id_sel}"):
+            _crm_e1, _crm_e2, _crm_e3 = st.columns(3)
+            with _crm_e1:
+                _crm_e_etapa = st.selectbox("Etapa", CRM_ETAPAS, index=CRM_ETAPAS.index(_crm_etapa_atual) if _crm_etapa_atual in CRM_ETAPAS else 0)
+                _crm_e_valor = st.text_input("Valor estimado (R$)", value=_crm_texto(_crm_sel.get("Valor_Estimado")))
+                _crm_e_prob = st.number_input("Probabilidade (%)", min_value=0, max_value=100, value=int(_crm_valor_numero(_crm_sel.get("Probabilidade")) or 0), step=5)
+            with _crm_e2:
+                _crm_e_acao = st.text_input("Próxima ação", value=_crm_texto(_crm_sel.get("Proxima_Acao")))
+                _crm_e_data = st.date_input("Data da próxima ação", value=_crm_data_br_para_date(_crm_sel.get("Data_Proxima_Acao"), date.today()), format="DD/MM/YYYY")
+                _crm_e_status = st.selectbox("Status do registro", ["Ativo", "Arquivado"], index=0 if _crm_status_atual != "Arquivado" else 1)
+            with _crm_e3:
+                _crm_e_num_prop = st.text_input("Número / referência da proposta", value=_crm_texto(_crm_sel.get("Numero_Proposta")), placeholder="Ex.: AG-2026-015")
+                _crm_e_envio = st.date_input("Data de envio da proposta", value=_crm_data_br_para_date(_crm_sel.get("Data_Envio_Proposta"), date.today()), format="DD/MM/YYYY")
+                _crm_e_validade = st.date_input("Validade da proposta", value=_crm_data_br_para_date(_crm_sel.get("Validade_Proposta"), date.today() + timedelta(days=15)), format="DD/MM/YYYY")
+            _crm_e_motivo = st.text_input("Motivo de não fechamento", value=_crm_texto(_crm_sel.get("Motivo_Perda")))
+            _crm_e_obs = st.text_area("Observações", value=_crm_texto(_crm_sel.get("Observacoes")), height=90)
+            _crm_e_salvar = st.form_submit_button("💾 Salvar atualização", type="primary", use_container_width=True)
+
+        if _crm_e_salvar:
+            if _crm_e_etapa == "Não fechado" and not _crm_e_motivo.strip():
+                st.error("Informe o motivo de não fechamento para registrar aprendizado comercial.")
+            else:
+                _crm_ok_edit = sheets_crm_atualizar(_crm_id_sel, {
+                    "Etapa": _crm_e_etapa,
+                    "Valor_Estimado": _crm_e_valor,
+                    "Probabilidade": str(_crm_e_prob),
+                    "Proxima_Acao": _crm_e_acao,
+                    "Data_Proxima_Acao": _crm_e_data.strftime("%d/%m/%Y"),
+                    "Numero_Proposta": _crm_e_num_prop,
+                    "Data_Envio_Proposta": _crm_e_envio.strftime("%d/%m/%Y") if _crm_e_num_prop.strip() else "",
+                    "Validade_Proposta": _crm_e_validade.strftime("%d/%m/%Y") if _crm_e_num_prop.strip() else "",
+                    "Motivo_Perda": _crm_e_motivo,
+                    "Observacoes": _crm_e_obs,
+                    "Status": _crm_e_status,
+                })
+                if _crm_ok_edit:
+                    st.success("✅ Oportunidade atualizada.")
+                    st.rerun()
+                else:
+                    st.error("Não foi possível atualizar a oportunidade.")
+
+        if st.button("📄 Preparar dados no gerador de proposta", key=f"crm_preparar_prop_{_crm_id_sel}", use_container_width=True):
+            _crm_prefixo = "pa" if _empresa_ativa_codigo() == "aqua_gestao" else "pb"
+            st.session_state[f"{_crm_prefixo}_cliente"] = _crm_texto(_crm_sel.get("Cliente_Lead"))
+            st.session_state[f"{_crm_prefixo}_cnpj"] = _crm_texto(_crm_sel.get("CPF_CNPJ"))
+            st.session_state[f"{_crm_prefixo}_sindico"] = _crm_texto(_crm_sel.get("Responsavel"))
+            st.session_state[f"{_crm_prefixo}_endereco"] = _crm_texto(_crm_sel.get("Endereco"))
+            st.session_state[f"{_crm_prefixo}_valor"] = _crm_texto(_crm_sel.get("Valor_Estimado"))
+            st.session_state["_crm_proposta_preparada"] = _crm_id_sel
+            st.success("Dados preparados. Abra o gerador de proposta deste painel e complete frequência, piscinas e condições comerciais.")
+
+with _crm_tab4:
+    _crm_origens_resumo = {}
+    for _crm_item in _crm_lista:
+        _crm_origem = _crm_texto(_crm_item.get("Origem")) or "Não informada"
+        _crm_origens_resumo.setdefault(_crm_origem, {"contatos": 0, "propostas": 0, "fechados": 0, "receita": 0.0})
+        _crm_origens_resumo[_crm_origem]["contatos"] += 1
+        if _crm_item in _crm_propostas:
+            _crm_origens_resumo[_crm_origem]["propostas"] += 1
+        if _crm_texto(_crm_item.get("Etapa")) == "Fechado":
+            _crm_origens_resumo[_crm_origem]["fechados"] += 1
+            _crm_origens_resumo[_crm_origem]["receita"] += _crm_valor_numero(_crm_item.get("Valor_Estimado"))
+
+    if not _crm_origens_resumo:
+        st.info("O desempenho por origem aparecerá após o cadastro dos primeiros contatos.")
+    else:
+        st.markdown("**Desempenho por origem dos contatos**")
+        for _crm_origem, _crm_resumo in sorted(_crm_origens_resumo.items(), key=lambda kv: kv[1]["contatos"], reverse=True):
+            _crm_o1, _crm_o2, _crm_o3, _crm_o4 = st.columns([1.5, 0.8, 0.8, 1])
+            _crm_o1.write(f"**{_crm_origem}**")
+            _crm_o2.metric("Contatos", _crm_resumo["contatos"])
+            _crm_o3.metric("Fechados", _crm_resumo["fechados"])
+            _crm_o4.metric("Valor fechado", _crm_moeda(_crm_resumo["receita"]))
 
 st.markdown("</div>", unsafe_allow_html=True)
 
