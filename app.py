@@ -9930,12 +9930,6 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         total_leituras = sum(1 for lc in lancamentos_analise if _tem_leitura(lc))
         total_sem_leitura = max(len(lancamentos_analise) - total_leituras, 0)
 
-        total_dosagens = 0
-        for lc in lancamentos:
-            for d in lc.get("dosagens", []) or []:
-                if isinstance(d, dict) and any(str(d.get(k, "") or "").strip() for k in ("produto", "quantidade", "finalidade")):
-                    total_dosagens += 1
-
         styles = getSampleStyleSheet()
         styles.add(ParagraphStyle(
             name="BS_Title", parent=styles["Title"], fontName="Helvetica-Bold",
@@ -10280,7 +10274,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         story.append(Spacer(1, 42 * mm))
 
         story.append(Paragraph(
-            "Finalidade: Registro de parâmetros físico-químicos, dosagens e rotina operacional.",
+            "Finalidade: Registro de parâmetros físico-químicos e da rotina operacional.",
             capa_rodape
         ))
         story.append(Paragraph(
@@ -10336,9 +10330,14 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         cards = [
             _style_card(_card("Total de visitas", len(lancamentos), f"Frequência: {freq_curta}", True), True),
-            _style_card(_card("pH conforme", f"{ph_pct}%", f"{ph_ok}/{ph_tot} leitura(s)"), False),
-            _style_card(_card("Cloro livre conforme", f"{crl_pct}%", f"{crl_ok}/{crl_tot} leitura(s)"), False),
-            _style_card(_card("Dosagens registradas", total_dosagens, "Aplicações no mês", True), True),
+            _style_card(_card("Leituras de pH", f"{ph_pct}%", f"{ph_ok}/{ph_tot} na faixa operacional"), False),
+            _style_card(_card("Leituras de cloro livre", f"{crl_pct}%", f"{crl_ok}/{crl_tot} na faixa operacional"), False),
+            _style_card(_card(
+                "Turbidez instrumental",
+                str(len(turb_vals)) if turb_vals else "Não medido",
+                "Medições no período" if turb_vals else "Análise complementar disponível",
+                True
+            ), True),
         ]
         cards_table = Table([cards], colWidths=[4.2 * cm, 4.2 * cm, 4.2 * cm, 4.2 * cm])
         cards_table.setStyle(TableStyle([
@@ -10444,6 +10443,18 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         t_vis.setStyle(TableStyle(style_vis))
         story.append(t_vis)
+        story.append(Spacer(1, 2 * mm))
+        story.append(P(
+            "<b>Siglas:</b> CL: cloro livre | CT: cloro total | CC: cloro combinado | "
+            "Alc.: alcalinidade total | Dur.: dureza cálcica | CYA: ácido cianúrico.",
+            "BS_BodySmall"
+        ))
+        story.append(P(
+            "<b>Legenda:</b> células em amarelo indicam resultados que merecem atenção operacional. "
+            "O traço <b>-</b> indica parâmetro não analisado naquela visita, conforme a periodicidade "
+            "operacional adotada.",
+            "BS_BodySmall"
+        ))
         story.append(Spacer(1, 5 * mm))
 
         # Estatística em tabela compacta
@@ -10459,7 +10470,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             ("CYA", cya_vals, "30–50", lambda v: 30 <= v <= 50, 0),
         ]
 
-        stat_rows = [[P("Parâmetro", "BS_TableHead"), P("Mín.", "BS_TableHead"), P("Méd.", "BS_TableHead"), P("Máx.", "BS_TableHead"), P("Faixa", "BS_TableHead"), P("Conf.", "BS_TableHead")]]
+        stat_rows = [[P("Parâmetro", "BS_TableHead"), P("Mín.", "BS_TableHead"), P("Méd.", "BS_TableHead"), P("Máx.", "BS_TableHead"), P("Faixa", "BS_TableHead"), P("Na faixa", "BS_TableHead")]]
         for nome, vals, faixa, regra, casas in stats:
             if vals:
                 ok = sum(1 for v in vals if regra(v))
@@ -10560,11 +10571,10 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         _bullet("Visitas do mês", f"Foram registradas <b>{len(lancamentos)}</b> visita(s), com frequência <b>{freq_curta}</b>.")
         _bullet("Análises semanais", f"Foram preenchidas análises completas em <b>{total_leituras}</b> segunda(s)-feira(s). As demais visitas correspondem ao acompanhamento e à manutenção operacional.")
-        _bullet("pH", f"Conformidade de <b>{ph_pct}%</b> ({ph_ok}/{ph_tot}). Média: <b>{_fmt(sum(ph_vals)/len(ph_vals) if ph_vals else None)}</b>. Faixa de referência: <b>7,2 a 7,8</b>.")
-        _bullet("Cloro livre", f"Conformidade de <b>{crl_pct}%</b> ({crl_ok}/{crl_tot}). Média: <b>{_fmt(sum(crl_vals)/len(crl_vals) if crl_vals else None)} mg/L</b>. Faixa de referência: <b>1,0 a 3,0 mg/L</b>.")
-        _bullet("Cloro combinado", f"Conformidade de <b>{clc_pct}%</b> ({clc_ok}/{clc_tot}) abaixo de <b>0,40 mg/L</b>. Média: <b>{_fmt(sum(clc_vals)/len(clc_vals) if clc_vals else None)} mg/L</b>.")
-        _bullet("Dosagens", f"Foram registradas <b>{total_dosagens}</b> dosagem(ns) no período. Recomenda-se manter o registro por visita para rastreabilidade operacional.")
-        _bullet("Recomendação geral", "Manter rotina de aferição, registrar dosagens, acompanhar pH e cloro residual, além de preservar filtração e retrolavagem conforme necessidade operacional.")
+        _bullet("pH", f"Leituras na faixa operacional: <b>{ph_pct}%</b> ({ph_ok}/{ph_tot}). Média: <b>{_fmt(sum(ph_vals)/len(ph_vals) if ph_vals else None)}</b>. Faixa de referência: <b>7,2 a 7,8</b>.")
+        _bullet("Cloro livre", f"Leituras na faixa operacional: <b>{crl_pct}%</b> ({crl_ok}/{crl_tot}). Média: <b>{_fmt(sum(crl_vals)/len(crl_vals) if crl_vals else None)} mg/L</b>. Faixa de referência: <b>1,0 a 3,0 mg/L</b>.")
+        _bullet("Cloro combinado", f"Leituras abaixo do critério operacional de <b>0,40 mg/L</b>: <b>{clc_pct}%</b> ({clc_ok}/{clc_tot}). Média: <b>{_fmt(sum(clc_vals)/len(clc_vals) if clc_vals else None)} mg/L</b>.")
+        _bullet("Recomendação geral", "Manter a rotina de aferição, acompanhar pH e cloro residual, além de preservar a filtração e realizar a retrolavagem conforme a necessidade operacional.")
 
         if obs_geral:
             _bullet("Observação da equipe", obs_geral)
@@ -10592,39 +10602,6 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         ]))
         story.append(t_bullets)
         story.append(Spacer(1, 5 * mm))
-
-        # Dosagens aplicadas
-        story.append(P("Ações Realizadas e Dosagens Aplicadas", "BS_H1"))
-        dos_rows = [[P("Data", "BS_TableHead"), P("Produto", "BS_TableHead"), P("Qtd.", "BS_TableHead"), P("Unid.", "BS_TableHead"), P("Finalidade", "BS_TableHead")]]
-
-        for lc in lancamentos:
-            data_lc = normalizar_data_visita(lc.get("data", ""))
-            for d in lc.get("dosagens", []) or []:
-                if isinstance(d, dict):
-                    prod = str(d.get("produto", "") or "").strip()
-                    qtd = str(d.get("quantidade", "") or "").strip()
-                    unid = str(d.get("unidade", "") or "").strip()
-                    fin = str(d.get("finalidade", "") or "").strip()
-                    if prod or qtd or fin:
-                        dos_rows.append([P(data_lc, "BS_Table"), P(prod, "BS_Table"), P(qtd or "—", "BS_Table"), P(unid or "—", "BS_Table"), P(fin or "—", "BS_Table")])
-
-        if len(dos_rows) == 1:
-            dos_rows.append([P("—", "BS_TableMuted"), P("Nenhuma dosagem registrada no período.", "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted"), P("—", "BS_TableMuted")])
-
-        t_dos = Table(dos_rows, colWidths=[24*mm, 48*mm, 22*mm, 20*mm, 65*mm], repeatRows=1)
-        t_dos.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), AZUL),
-            ("GRID", (0,0), (-1,-1), 0.25, BORDA),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, CINZA_LINHA]),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ("ALIGN", (0,1), (0,-1), "CENTER"),
-            ("ALIGN", (2,1), (3,-1), "CENTER"),
-            ("LEFTPADDING", (0,0), (-1,-1), 5),
-            ("RIGHTPADDING", (0,0), (-1,-1), 5),
-            ("TOPPADDING", (0,0), (-1,-1), 4),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-        ]))
-        story.append(t_dos)
 
         # Encerramento compacto
         story.append(Spacer(1, 7 * mm))
