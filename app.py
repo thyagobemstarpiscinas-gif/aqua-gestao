@@ -649,6 +649,14 @@ def _crm_numero_proposta(id_oportunidade: str, empresa_codigo: str) -> str:
     return f"{prefixo}-{date.today().year}-{sufixo}"
 
 
+def _crm_numero_contrato(id_oportunidade: str, empresa_codigo: str) -> str:
+    """Gera referência do contrato vinculada à oportunidade do CRM."""
+    prefixo = "CT-AG" if empresa_codigo == "aqua_gestao" else "CT-BS"
+    digitos = re.sub(r"\D", "", _crm_texto(id_oportunidade))
+    sufixo = digitos[-8:] if digitos else datetime.now().strftime("%m%d%H%M")
+    return f"{prefixo}-{date.today().year}-{sufixo}"
+
+
 def _crm_escopo_proposta(empresa_codigo: str, servico: str) -> list[str]:
     """Retorna um escopo comercial orientativo conforme empresa e serviço."""
     servico_norm = normalizar_texto_busca(servico)
@@ -1061,6 +1069,314 @@ def gerar_proposta_crm_pdf(dados: dict) -> bytes:
     ], colWidths=[90 * mm, 90 * mm])
     assinatura.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(KeepTogether(assinatura))
+
+    doc.build(story, onFirstPage=rodape, onLaterPages=rodape)
+    return buffer.getvalue()
+
+
+def gerar_contrato_crm_pdf(dados: dict) -> bytes:
+    """Gera contrato comercial pelo CRM sem alterar os geradores tradicionais."""
+    import io
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    import reportlab
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        PageBreak, KeepTogether, HRFlowable, Image as RLImage,
+    )
+
+    empresa_codigo = _crm_texto(dados.get("empresa_codigo"))
+    aqua = empresa_codigo == "aqua_gestao"
+    empresa = "Aqua Gestão" if aqua else "Bem Star Piscinas"
+    razao = "AQUA GESTÃO CONTROLE TÉCNICO LTDA" if aqua else "BEM STAR PISCINAS LTDA"
+    cnpj = "66.008.795/0001-92" if aqua else "26.799.958/0001-88"
+    endereco_empresa = "Uberlândia/MG" if aqua else "Av. Getúlio Vargas, 4411, Jardim das Palmeiras, Uberlândia/MG"
+    assinatura_empresa = "Aqua Gestão - Controle Técnico de Piscinas" if aqua else "Bem Star Piscinas Ltda."
+    azul_escuro = colors.HexColor("#07182E") if aqua else colors.HexColor("#082B57")
+    azul = colors.HexColor("#0B4F83") if aqua else colors.HexColor("#12579B")
+    dourado = colors.HexColor("#D7A719")
+    azul_claro = colors.HexColor("#EEF5FB")
+    cinza = colors.HexColor("#526174")
+    borda = colors.HexColor("#C9D5E3")
+    texto_cor = colors.HexColor("#152235")
+
+    fonte = "Helvetica"
+    fonte_bold = "Helvetica-Bold"
+    try:
+        reportlab_dir = Path(reportlab.__file__).resolve().parent
+        fonte_regular_path = reportlab_dir / "fonts" / "Vera.ttf"
+        fonte_bold_path = reportlab_dir / "fonts" / "VeraBd.ttf"
+        if not (fonte_regular_path.exists() and fonte_bold_path.exists()):
+            fonte_regular_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            fonte_bold_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        if fonte_regular_path.exists() and fonte_bold_path.exists():
+            if "CRMContrato" not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont("CRMContrato", str(fonte_regular_path)))
+            if "CRMContrato-Bold" not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont("CRMContrato-Bold", str(fonte_bold_path)))
+            fonte = "CRMContrato"
+            fonte_bold = "CRMContrato-Bold"
+    except Exception:
+        pass
+
+    corpo = ParagraphStyle(
+        "CRMContratoCorpo", fontName=fonte, fontSize=8.7, leading=13.2,
+        textColor=texto_cor, alignment=TA_JUSTIFY, spaceAfter=2.2 * mm,
+    )
+    corpo_esq = ParagraphStyle("CRMContratoEsq", parent=corpo, alignment=TA_LEFT)
+    pequeno = ParagraphStyle(
+        "CRMContratoPequeno", parent=corpo_esq, fontSize=7.1, leading=9.5,
+        textColor=cinza, spaceAfter=0,
+    )
+    titulo = ParagraphStyle(
+        "CRMContratoTitulo", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=17, leading=21, textColor=colors.white, alignment=TA_CENTER,
+    )
+    secao = ParagraphStyle(
+        "CRMContratoSecao", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=10.5, leading=13.5, textColor=azul_escuro,
+        spaceBefore=2.2 * mm, spaceAfter=1.5 * mm,
+    )
+    rotulo = ParagraphStyle(
+        "CRMContratoRotulo", parent=corpo_esq, fontName=fonte_bold,
+        fontSize=7.7, leading=10, textColor=azul_escuro, spaceAfter=0,
+    )
+    centro = ParagraphStyle("CRMContratoCentro", parent=corpo_esq, alignment=TA_CENTER)
+
+    def txt(valor, padrao="Não informado"):
+        valor = _crm_texto(valor)
+        return escape(valor) if valor else padrao
+
+    def titulo_clausula(numero, nome):
+        return [
+            Paragraph(f"CLÁUSULA {numero} — {nome}", secao),
+            HRFlowable(width="100%", thickness=0.65, color=dourado, spaceAfter=1.8 * mm),
+        ]
+
+    numero = txt(dados.get("numero"), "Sem referência")
+    cliente = txt(dados.get("cliente"))
+    tipo_cliente = _crm_texto(dados.get("tipo_cliente")) or "Condomínio"
+    residencial = normalizar_texto_busca(tipo_cliente) == "residencial"
+    documento = txt(dados.get("documento"))
+    responsavel = txt(dados.get("responsavel"))
+    doc_responsavel = txt(dados.get("documento_responsavel"))
+    rg = txt(dados.get("rg"))
+    endereco_completo = " - ".join(
+        x for x in [_crm_texto(dados.get("endereco")), _crm_texto(dados.get("cidade"))] if x
+    )
+    endereco_completo = escape(endereco_completo) if endereco_completo else "Não informado"
+    telefone = txt(dados.get("telefone"))
+    email = txt(dados.get("email"))
+    servico = txt(dados.get("servico"))
+    frequencia = txt(dados.get("frequencia"))
+    piscinas = txt(dados.get("piscinas"), "Local e piscina(s) conforme vistoria e proposta comercial")
+    produtos = txt(dados.get("produtos"))
+    valor = txt(dados.get("valor"))
+    natureza_valor = txt(dados.get("natureza_valor"), "mensal")
+    pagamento = txt(dados.get("pagamento"))
+    vencimento = txt(dados.get("vencimento"))
+    primeiro_vencimento = txt(dados.get("primeiro_vencimento"))
+    inicio = txt(dados.get("inicio"))
+    fim = txt(dados.get("fim"))
+    renovacao = txt(dados.get("renovacao"), "mediante acordo entre as partes")
+    observacoes = _crm_texto(dados.get("observacoes"))
+    servico_norm = normalizar_texto_busca(dados.get("servico"))
+    manutencao_operacional_aqua = aqua and "manutencao operacional" in servico_norm
+    manutencao_bem_star = (not aqua) and "manutencao" in servico_norm
+
+    if residencial:
+        qualificacao = (
+            f"{cliente}, pessoa física, inscrita no CPF sob nº {documento}, RG nº {rg}, "
+            f"residente e domiciliada em {endereco_completo}, telefone {telefone}, e-mail {email}, "
+            "doravante denominada CONTRATANTE"
+        )
+        representante_tabela = "Não aplicável — contratação residencial"
+    else:
+        qualificacao = (
+            f"{cliente}, inscrita no CPF/CNPJ sob nº {documento}, estabelecida em {endereco_completo}, "
+            f"neste ato representada por {responsavel}, CPF nº {doc_responsavel}, telefone {telefone}, "
+            f"e-mail {email}, doravante denominada CONTRATANTE"
+        )
+        representante_tabela = f"{responsavel}\nCPF: {doc_responsavel}"
+
+    escopo = _crm_escopo_proposta(empresa_codigo, _crm_texto(dados.get("servico")))
+    if manutencao_operacional_aqua:
+        escopo = [
+            "Limpeza física, aspiração, escovação, peneiração e cuidados operacionais previstos na rotina contratada.",
+            "Análise e ajuste operacional dos parâmetros físico-químicos aplicáveis em cada visita.",
+            "Verificação visual da piscina, filtração, circulação e casa de máquinas.",
+            "Registro digital dos serviços e comunicação de ocorrências ao contratante.",
+            "Atuação estritamente operacional, sem Responsabilidade Técnica ou ART incluída.",
+        ]
+
+    def cabecalho():
+        logo = None
+        try:
+            logo_path = encontrar_logo() if aqua else encontrar_logo_bem_star()
+            if logo_path:
+                logo = RLImage(str(logo_path), width=29 * mm, height=20 * mm, kind="proportional")
+        except Exception:
+            logo = None
+        marca = Paragraph(
+            f"<b>{escape(empresa.upper())}</b><br/><font size='7' color='#D7A719'>{escape(assinatura_empresa)}</font>",
+            ParagraphStyle("CRMContratoMarca", parent=centro, fontName=fonte_bold, fontSize=15, leading=18, textColor=colors.white),
+        )
+        esquerda = Table([[logo, marca]], colWidths=[34 * mm, 75 * mm]) if logo else marca
+        if isinstance(esquerda, Table):
+            esquerda.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ]))
+        direita = Paragraph(f"CONTRATO DE PRESTAÇÃO<br/>DE SERVIÇOS<br/><font size='8'>{numero}</font>", titulo)
+        tabela = Table([[esquerda, direita]], colWidths=[110 * mm, 70 * mm], rowHeights=[37 * mm])
+        tabela.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), azul_escuro),
+            ("LINEBELOW", (0, 0), (-1, -1), 1.8, dourado),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 9),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ]))
+        return tabela
+
+    def rodape(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setStrokeColor(dourado)
+        canvas.setLineWidth(0.7)
+        canvas.line(15 * mm, 12 * mm, 195 * mm, 12 * mm)
+        canvas.setFillColor(cinza)
+        canvas.setFont(fonte, 6.8)
+        canvas.drawString(15 * mm, 8 * mm, f"{assinatura_empresa} | CNPJ {cnpj} | Uberlândia/MG")
+        canvas.drawRightString(195 * mm, 8 * mm, f"Contrato {numero} | Página {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=14 * mm, bottomMargin=18 * mm,
+        title=f"Contrato {numero}", author=assinatura_empresa,
+    )
+    story = [cabecalho(), Spacer(1, 6 * mm)]
+
+    identificacao = Table([
+        [Paragraph("CONTRATADA", rotulo), Paragraph(f"<b>{razao}</b><br/>CNPJ {cnpj}<br/>{escape(endereco_empresa)}", corpo_esq)],
+        [Paragraph("CONTRATANTE", rotulo), Paragraph(f"<b>{cliente}</b><br/>Tipo: {escape(tipo_cliente)}<br/>CPF/CNPJ: {documento}<br/>Endereço: {endereco_completo}", corpo_esq)],
+        [Paragraph("REPRESENTANTE", rotulo), Paragraph(escape(representante_tabela).replace("\n", "<br/>"), corpo_esq)],
+        [Paragraph("SERVIÇO", rotulo), Paragraph(f"{servico}<br/>Frequência/prazo: {frequencia}<br/>Local/piscina(s): {piscinas}", corpo_esq)],
+        [Paragraph("CONDIÇÕES", rotulo), Paragraph(f"Valor {natureza_valor}: {valor}<br/>Primeiro vencimento: {primeiro_vencimento}<br/>Demais vencimentos: {vencimento}<br/>Pagamento: {pagamento}", corpo_esq)],
+    ], colWidths=[42 * mm, 138 * mm])
+    identificacao.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.7, borda),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, borda),
+        ("BACKGROUND", (0, 0), (0, -1), azul_claro),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story += [identificacao, Spacer(1, 5 * mm)]
+    story.append(Paragraph(
+        f"Pelo presente instrumento particular, de um lado {razao}, inscrita no CNPJ sob nº {cnpj}, "
+        f"doravante denominada CONTRATADA; e, de outro, {qualificacao}, resolvem celebrar o presente contrato, "
+        "vinculado à proposta comercial informada no CRM, mediante as cláusulas seguintes.", corpo,
+    ))
+    story.append(PageBreak())
+
+    story += titulo_clausula("1", "DO OBJETO E DO ESCOPO")
+    story.append(Paragraph(f"O presente contrato tem por objeto a prestação do serviço de <b>{servico}</b>, no local indicado pela CONTRATANTE.", corpo))
+    for item in escopo:
+        story.append(Paragraph(f"• {escape(item)}", corpo_esq))
+
+    story += titulo_clausula("2", "DA EXECUÇÃO E DA FREQUÊNCIA")
+    story.append(Paragraph(
+        f"Os serviços serão executados conforme a frequência, prazo ou entrega definida: <b>{frequencia}</b>. "
+        "Datas e horários poderão ser ajustados por necessidade operacional, climática, feriados, impedimento de acesso, "
+        "caso fortuito ou força maior, com comunicação ao CONTRATANTE. Atividades extraordinárias ou fora do escopo serão avaliadas separadamente.", corpo,
+    ))
+
+    story += titulo_clausula("3", "DOS PRODUTOS, MATERIAIS E EQUIPAMENTOS")
+    story.append(Paragraph(
+        f"A condição comercial dos produtos e materiais é: <b>{produtos}</b>. Itens extraordinários, reposições por contaminação, "
+        "eventos, drenagens, falhas estruturais, mau uso, peças e intervenções não previstas dependerão de autorização e orçamento específico.", corpo,
+    ))
+
+    story += titulo_clausula("4", "DO VALOR E DO PAGAMENTO")
+    story.append(Paragraph(
+        f"Pelos serviços contratados, a CONTRATANTE pagará à CONTRATADA o valor <b>{natureza_valor} de {valor}</b>. "
+        f"O primeiro vencimento ocorrerá em <b>{primeiro_vencimento}</b>; os demais, em <b>{vencimento}</b>, mediante {pagamento}. "
+        "O atraso sujeitará a CONTRATANTE à multa de 2%, juros de mora de 1% ao mês pro rata die e correção monetária pelo índice oficial aplicável.", corpo,
+    ))
+
+    story += titulo_clausula("5", "DA VIGÊNCIA E DA RENOVAÇÃO")
+    story.append(Paragraph(
+        f"A vigência terá início em <b>{inicio}</b> e término em <b>{fim}</b>. A renovação ocorrerá {renovacao}. "
+        "Quando o contrato ultrapassar 12 meses, o valor poderá ser reajustado anualmente pelo IPCA/IBGE ou índice que o substitua.", corpo,
+    ))
+
+    story += titulo_clausula("6", "DAS OBRIGAÇÕES DAS PARTES")
+    story.append(Paragraph(
+        "A CONTRATADA executará o escopo com zelo, boa-fé e organização, registrando ou comunicando ocorrências relevantes. "
+        "A CONTRATANTE garantirá acesso ao local, fornecerá informações corretas, comunicará alterações de uso ou eventos, "
+        "manterá instalações e equipamentos em condições de operação e efetuará os pagamentos nos prazos pactuados.", corpo,
+    ))
+
+    story += titulo_clausula("7", "DOS LIMITES DO SERVIÇO E DA RESPONSABILIDADE")
+    limite = (
+        "A modalidade contratada possui natureza operacional e não inclui Responsabilidade Técnica química, ART, laudos periciais ou documentos privativos de RT, salvo contratação específica e independente. "
+        if manutencao_operacional_aqua or manutencao_bem_star else
+        "A contratação limita-se ao escopo expressamente descrito e não inclui Responsabilidade Técnica ou ART, salvo quando o objeto específico e documento próprio dispuserem de forma diferente. "
+    )
+    story.append(Paragraph(
+        limite + "Não estão incluídas obras civis, reformas hidráulicas, reparos elétricos, falhas estruturais, substituição de equipamentos, "
+        "danos por mau uso, intervenção de terceiros, vandalismo, intempéries ou situações não atribuíveis à execução direta da CONTRATADA.", corpo,
+    ))
+
+    story += titulo_clausula("8", "DA RESCISÃO")
+    story.append(Paragraph(
+        "O contrato poderá ser rescindido por mútuo acordo; por qualquer das partes mediante aviso prévio escrito de 30 dias; "
+        "ou imediatamente após descumprimento contratual relevante não sanado após comunicação. Permanecem devidos os valores vencidos, "
+        "serviços prestados, materiais utilizados e obrigações constituídas até o encerramento.", corpo,
+    ))
+
+    clausula_nove = titulo_clausula("9", "DA PROTEÇÃO DE DADOS, COMUNICAÇÕES E DISPOSIÇÕES GERAIS")
+    clausula_nove.append(Paragraph(
+        "Os dados fornecidos serão utilizados para execução contratual, comunicação operacional, cobrança e registros administrativos. "
+        "E-mails, mensagens eletrônicas, registros digitais, relatórios e documentos assinados física ou eletronicamente serão meios válidos de comunicação e prova. "
+        "Alterações relevantes de escopo, frequência, prazo ou preço deverão ser formalizadas por escrito.", corpo,
+    ))
+    if observacoes:
+        clausula_nove.append(Paragraph(f"<b>Condições adicionais:</b> {escape(observacoes).replace(chr(10), '<br/>')}", corpo))
+    story.append(KeepTogether(clausula_nove))
+
+    story += titulo_clausula("10", "DO FORO")
+    story.append(Paragraph(
+        "Fica eleito o foro da Comarca de Uberlândia/MG para dirimir controvérsias oriundas deste instrumento, "
+        "com renúncia a qualquer outro, por mais privilegiado que seja.", corpo,
+    ))
+
+    story += [Spacer(1, 5 * mm), Paragraph(
+        f"Uberlândia/MG, {txt(dados.get('data_assinatura'))}.", centro,
+    ), Spacer(1, 10 * mm)]
+    assinatura_cliente = cliente if residencial else f"{cliente}<br/><font size='7'>Representante: {responsavel}</font>"
+    assinaturas = Table([
+        [Paragraph("________________________________________<br/><b>CONTRATADA</b><br/>" + escape(razao), centro),
+         Paragraph("________________________________________<br/><b>CONTRATANTE</b><br/>" + assinatura_cliente, centro)],
+        [Spacer(1, 7 * mm), Spacer(1, 7 * mm)],
+        [Paragraph("________________________________________<br/><b>TESTEMUNHA 1</b><br/><font size='7'>Nome e CPF</font>", centro),
+         Paragraph("________________________________________<br/><b>TESTEMUNHA 2</b><br/><font size='7'>Nome e CPF</font>", centro)],
+    ], colWidths=[90 * mm, 90 * mm])
+    assinaturas.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+    ]))
+    story.append(KeepTogether(assinaturas))
 
     doc.build(story, onFirstPage=rodape, onLaterPages=rodape)
     return buffer.getvalue()
@@ -15067,6 +15383,226 @@ with _crm_tab3:
                 st.session_state[f"{_crm_prefixo}_valor"] = _crm_texto(_crm_sel.get("Valor_Estimado"))
                 st.session_state["_crm_proposta_preparada"] = _crm_id_sel
                 st.success("Dados preparados. Abra o gerador tradicional deste painel para concluir.")
+
+        st.divider()
+        st.markdown("#### 📝 Gerar contrato após aprovação da proposta")
+        _crm_servico_contrato_norm = normalizar_texto_busca(_crm_sel.get("Servico"))
+        _crm_contrato_rt = (
+            _empresa_ativa_codigo() == "aqua_gestao"
+            and "responsabilidade tecnica" in _crm_servico_contrato_norm
+        )
+
+        if _crm_contrato_rt:
+            st.info(
+                "Para Responsabilidade Técnica, utilize o gerador específico de Contrato RT deste painel. "
+                "Ele preserva as cláusulas e os documentos exigidos para CRQ/ART."
+            )
+        elif not _crm_texto(_crm_sel.get("Numero_Proposta")):
+            st.info("Gere e registre uma proposta antes de preparar o contrato desta oportunidade.")
+        else:
+            st.caption(
+                "Confirme o aceite do cliente e revise as condições. A geração do PDF não marca a venda como fechada; "
+                "o fechamento ocorrerá somente após a assinatura."
+            )
+            _crm_contrato_numero_padrao = _crm_numero_contrato(_crm_id_sel, _empresa_ativa_codigo())
+            _crm_contrato_pdf_key = f"_crm_contrato_pdf_{_crm_id_sel}"
+            _crm_contrato_nome_key = f"_crm_contrato_nome_{_crm_id_sel}"
+            _crm_contrato_residencial = normalizar_texto_busca(_crm_sel.get("Tipo_Cliente")) == "residencial"
+            _crm_contrato_recorrente = "manutencao" in _crm_servico_contrato_norm
+
+            with st.form(f"crm_contrato_form_{_crm_id_sel}"):
+                _crm_c_aceite = st.checkbox(
+                    "Confirmo que o cliente aprovou a proposta comercial",
+                    value=False,
+                )
+                _crm_c1, _crm_c2, _crm_c3 = st.columns(3)
+                with _crm_c1:
+                    _crm_c_numero = st.text_input("Número do contrato", value=_crm_contrato_numero_padrao)
+                    _crm_c_valor = st.text_input(
+                        "Valor contratado (R$)",
+                        value=_crm_texto(_crm_sel.get("Valor_Estimado")),
+                    )
+                    _crm_c_natureza = st.selectbox(
+                        "Natureza do valor",
+                        ["mensal", "total do serviço"],
+                        index=0 if _crm_contrato_recorrente else 1,
+                    )
+                    _crm_c_frequencia = st.text_input(
+                        "Frequência, prazo ou entrega",
+                        value=_crm_g_frequencia,
+                        placeholder="Ex.: 2x por semana",
+                    )
+                with _crm_c2:
+                    _crm_c_inicio = st.date_input(
+                        "Início da vigência",
+                        value=date.today(),
+                        format="DD/MM/YYYY",
+                    )
+                    _crm_c_fim = st.date_input(
+                        "Término da vigência",
+                        value=date.today() + timedelta(days=364),
+                        format="DD/MM/YYYY",
+                    )
+                    _crm_c_primeiro_venc = st.date_input(
+                        "Primeiro vencimento",
+                        value=date.today() + timedelta(days=30),
+                        format="DD/MM/YYYY",
+                    )
+                    _crm_c_vencimento = st.text_input(
+                        "Demais vencimentos",
+                        value=_crm_g_vencimento or "Dia 10 de cada mês",
+                    )
+                with _crm_c3:
+                    _crm_c_pagamento = st.selectbox(
+                        "Forma de pagamento",
+                        ["PIX / transferência bancária", "Boleto", "PIX", "Transferência bancária", "Cartão", "A combinar"],
+                        index=0,
+                    )
+                    _crm_c_produtos = st.selectbox(
+                        "Produtos / materiais",
+                        _crm_produtos_opcoes,
+                        index=_crm_produtos_opcoes.index(_crm_g_produtos) if _crm_g_produtos in _crm_produtos_opcoes else 0,
+                    )
+                    _crm_c_piscinas = st.text_input(
+                        "Piscina(s), volume ou local",
+                        value=_crm_g_piscinas,
+                    )
+                    _crm_c_renovacao = st.selectbox(
+                        "Renovação",
+                        [
+                            "automaticamente por períodos sucessivos, salvo manifestação escrita",
+                            "somente mediante novo acordo escrito entre as partes",
+                        ],
+                    )
+
+                _crm_cd1, _crm_cd2 = st.columns(2)
+                with _crm_cd1:
+                    if _crm_contrato_residencial:
+                        _crm_c_rg = st.text_input("RG do contratante (opcional)")
+                        _crm_c_doc_resp = ""
+                    else:
+                        _crm_c_doc_resp = st.text_input("CPF do responsável / representante *")
+                        _crm_c_rg = ""
+                with _crm_cd2:
+                    _crm_c_data_assinatura = st.date_input(
+                        "Data do contrato",
+                        value=date.today(),
+                        format="DD/MM/YYYY",
+                    )
+                _crm_c_observacoes = st.text_area(
+                    "Condições adicionais do contrato",
+                    value=_crm_g_observacoes,
+                    placeholder="Inclua somente condições que foram aprovadas pelo cliente.",
+                    height=90,
+                )
+                _crm_c_gerar = st.form_submit_button(
+                    "📝 Gerar contrato em PDF",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if _crm_c_gerar:
+                _crm_c_erros = []
+                if not _crm_c_aceite:
+                    _crm_c_erros.append("Confirme que o cliente aprovou a proposta.")
+                if not _crm_c_numero.strip():
+                    _crm_c_erros.append("Informe o número do contrato.")
+                if not _crm_texto(_crm_sel.get("CPF_CNPJ")):
+                    _crm_c_erros.append("Complete o CPF/CNPJ no bloco de dados do cliente.")
+                if not _crm_texto(_crm_sel.get("Endereco")):
+                    _crm_c_erros.append("Complete o endereço no bloco de dados do cliente.")
+                if not _crm_contrato_residencial and not _crm_texto(_crm_sel.get("Responsavel")):
+                    _crm_c_erros.append("Complete o responsável/representante no bloco de dados do cliente.")
+                if not _crm_contrato_residencial and not _crm_c_doc_resp.strip():
+                    _crm_c_erros.append("Informe o CPF do responsável/representante.")
+                if not _crm_c_valor.strip():
+                    _crm_c_erros.append("Informe o valor contratado.")
+                if _crm_c_fim < _crm_c_inicio:
+                    _crm_c_erros.append("O término da vigência não pode ser anterior ao início.")
+
+                if _crm_c_erros:
+                    st.error("Corrija antes de gerar o contrato:\n- " + "\n- ".join(_crm_c_erros))
+                else:
+                    try:
+                        _crm_c_dados = {
+                            "empresa_codigo": _empresa_ativa_codigo(),
+                            "numero": _crm_c_numero,
+                            "cliente": _crm_sel.get("Cliente_Lead"),
+                            "tipo_cliente": _crm_sel.get("Tipo_Cliente"),
+                            "documento": _crm_sel.get("CPF_CNPJ"),
+                            "responsavel": _crm_sel.get("Responsavel"),
+                            "documento_responsavel": _crm_c_doc_resp,
+                            "rg": _crm_c_rg,
+                            "telefone": _crm_sel.get("Telefone"),
+                            "email": _crm_sel.get("Email"),
+                            "endereco": _crm_sel.get("Endereco"),
+                            "cidade": _crm_sel.get("Cidade"),
+                            "servico": _crm_sel.get("Servico"),
+                            "frequencia": _crm_c_frequencia,
+                            "piscinas": _crm_c_piscinas,
+                            "produtos": _crm_c_produtos,
+                            "valor": _crm_c_valor,
+                            "natureza_valor": _crm_c_natureza,
+                            "pagamento": _crm_c_pagamento,
+                            "vencimento": _crm_c_vencimento,
+                            "primeiro_vencimento": _crm_c_primeiro_venc.strftime("%d/%m/%Y"),
+                            "inicio": _crm_c_inicio.strftime("%d/%m/%Y"),
+                            "fim": _crm_c_fim.strftime("%d/%m/%Y"),
+                            "renovacao": _crm_c_renovacao,
+                            "data_assinatura": _crm_c_data_assinatura.strftime("%d/%m/%Y"),
+                            "observacoes": _crm_c_observacoes,
+                        }
+                        _crm_contrato_bytes = gerar_contrato_crm_pdf(_crm_c_dados)
+                        _crm_contrato_empresa_nome = "Aqua_Gestao" if _empresa_ativa_codigo() == "aqua_gestao" else "Bem_Star"
+                        _crm_contrato_nome = limpar_nome_arquivo(
+                            f"Contrato_{_crm_contrato_empresa_nome}_{_crm_texto(_crm_sel.get('Cliente_Lead'))}_{_crm_c_numero}.pdf"
+                        )
+                        st.session_state[_crm_contrato_pdf_key] = _crm_contrato_bytes
+                        st.session_state[_crm_contrato_nome_key] = _crm_contrato_nome
+                        _crm_contrato_registrado = sheets_crm_atualizar(_crm_id_sel, {
+                            "Etapa": "Negociação",
+                            "Probabilidade": "90",
+                            "Proxima_Acao": "Enviar contrato para assinatura",
+                            "Data_Proxima_Acao": date.today().strftime("%d/%m/%Y"),
+                            "Valor_Estimado": _crm_c_valor,
+                        })
+                        if _crm_contrato_registrado:
+                            st.success("✅ Contrato gerado. O CRM registrou a próxima ação: enviar para assinatura.")
+                        else:
+                            st.warning("O contrato foi gerado, mas a atualização do CRM precisa ser conferida.")
+                    except Exception as _crm_erro_contrato:
+                        st.error(f"Não foi possível gerar o contrato: {_crm_erro_contrato}")
+
+            if st.session_state.get(_crm_contrato_pdf_key):
+                _crm_cdl1, _crm_cdl2 = st.columns([1.5, 1])
+                with _crm_cdl1:
+                    st.download_button(
+                        "⬇️ Baixar contrato em PDF",
+                        data=st.session_state[_crm_contrato_pdf_key],
+                        file_name=st.session_state.get(_crm_contrato_nome_key, "Contrato.pdf"),
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"crm_download_contrato_{_crm_id_sel}",
+                    )
+                with _crm_cdl2:
+                    if st.button(
+                        "✅ Contrato assinado — fechar venda",
+                        key=f"crm_contrato_assinado_{_crm_id_sel}",
+                        use_container_width=True,
+                    ):
+                        _crm_fechou_contrato = sheets_crm_atualizar(_crm_id_sel, {
+                            "Etapa": "Fechado",
+                            "Probabilidade": "100",
+                            "Proxima_Acao": "Cadastrar cliente e iniciar atendimento",
+                            "Data_Proxima_Acao": date.today().strftime("%d/%m/%Y"),
+                            "Motivo_Perda": "",
+                            "Status": "Ativo",
+                        })
+                        if _crm_fechou_contrato:
+                            st.success("✅ Venda fechada. Próxima ação: cadastrar cliente e iniciar atendimento.")
+                            st.rerun()
+                        else:
+                            st.error("Não foi possível registrar o fechamento no CRM.")
 
 with _crm_tab4:
     _crm_origens_resumo = {}
