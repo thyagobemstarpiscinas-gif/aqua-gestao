@@ -32,7 +32,8 @@ FUNCOES_RT = [
     "_rascunho_usa_sheets", "_relatorio_rt_tem_conteudo", "_relatorio_rt_tem_dados_em_tela",
     "_relatorio_rt_coletar_rascunho", "_relatorio_rt_chave_sessao", "_relatorio_rt_arquivo_local",
     "_relatorio_rt_aba", "_relatorio_rt_ler_json", "_relatorio_rt_serializar", "_relatorio_rt_desserializar",
-    "_relatorio_rt_eh_chave", "_relatorio_rt_ordem", "_relatorio_rt_listar_rascunhos", "_relatorio_rt_gravar_linha",
+    "_relatorio_rt_eh_chave", "_relatorio_rt_ordem", "_relatorio_rt_listar_rascunhos", "_relatorio_rt_descartada",
+    "_relatorio_rt_gravar_linha",
     "_relatorio_rt_coluna", "_relatorio_rt_salvar_rascunho", "_relatorio_rt_carregar_rascunho",
     "_relatorio_rt_descartar", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
     "_relatorio_rt_resumo",
@@ -89,6 +90,13 @@ class _Aba:
             row.append("")
         row[col_ini - 1:col_ini - 1 + len(values[0])] = list(values[0])
         self.updates += 1
+
+    def batch_update(self, blocos, **_):
+        self._gancho()
+        antes, gancho = self.updates, self.antes_de_gravar
+        for b in blocos:  # uma única chamada: todos os intervalos juntos
+            self.update(range_name=b["range"], values=b["values"])
+        self.updates = antes + 1
 
     def append_row(self, values, **_):
         self._gancho()
@@ -573,6 +581,99 @@ class TestCodespaces(unittest.TestCase):
         s["_relatorio_rt_salvar_rascunho"]()
         self.assertGreater(amb.planilha.conexoes, 0)
         self.assertEqual(len(amb.linhas()), 1)
+
+
+class TestAjustesFinais(unittest.TestCase):
+    def test_descarte_com_planilha_indisponivel_nao_conclui(self):
+        amb = Ambiente()
+        a = amb.sessao()
+        a["ss"]["rel_diagnostico"] = "versão X"
+        a["_relatorio_rt_salvar_rascunho"]()
+        chave = a["ss"]["_rt_rasc_chave"]
+        antes = copy.deepcopy(amb.aba().linhas)
+        real = a["_relatorio_rt_aba"]
+        a["_relatorio_rt_aba"] = lambda criar=False: None  # planilha fora do ar
+        self.assertFalse(a["_relatorio_rt_descartar"](chave))
+        self.assertIn("NÃO foi descartado", a["ss"]["_rt_rasc_erro_descarte"])
+        self.assertEqual(amb.aba().linhas, antes)  # planilha intacta
+        self.assertEqual(a["ss"]["_rt_rasc_chave"], chave)  # nada mudou na sessão
+        local = json.loads((amb.dir / f"_rascunho_relatorio_rt_{slugify_nome(chave)}.json").read_text(encoding="utf-8"))
+        self.assertNotIn("_descartado", local)  # cópia local também preservada
+        a["_relatorio_rt_aba"] = real  # planilha voltou: nova tentativa
+        self.assertTrue(a["_relatorio_rt_descartar"](chave))
+        self.assertTrue(amb.linhas(chave)[0][3].startswith("descartado"))
+        amb.limpar_disco()
+        nova = amb.sessao(abrir=False)
+        self.assertFalse(any(v["chave"] == chave for v in nova["_relatorio_rt_listar_rascunhos"]()["versoes"]))
+
+    def test_descarte_com_falha_ao_gravar_marca_preserva_rascunho(self):
+        amb = Ambiente()
+        a = amb.sessao()
+        a["ss"]["rel_diagnostico"] = "versão X"
+        a["_relatorio_rt_salvar_rascunho"]()
+        chave = a["ss"]["_rt_rasc_chave"]
+        amb.aba().falhar = True
+        self.assertFalse(a["_relatorio_rt_descartar"](chave))
+        amb.aba().falhar = False
+        self.assertEqual(amb.linhas(chave)[0][3], "")
+        self.assertTrue(any(v["chave"] == chave for v in a["_relatorio_rt_listar_rascunhos"]()["versoes"]))
+
+    def test_restaurar_outra_versao_na_mesma_sessao_preserva_x_e_y(self):
+        amb = Ambiente()
+        b = amb.sessao()
+        b["ss"].update({"rel_nome_condominio": "Y", "rel_analise_ph_0": "7.7"})
+        b["_relatorio_rt_salvar_rascunho"]()
+        chave_y = b["ss"]["_rt_rasc_chave"]
+        linha_y = copy.deepcopy(amb.linhas(chave_y))
+        a = amb.sessao()
+        a["ss"].update({"rel_nome_condominio": "X", "rel_analise_ph_0": "7.1"})
+        a["_relatorio_rt_salvar_rascunho"]()
+        chave_x = a["ss"]["_rt_rasc_chave"]
+        linha_x = copy.deepcopy(amb.linhas(chave_x))
+        y = next(v["dados"] for v in a["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave_y)
+        _restaurar(a, y)
+        a["_relatorio_rt_salvar_rascunho"]()
+        a["ss"]["rel_analise_ph_1"] = "7.2"
+        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
+        self.assertEqual(amb.linhas(chave_x), linha_x)  # X intacto
+        self.assertEqual(amb.linhas(chave_y), linha_y)  # Y original intacto
+        nova = amb.campos(a)
+        self.assertNotIn(a["ss"]["_rt_rasc_chave"], (chave_x, chave_y))
+        self.assertEqual((nova["rel_nome_condominio"], nova["rel_analise_ph_1"]), ("Y", "7.2"))
+
+    def test_descarte_no_meio_do_salvamento_mantem_marca_e_partes_integras(self):
+        amb = Ambiente()
+        a = amb.sessao()
+        a["ss"]["rel_observacoes_gerais"] = "a" * 90000  # versão dividida em partes
+        a["_relatorio_rt_salvar_rascunho"]()
+        chave = a["ss"]["_rt_rasc_chave"]
+        b = amb.sessao(abrir=False)
+        a["ss"]["rel_observacoes_gerais"] = "b" * 95000
+        amb.aba().antes_de_gravar = lambda: self.assertTrue(b["_relatorio_rt_descartar"](chave))
+        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
+        self.assertTrue(amb.linhas(chave)[0][3].startswith("descartado"))  # marca não foi apagada
+        nova_chave = a["ss"]["_rt_rasc_chave"]
+        self.assertNotEqual(nova_chave, chave)
+        self.assertEqual(amb.campos(a)["rel_observacoes_gerais"], "b" * 95000)  # edição em linha ativa, partes válidas
+        lista = b["_relatorio_rt_listar_rascunhos"]()
+        self.assertEqual([v["chave"] for v in lista["versoes"]], [nova_chave])
+        self.assertEqual(lista["ignorados"], 0)
+        for row in amb.linhas():
+            self.assertIsNotNone(b["_relatorio_rt_desserializar"](row))  # nenhuma linha corrompida
+
+    def test_codespaces_descarte_local_continua_permitido(self):
+        os.environ["CODESPACES"] = "true"
+        try:
+            amb = Ambiente()
+            s = amb.sessao()
+            s["ss"]["rel_diagnostico"] = "dev"
+            s["_relatorio_rt_salvar_rascunho"]()
+            chave = s["ss"]["_rt_rasc_chave"]
+            self.assertTrue(s["_relatorio_rt_descartar"](chave))
+            self.assertEqual(s["_relatorio_rt_listar_rascunhos"]()["versoes"], [])
+            self.assertEqual(amb.planilha.conexoes, 0)
+        finally:
+            os.environ.pop("CODESPACES", None)
 
 
 if __name__ == "__main__":

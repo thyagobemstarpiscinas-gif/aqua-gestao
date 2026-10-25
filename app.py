@@ -12378,22 +12378,37 @@ def _relatorio_rt_listar_rascunhos(incluir_descartados: bool = False) -> dict:
     return {"versoes": lista, "ignorados": ignorados}
 
 
-def _relatorio_rt_gravar_linha(aba, chave: str, dados: dict):
-    """Grava/atualiza somente a linha desta sessão numa única chamada (sem estado parcial)."""
+def _relatorio_rt_descartada(row: list) -> bool:
+    return len(row) > 3 and str(row[3]).strip().lower().startswith("descartado")
+
+
+def _relatorio_rt_gravar_linha(aba, chave: str, dados: dict) -> bool:
+    """Grava/atualiza somente a linha desta sessão.
+
+    A coluna D (status) nunca é escrita aqui, então um descarte feito por outro acesso
+    não é desfeito. Conteúdo e partes vão numa única chamada (batch_update).
+    Retorna False se a linha está ou ficou descartada: o chamador grava em linha nova.
+    """
     celulas = _relatorio_rt_serializar(dados)
-    linha_nova = [chave, dados.get("salvo_em", ""), celulas[0], ""] + celulas[1:]
     todas = aba.get_all_values()
     indice = next((i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave), None)
     if indice is None:
-        aba.append_row(linha_nova, value_input_option="RAW", insert_data_option="INSERT_ROWS", table_range="A1")
-        return
-    if len(todas[indice - 1]) > 3 and str(todas[indice - 1][3]).strip():
-        raise PermissionError("linha marcada como descartada")
-    largura = max(len(linha_nova), len(todas[indice - 1]))
-    linha_nova += [""] * (largura - len(linha_nova))  # limpa partes antigas que sobrarem
+        aba.append_row([chave, dados.get("salvo_em", ""), celulas[0], ""] + celulas[1:],
+                       value_input_option="RAW", insert_data_option="INSERT_ROWS", table_range="A1")
+        return True
+    if _relatorio_rt_descartada(todas[indice - 1]):
+        return False
+    partes = celulas[1:]
+    largura = max(_RASCUNHO_RT_COL_PARTES + len(partes), len(todas[indice - 1]))
     if aba.col_count < largura:
         aba.add_cols(largura - aba.col_count)
-    aba.update(range_name=f"A{indice}:{_relatorio_rt_coluna(largura)}{indice}", values=[linha_nova], value_input_option="RAW")
+    blocos = [{"range": f"A{indice}:C{indice}", "values": [[chave, dados.get("salvo_em", ""), celulas[0]]]}]
+    resto = partes + [""] * (largura - _RASCUNHO_RT_COL_PARTES - len(partes))  # limpa partes antigas que sobrarem
+    if resto:
+        blocos.append({"range": f"E{indice}:{_relatorio_rt_coluna(largura)}{indice}", "values": [resto]})
+    aba.batch_update(blocos, value_input_option="RAW")
+    depois = aba.get_all_values()
+    return len(depois) >= indice and not _relatorio_rt_descartada(depois[indice - 1])
 
 
 def _relatorio_rt_coluna(n: int) -> str:
@@ -12449,13 +12464,13 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
             ss["_rt_rasc_aviso"] = "planilha indisponível"
         elif aba is not None:
             try:
-                try:
-                    _relatorio_rt_gravar_linha(aba, chave, dados)
-                except PermissionError:  # esta versão foi descartada por outro acesso: começa outra
+                if not _relatorio_rt_gravar_linha(aba, chave, dados):
+                    # esta versão foi descartada por outro acesso: a edição segue numa linha nova
                     chave = _relatorio_rt_chave_sessao(nova=True)
                     dados["_chave"] = chave
                     _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-                    _relatorio_rt_gravar_linha(aba, chave, dados)
+                    if not _relatorio_rt_gravar_linha(aba, chave, dados):
+                        raise RuntimeError("linha nova marcada como descartada")
                 ss.pop("_rt_rasc_aviso", None)
             except Exception as e:
                 ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
@@ -12476,25 +12491,45 @@ def _relatorio_rt_carregar_rascunho() -> dict:
 
 
 def _relatorio_rt_descartar(chave: str) -> bool:
-    """Marca somente esta versão como descartada. O conteúdo permanece na planilha."""
+    """Marca somente esta versão como descartada. O conteúdo permanece na planilha.
+
+    Em produção só conclui se a marca foi gravada na planilha; caso contrário o
+    rascunho é preservado, nada muda e o usuário pode tentar de novo. No Codespaces
+    a marca fica no arquivo local.
+    """
+    ss = st.session_state
     marca = f"descartado em {_agora_brasilia() if '_agora_brasilia' in globals() else datetime.now().isoformat()}"
-    aba = _relatorio_rt_aba()
-    if aba is not None:
-        todas = aba.get_all_values()
-        indices = [i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave]
-        if aba.col_count < 4:
-            aba.add_cols(4 - aba.col_count)
-        for i in indices:
-            aba.update(range_name=f"D{i}:D{i}", values=[[marca]], value_input_option="RAW")
     local = _relatorio_rt_arquivo_local(chave)
+    if _rascunho_usa_sheets():
+        aba = _relatorio_rt_aba()
+        if aba is None:
+            ss["_rt_rasc_erro_descarte"] = (
+                "A planilha de rascunhos está indisponível: o rascunho NÃO foi descartado e continua guardado. "
+                "Tente novamente em instantes."
+            )
+            return False
+        try:
+            todas = aba.get_all_values()
+            indices = [i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave]
+            if not indices and not local.exists():
+                raise LookupError("versão não encontrada")
+            if indices and aba.col_count < 4:
+                aba.add_cols(4 - aba.col_count)
+            for i in indices:
+                aba.update(range_name=f"D{i}:D{i}", values=[[marca]], value_input_option="RAW")
+        except Exception as e:
+            ss["_rt_rasc_erro_descarte"] = (
+                f"Não foi possível descartar o rascunho ({type(e).__name__}). Ele continua guardado; tente novamente."
+            )
+            return False
     if local.exists():
         dados = _relatorio_rt_ler_json(local.read_text(encoding="utf-8")) or {}
         dados["_descartado"] = marca
         local.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-    ss = st.session_state
     if chave == ss.get("_rt_rasc_chave"):
         _relatorio_rt_chave_sessao(nova=True)
     ss["_rt_rasc_ref"] = None  # nada é regravado sem nova edição
+    ss.pop("_rt_rasc_erro_descarte", None)
     ss.pop("_rt_rasc_lista_cache", None)
     return True
 
@@ -12526,6 +12561,7 @@ def _relatorio_rt_aplicar_pendente():
     if not pendente:
         return
     if _relatorio_rt_aplicar_rascunho(pendente.get("dados") or {}):
+        _relatorio_rt_chave_sessao(nova=True)  # edições a partir daqui viram nova versão; nenhuma linha existente muda
         st.session_state["_rt_rasc_ref"] = None  # próxima execução só registra referência
         st.session_state.pop("_relatorio_rt_restore_erro", None)
         st.session_state.pop("_rt_rasc_lista_cache", None)
@@ -12555,9 +12591,10 @@ def _relatorio_rt_cb_cancelar_descarte():
 
 
 def _relatorio_rt_cb_confirmar_descarte(chave: str):
-    st.session_state.pop("_rt_rasc_confirmar_descarte", None)
-    _relatorio_rt_descartar(chave)
-    st.session_state["_rt_rasc_msg"] = "Rascunho descartado."
+    if _relatorio_rt_descartar(chave):
+        st.session_state.pop("_rt_rasc_confirmar_descarte", None)
+        st.session_state["_rt_rasc_msg"] = "Rascunho descartado."
+    # em caso de falha a confirmação continua aberta para nova tentativa
 
 
 def _relatorio_rt_renderizar_painel_rascunho():
@@ -12609,6 +12646,8 @@ def _relatorio_rt_renderizar_painel_rascunho():
             ss["_relatorio_rt_rascunho_restaurado"] = False
         if ss.get("_rt_rasc_msg"):
             st.success(ss.pop("_rt_rasc_msg"))
+        if ss.get("_rt_rasc_erro_descarte"):
+            st.error(ss.pop("_rt_rasc_erro_descarte"))
         if ss.get("_rt_rasc_aviso"):
             st.error(
                 "⚠️ O rascunho RT NÃO foi salvo na planilha e pode ser perdido se o servidor reiniciar. "
