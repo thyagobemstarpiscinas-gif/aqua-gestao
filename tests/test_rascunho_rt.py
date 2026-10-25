@@ -33,7 +33,7 @@ FUNCOES_RT = [
     "_relatorio_rt_coletar_rascunho", "_relatorio_rt_chave_sessao", "_relatorio_rt_arquivo_local",
     "_relatorio_rt_aba", "_relatorio_rt_ler_json", "_relatorio_rt_serializar", "_relatorio_rt_desserializar",
     "_relatorio_rt_eh_chave", "_relatorio_rt_ordem", "_relatorio_rt_listar_rascunhos", "_relatorio_rt_descartada",
-    "_relatorio_rt_gravar_linha",
+    "_relatorio_rt_gravar_linha", "_relatorio_rt_enviar_planilha", "_relatorio_rt_sincronizar_pendentes",
     "_relatorio_rt_coluna", "_relatorio_rt_salvar_rascunho", "_relatorio_rt_carregar_rascunho",
     "_relatorio_rt_descartar", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
     "_relatorio_rt_resumo",
@@ -674,6 +674,121 @@ class TestAjustesFinais(unittest.TestCase):
             self.assertEqual(amb.planilha.conexoes, 0)
         finally:
             os.environ.pop("CODESPACES", None)
+
+
+class TestSincronizacaoPendente(unittest.TestCase):
+    """Falha temporária da planilha: edição fica local, pendente, e é reenviada sem nova edição."""
+
+    def _com_falha(self):
+        amb = Ambiente()
+        s = amb.sessao()  # 1. abre o formulário
+        s["ss"]["rel_diagnostico"] = "versão válida"
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
+        chave = s["ss"]["_rt_rasc_chave"]
+        s["ss"]["rel_diagnostico"] = "edição durante a falha"  # 2. edita
+        amb.aba().falhar = True  # 3. falha temporária
+        self.assertFalse(s["_relatorio_rt_salvar_rascunho"]())  # não informa persistência
+        return amb, s, chave
+
+    def _local(self, amb, chave):
+        return json.loads((amb.dir / f"_rascunho_relatorio_rt_{slugify_nome(chave)}.json").read_text(encoding="utf-8"))
+
+    def _ops(self, amb):
+        return amb.aba().updates + amb.aba().appends
+
+    def test_cenario_completo_reenvia_sem_nova_edicao(self):
+        amb, s, chave = self._com_falha()
+        self.assertEqual(self._local(amb, chave)["campos"]["rel_diagnostico"], "edição durante a falha")  # 4. local salvo
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "versão válida")  # planilha com a versão válida anterior
+        self.assertIn("falha simulada", s["ss"]["_rt_rasc_aviso"])
+        self.assertEqual(s["ss"]["_rt_rasc_sync_pendente"], [chave])
+        amb.aba().falhar = False  # 5. planilha volta
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0  # intervalo entre tentativas já passou
+        antes = self._ops(amb)
+        s["_relatorio_rt_salvar_rascunho"]()  # 6. rerun sem modificar nada
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "edição durante a falha")  # 7. persistido
+        self.assertEqual(self._ops(amb) - antes, 1)
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
+        self.assertIsNone(s["ss"].get("_rt_rasc_sync_pendente"))
+        antes = self._ops(amb)
+        for _ in range(3):
+            s["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(self._ops(amb), antes)  # sem gravações duplicadas
+        self.assertEqual(len(amb.linhas()), 1)
+
+    def test_respeita_intervalo_entre_tentativas(self):
+        amb, s, chave = self._com_falha()
+        amb.aba().falhar = False
+        antes = self._ops(amb)
+        s["_relatorio_rt_salvar_rascunho"]()  # logo em seguida: ainda dentro do intervalo
+        self.assertEqual(self._ops(amb), antes)
+        self.assertEqual(s["ss"]["_rt_rasc_sync_pendente"], [chave])
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertIsNone(s["ss"].get("_rt_rasc_sync_pendente"))
+
+    def test_planilha_ainda_fora_mantem_pendencia_e_aviso(self):
+        amb, s, chave = self._com_falha()
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_salvar_rascunho"]()  # nova tentativa falha
+        self.assertEqual(s["ss"]["_rt_rasc_sync_pendente"], [chave])
+        self.assertTrue(s["ss"]["_rt_rasc_aviso"])
+        self.assertGreater(s["ss"]["_rt_rasc_proxima_tentativa"], 0)
+        amb.aba().falhar = False
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "versão válida")
+
+    def test_planilha_indisponivel_na_conexao_tambem_fica_pendente(self):
+        amb = Ambiente()
+        s = amb.sessao()
+        real = s["_relatorio_rt_aba"]
+        s["_relatorio_rt_aba"] = lambda criar=False: None
+        s["ss"]["rel_diagnostico"] = "sem conexão"
+        self.assertFalse(s["_relatorio_rt_salvar_rascunho"]())
+        self.assertTrue(s["ss"]["_rt_rasc_aviso"])
+        s["_relatorio_rt_aba"] = real
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "sem conexão")
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
+
+    def test_nova_edicao_com_pendencia_grava_uma_vez(self):
+        amb, s, chave = self._com_falha()
+        amb.aba().falhar = False
+        s["ss"]["rel_diagnostico"] = "edição depois que a planilha voltou"
+        antes = self._ops(amb)
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
+        self.assertEqual(self._ops(amb) - antes, 1)  # a versão nova já cobre a pendência da mesma chave
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "edição depois que a planilha voltou")
+        self.assertIsNone(s["ss"].get("_rt_rasc_sync_pendente"))
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
+
+    def test_restaurar_outra_versao_com_pendencia_nao_perde_edicao(self):
+        amb, s, chave = self._com_falha()
+        outra = amb.sessao()
+        amb.aba().falhar = False
+        outra["ss"]["rel_nome_condominio"] = "Versão Y"
+        outra["_relatorio_rt_salvar_rascunho"]()
+        chave_y = outra["ss"]["_rt_rasc_chave"]
+        linha_y = copy.deepcopy(amb.linhas(chave_y))
+        y = next(v["dados"] for v in s["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave_y)
+        _restaurar(s, y)
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        for _ in range(2):
+            s["_relatorio_rt_salvar_rascunho"]()  # reruns sem edição
+        linha_x = amb.linhas(chave)[0]
+        self.assertEqual(s["_relatorio_rt_desserializar"](linha_x)["campos"]["rel_diagnostico"], "edição durante a falha")
+        self.assertEqual(amb.linhas(chave_y), linha_y)
+        self.assertEqual(len(amb.linhas()), 2)  # a versão restaurada não é regravada sem edição
+        self.assertIsNone(s["ss"].get("_rt_rasc_sync_pendente"))
+
+    def test_abrir_escritorio_continua_sem_gravar(self):
+        amb = Ambiente()
+        amb.criar_aba()
+        s = amb.sessao()
+        for _ in range(3):
+            s["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(self._ops(amb), 0)
+        self.assertIsNone(s["ss"].get("_rt_rasc_sync_pendente"))
 
 
 if __name__ == "__main__":

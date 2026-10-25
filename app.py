@@ -12419,6 +12419,63 @@ def _relatorio_rt_coluna(n: int) -> str:
     return letras
 
 
+RASCUNHO_RT_INTERVALO_REENVIO = 15  # segundos entre tentativas de sincronizar com a planilha
+
+
+def _relatorio_rt_enviar_planilha(aba, chave: str, dados: dict) -> str:
+    """Grava a versão na planilha e devolve a chave usada (nova, se a linha foi descartada).
+    Levanta exceção se não for possível persistir."""
+    if aba is None:
+        raise ConnectionError("planilha indisponível")
+    if _relatorio_rt_gravar_linha(aba, chave, dados):
+        return chave
+    # esta versão foi descartada por outro acesso: a edição segue numa linha nova
+    nova = _relatorio_rt_chave_sessao(nova=True) if chave == st.session_state.get("_rt_rasc_chave") \
+        else f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    dados["_chave"] = nova
+    _relatorio_rt_arquivo_local(nova).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not _relatorio_rt_gravar_linha(aba, nova, dados):
+        raise RuntimeError("linha nova marcada como descartada")
+    return nova
+
+
+def _relatorio_rt_sincronizar_pendentes() -> bool:
+    """Reenvia à planilha as versões que ficaram só no disco local por falha anterior.
+
+    Usa o conteúdo exato do arquivo local de cada versão (não o formulário atual) e
+    respeita um intervalo entre tentativas. Retorna True quando não resta pendência."""
+    ss = st.session_state
+    pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+    if not pendentes:
+        return True
+    agora = datetime.now().timestamp()
+    if agora < ss.get("_rt_rasc_proxima_tentativa", 0):
+        return False
+    aba = _relatorio_rt_aba(criar=True)
+    restantes = []
+    for chave in pendentes:
+        try:
+            dados = _relatorio_rt_ler_json(_relatorio_rt_arquivo_local(chave).read_text(encoding="utf-8"))
+        except Exception:
+            dados = None
+        if not dados or dados.get("_descartado"):
+            continue  # cópia local não existe mais (ex.: reinício) ou foi descartada: nada a enviar
+        try:
+            _relatorio_rt_enviar_planilha(aba, chave, dados)
+            ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        except Exception as e:
+            restantes.append(chave)
+            ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
+    ss.pop("_rt_rasc_lista_cache", None)
+    if restantes:
+        ss["_rt_rasc_sync_pendente"] = restantes
+        ss["_rt_rasc_proxima_tentativa"] = agora + RASCUNHO_RT_INTERVALO_REENVIO
+        return False
+    for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
+        ss.pop(k, None)
+    return True
+
+
 def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
     """Salva o rascunho RT somente quando o usuário alterou algo.
 
@@ -12428,8 +12485,11 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
       conteúdo (análise, dosagem, observação) que já surge preenchido.
     - Formulário sem conteúdo do usuário nunca é gravado.
     - Grava somente a linha desta sessão; outras sessões e versões não são tocadas.
-    - Se a gravação na planilha falhar, a última versão válida dela é preservada e um
-      aviso explícito informa que o rascunho não está persistido.
+    - Se a gravação na planilha falhar, a última versão válida dela é preservada, a
+      versão fica pendente de sincronização (reenviada automaticamente nos próximos
+      reruns, sem nova edição) e um aviso explícito permanece até ela ser persistida.
+    - Retorna True somente quando a versão foi persistida (planilha em produção; disco
+      local no Codespaces).
     """
     ss = st.session_state
     if ss.get("_rt_rasc_gravando"):
@@ -12450,33 +12510,40 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
         )
         for k, v in campos.items():
             referencia.setdefault(k, v)  # widget recém-criado: valor padrão não é edição
-        if not mudou:
+        if not mudou or not _relatorio_rt_tem_conteudo(campos):
+            if mudou:
+                ss["_rt_rasc_ref"] = dict(campos)  # formulário vazio não vira rascunho
+            if _rascunho_usa_sheets():
+                _relatorio_rt_sincronizar_pendentes()  # reenvio sem nova edição (só há pendência após edição real)
             return False
-        if not _relatorio_rt_tem_conteudo(campos):
-            ss["_rt_rasc_ref"] = dict(campos)
-            return False  # formulário vazio não vira rascunho
 
         chave = _relatorio_rt_chave_sessao()
         dados["_chave"] = chave
         _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-        aba = _relatorio_rt_aba(criar=True)
-        if aba is None and _rascunho_usa_sheets():
-            ss["_rt_rasc_aviso"] = "planilha indisponível"
-        elif aba is not None:
-            try:
-                if not _relatorio_rt_gravar_linha(aba, chave, dados):
-                    # esta versão foi descartada por outro acesso: a edição segue numa linha nova
-                    chave = _relatorio_rt_chave_sessao(nova=True)
-                    dados["_chave"] = chave
-                    _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-                    if not _relatorio_rt_gravar_linha(aba, chave, dados):
-                        raise RuntimeError("linha nova marcada como descartada")
-                ss.pop("_rt_rasc_aviso", None)
-            except Exception as e:
-                ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
-        ss["_rt_rasc_ref"] = dict(campos)
-        ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        ss["_rt_rasc_ref"] = dict(campos)  # a edição está guardada (local); a sincronização segue abaixo
         ss.pop("_rt_rasc_lista_cache", None)
+        if not _rascunho_usa_sheets():
+            ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+            return True  # Codespaces: o disco local é o armazenamento
+        try:
+            _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados)
+        except Exception as e:
+            pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+            if chave not in pendentes:
+                pendentes.append(chave)
+            ss["_rt_rasc_sync_pendente"] = pendentes
+            ss["_rt_rasc_proxima_tentativa"] = datetime.now().timestamp() + RASCUNHO_RT_INTERVALO_REENVIO
+            ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
+            return False
+        ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        restantes = [c for c in (ss.get("_rt_rasc_sync_pendente") or []) if c != chave]  # versão atual já persistida
+        if restantes:
+            ss["_rt_rasc_sync_pendente"] = restantes
+            ss["_rt_rasc_proxima_tentativa"] = 0
+            _relatorio_rt_sincronizar_pendentes()
+        else:
+            for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
+                ss.pop(k, None)
         return True
     except Exception as e:
         ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
@@ -12650,7 +12717,8 @@ def _relatorio_rt_renderizar_painel_rascunho():
             st.error(ss.pop("_rt_rasc_erro_descarte"))
         if ss.get("_rt_rasc_aviso"):
             st.error(
-                "⚠️ O rascunho RT NÃO foi salvo na planilha e pode ser perdido se o servidor reiniciar. "
+                "⚠️ Há alterações do rascunho RT que AINDA NÃO foram salvas na planilha e podem ser perdidas se o "
+                "servidor reiniciar. O sistema tentará enviá-las de novo automaticamente a cada interação. "
                 f"A última versão salva na planilha foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
             )
         if not _rascunho_usa_sheets():
