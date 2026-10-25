@@ -1,4 +1,4 @@
-"""Testes do rascunho do Relatório RT (autosave, proteção e restauração).
+"""Testes do rascunho do Relatório RT (autosave, proteção, restauração e descarte).
 
 Carregam somente as funções de rascunho do app.py, sem executar o app, com
 session_state, planilha e disco simulados (pasta temporária). Nenhum acesso a
@@ -30,21 +30,20 @@ TREE = ast.parse(APP.read_text(encoding="utf-8"))
 
 FUNCOES_RT = [
     "_rascunho_usa_sheets", "_relatorio_rt_tem_conteudo", "_relatorio_rt_tem_dados_em_tela",
-    "_relatorio_rt_assinatura", "_relatorio_rt_rev", "_relatorio_rt_coletar_rascunho",
-    "_relatorio_rt_chave_conflito", "_relatorio_rt_arquivo_local", "_relatorio_rt_aba",
-    "_relatorio_rt_ler_json", "_relatorio_rt_ler_rascunhos", "_relatorio_rt_salvar_rascunho",
-    "_relatorio_rt_carregar_rascunho", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
+    "_relatorio_rt_coletar_rascunho", "_relatorio_rt_chave_sessao", "_relatorio_rt_arquivo_local",
+    "_relatorio_rt_aba", "_relatorio_rt_ler_json", "_relatorio_rt_serializar", "_relatorio_rt_desserializar",
+    "_relatorio_rt_eh_chave", "_relatorio_rt_ordem", "_relatorio_rt_listar_rascunhos", "_relatorio_rt_gravar_linha",
+    "_relatorio_rt_coluna", "_relatorio_rt_salvar_rascunho", "_relatorio_rt_carregar_rascunho",
+    "_relatorio_rt_descartar", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
+    "_relatorio_rt_resumo",
 ]
 FUNCOES_OPERADOR = ["salvar_rascunho_operador", "carregar_rascunho_operador", "deletar_rascunho_operador"]
-CONSTANTES = {
-    "RASCUNHO_RT_USUARIO", "RASCUNHO_RT_LIMITE_SHEETS", "_RASCUNHO_RT_CAMPOS_AUTOMATICOS",
-    "_RASCUNHO_RT_PREFIXOS_CONTEUDO", "_RASCUNHO_RT_CAMPOS_CONTEUDO", "_RASCUNHO_RT_NAO_RESTAURAR",
-}
+PREFIXO_CONSTANTES = ("RASCUNHO_RT_", "_RASCUNHO_RT_")
 
 
 def _nos(nomes_funcoes):
     nos = [n for n in TREE.body if isinstance(n, ast.Assign)
-           and any(isinstance(t, ast.Name) and t.id in CONSTANTES for t in n.targets)]
+           and any(isinstance(t, ast.Name) and t.id.startswith(PREFIXO_CONSTANTES) for t in n.targets)]
     for nome in nomes_funcoes:
         f = next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == nome)
         f.decorator_list = []
@@ -53,24 +52,59 @@ def _nos(nomes_funcoes):
 
 
 class _Aba:
-    """Planilha em memória com a mesma interface usada pelo app."""
+    """Planilha em memória com a interface do gspread usada pelo app."""
 
-    def __init__(self, titulo):
+    def __init__(self, titulo, cols=4):
         self.titulo = titulo
         self.linhas = []
-        self.gravacoes = 0
+        self.col_count = cols
+        self.updates = 0
+        self.appends = 0
+        self.falhar = False
+        self.antes_de_gravar = None  # gancho para simular outra sessão no meio da gravação
 
     def get_all_values(self):
         return copy.deepcopy(self.linhas)
 
+    def _gancho(self):
+        if self.antes_de_gravar:
+            gancho, self.antes_de_gravar = self.antes_de_gravar, None
+            gancho()
+        if self.falhar:
+            raise ConnectionError("falha simulada da planilha")
+
     def update(self, *args, range_name=None, values=None, **_):
         if args:
             range_name, values = args[0], args[1]
-        linha = int(re.match(r"[A-Z]+(\d+)", range_name).group(1))
+        self._gancho()
+        ini, fim = (range_name.split(":") + [range_name])[:2]
+        linha = int(re.match(r"[A-Z]+(\d+)", ini).group(1))
+        col_ini = _col_num(re.match(r"([A-Z]+)", ini).group(1))
+        if _col_num(re.match(r"([A-Z]+)", fim).group(1)) > self.col_count:
+            raise ValueError("range além da grade")
         while len(self.linhas) < linha:
             self.linhas.append([])
-        self.linhas[linha - 1] = list(values[0])
-        self.gravacoes += 1
+        row = self.linhas[linha - 1]
+        while len(row) < col_ini - 1 + len(values[0]):
+            row.append("")
+        row[col_ini - 1:col_ini - 1 + len(values[0])] = list(values[0])
+        self.updates += 1
+
+    def append_row(self, values, **_):
+        self._gancho()
+        self.linhas.append(list(values))  # values.append: sempre uma linha nova
+        self.col_count = max(self.col_count, len(values))
+        self.appends += 1
+
+    def add_cols(self, n):
+        self.col_count += n
+
+
+def _col_num(letras):
+    n = 0
+    for c in letras:
+        n = n * 26 + ord(c) - 64
+    return n
 
 
 class _Planilha:
@@ -79,7 +113,14 @@ class _Planilha:
         self.conexoes = 0
 
     def add_worksheet(self, title, rows, cols):
-        self.abas[title] = _Aba(title)
+        if title in self.abas:
+            raise ValueError("aba já existe")
+        self.abas[title] = _Aba(title, cols)
+        return self.abas[title]
+
+    def worksheet(self, title):
+        if title not in self.abas:
+            raise KeyError(title)
         return self.abas[title]
 
 
@@ -89,13 +130,12 @@ class _St:
 
 
 class Ambiente:
-    """Armazenamento compartilhado (planilha + disco) entre sessões simuladas."""
+    """Armazenamento compartilhado (planilha + disco do servidor) entre sessões simuladas."""
 
-    def __init__(self, codespaces=False):
+    def __init__(self):
         self.dir = Path(tempfile.mkdtemp(prefix="rascunho_rt_teste_"))
         atexit.register(shutil.rmtree, self.dir, ignore_errors=True)
         self.planilha = _Planilha()
-        self.codespaces = codespaces
         self._relogio = 0
 
     def agora(self):
@@ -107,11 +147,9 @@ class Ambiente:
         return self.planilha
 
     def obter_aba(self, nome):
-        if nome not in self.planilha.abas:
-            raise KeyError(nome)
-        return self.planilha.abas[nome]
+        return self.planilha.abas.get(nome)  # como no app: None quando a aba não existe
 
-    def sessao(self):
+    def sessao(self, abrir=True):
         st = _St()
         ns = {
             "st": st, "os": os, "re": re, "json": json, "hashlib": hashlib, "datetime": datetime, "Path": Path,
@@ -120,18 +158,32 @@ class Ambiente:
             "_relatorio_rt_rascunho_path": lambda: self.dir / "_rascunho_relatorio_rt_em_andamento.json",
         }
         exec(compile(ast.Module(body=_nos(FUNCOES_RT + FUNCOES_OPERADOR), type_ignores=[]), str(APP), "exec"), ns)
-        ns["abrir_formulario"] = lambda: _abrir_formulario(st.session_state)
+        ns["ss"] = st.session_state
+        if abrir:
+            _abrir_formulario(st.session_state)
+            ns["_relatorio_rt_salvar_rascunho"]()  # 1ª renderização registra a referência
         return ns
 
     def aba(self):
         return self.planilha.abas.get("_Rascunhos_RT")
 
-    def linha(self, chave):
+    def criar_aba(self):
+        aba = self.planilha.add_worksheet("_Rascunhos_RT", 100, 3)
+        aba.linhas = [["Usuario", "Salvo em", "Dados JSON"]]  # cabeçalho no formato antigo
+        return aba
+
+    def linhas(self, chave=None):
         aba = self.aba()
-        for row in (aba.linhas if aba else [])[1:]:
-            if row and row[0] == chave:
-                return json.loads(row[2])
-        return None
+        return [r for r in (aba.linhas[1:] if aba else []) if chave is None or (r and r[0] == chave)]
+
+    def campos(self, sessao):
+        rows = self.linhas(sessao["ss"]["_rt_rasc_chave"])
+        assert len(rows) == 1, rows
+        return sessao["_relatorio_rt_desserializar"](rows[0])["campos"]
+
+    def limpar_disco(self):
+        for p in self.dir.glob("*.json"):
+            p.unlink()
 
 
 def _abrir_formulario(ss):
@@ -144,8 +196,8 @@ def _abrir_formulario(ss):
             ss.setdefault(f"rel_analise_{suf}_{i}", "")
 
 
-def _relatorio_completo(ss, linhas=6):
-    ss.update({"rel_nome_condominio": "Condomínio Fictício Alfa", "rel_endereco_condominio": "Rua Teste, 100",
+def _relatorio_completo(ss, linhas=6, nome="Condomínio Fictício Alfa"):
+    ss.update({"rel_nome_condominio": nome, "rel_endereco_condominio": "Rua Teste, 100",
                "rel_representante": "Síndico Fictício", "rel_mes_referencia": "09", "rel_ano_referencia": "2026",
                "rel_diagnostico": "Água dentro dos parâmetros.", "rel_observacoes_gerais": "Observação fictícia.",
                "rel_art_numero": "ART-0000", "rel_analises_total": linhas, "rel_obs_cmaq": "Casa de máquinas ok",
@@ -156,159 +208,331 @@ def _relatorio_completo(ss, linhas=6):
                    f"rel_analise_cl_{i}": "1.5", f"rel_analise_ct_{i}": "1.8", f"rel_analise_operador_{i}": "Op. Teste"})
 
 
+def _restaurar(sessao, versao_dados):
+    sessao["ss"]["_rt_rasc_pendente"] = {"dados": versao_dados}
+    sessao["_relatorio_rt_aplicar_pendente"]()  # topo do script, antes dos widgets
+
+
 class TestAutosave(unittest.TestCase):
     def setUp(self):
         self.amb = Ambiente()
         self.s = self.amb.sessao()
-        self.s["abrir_formulario"]()
         self.salvar = self.s["_relatorio_rt_salvar_rascunho"]
 
     def test_01_abrir_formulario_sem_alteracoes_nao_grava(self):
-        for _ in range(3):  # 1ª renderização + reruns
+        for _ in range(3):
             self.assertFalse(self.salvar("autosave_apos_renderizar_linhas"))
-        self.assertIsNone(self.amb.linha("thyago"))
-        self.assertFalse((self.amb.dir / "_rascunho_relatorio_rt_em_andamento.json").exists())
+        self.assertEqual(self.amb.linhas(), [])
+        self.assertEqual(list(self.amb.dir.glob("*.json")), [])
 
     def test_campos_automaticos_nao_contam_como_conteudo(self):
         self.assertFalse(self.s["_relatorio_rt_tem_dados_em_tela"]())
 
     def test_widget_criado_depois_com_valor_padrao_nao_grava(self):
-        self.salvar()
-        self.s["st"].session_state.update({"rel_nbr11238_chuveiro": "Sim", "rel_epi_luvas_status": "Conforme",
-                                           "rel_dos_produto_0": ""})
+        self.s["ss"].update({"rel_nbr11238_chuveiro": "Sim", "rel_epi_luvas_status": "Conforme", "rel_dos_produto_0": ""})
         self.assertFalse(self.salvar())
-        self.assertIsNone(self.amb.linha("thyago"))
-        self.s["st"].session_state["rel_nbr11238_chuveiro"] = "Não"  # escolha do usuário depois
+        self.s["ss"]["rel_nbr11238_chuveiro"] = "Não"
+        self.s["ss"]["rel_analise_ph_0"] = "7.0"
         self.assertTrue(self.salvar())
 
     def test_campo_de_conteudo_que_surge_preenchido_grava(self):
-        self.salvar()
-        self.s["st"].session_state["rel_analise_ph_7"] = "7.6"  # ex.: linha nova vinda de importação
+        self.s["ss"]["rel_analise_ph_7"] = "7.6"
         self.assertTrue(self.salvar())
 
     def test_02_alterar_campo_grava(self):
-        self.salvar()
-        self.s["st"].session_state["rel_analise_ph_0"] = "7.4"
+        self.s["ss"]["rel_analise_ph_0"] = "7.4"
         self.assertTrue(self.salvar())
-        self.assertEqual(self.amb.linha("thyago")["campos"]["rel_analise_ph_0"], "7.4")
-        self.assertEqual(self.amb.aba().gravacoes, 2)  # cabeçalho + rascunho
+        self.assertEqual(self.amb.campos(self.s)["rel_analise_ph_0"], "7.4")
 
     def test_03_rerun_sem_alteracao_nao_grava_de_novo(self):
+        self.s["ss"]["rel_diagnostico"] = "Texto"
         self.salvar()
-        self.s["st"].session_state["rel_diagnostico"] = "Texto"
-        self.salvar()
-        antes = self.amb.aba().gravacoes
+        antes = (self.amb.aba().updates, self.amb.aba().appends)
         for _ in range(3):
             self.assertFalse(self.salvar())
-        self.assertEqual(self.amb.aba().gravacoes, antes)
+        self.assertEqual((self.amb.aba().updates, self.amb.aba().appends), antes)
+
+    def test_formulario_vazio_nunca_e_gravado(self):
+        self.s["ss"]["rel_mes_referencia"] = "11"
+        self.assertFalse(self.salvar())
+        self.assertEqual(self.amb.linhas(), [])
+
+
+class TestSessoes(unittest.TestCase):
+    def test_s1_duas_sessoes_gravando_simultaneamente(self):
+        amb = Ambiente()
+        a, b = amb.sessao(), amb.sessao()
+        a["ss"].update({"rel_nome_condominio": "Condomínio A", "rel_analise_ph_0": "7.1"})
+        b["ss"].update({"rel_nome_condominio": "Condomínio B", "rel_analise_ph_0": "7.9"})
+        c = amb.sessao()
+        c["ss"]["rel_obs_x"] = "semente"
+        c["_relatorio_rt_salvar_rascunho"]()  # aba já existe
+        amb.aba().antes_de_gravar = lambda: b["_relatorio_rt_salvar_rascunho"]()  # B grava no meio da gravação de A
+        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
+        self.assertEqual(amb.campos(a)["rel_nome_condominio"], "Condomínio A")
+        self.assertEqual(amb.campos(b)["rel_nome_condominio"], "Condomínio B")
+        self.assertEqual(amb.campos(c)["rel_obs_x"], "semente")
+
+    def test_s2_duas_sessoes_novas_criando_linhas_ao_mesmo_tempo(self):
+        amb = Ambiente()
+        amb.criar_aba()
+        a, b = amb.sessao(), amb.sessao()
+        a["ss"]["rel_analise_ph_0"] = "7.1"
+        b["ss"]["rel_analise_ph_0"] = "7.2"
+        amb.aba().antes_de_gravar = lambda: b["_relatorio_rt_salvar_rascunho"]()
+        a["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(len(amb.linhas()), 2)
+        self.assertEqual(amb.aba().appends, 2)
+        self.assertNotEqual(a["ss"]["_rt_rasc_chave"], b["ss"]["_rt_rasc_chave"])
+
+    def test_s3_atualizacao_repetida_da_mesma_sessao(self):
+        amb = Ambiente()
+        s = amb.sessao()
+        chave = None
+        for i in range(5):
+            s["ss"]["rel_analise_ph_0"] = f"7.{i}"
+            self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
+            chave = chave or s["ss"]["_rt_rasc_chave"]
+            self.assertEqual(s["ss"]["_rt_rasc_chave"], chave)  # chave estável
+        self.assertEqual(len(amb.linhas(chave)), 1)
+        self.assertEqual(amb.campos(s)["rel_analise_ph_0"], "7.4")
+        self.assertEqual(amb.aba().appends, 1)
+
+    def test_s3b_gravacao_simultanea_da_mesma_sessao_nao_perde_edicao(self):
+        amb = Ambiente()
+        s = amb.sessao()
+        s["ss"]["rel_analise_ph_0"] = "7.1"
+        s["ss"]["_rt_rasc_gravando"] = True  # outra gravação desta sessão em andamento
+        self.assertFalse(s["_relatorio_rt_salvar_rascunho"]())
+        s["ss"]["_rt_rasc_gravando"] = False
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())  # próximo rerun grava a edição pendente
+        self.assertEqual(amb.campos(s)["rel_analise_ph_0"], "7.1")
+
+
+class TestLegado(unittest.TestCase):
+    def _amb_legado(self):
+        amb = Ambiente()
+        aba = amb.criar_aba()
+        legado = {"salvo_em": "24/10/2026 18:00:00", "motivo": "autosave", "rel_analises_total": 12,
+                  "campos": {"rel_nome_condominio": "Condomínio Legado", "rel_analise_ph_0": "7.3", "rel_diagnostico": "Antigo"}}
+        aba.linhas.append(["thyago", legado["salvo_em"], json.dumps(legado, ensure_ascii=False)])
+        return amb, copy.deepcopy(aba.linhas)
+
+    def test_l4_le_e_restaura_rascunho_legado(self):
+        amb, _ = self._amb_legado()
+        s = amb.sessao()
+        versoes = s["_relatorio_rt_listar_rascunhos"]()["versoes"]
+        self.assertEqual(versoes[0]["chave"], "thyago")
+        _restaurar(s, versoes[0]["dados"])
+        self.assertEqual(s["ss"]["rel_nome_condominio"], "Condomínio Legado")
+        self.assertIn("Condomínio Legado", s["_relatorio_rt_resumo"](versoes[0]["dados"]))
+
+    def test_l11_integridade_dos_dados_anteriores(self):
+        amb, original = self._amb_legado()
+        a, b = amb.sessao(), amb.sessao()
+        _restaurar(a, a["_relatorio_rt_carregar_rascunho"]())
+        a["_relatorio_rt_salvar_rascunho"]()
+        a["ss"]["rel_analise_ph_1"] = "7.5"
+        a["_relatorio_rt_salvar_rascunho"]()
+        b["ss"]["rel_diagnostico"] = "Outro"
+        b["_relatorio_rt_salvar_rascunho"]()
+        b["_relatorio_rt_descartar"](b["ss"]["_rt_rasc_chave"])
+        self.assertEqual(amb.aba().linhas[1][:3], original[1])  # linha antiga intacta
+        self.assertEqual(amb.campos(a)["rel_nome_condominio"], "Condomínio Legado")
+
+
+class TestRascunhoGrande(unittest.TestCase):
+    def _grande(self, amb, n=120000):
+        s = amb.sessao()
+        s["ss"]["rel_observacoes_gerais"] = "x" * n
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
+        return s
+
+    def test_g5_dividido_em_partes_e_reconstruido(self):
+        amb = Ambiente()
+        s = self._grande(amb)
+        row = amb.linhas(s["ss"]["_rt_rasc_chave"])[0]
+        self.assertTrue(row[2].startswith("__PARTES__:"))
+        n = int(row[2].split(":")[1])
+        self.assertGreaterEqual(n, 4)
+        self.assertTrue(all(len(c) <= 40000 for c in row))
+        self.assertEqual(len(amb.campos(s)["rel_observacoes_gerais"]), 120000)
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
+
+    def test_g5b_reduzir_tamanho_limpa_partes_antigas(self):
+        amb = Ambiente()
+        s = self._grande(amb)
+        s["ss"]["rel_observacoes_gerais"] = "curto"
+        s["_relatorio_rt_salvar_rascunho"]()
+        row = amb.linhas(s["ss"]["_rt_rasc_chave"])[0]
+        self.assertFalse(row[2].startswith("__PARTES__"))
+        self.assertTrue(all(c == "" for c in row[4:]))
+        self.assertEqual(amb.campos(s)["rel_observacoes_gerais"], "curto")
+
+    def test_g6_parte_ausente_ou_alterada_nao_e_restaurada(self):
+        for corromper in ("alterar", "remover"):
+            amb = Ambiente()
+            s = self._grande(amb)
+            row = amb.aba().linhas[-1]
+            if corromper == "alterar":
+                row[5] = row[5][:-1] + "y"
+            else:
+                del row[6:]
+            nova = amb.sessao(abrir=False)
+            amb.limpar_disco()  # sem cópia local, só a planilha
+            lista = nova["_relatorio_rt_listar_rascunhos"]()
+            self.assertEqual(lista["versoes"], [], corromper)
+            self.assertEqual(lista["ignorados"], 1, corromper)
+
+    def test_g7_falha_ao_gravar_rascunho_grande_preserva_versao_valida(self):
+        amb = Ambiente()
+        s = amb.sessao()
+        s["ss"]["rel_diagnostico"] = "versão válida"
+        s["_relatorio_rt_salvar_rascunho"]()
+        antes = copy.deepcopy(amb.linhas(s["ss"]["_rt_rasc_chave"]))
+        amb.aba().falhar = True
+        s["ss"]["rel_observacoes_gerais"] = "x" * 90000
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(amb.linhas(s["ss"]["_rt_rasc_chave"]), antes)  # planilha intacta
+        self.assertIn("falha simulada", s["ss"]["_rt_rasc_aviso"])  # aviso explícito no painel
+        versoes = s["_relatorio_rt_listar_rascunhos"]()["versoes"]
+        self.assertEqual(versoes[0]["origem"], "local")  # cópia temporária identificada como tal
+        amb.aba().falhar = False
+        s["ss"]["rel_observacoes_gerais"] += "!"
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
+        self.assertEqual(len(amb.campos(s)["rel_observacoes_gerais"]), 90001)
+
+    def test_g8_reinicio_do_app_restaura_pela_planilha(self):
+        amb = Ambiente()
+        s = self._grande(amb)
+        _relatorio_completo(s["ss"], linhas=6)
+        s["_relatorio_rt_salvar_rascunho"]()
+        amb.limpar_disco()  # reinício do Streamlit Cloud
+        nova = amb.sessao()
+        rasc = nova["_relatorio_rt_carregar_rascunho"]()
+        _restaurar(nova, rasc)
+        self.assertEqual(len(nova["ss"]["rel_observacoes_gerais"]), len("Observação fictícia."))
+        for i in range(6):
+            self.assertEqual(nova["ss"][f"rel_analise_ph_{i}"], f"7.{i}")
+        self.assertEqual(nova["ss"]["rel_nome_condominio"], "Condomínio Fictício Alfa")
+
+    def test_rascunho_antigo_truncado_e_ignorado(self):
+        amb = Ambiente()
+        aba = amb.criar_aba()
+        aba.linhas.append(["thyago", "01/01/2026", '{"campos": {"rel_ana...'])
+        s = amb.sessao(abrir=False)
+        self.assertEqual(s["_relatorio_rt_carregar_rascunho"](), {})
 
 
 class TestRestauracao(unittest.TestCase):
-    def _salvar_completo(self, amb, linhas=6):
-        a = amb.sessao()
-        a["abrir_formulario"]()
-        a["_relatorio_rt_salvar_rascunho"]()
-        _relatorio_completo(a["st"].session_state, linhas)
-        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
-        return a
-
-    def _restaurar_em_nova_sessao(self, amb):
-        b = amb.sessao()
-        rasc = b["_relatorio_rt_carregar_rascunho"]()
-        b["st"].session_state["_rt_rasc_pendente"] = {"dados": rasc, "base_rev": b["_relatorio_rt_rev"](rasc)}
-        b["_relatorio_rt_aplicar_pendente"]()  # topo do script, antes dos widgets
-        return b, rasc
-
     def test_04_e_05_restaurar_relatorio_completo_com_varias_linhas(self):
         amb = Ambiente()
-        a = self._salvar_completo(amb, linhas=6)
-        b, rasc = self._restaurar_em_nova_sessao(amb)
-        ss_a, ss_b = a["st"].session_state, b["st"].session_state
+        a = amb.sessao()
+        _relatorio_completo(a["ss"], linhas=6)
+        a["_relatorio_rt_salvar_rascunho"]()
+        b = amb.sessao(abrir=False)
+        rasc = b["_relatorio_rt_carregar_rascunho"]()
+        _restaurar(b, rasc)
         for k, v in rasc["campos"].items():
-            if k in ("rel_fotos_upload",):
-                continue
-            self.assertEqual(ss_b.get(k), v, k)
-        for i in range(6):
-            self.assertEqual(ss_b[f"rel_analise_ph_{i}"], ss_a[f"rel_analise_ph_{i}"])
-            self.assertEqual(ss_b[f"rel_analise_data_{i}"], ss_a[f"rel_analise_data_{i}"])
-        self.assertEqual(ss_b["rel_nome_condominio"], "Condomínio Fictício Alfa")
-        self.assertEqual(ss_b["rel_diagnostico"], "Água dentro dos parâmetros.")
-        self.assertNotIn("rel_fotos_upload", ss_b)  # upload não aceita valor via session_state
-        self.assertNotIn("_relatorio_rt_restore_erro", ss_b)
+            if k != "rel_fotos_upload":
+                self.assertEqual(b["ss"].get(k), v, k)
+        self.assertNotIn("rel_fotos_upload", b["ss"])
+        self.assertNotIn("_relatorio_rt_restore_erro", b["ss"])
 
-    def test_restaurar_nao_dispara_gravacao_imediata(self):
+    def test_restaurar_nao_grava_e_edicao_seguinte_vai_para_linha_propria(self):
         amb = Ambiente()
-        self._salvar_completo(amb)
-        b, _ = self._restaurar_em_nova_sessao(amb)
-        antes = amb.aba().gravacoes
+        a = amb.sessao()
+        _relatorio_completo(a["ss"])
+        a["_relatorio_rt_salvar_rascunho"]()
+        b = amb.sessao(abrir=False)
+        _restaurar(b, b["_relatorio_rt_carregar_rascunho"]())
         self.assertFalse(b["_relatorio_rt_salvar_rascunho"]())
-        self.assertEqual(amb.aba().gravacoes, antes)
-        b["st"].session_state["rel_analise_ph_0"] = "7.8"  # edição depois de restaurar vai para o principal
+        self.assertEqual(len(amb.linhas()), 1)
+        b["ss"]["rel_analise_ph_0"] = "7.8"
         self.assertTrue(b["_relatorio_rt_salvar_rascunho"]())
-        self.assertEqual(amb.linha("thyago")["campos"]["rel_analise_ph_0"], "7.8")
-
-    def test_06_formulario_vazio_nao_sobrescreve_completo(self):
-        amb = Ambiente()
-        self._salvar_completo(amb)
-        original = amb.linha("thyago")
-        c = amb.sessao()
-        c["abrir_formulario"]()
-        c["_relatorio_rt_salvar_rascunho"]()
-        c["st"].session_state["rel_mes_referencia"] = "11"  # muda algo, mas sem conteúdo
-        self.assertFalse(c["_relatorio_rt_salvar_rascunho"]())
-        self.assertEqual(amb.linha("thyago"), original)
+        self.assertEqual(amb.campos(a)["rel_analise_ph_0"], "7.0")  # versão de A preservada
+        self.assertEqual(amb.campos(b)["rel_analise_ph_0"], "7.8")
 
     def test_07_rascunho_parcial_recuperavel(self):
         amb = Ambiente()
         a = amb.sessao()
-        a["abrir_formulario"]()
+        a["ss"].update({"rel_nome_condominio": "Residencial Fictício", "rel_analise_ph_0": "7.2"})
         a["_relatorio_rt_salvar_rascunho"]()
-        a["st"].session_state.update({"rel_nome_condominio": "Residencial Fictício", "rel_analise_ph_0": "7.2"})
-        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
-        b, _ = self._restaurar_em_nova_sessao(amb)
-        self.assertEqual(b["st"].session_state["rel_nome_condominio"], "Residencial Fictício")
-        self.assertEqual(b["st"].session_state["rel_analise_ph_0"], "7.2")
-        self.assertEqual(b["st"].session_state["rel_analise_ph_1"], "")
+        b = amb.sessao(abrir=False)
+        _restaurar(b, b["_relatorio_rt_carregar_rascunho"]())
+        self.assertEqual(b["ss"]["rel_nome_condominio"], "Residencial Fictício")
+        self.assertEqual(b["ss"]["rel_analise_ph_1"], "")
 
-    def test_11_logout_nao_sobrescreve_completo(self):
+    def test_11_logout_nao_grava_formulario_vazio(self):
         amb = Ambiente()
-        self._salvar_completo(amb)
-        original = amb.linha("thyago")
+        a = amb.sessao()
+        _relatorio_completo(a["ss"])
+        a["_relatorio_rt_salvar_rascunho"]()
+        original = copy.deepcopy(amb.linhas())
         d = amb.sessao()
-        d["abrir_formulario"]()
-        d["_relatorio_rt_salvar_rascunho"]("autosave_apos_renderizar_linhas")
         self.assertFalse(d["_relatorio_rt_salvar_rascunho"]("logout_admin"))
-        self.assertEqual(amb.linha("thyago"), original)
+        self.assertEqual(amb.linhas(), original)
 
 
-class TestDuasSessoes(unittest.TestCase):
-    def test_08_sessoes_simultaneas_sem_perda_silenciosa(self):
+class TestDescarte(unittest.TestCase):
+    def _duas_versoes(self):
         amb = Ambiente()
         a, b = amb.sessao(), amb.sessao()
-        for s in (a, b):
-            s["abrir_formulario"]()
-            s["_relatorio_rt_salvar_rascunho"]()  # ambas abrem a tela ao mesmo tempo
-        a["st"].session_state.update({"rel_nome_condominio": "Condomínio A", "rel_analise_ph_0": "7.1"})
-        self.assertTrue(a["_relatorio_rt_salvar_rascunho"]())
-        b["st"].session_state.update({"rel_nome_condominio": "Condomínio B", "rel_analise_ph_0": "7.9"})
-        self.assertTrue(b["_relatorio_rt_salvar_rascunho"]())
-
-        self.assertEqual(amb.linha("thyago")["campos"]["rel_nome_condominio"], "Condomínio A")
-        chave_b = b["st"].session_state["_rt_rasc_conflito"]
-        self.assertTrue(chave_b.startswith("thyago#conflito#"))
-        self.assertEqual(amb.linha(chave_b)["campos"]["rel_nome_condominio"], "Condomínio B")
-
-        b["st"].session_state["rel_analise_ph_1"] = "7.5"  # B continua na própria cópia
-        b["_relatorio_rt_salvar_rascunho"]()
-        self.assertEqual(amb.linha("thyago")["campos"]["rel_nome_condominio"], "Condomínio A")
-        self.assertEqual(amb.linha(chave_b)["campos"]["rel_analise_ph_1"], "7.5")
-
-        a["st"].session_state["rel_analise_ph_1"] = "7.3"  # A segue no principal normalmente
+        _relatorio_completo(a["ss"], nome="Condomínio A")
         a["_relatorio_rt_salvar_rascunho"]()
-        self.assertEqual(amb.linha("thyago")["campos"]["rel_analise_ph_1"], "7.3")
+        _relatorio_completo(b["ss"], nome="Condomínio B")
+        b["_relatorio_rt_salvar_rascunho"]()
+        return amb, a, b
 
-        rascunhos, _ = a["_relatorio_rt_ler_rascunhos"](amb.aba())
-        self.assertEqual(set(rascunhos), {"thyago", chave_b})
+    def test_d9_descarte_confirmado_marca_somente_aquela_versao(self):
+        amb, a, b = self._duas_versoes()
+        chave_b = b["ss"]["_rt_rasc_chave"]
+        linha_a = copy.deepcopy(amb.linhas(a["ss"]["_rt_rasc_chave"]))
+        conteudo_b = amb.linhas(chave_b)[0][2]
+        a["_relatorio_rt_descartar"](chave_b)
+        row_b = amb.linhas(chave_b)[0]
+        self.assertTrue(row_b[3].startswith("descartado em"))
+        self.assertEqual(row_b[2], conteudo_b)  # conteúdo preservado para recuperação
+        self.assertEqual(amb.linhas(a["ss"]["_rt_rasc_chave"]), linha_a)
+        nomes = [v["dados"]["campos"]["rel_nome_condominio"] for v in a["_relatorio_rt_listar_rascunhos"]()["versoes"]]
+        self.assertEqual(nomes, ["Condomínio A"])
+        todas = a["_relatorio_rt_listar_rascunhos"](incluir_descartados=True)["versoes"]
+        self.assertEqual(len(todas), 2)
+
+    def test_d9b_descarte_cancelado_nao_altera_nada(self):
+        amb, a, b = self._duas_versoes()
+        antes = copy.deepcopy(amb.aba().linhas)
+        a["ss"]["_rt_rasc_confirmar_descarte"] = b["ss"]["_rt_rasc_chave"]
+        a["ss"].pop("_rt_rasc_confirmar_descarte")  # "Cancelar"
+        self.assertEqual(amb.aba().linhas, antes)
+
+    def test_d10_descartado_nao_reaparece_e_nao_e_regravado(self):
+        amb, a, b = self._duas_versoes()
+        chave_b = b["ss"]["_rt_rasc_chave"]
+        b["_relatorio_rt_descartar"](chave_b)  # descarta a própria versão
+        self.assertNotEqual(b["ss"]["_rt_rasc_chave"], chave_b)
+        for _ in range(3):
+            self.assertFalse(b["_relatorio_rt_salvar_rascunho"]())  # reruns não regravam
+        self.assertEqual(len(amb.linhas()), 2)
+        amb.limpar_disco()
+        nova = amb.sessao()  # novo login
+        nomes = [v["dados"]["campos"]["rel_nome_condominio"] for v in nova["_relatorio_rt_listar_rascunhos"]()["versoes"]]
+        self.assertNotIn("Condomínio B", nomes)
+        b["ss"]["rel_analise_ph_0"] = "6.9"  # nova edição vira nova versão
+        self.assertTrue(b["_relatorio_rt_salvar_rascunho"]())
+        self.assertTrue(amb.linhas(chave_b)[0][3].startswith("descartado"))
+        self.assertEqual(len(amb.linhas()), 3)
+
+    def test_versao_descartada_por_outro_acesso_continua_descartada(self):
+        amb, a, b = self._duas_versoes()
+        chave_b = b["ss"]["_rt_rasc_chave"]
+        a["_relatorio_rt_descartar"](chave_b)
+        b["ss"]["rel_analise_ph_0"] = "6.5"  # B ainda editando
+        self.assertTrue(b["_relatorio_rt_salvar_rascunho"]())
+        self.assertTrue(amb.linhas(chave_b)[0][3].startswith("descartado"))
+        self.assertNotEqual(b["ss"]["_rt_rasc_chave"], chave_b)
+        self.assertEqual(amb.campos(b)["rel_analise_ph_0"], "6.5")
 
 
 class TestCodespaces(unittest.TestCase):
@@ -323,20 +547,19 @@ class TestCodespaces(unittest.TestCase):
             os.environ["CODESPACES"] = self._antes
 
     def test_09_codespaces_nao_acessa_planilha(self):
-        amb = Ambiente(codespaces=True)
+        amb = Ambiente()
         s = amb.sessao()
-        s["abrir_formulario"]()
-        s["_relatorio_rt_salvar_rascunho"]()
-        _relatorio_completo(s["st"].session_state)
+        _relatorio_completo(s["ss"])
         self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
         self.assertTrue(s["_relatorio_rt_carregar_rascunho"]())
+        s["_relatorio_rt_descartar"](s["ss"]["_rt_rasc_chave"])
         self.assertEqual(amb.planilha.conexoes, 0)
         self.assertIsNone(amb.aba())
-        self.assertTrue((amb.dir / "_rascunho_relatorio_rt_em_andamento.json").exists())
+        self.assertIsNone(s["ss"].get("_rt_rasc_aviso"))
 
     def test_rascunhos_de_operador_tambem_isolados(self):
-        amb = Ambiente(codespaces=True)
-        s = amb.sessao()
+        amb = Ambiente()
+        s = amb.sessao(abrir=False)
         s["salvar_rascunho_operador"]("Condomínio Fictício", {"obs": "x"}, salvar_sheets=True)
         s["carregar_rascunho_operador"]("Outro Condomínio")
         s["deletar_rascunho_operador"]("Condomínio Fictício")
@@ -346,39 +569,10 @@ class TestCodespaces(unittest.TestCase):
         os.environ.pop("CODESPACES", None)
         amb = Ambiente()
         s = amb.sessao()
-        s["abrir_formulario"]()
-        s["_relatorio_rt_salvar_rascunho"]()
-        s["st"].session_state["rel_analise_ph_0"] = "7.4"
+        s["ss"]["rel_analise_ph_0"] = "7.4"
         s["_relatorio_rt_salvar_rascunho"]()
         self.assertGreater(amb.planilha.conexoes, 0)
-        self.assertIsNotNone(amb.linha("thyago"))
-
-
-class TestRascunhoGrande(unittest.TestCase):
-    def test_10_rascunho_grande_nao_gera_json_invalido(self):
-        amb = Ambiente()
-        s = amb.sessao()
-        ss = s["st"].session_state
-        s["abrir_formulario"]()
-        s["_relatorio_rt_salvar_rascunho"]()
-        ss["rel_diagnostico"] = "Versão válida"
-        s["_relatorio_rt_salvar_rascunho"]()
-        ss["rel_observacoes_gerais"] = "x" * 60000
-        s["_relatorio_rt_salvar_rascunho"]()
-        for row in amb.aba().linhas[1:]:
-            json.loads(row[2])  # nenhuma célula com JSON inválido
-        self.assertEqual(amb.linha("thyago")["campos"]["rel_diagnostico"], "Versão válida")
-        self.assertNotIn("rel_observacoes_gerais", {k for k, v in amb.linha("thyago")["campos"].items() if v})
-        self.assertIn("limite da planilha", ss["_rt_rasc_aviso"])
-        local = json.loads((amb.dir / "_rascunho_relatorio_rt_em_andamento.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(local["campos"]["rel_observacoes_gerais"]), 60000)
-
-    def test_rascunho_antigo_truncado_e_ignorado(self):
-        amb = Ambiente()
-        aba = amb.planilha.add_worksheet("_Rascunhos_RT", 100, 3)
-        aba.linhas = [["Usuario", "Salvo em", "Dados JSON"], ["thyago", "01/01/2026", '{"campos": {"rel_ana...']]
-        s = amb.sessao()
-        self.assertEqual(s["_relatorio_rt_carregar_rascunho"](), {})
+        self.assertEqual(len(amb.linhas()), 1)
 
 
 if __name__ == "__main__":

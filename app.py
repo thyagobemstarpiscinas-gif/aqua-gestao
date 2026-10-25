@@ -12191,10 +12191,16 @@ def _relatorio_rt_rascunho_path() -> Path:
     return GENERATED_DIR / "_rascunho_relatorio_rt_em_andamento.json"
 
 
-# Rascunho RT: a planilha guarda uma linha por usuário. Em produção ela é a
-# referência compartilhada entre servidores; o arquivo local é cópia de apoio.
+# Rascunho RT na aba _Rascunhos_RT: uma linha por sessão de edição.
+#   A = chave ("thyago#s#<sessão>"; a linha antiga "thyago" continua legível)
+#   B = salvo em | C = JSON, ou "__PARTES__:<n>:<sha256>" quando dividido
+#   D = status ("" ou "descartado em ...") | E em diante = partes do JSON
+# Cada sessão só grava a própria linha; linhas novas entram por append_row.
 RASCUNHO_RT_USUARIO = "thyago"
-RASCUNHO_RT_LIMITE_SHEETS = 45000  # célula do Sheets aceita até 50.000 caracteres
+RASCUNHO_RT_TAMANHO_PARTE = 40000  # célula do Sheets aceita até 50.000 caracteres
+RASCUNHO_RT_MAX_PARTES = 40
+_RASCUNHO_RT_MARCA_PARTES = "__PARTES__"
+_RASCUNHO_RT_COL_PARTES = 4  # índice (0-based) da coluna E
 # Preenchidos pelo próprio app a cada execução: não indicam edição do usuário.
 _RASCUNHO_RT_CAMPOS_AUTOMATICOS = {"rel_status_agua", "rel_verificacoes_semanais", "rel_analises_total"}
 # Campos digitados pelo usuário que caracterizam um rascunho com conteúdo.
@@ -12224,25 +12230,11 @@ def _relatorio_rt_tem_dados_em_tela() -> bool:
     return _relatorio_rt_tem_conteudo(dict(st.session_state))
 
 
-def _relatorio_rt_assinatura(campos: dict) -> str:
-    """Impressão digital do conteúdo, ignorando campos vazios e automáticos."""
-    base = {
-        str(k): v for k, v in (campos or {}).items()
-        if str(k) not in _RASCUNHO_RT_CAMPOS_AUTOMATICOS and str(v if v is not None else "").strip()
-    }
-    return hashlib.sha256(json.dumps(base, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
-
-
-def _relatorio_rt_rev(dados: dict | None) -> str | None:
-    if not dados:
-        return None
-    return dados.get("_rev") or _relatorio_rt_assinatura(dados.get("campos", {}))
-
-
 def _relatorio_rt_coletar_rascunho() -> dict:
     total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
+        "_salvo_iso": datetime.now().isoformat(timespec="microseconds"),
         "empresa_ativa": "aqua_gestao",
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
@@ -12259,9 +12251,11 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     return dados
 
 
-def _relatorio_rt_chave_conflito() -> str:
-    sessao = st.session_state.setdefault("_rt_rasc_sessao", os.urandom(4).hex())
-    return f"{RASCUNHO_RT_USUARIO}#conflito#{sessao}"
+def _relatorio_rt_chave_sessao(nova: bool = False) -> str:
+    """Chave da linha desta sessão; estável entre reruns, nova após descarte."""
+    if nova or not st.session_state.get("_rt_rasc_chave"):
+        st.session_state["_rt_rasc_chave"] = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    return st.session_state["_rt_rasc_chave"]
 
 
 def _relatorio_rt_arquivo_local(chave: str) -> Path:
@@ -12277,14 +12271,20 @@ def _relatorio_rt_aba(criar: bool = False):
     sh = conectar_sheets()
     if not sh:
         return None
+    aba = obter_aba_sheets("_Rascunhos_RT")
+    if aba is not None:
+        return aba
     try:
-        return obter_aba_sheets("_Rascunhos_RT")
+        return sh.worksheet("_Rascunhos_RT")  # obter_aba_sheets devolve None (em cache) se a aba faltar
     except Exception:
         if not criar:
             return None
-        aba = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-        aba.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
+    try:
+        aba = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=4)
+        aba.update("A1:D1", [["Usuario", "Salvo em", "Dados JSON", "Status"]])
         return aba
+    except Exception:
+        return None
 
 
 def _relatorio_rt_ler_json(texto: str):
@@ -12295,124 +12295,208 @@ def _relatorio_rt_ler_json(texto: str):
         return None  # JSON inválido (ex.: rascunho antigo truncado) não é usado
 
 
-def _relatorio_rt_ler_rascunhos(aba=None) -> tuple[dict, dict]:
-    """Retorna ({chave: rascunho}, {chave: linha_na_planilha}). Sem planilha, lê o disco local."""
-    rascunhos, linhas = {}, {}
+def _relatorio_rt_serializar(dados: dict) -> list[str]:
+    """[coluna C, partes...]. JSON pequeno vai inteiro em C; grande vira partes com hash."""
+    payload = json.dumps(dados, ensure_ascii=False)
+    if len(payload) <= RASCUNHO_RT_TAMANHO_PARTE:
+        return [payload]
+    partes = [payload[i:i + RASCUNHO_RT_TAMANHO_PARTE] for i in range(0, len(payload), RASCUNHO_RT_TAMANHO_PARTE)]
+    if len(partes) > RASCUNHO_RT_MAX_PARTES:
+        raise ValueError(f"rascunho com {len(payload)} caracteres excede o limite de {RASCUNHO_RT_MAX_PARTES} partes")
+    sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return [f"{_RASCUNHO_RT_MARCA_PARTES}:{len(partes)}:{sha}"] + partes
+
+
+def _relatorio_rt_desserializar(row: list) -> dict | None:
+    """Reconstrói o rascunho de uma linha. Partes ausentes ou hash divergente -> None."""
+    c = row[2] if len(row) > 2 else ""
+    if not str(c).startswith(_RASCUNHO_RT_MARCA_PARTES + ":"):
+        return _relatorio_rt_ler_json(c) if str(c).strip() else None
+    try:
+        _, n, sha = str(c).split(":", 2)
+        n = int(n)
+        partes = row[_RASCUNHO_RT_COL_PARTES:_RASCUNHO_RT_COL_PARTES + n]
+        if n < 1 or len(partes) != n or any(not p for p in partes):
+            return None
+        payload = "".join(partes)
+        if hashlib.sha256(payload.encode("utf-8")).hexdigest() != sha:
+            return None
+        return _relatorio_rt_ler_json(payload)
+    except Exception:
+        return None
+
+
+def _relatorio_rt_eh_chave(chave: str) -> bool:
+    return chave == RASCUNHO_RT_USUARIO or chave.startswith(f"{RASCUNHO_RT_USUARIO}#")
+
+
+def _relatorio_rt_ordem(dados: dict, posicao: int = 0) -> tuple:
+    iso = str(dados.get("_salvo_iso") or "")
+    if not iso:  # rascunho antigo: "dd/mm/aaaa HH:MM:SS"
+        m = re.match(r"(\d{2})/(\d{2})/(\d{4}) (\d{2}:\d{2}:\d{2})", str(dados.get("salvo_em", "")))
+        iso = f"{m.group(3)}-{m.group(2)}-{m.group(1)}T{m.group(4)}" if m else ""
+    return (iso, posicao)
+
+
+def _relatorio_rt_listar_rascunhos(incluir_descartados: bool = False) -> dict:
+    """Versões disponíveis, da mais recente para a mais antiga.
+
+    Retorna {"versoes": [{"chave", "dados", "linha", "origem", "descartado"}], "ignorados": n}.
+    Em produção a planilha é a referência; cópias locais (temporárias) só entram quando
+    a planilha está indisponível ou quando são mais novas que a versão da planilha.
+    """
+    versoes, ignorados = {}, 0
+    aba = _relatorio_rt_aba()
     if aba is not None:
         for i, row in enumerate(aba.get_all_values()[1:], start=2):
             chave = str(row[0]).strip() if row else ""
-            if chave == RASCUNHO_RT_USUARIO or chave.startswith(f"{RASCUNHO_RT_USUARIO}#conflito#"):
-                linhas[chave] = i
-                dados = _relatorio_rt_ler_json(row[2]) if len(row) >= 3 and row[2].strip() else None
-                if dados:
-                    rascunhos[chave] = dados
-        return rascunhos, linhas
+            if not _relatorio_rt_eh_chave(chave):
+                continue
+            dados = _relatorio_rt_desserializar(row)
+            if dados is None:
+                ignorados += 1
+                continue
+            status = str(row[3]).strip() if len(row) > 3 else ""
+            atual = versoes.get(chave)
+            if atual is None or _relatorio_rt_ordem(dados, i) > _relatorio_rt_ordem(atual["dados"], atual["linha"] or 0):
+                versoes[chave] = {"chave": chave, "dados": dados, "linha": i, "origem": "planilha",
+                                  "descartado": status.lower().startswith("descartado")}
     base = _relatorio_rt_rascunho_path()
-    if base.exists():
-        dados = _relatorio_rt_ler_json(base.read_text(encoding="utf-8"))
-        if dados:
-            rascunhos[RASCUNHO_RT_USUARIO] = dados
-    for p in base.parent.glob("_rascunho_relatorio_rt_*conflito*.json"):
+    for p in sorted(base.parent.glob("_rascunho_relatorio_rt*.json")) if base.parent.exists() else []:
         dados = _relatorio_rt_ler_json(p.read_text(encoding="utf-8"))
-        if dados:
-            rascunhos[dados.get("_chave") or p.stem] = dados
-    return rascunhos, linhas
+        if not dados:
+            continue
+        chave = dados.get("_chave") or (RASCUNHO_RT_USUARIO if p == base else p.stem)
+        atual = versoes.get(chave)
+        if atual is None or _relatorio_rt_ordem(dados) > _relatorio_rt_ordem(atual["dados"]):
+            versoes[chave] = {"chave": chave, "dados": dados, "linha": None,
+                              "origem": "local" if aba is not None or _rascunho_usa_sheets() else "desenvolvimento",
+                              "descartado": bool(dados.get("_descartado")) or bool(atual and atual["descartado"])}
+    lista = sorted(versoes.values(), key=lambda v: _relatorio_rt_ordem(v["dados"], v["linha"] or 0), reverse=True)
+    if not incluir_descartados:
+        lista = [v for v in lista if not v["descartado"]]
+    return {"versoes": lista, "ignorados": ignorados}
+
+
+def _relatorio_rt_gravar_linha(aba, chave: str, dados: dict):
+    """Grava/atualiza somente a linha desta sessão numa única chamada (sem estado parcial)."""
+    celulas = _relatorio_rt_serializar(dados)
+    linha_nova = [chave, dados.get("salvo_em", ""), celulas[0], ""] + celulas[1:]
+    todas = aba.get_all_values()
+    indice = next((i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave), None)
+    if indice is None:
+        aba.append_row(linha_nova, value_input_option="RAW", insert_data_option="INSERT_ROWS", table_range="A1")
+        return
+    if len(todas[indice - 1]) > 3 and str(todas[indice - 1][3]).strip():
+        raise PermissionError("linha marcada como descartada")
+    largura = max(len(linha_nova), len(todas[indice - 1]))
+    linha_nova += [""] * (largura - len(linha_nova))  # limpa partes antigas que sobrarem
+    if aba.col_count < largura:
+        aba.add_cols(largura - aba.col_count)
+    aba.update(range_name=f"A{indice}:{_relatorio_rt_coluna(largura)}{indice}", values=[linha_nova], value_input_option="RAW")
+
+
+def _relatorio_rt_coluna(n: int) -> str:
+    letras = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        letras = chr(65 + r) + letras
+    return letras
 
 
 def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
     """Salva o rascunho RT somente quando o usuário alterou algo.
 
-    - 1ª execução da sessão (ou logo após restaurar): só registra o estado de referência.
+    - 1ª execução da sessão (ou logo após restaurar/descartar): só registra a referência.
     - Widgets criados depois (com seu valor padrão) entram na referência sem contar
       como edição; edição é mudança de valor de um campo já conhecido, ou um campo de
       conteúdo (análise, dosagem, observação) que já surge preenchido.
-    - Nunca troca um rascunho com conteúdo por um formulário vazio.
-    - Se outra sessão salvou um rascunho diferente depois da leitura desta sessão,
-      grava numa cópia de conflito em vez de sobrescrever.
-    - Rascunho grande demais para a planilha fica só no disco local, preservando
-      a última versão válida da planilha.
+    - Formulário sem conteúdo do usuário nunca é gravado.
+    - Grava somente a linha desta sessão; outras sessões e versões não são tocadas.
+    - Se a gravação na planilha falhar, a última versão válida dela é preservada e um
+      aviso explícito informa que o rascunho não está persistido.
     """
     ss = st.session_state
+    if ss.get("_rt_rasc_gravando"):
+        return False  # gravação desta sessão em andamento: a referência não muda, o próximo rerun grava
+    ss["_rt_rasc_gravando"] = True
     try:
         dados = _relatorio_rt_coletar_rascunho()
         dados["motivo"] = motivo
         campos = dados["campos"]
-        assinatura = _relatorio_rt_assinatura(campos)
-        dados["_rev"] = assinatura
         referencia = ss.get("_rt_rasc_ref")
-        if referencia is not None:
-            mudou = any(
-                (k in referencia and referencia[k] != v)
-                or (k not in referencia and _relatorio_rt_tem_conteudo({k: v}))
-                for k, v in campos.items() if k not in _RASCUNHO_RT_CAMPOS_AUTOMATICOS
-            )
-            for k, v in campos.items():
-                referencia.setdefault(k, v)  # widget recém-criado: valor padrão não é edição
-            if not mudou:
-                return False
-
-        aba = _relatorio_rt_aba(criar=True)
-        rascunhos, linhas = _relatorio_rt_ler_rascunhos(aba)
-        principal = rascunhos.get(RASCUNHO_RT_USUARIO)
-        rev_principal = _relatorio_rt_rev(principal)
-
         if referencia is None:
             ss["_rt_rasc_ref"] = dict(campos)
-            ss.setdefault("_rt_rasc_base_rev", rev_principal)
             return False  # abrir a tela não é edição
-
-        if not _relatorio_rt_tem_conteudo(campos) and principal and _relatorio_rt_tem_conteudo(principal.get("campos")):
-            ss["_rt_rasc_ref"] = dict(campos)
-            return False  # formulário vazio não substitui rascunho com conteúdo
-
-        chave = RASCUNHO_RT_USUARIO
-        outro_salvou = (
-            principal is not None
-            and rev_principal not in (ss.get("_rt_rasc_base_rev"), assinatura)
-            and _relatorio_rt_tem_conteudo(principal.get("campos"))
+        mudou = any(
+            (k in referencia and referencia[k] != v)
+            or (k not in referencia and _relatorio_rt_tem_conteudo({k: v}))
+            for k, v in campos.items() if k not in _RASCUNHO_RT_CAMPOS_AUTOMATICOS
         )
-        if ss.get("_rt_rasc_conflito") or outro_salvou:
-            chave = _relatorio_rt_chave_conflito()
-            ss["_rt_rasc_conflito"] = chave
+        for k, v in campos.items():
+            referencia.setdefault(k, v)  # widget recém-criado: valor padrão não é edição
+        if not mudou:
+            return False
+        if not _relatorio_rt_tem_conteudo(campos):
+            ss["_rt_rasc_ref"] = dict(campos)
+            return False  # formulário vazio não vira rascunho
+
+        chave = _relatorio_rt_chave_sessao()
         dados["_chave"] = chave
-
         _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-        gravou_referencia = aba is None
-        if aba is not None:
-            payload = json.dumps(dados, ensure_ascii=False)
-            if len(payload) > RASCUNHO_RT_LIMITE_SHEETS:
-                ss["_rt_rasc_aviso"] = (
-                    "Rascunho RT maior que o limite da planilha: salvo apenas neste servidor. "
-                    "A última versão válida na planilha foi preservada."
-                )
-            else:
+        aba = _relatorio_rt_aba(criar=True)
+        if aba is None and _rascunho_usa_sheets():
+            ss["_rt_rasc_aviso"] = "planilha indisponível"
+        elif aba is not None:
+            try:
                 try:
-                    nova = [chave, dados.get("salvo_em", ""), payload]
-                    if chave in linhas:
-                        aba.update(range_name=f"A{linhas[chave]}:C{linhas[chave]}", values=[nova], value_input_option="RAW")
-                    else:
-                        prox = max(len(aba.get_all_values()) + 1, 2)
-                        aba.update(range_name=f"A{prox}:C{prox}", values=[nova], value_input_option="RAW")
-                    gravou_referencia = True
-                    ss.pop("_rt_rasc_aviso", None)
-                except Exception as e:
-                    ss["_rt_rasc_aviso"] = f"Planilha indisponível: rascunho RT salvo apenas neste servidor ({type(e).__name__})."
-
+                    _relatorio_rt_gravar_linha(aba, chave, dados)
+                except PermissionError:  # esta versão foi descartada por outro acesso: começa outra
+                    chave = _relatorio_rt_chave_sessao(nova=True)
+                    dados["_chave"] = chave
+                    _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+                    _relatorio_rt_gravar_linha(aba, chave, dados)
+                ss.pop("_rt_rasc_aviso", None)
+            except Exception as e:
+                ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
         ss["_rt_rasc_ref"] = dict(campos)
-        if gravou_referencia and chave == RASCUNHO_RT_USUARIO:
-            ss["_rt_rasc_base_rev"] = assinatura
         ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        ss.pop("_rt_rasc_lista_cache", None)
         return True
     except Exception as e:
         ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
         return False
+    finally:
+        ss["_rt_rasc_gravando"] = False
 
 
 def _relatorio_rt_carregar_rascunho() -> dict:
-    rascunhos, _ = _relatorio_rt_ler_rascunhos(_relatorio_rt_aba())
-    if not rascunhos and _rascunho_usa_sheets():
-        rascunhos, _ = _relatorio_rt_ler_rascunhos(None)  # planilha indisponível: cópia local
-    return rascunhos.get(RASCUNHO_RT_USUARIO) or {}
+    versoes = _relatorio_rt_listar_rascunhos()["versoes"]
+    return versoes[0]["dados"] if versoes else {}
+
+
+def _relatorio_rt_descartar(chave: str) -> bool:
+    """Marca somente esta versão como descartada. O conteúdo permanece na planilha."""
+    marca = f"descartado em {_agora_brasilia() if '_agora_brasilia' in globals() else datetime.now().isoformat()}"
+    aba = _relatorio_rt_aba()
+    if aba is not None:
+        todas = aba.get_all_values()
+        indices = [i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave]
+        if aba.col_count < 4:
+            aba.add_cols(4 - aba.col_count)
+        for i in indices:
+            aba.update(range_name=f"D{i}:D{i}", values=[[marca]], value_input_option="RAW")
+    local = _relatorio_rt_arquivo_local(chave)
+    if local.exists():
+        dados = _relatorio_rt_ler_json(local.read_text(encoding="utf-8")) or {}
+        dados["_descartado"] = marca
+        local.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    ss = st.session_state
+    if chave == ss.get("_rt_rasc_chave"):
+        _relatorio_rt_chave_sessao(nova=True)
+    ss["_rt_rasc_ref"] = None  # nada é regravado sem nova edição
+    ss.pop("_rt_rasc_lista_cache", None)
+    return True
 
 
 def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
@@ -12443,58 +12527,97 @@ def _relatorio_rt_aplicar_pendente():
         return
     if _relatorio_rt_aplicar_rascunho(pendente.get("dados") or {}):
         st.session_state["_rt_rasc_ref"] = None  # próxima execução só registra referência
-        st.session_state["_rt_rasc_base_rev"] = pendente.get("base_rev")
-        st.session_state.pop("_rt_rasc_conflito", None)
         st.session_state.pop("_relatorio_rt_restore_erro", None)
+        st.session_state.pop("_rt_rasc_lista_cache", None)
+
+
+def _relatorio_rt_resumo(dados: dict) -> str:
+    campos = dados.get("campos", {}) or {}
+    cond = str(campos.get("rel_nome_condominio") or campos.get("nome_condominio") or "").strip() or "sem condomínio"
+    analises = len({k.rsplit("_", 1)[-1] for k, v in campos.items()
+                    if str(k).startswith("rel_analise_") and not str(k).startswith("rel_analise_operador_") and str(v or "").strip()})
+    return f"{cond} | salvo em {dados.get('salvo_em', 'horário não informado')} | {analises} linha(s) de análise preenchida(s)"
+
+
+# Callbacks dos botões do painel: rodam antes do script, então dispensam st.rerun()
+# no meio da página (que interromperia a execução antes da tabela de análises).
+def _relatorio_rt_cb_restaurar(dados: dict):
+    st.session_state["_rt_rasc_pendente"] = {"dados": dados}
+    _relatorio_rt_aplicar_pendente()
+
+
+def _relatorio_rt_cb_pedir_descarte(chave: str):
+    st.session_state["_rt_rasc_confirmar_descarte"] = chave
+
+
+def _relatorio_rt_cb_cancelar_descarte():
+    st.session_state.pop("_rt_rasc_confirmar_descarte", None)
+
+
+def _relatorio_rt_cb_confirmar_descarte(chave: str):
+    st.session_state.pop("_rt_rasc_confirmar_descarte", None)
+    _relatorio_rt_descartar(chave)
+    st.session_state["_rt_rasc_msg"] = "Rascunho descartado."
 
 
 def _relatorio_rt_renderizar_painel_rascunho():
     try:
-        rascunhos, _ = _relatorio_rt_ler_rascunhos(_relatorio_rt_aba())
-        if not rascunhos and _rascunho_usa_sheets():
-            rascunhos, _ = _relatorio_rt_ler_rascunhos(None)
-        rev_principal = _relatorio_rt_rev(rascunhos.get(RASCUNHO_RT_USUARIO))
-        conflitos = sorted(
-            (c for c in rascunhos if c != RASCUNHO_RT_USUARIO),
-            key=lambda c: str(rascunhos[c].get("salvo_em", "")), reverse=True,
-        )[:3]
-        for idx, chave in enumerate(([RASCUNHO_RT_USUARIO] if RASCUNHO_RT_USUARIO in rascunhos else []) + conflitos):
-            rasc = rascunhos[chave]
-            salvo_em = rasc.get("salvo_em", "horário não informado")
-            motivo = rasc.get("motivo", "autosave")
-            if chave == RASCUNHO_RT_USUARIO:
-                st.warning(f"🛡️ Rascunho de Relatório RT salvo encontrado ({salvo_em} | {motivo}).")
-            else:
-                st.warning(f"⚠️ Cópia de rascunho RT salva por outro acesso ao mesmo tempo ({salvo_em}). Nada foi sobrescrito.")
-            c_r1, c_r2, c_r3 = st.columns([1, 1, 2])
+        ss = st.session_state
+        agora = datetime.now().timestamp()
+        cache = ss.get("_rt_rasc_lista_cache")
+        if cache and agora - cache[0] < 20:
+            lista = cache[1]  # evita ler a planilha a cada rerun
+        else:
+            lista = _relatorio_rt_listar_rascunhos()
+            ss["_rt_rasc_lista_cache"] = (agora, lista)
+        versoes = lista["versoes"][:4]
+        minha = ss.get("_rt_rasc_chave")
+        if versoes:
+            st.warning("🛡️ Rascunhos de Relatório RT disponíveis (do mais recente para o mais antigo):")
+        for v in versoes:
+            chave, rasc = v["chave"], v["dados"]
+            selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
+            st.markdown(f"- **{_relatorio_rt_resumo(rasc)}**{selo}")
+            id_btn = re.sub(r"\W", "_", chave)
+            c_r1, c_r2, _ = st.columns([1, 1, 2])
             with c_r1:
-                if st.button("♻️ Restaurar rascunho RT" if idx == 0 and chave == RASCUNHO_RT_USUARIO else "♻️ Restaurar esta cópia",
-                             key="btn_restaurar_rascunho_relatorio_rt" if chave == RASCUNHO_RT_USUARIO else f"btn_restaurar_rascunho_rt_{chave}",
-                             use_container_width=True):
-                    st.session_state["_rt_rasc_pendente"] = {"dados": rasc, "base_rev": rev_principal}
-                    st.rerun()
-            if chave == RASCUNHO_RT_USUARIO:
-                with c_r2:
-                    if st.button("🗑️ Descartar rascunho", key="btn_descartar_rascunho_relatorio_rt", use_container_width=True):
-                        try:
-                            _relatorio_rt_rascunho_path().unlink(missing_ok=True)
-                            st.success("Rascunho descartado.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao descartar rascunho: {e}")
-        if st.session_state.get("_relatorio_rt_restore_erro"):
-            st.error(f"Não foi possível restaurar o rascunho: {st.session_state['_relatorio_rt_restore_erro']}")
-        if st.session_state.get("_relatorio_rt_rascunho_restaurado"):
+                st.button("♻️ Restaurar", key=f"btn_restaurar_rascunho_rt_{id_btn}", use_container_width=True,
+                          on_click=_relatorio_rt_cb_restaurar, args=(rasc,))
+            with c_r2:
+                st.button("🗑️ Descartar", key=f"btn_descartar_rascunho_rt_{id_btn}", use_container_width=True,
+                          on_click=_relatorio_rt_cb_pedir_descarte, args=(chave,))
+            if ss.get("_rt_rasc_confirmar_descarte") == chave:
+                st.error(
+                    f"Descartar este rascunho? **{_relatorio_rt_resumo(rasc)}**. Ele deixará de ser oferecido para restauração; "
+                    "o conteúdo continua guardado na planilha para recuperação manual. Outras versões não são afetadas."
+                )
+                c_c1, c_c2, _ = st.columns([1, 1, 2])
+                with c_c1:
+                    st.button("Sim, descartar este rascunho", key=f"btn_confirmar_descarte_rt_{id_btn}", use_container_width=True,
+                              on_click=_relatorio_rt_cb_confirmar_descarte, args=(chave,))
+                with c_c2:
+                    st.button("Cancelar", key=f"btn_cancelar_descarte_rt_{id_btn}", use_container_width=True,
+                              on_click=_relatorio_rt_cb_cancelar_descarte)
+        if len(lista["versoes"]) > len(versoes):
+            st.caption(f"Mais {len(lista['versoes']) - len(versoes)} versão(ões) antiga(s) guardada(s) na planilha.")
+        if lista["ignorados"]:
+            st.caption(f"{lista['ignorados']} versão(ões) ignorada(s) por estarem incompletas ou corrompidas.")
+        if ss.get("_relatorio_rt_restore_erro"):
+            st.error(f"Não foi possível restaurar o rascunho: {ss['_relatorio_rt_restore_erro']}")
+        if ss.get("_relatorio_rt_rascunho_restaurado"):
             st.success("✅ Rascunho do relatório RT restaurado nesta sessão.")
-            st.session_state["_relatorio_rt_rascunho_restaurado"] = False
-        if st.session_state.get("_rt_rasc_conflito"):
-            st.info("Outro acesso salvou um rascunho RT diferente. As suas alterações estão sendo guardadas numa cópia separada, sem apagar o outro rascunho.")
-        if st.session_state.get("_rt_rasc_aviso"):
-            st.warning(st.session_state["_rt_rasc_aviso"])
+            ss["_relatorio_rt_rascunho_restaurado"] = False
+        if ss.get("_rt_rasc_msg"):
+            st.success(ss.pop("_rt_rasc_msg"))
+        if ss.get("_rt_rasc_aviso"):
+            st.error(
+                "⚠️ O rascunho RT NÃO foi salvo na planilha e pode ser perdido se o servidor reiniciar. "
+                f"A última versão salva na planilha foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
+            )
         if not _rascunho_usa_sheets():
             st.caption("🧪 Ambiente de desenvolvimento: rascunhos RT ficam só neste computador, sem usar a planilha de produção.")
-        ultimo = st.session_state.get("_relatorio_rt_ultimo_autosave", "")
-        if ultimo:
+        ultimo = ss.get("_relatorio_rt_ultimo_autosave", "")
+        if ultimo and not ss.get("_rt_rasc_aviso"):
             st.caption(f"🛡️ Autosave do relatório RT ativo. Último salvamento: {ultimo}")
     except Exception as e:
         st.caption(f"Painel de rascunho RT indisponível: {e}")
