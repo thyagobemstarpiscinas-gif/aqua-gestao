@@ -70,6 +70,38 @@ except Exception:
     st_canvas = None
 
 # =========================================
+# NOME SEGURO PARA DOWNLOADS
+# =========================================
+# O Streamlit envia o file_name no cabeçalho Content-Disposition como latin-1.
+# Acentos (ex.: "Condomínio") viram bytes não-ASCII, e proxies como o do
+# GitHub Codespaces recusam a resposta (HTTP 502 / "Não foi possível baixar").
+# Só o nome do arquivo baixado muda; o conteúdo e os arquivos salvos não.
+
+def nome_download_seguro(nome) -> str:
+    nome = unicodedata.normalize("NFKD", str(nome or "arquivo"))
+    nome = nome.encode("ascii", "ignore").decode("ascii")
+    nome = re.sub(r"[^A-Za-z0-9._-]+", "_", nome).strip("_")
+    base, ponto, extensao = nome.rpartition(".")
+    if ponto and not base.strip("._-"):  # ex.: "日本.pdf" -> ".pdf": garante um nome-base
+        nome = f"arquivo.{extensao}" if extensao else "arquivo"
+    return nome or "arquivo"
+
+
+# O script roda de novo a cada rerun: guarda o original uma única vez para
+# não empilhar wrappers.
+_st_download_button_original = getattr(st.download_button, "_original_aqua", st.download_button)
+
+
+def _download_button_nome_seguro(*args, **kwargs):
+    if kwargs.get("file_name"):
+        kwargs["file_name"] = nome_download_seguro(kwargs["file_name"])
+    return _st_download_button_original(*args, **kwargs)
+
+
+_download_button_nome_seguro._original_aqua = _st_download_button_original
+st.download_button = _download_button_nome_seguro
+
+# =========================================
 # INTEGRAÇÃO GOOGLE SHEETS
 # =========================================
 
