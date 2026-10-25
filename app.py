@@ -81,6 +81,9 @@ def nome_download_seguro(nome) -> str:
     nome = unicodedata.normalize("NFKD", str(nome or "arquivo"))
     nome = nome.encode("ascii", "ignore").decode("ascii")
     nome = re.sub(r"[^A-Za-z0-9._-]+", "_", nome).strip("_")
+    base, ponto, extensao = nome.rpartition(".")
+    if ponto and not base.strip("._-"):  # ex.: "日本.pdf" -> ".pdf": garante um nome-base
+        nome = f"arquivo.{extensao}" if extensao else "arquivo"
     return nome or "arquivo"
 
 
