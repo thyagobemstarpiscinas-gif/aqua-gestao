@@ -4,6 +4,8 @@ import os
 import re
 import json
 import shutil
+import hmac
+import hashlib
 import unicodedata
 from datetime import date, datetime, timedelta
 import platform
@@ -325,7 +327,7 @@ def sheets_listar_operadores() -> list[dict]:
                 conds_raw = str(row[2]).strip()
                 ativo = str(row[3]).strip().lower() in ("sim", "ativo", "1", "true", "yes")
                 conds = _condominios_organizar(conds_raw.split("|")) if conds_raw else []
-                acesso_total = any(_normalizar_chave_acesso(c) == "todos" for c in conds) or not conds
+                acesso_total = any(_normalizar_chave_acesso(c) == "todos" for c in conds)
                 operadores.append({
                     "nome": nome,
                     "pin": pin,
@@ -1893,46 +1895,74 @@ def salvar_operadores(lista: list):
     except Exception:
         pass
 
+def _secret_pin(secao: str, chave: str = "pin") -> str:
+    """Lê um PIN do Streamlit Secrets. Retorna vazio quando não configurado
+    (nesse caso o acesso correspondente fica desativado)."""
+    try:
+        return str(st.secrets.get(secao, {}).get(chave, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _pin_confere(digitado, esperado) -> bool:
+    """Compara PINs em tempo constante. PIN vazio nunca autentica."""
+    digitado = str(digitado or "").strip()
+    esperado = str(esperado or "").strip()
+    if not digitado or not esperado:
+        return False
+    return hmac.compare_digest(digitado.encode("utf-8"), esperado.encode("utf-8"))
+
+
+def _pin_mestre_operador() -> str:
+    """PIN mestre do Modo Operador: somente Secrets [operador] pin_mestre."""
+    return _secret_pin("operador", "pin_mestre")
+
+
+def _pin_reservado(pin: str) -> bool:
+    """Indica se o PIN coincide com o PIN mestre, do RT ou administrativo (sem expor valores)."""
+    return any(_pin_confere(pin, p) for p in (_pin_mestre_operador(), _secret_pin("rt"), _secret_pin("admin")))
+
+
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global XXXX_PIN_MESTRE (acesso total) e PIN do RT via secrets [rt] pin."""
+    PINs especiais vêm exclusivamente do Streamlit Secrets: [rt] pin (Responsável Técnico)
+    e [operador] pin_mestre (acesso geral). Sem o Secret, o acesso correspondente fica desativado."""
     pin_limpo = str(pin or "").strip()
+    if not pin_limpo:
+        return None
     # PIN do Responsável Técnico — lido do secrets [rt] pin
-    try:
-        _pin_rt = str(st.secrets.get("rt", {}).get("pin", "") or "").strip()
-        if _pin_rt and pin_limpo == _pin_rt:
-            return {
-                "nome": "Thyago Fernando da Silveira",
-                "pin": pin_limpo,
-                "condomínios": ["TODOS"],
-                "acesso_total": True,
-                "is_rt": True,
-            }
-    except Exception:
-        pass
-    # PIN global continua funcionando — acesso total
-    if pin_limpo == PIN_OPERADOR:
+    if _pin_confere(pin_limpo, _secret_pin("rt")):
+        return {
+            "nome": "Thyago Fernando da Silveira",
+            "pin": pin_limpo,
+            "condomínios": ["TODOS"],
+            "acesso_total": True,
+            "is_rt": True,
+        }
+    # PIN mestre — somente quando configurado no Secrets
+    if _pin_confere(pin_limpo, _pin_mestre_operador()):
         return {"nome": "Operador", "pin": pin_limpo, "condomínios": ["TODOS"], "acesso_total": True}
     # Busca nos operadores do Sheets
     try:
         operadores = sheets_listar_operadores()
         for op in operadores:
-            if op.get("pin", "").strip() == pin_limpo and op.get("ativo", True):
+            if _pin_confere(pin_limpo, op.get("pin", "")) and op.get("ativo", True):
                 op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
+                # Acesso total só com marcação explícita ("TODOS"); lista vazia não libera nada.
                 op["acesso_total"] = op.get("acesso_total", False) or any(
                     _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
-                ) or not op["condomínios"]
+                )
                 return op
     except Exception:
         pass
     # Fallback: JSON local
     operadores_local = carregar_operadores()
     for op in operadores_local:
-        if str(op.get("pin", "")).strip() == pin_limpo and op.get("ativo", True):
+        if _pin_confere(pin_limpo, op.get("pin", "")) and op.get("ativo", True):
             op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
             op["acesso_total"] = op.get("acesso_total", False) or any(
                 _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
-            ) or not op["condomínios"]
+            )
             return op
     return None
 
@@ -3438,7 +3468,8 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
 
     # 2. Google Sheets aba _Rascunhos — SOMENTE quando solicitado explicitamente
     # v5: não chamar durante digitação/on_change para evitar reruns e instabilidade
-    if salvar_sheets:
+    # (nunca no Codespaces: ver _rascunho_usa_sheets)
+    if salvar_sheets and _rascunho_usa_sheets():
         try:
             sh = conectar_sheets()
             if sh:
@@ -3483,7 +3514,9 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
     except Exception:
         pass
 
-    # 2. Fallback Google Sheets
+    # 2. Fallback Google Sheets (nunca no Codespaces)
+    if not _rascunho_usa_sheets():
+        return {}
     try:
         sh = conectar_sheets()
         if sh:
@@ -3519,6 +3552,8 @@ def deletar_rascunho_operador(nome_cond: str):
             rascunho_path.unlink()
     except Exception:
         pass
+    if not _rascunho_usa_sheets():
+        return
     try:
         sh = conectar_sheets()
         if sh:
@@ -12185,26 +12220,50 @@ def _relatorio_rt_rascunho_path() -> Path:
     return GENERATED_DIR / "_rascunho_relatorio_rt_em_andamento.json"
 
 
-def _relatorio_rt_tem_dados_em_tela() -> bool:
-    chaves_prefixos = ("rel_analise_", "rel_dos_", "rel_obs_")
-    chaves_diretas = (
-        "rel_nome_condominio", "nome_condominio", "rel_mes_referencia", "rel_ano_referencia",
-        "rel_diagnostico", "rel_observacoes_gerais", "csr_obs_rel",
-        "rel_status_agua", "rel_verificacoes_semanais",
-    )
-    for k in chaves_diretas:
-        if str(st.session_state.get(k, "") or "").strip():
-            return True
-    for k, v in st.session_state.items():
-        if str(k).startswith(chaves_prefixos) and str(v or "").strip():
+# Rascunho RT na aba _Rascunhos_RT: uma linha por sessão de edição.
+#   A = chave ("thyago#s#<sessão>"; a linha antiga "thyago" continua legível)
+#   B = salvo em | C = JSON, ou "__PARTES__:<n>:<sha256>" quando dividido
+#   D = status ("" ou "descartado em ...") | E em diante = partes do JSON
+# Cada sessão só grava a própria linha; linhas novas entram por append_row.
+RASCUNHO_RT_USUARIO = "thyago"
+RASCUNHO_RT_TAMANHO_PARTE = 40000  # célula do Sheets aceita até 50.000 caracteres
+RASCUNHO_RT_MAX_PARTES = 40
+_RASCUNHO_RT_MARCA_PARTES = "__PARTES__"
+_RASCUNHO_RT_COL_PARTES = 4  # índice (0-based) da coluna E
+# Preenchidos pelo próprio app a cada execução: não indicam edição do usuário.
+_RASCUNHO_RT_CAMPOS_AUTOMATICOS = {"rel_status_agua", "rel_verificacoes_semanais", "rel_analises_total"}
+# Campos digitados pelo usuário que caracterizam um rascunho com conteúdo.
+_RASCUNHO_RT_PREFIXOS_CONTEUDO = ("rel_analise_", "rel_dos_", "rel_obs_")
+_RASCUNHO_RT_CAMPOS_CONTEUDO = (
+    "rel_nome_condominio", "nome_condominio", "rel_diagnostico", "rel_observacoes_gerais", "csr_obs_rel",
+)
+# Uploads não aceitam valor via session_state; seleções temporárias não devem voltar.
+_RASCUNHO_RT_NAO_RESTAURAR = {"rel_fotos_upload", "rel_pdf_visita_importador", "csr_sel_relatorio", "rel_regerar_pdf_visita_idx"}
+
+
+def _rascunho_usa_sheets() -> bool:
+    """Rascunhos usam a planilha só em produção. No GitHub Codespaces (CODESPACES=true)
+    ficam apenas no disco local, sem ler nem gravar a planilha real."""
+    return os.environ.get("CODESPACES", "").strip().lower() != "true"
+
+
+def _relatorio_rt_tem_conteudo(campos: dict) -> bool:
+    for k, v in (campos or {}).items():
+        k = str(k)
+        if (k.startswith(_RASCUNHO_RT_PREFIXOS_CONTEUDO) or k in _RASCUNHO_RT_CAMPOS_CONTEUDO) and str(v or "").strip():
             return True
     return False
+
+
+def _relatorio_rt_tem_dados_em_tela() -> bool:
+    return _relatorio_rt_tem_conteudo(dict(st.session_state))
 
 
 def _relatorio_rt_coletar_rascunho() -> dict:
     total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
+        "_salvo_iso": datetime.now().isoformat(timespec="microseconds"),
         "empresa_ativa": "aqua_gestao",
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
@@ -12221,80 +12280,359 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     return dados
 
 
-def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
+def _relatorio_rt_chave_sessao(nova: bool = False) -> str:
+    """Chave da linha desta sessão; estável entre reruns, nova após descarte."""
+    if nova or not st.session_state.get("_rt_rasc_chave"):
+        st.session_state["_rt_rasc_chave"] = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    return st.session_state["_rt_rasc_chave"]
+
+
+def _relatorio_rt_arquivo_local(chave: str) -> Path:
+    if chave == RASCUNHO_RT_USUARIO:
+        return _relatorio_rt_rascunho_path()
+    return _relatorio_rt_rascunho_path().with_name(f"_rascunho_relatorio_rt_{slugify_nome(chave)}.json")
+
+
+def _relatorio_rt_aba(criar: bool = False):
+    """Aba _Rascunhos_RT, ou None fora de produção / sem conexão."""
+    if not _rascunho_usa_sheets():
+        return None
+    sh = conectar_sheets()
+    if not sh:
+        return None
+    aba = obter_aba_sheets("_Rascunhos_RT")
+    if aba is not None:
+        return aba
     try:
-        if not _relatorio_rt_tem_dados_em_tela():
-            return False
+        return sh.worksheet("_Rascunhos_RT")  # obter_aba_sheets devolve None (em cache) se a aba faltar
+    except Exception:
+        if not criar:
+            return None
+    try:
+        aba = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=4)
+        aba.update("A1:D1", [["Usuario", "Salvo em", "Dados JSON", "Status"]])
+        return aba
+    except Exception:
+        return None
+
+
+def _relatorio_rt_ler_json(texto: str):
+    try:
+        dados = json.loads(texto)
+        return dados if isinstance(dados, dict) else None
+    except Exception:
+        return None  # JSON inválido (ex.: rascunho antigo truncado) não é usado
+
+
+def _relatorio_rt_serializar(dados: dict) -> list[str]:
+    """[coluna C, partes...]. JSON pequeno vai inteiro em C; grande vira partes com hash."""
+    payload = json.dumps(dados, ensure_ascii=False)
+    if len(payload) <= RASCUNHO_RT_TAMANHO_PARTE:
+        return [payload]
+    partes = [payload[i:i + RASCUNHO_RT_TAMANHO_PARTE] for i in range(0, len(payload), RASCUNHO_RT_TAMANHO_PARTE)]
+    if len(partes) > RASCUNHO_RT_MAX_PARTES:
+        raise ValueError(f"rascunho com {len(payload)} caracteres excede o limite de {RASCUNHO_RT_MAX_PARTES} partes")
+    sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return [f"{_RASCUNHO_RT_MARCA_PARTES}:{len(partes)}:{sha}"] + partes
+
+
+def _relatorio_rt_desserializar(row: list) -> dict | None:
+    """Reconstrói o rascunho de uma linha. Partes ausentes ou hash divergente -> None."""
+    c = row[2] if len(row) > 2 else ""
+    if not str(c).startswith(_RASCUNHO_RT_MARCA_PARTES + ":"):
+        return _relatorio_rt_ler_json(c) if str(c).strip() else None
+    try:
+        _, n, sha = str(c).split(":", 2)
+        n = int(n)
+        partes = row[_RASCUNHO_RT_COL_PARTES:_RASCUNHO_RT_COL_PARTES + n]
+        if n < 1 or len(partes) != n or any(not p for p in partes):
+            return None
+        payload = "".join(partes)
+        if hashlib.sha256(payload.encode("utf-8")).hexdigest() != sha:
+            return None
+        return _relatorio_rt_ler_json(payload)
+    except Exception:
+        return None
+
+
+def _relatorio_rt_eh_chave(chave: str) -> bool:
+    return chave == RASCUNHO_RT_USUARIO or chave.startswith(f"{RASCUNHO_RT_USUARIO}#")
+
+
+def _relatorio_rt_ordem(dados: dict, posicao: int = 0) -> tuple:
+    iso = str(dados.get("_salvo_iso") or "")
+    if not iso:  # rascunho antigo: "dd/mm/aaaa HH:MM:SS"
+        m = re.match(r"(\d{2})/(\d{2})/(\d{4}) (\d{2}:\d{2}:\d{2})", str(dados.get("salvo_em", "")))
+        iso = f"{m.group(3)}-{m.group(2)}-{m.group(1)}T{m.group(4)}" if m else ""
+    return (iso, posicao)
+
+
+def _relatorio_rt_listar_rascunhos(incluir_descartados: bool = False) -> dict:
+    """Versões disponíveis, da mais recente para a mais antiga.
+
+    Retorna {"versoes": [{"chave", "dados", "linha", "origem", "descartado"}], "ignorados": n}.
+    Em produção a planilha é a referência; cópias locais (temporárias) só entram quando
+    a planilha está indisponível ou quando são mais novas que a versão da planilha.
+    """
+    versoes, ignorados = {}, 0
+    aba = _relatorio_rt_aba()
+    if aba is not None:
+        for i, row in enumerate(aba.get_all_values()[1:], start=2):
+            chave = str(row[0]).strip() if row else ""
+            if not _relatorio_rt_eh_chave(chave):
+                continue
+            dados = _relatorio_rt_desserializar(row)
+            if dados is None:
+                ignorados += 1
+                continue
+            status = str(row[3]).strip() if len(row) > 3 else ""
+            atual = versoes.get(chave)
+            if atual is None or _relatorio_rt_ordem(dados, i) > _relatorio_rt_ordem(atual["dados"], atual["linha"] or 0):
+                versoes[chave] = {"chave": chave, "dados": dados, "linha": i, "origem": "planilha",
+                                  "descartado": status.lower().startswith("descartado")}
+    base = _relatorio_rt_rascunho_path()
+    for p in sorted(base.parent.glob("_rascunho_relatorio_rt*.json")) if base.parent.exists() else []:
+        dados = _relatorio_rt_ler_json(p.read_text(encoding="utf-8"))
+        if not dados:
+            continue
+        chave = dados.get("_chave") or (RASCUNHO_RT_USUARIO if p == base else p.stem)
+        atual = versoes.get(chave)
+        if atual is None or _relatorio_rt_ordem(dados) > _relatorio_rt_ordem(atual["dados"]):
+            versoes[chave] = {"chave": chave, "dados": dados, "linha": None,
+                              "origem": "local" if aba is not None or _rascunho_usa_sheets() else "desenvolvimento",
+                              "descartado": bool(dados.get("_descartado")) or bool(atual and atual["descartado"])}
+    lista = sorted(versoes.values(), key=lambda v: _relatorio_rt_ordem(v["dados"], v["linha"] or 0), reverse=True)
+    if not incluir_descartados:
+        lista = [v for v in lista if not v["descartado"]]
+    return {"versoes": lista, "ignorados": ignorados}
+
+
+def _relatorio_rt_descartada(row: list) -> bool:
+    return len(row) > 3 and str(row[3]).strip().lower().startswith("descartado")
+
+
+def _relatorio_rt_gravar_linha(aba, chave: str, dados: dict) -> bool:
+    """Grava/atualiza somente a linha desta sessão.
+
+    A coluna D (status) nunca é escrita aqui, então um descarte feito por outro acesso
+    não é desfeito. Conteúdo e partes vão numa única chamada (batch_update).
+    Retorna False se a linha está ou ficou descartada: o chamador grava em linha nova.
+    """
+    celulas = _relatorio_rt_serializar(dados)
+    todas = aba.get_all_values()
+    indice = next((i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave), None)
+    if indice is None:
+        aba.append_row([chave, dados.get("salvo_em", ""), celulas[0], ""] + celulas[1:],
+                       value_input_option="RAW", insert_data_option="INSERT_ROWS", table_range="A1")
+        return True
+    if _relatorio_rt_descartada(todas[indice - 1]):
+        return False
+    partes = celulas[1:]
+    largura = max(_RASCUNHO_RT_COL_PARTES + len(partes), len(todas[indice - 1]))
+    if aba.col_count < largura:
+        aba.add_cols(largura - aba.col_count)
+    blocos = [{"range": f"A{indice}:C{indice}", "values": [[chave, dados.get("salvo_em", ""), celulas[0]]]}]
+    resto = partes + [""] * (largura - _RASCUNHO_RT_COL_PARTES - len(partes))  # limpa partes antigas que sobrarem
+    if resto:
+        blocos.append({"range": f"E{indice}:{_relatorio_rt_coluna(largura)}{indice}", "values": [resto]})
+    aba.batch_update(blocos, value_input_option="RAW")
+    depois = aba.get_all_values()
+    return len(depois) >= indice and not _relatorio_rt_descartada(depois[indice - 1])
+
+
+def _relatorio_rt_coluna(n: int) -> str:
+    letras = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        letras = chr(65 + r) + letras
+    return letras
+
+
+RASCUNHO_RT_INTERVALO_REENVIO = 15  # segundos entre tentativas de sincronizar com a planilha
+
+
+def _relatorio_rt_enviar_planilha(aba, chave: str, dados: dict) -> str:
+    """Grava a versão na planilha e devolve a chave usada (nova, se a linha foi descartada).
+    Levanta exceção se não for possível persistir."""
+    if aba is None:
+        raise ConnectionError("planilha indisponível")
+    if _relatorio_rt_gravar_linha(aba, chave, dados):
+        return chave
+    # esta versão foi descartada por outro acesso: a edição segue numa linha nova
+    nova = _relatorio_rt_chave_sessao(nova=True) if chave == st.session_state.get("_rt_rasc_chave") \
+        else f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    dados["_chave"] = nova
+    _relatorio_rt_arquivo_local(nova).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not _relatorio_rt_gravar_linha(aba, nova, dados):
+        raise RuntimeError("linha nova marcada como descartada")
+    return nova
+
+
+def _relatorio_rt_sincronizar_pendentes() -> bool:
+    """Reenvia à planilha as versões que ficaram só no disco local por falha anterior.
+
+    Usa o conteúdo exato do arquivo local de cada versão (não o formulário atual) e
+    respeita um intervalo entre tentativas. Retorna True quando não resta pendência."""
+    ss = st.session_state
+    pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+    if not pendentes:
+        return True
+    agora = datetime.now().timestamp()
+    if agora < ss.get("_rt_rasc_proxima_tentativa", 0):
+        return False
+    aba = _relatorio_rt_aba(criar=True)
+    restantes = []
+    for chave in pendentes:
+        try:
+            dados = _relatorio_rt_ler_json(_relatorio_rt_arquivo_local(chave).read_text(encoding="utf-8"))
+        except Exception:
+            dados = None
+        if not dados or dados.get("_descartado"):
+            continue  # cópia local não existe mais (ex.: reinício) ou foi descartada: nada a enviar
+        try:
+            _relatorio_rt_enviar_planilha(aba, chave, dados)
+            ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        except Exception as e:
+            restantes.append(chave)
+            ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
+    ss.pop("_rt_rasc_lista_cache", None)
+    if restantes:
+        ss["_rt_rasc_sync_pendente"] = restantes
+        ss["_rt_rasc_proxima_tentativa"] = agora + RASCUNHO_RT_INTERVALO_REENVIO
+        return False
+    for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
+        ss.pop(k, None)
+    return True
+
+
+def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
+    """Salva o rascunho RT somente quando o usuário alterou algo.
+
+    - 1ª execução da sessão (ou logo após restaurar/descartar): só registra a referência.
+    - Widgets criados depois (com seu valor padrão) entram na referência sem contar
+      como edição; edição é mudança de valor de um campo já conhecido, ou um campo de
+      conteúdo (análise, dosagem, observação) que já surge preenchido.
+    - Formulário sem conteúdo do usuário nunca é gravado.
+    - Grava somente a linha desta sessão; outras sessões e versões não são tocadas.
+    - Se a gravação na planilha falhar, a última versão válida dela é preservada, a
+      versão fica pendente de sincronização (reenviada automaticamente nos próximos
+      reruns, sem nova edição) e um aviso explícito permanece até ela ser persistida.
+    - Retorna True somente quando a versão foi persistida (planilha em produção; disco
+      local no Codespaces).
+    """
+    ss = st.session_state
+    if ss.get("_rt_rasc_gravando"):
+        return False  # gravação desta sessão em andamento: a referência não muda, o próximo rerun grava
+    ss["_rt_rasc_gravando"] = True
+    try:
         dados = _relatorio_rt_coletar_rascunho()
         dados["motivo"] = motivo
-        # 1. Salva localmente
-        _relatorio_rt_rascunho_path().write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-        st.session_state["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
-        # 2. Backup no Sheets (persiste apos sleep do servidor)
+        campos = dados["campos"]
+        referencia = ss.get("_rt_rasc_ref")
+        if referencia is None:
+            ss["_rt_rasc_ref"] = dict(campos)
+            return False  # abrir a tela não é edição
+        mudou = any(
+            (k in referencia and referencia[k] != v)
+            or (k not in referencia and _relatorio_rt_tem_conteudo({k: v}))
+            for k, v in campos.items() if k not in _RASCUNHO_RT_CAMPOS_AUTOMATICOS
+        )
+        for k, v in campos.items():
+            referencia.setdefault(k, v)  # widget recém-criado: valor padrão não é edição
+        if not mudou or not _relatorio_rt_tem_conteudo(campos):
+            if mudou:
+                ss["_rt_rasc_ref"] = dict(campos)  # formulário vazio não vira rascunho
+            if _rascunho_usa_sheets():
+                _relatorio_rt_sincronizar_pendentes()  # reenvio sem nova edição (só há pendência após edição real)
+            return False
+
+        chave = _relatorio_rt_chave_sessao()
+        dados["_chave"] = chave
+        _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+        ss["_rt_rasc_ref"] = dict(campos)  # a edição está guardada (local); a sincronização segue abaixo
+        ss.pop("_rt_rasc_lista_cache", None)
+        if not _rascunho_usa_sheets():
+            ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+            return True  # Codespaces: o disco local é o armazenamento
         try:
-            sh = conectar_sheets()
-            if sh:
-                try:
-                    aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
-                except Exception:
-                    aba_rasc_rt = sh.add_worksheet(title="_Rascunhos_RT", rows=100, cols=3)
-                    aba_rasc_rt.update("A1:C1", [["Usuario", "Salvo em", "Dados JSON"]])
-                payload = json.dumps(dados, ensure_ascii=False)
-                if len(payload) > 45000:
-                    payload = payload[:45000] + "..."
-                todos_rt = aba_rasc_rt.get_all_values()
-                linha_ex = None
-                for i, row in enumerate(todos_rt[1:], start=2):
-                    if row and str(row[0]).strip() == "thyago":
-                        linha_ex = i
-                        break
-                nova = ["thyago", dados.get("salvo_em", ""), payload]
-                if linha_ex:
-                    aba_rasc_rt.update(range_name=f"A{linha_ex}:C{linha_ex}", values=[nova], value_input_option="RAW")
-                else:
-                    prox = max(len(todos_rt) + 1, 2)
-                    aba_rasc_rt.update(range_name=f"A{prox}:C{prox}", values=[nova], value_input_option="RAW")
-        except Exception:
-            pass  # Sheets indisponivel — arquivo local e suficiente
+            _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados)
+        except Exception as e:
+            pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+            if chave not in pendentes:
+                pendentes.append(chave)
+            ss["_rt_rasc_sync_pendente"] = pendentes
+            ss["_rt_rasc_proxima_tentativa"] = datetime.now().timestamp() + RASCUNHO_RT_INTERVALO_REENVIO
+            ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
+            return False
+        ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+        restantes = [c for c in (ss.get("_rt_rasc_sync_pendente") or []) if c != chave]  # versão atual já persistida
+        if restantes:
+            ss["_rt_rasc_sync_pendente"] = restantes
+            ss["_rt_rasc_proxima_tentativa"] = 0
+            _relatorio_rt_sincronizar_pendentes()
+        else:
+            for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
+                ss.pop(k, None)
         return True
     except Exception as e:
-        st.session_state["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
+        ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
         return False
+    finally:
+        ss["_rt_rasc_gravando"] = False
 
 
 def _relatorio_rt_carregar_rascunho() -> dict:
-    # 1. Tenta arquivo local
-    try:
-        path = _relatorio_rt_rascunho_path()
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    # 2. Fallback no Sheets (apos sleep do servidor)
-    try:
-        sh = conectar_sheets()
-        if sh:
-            try:
-                aba_rasc_rt = obter_aba_sheets("_Rascunhos_RT")
-                todos_rt = aba_rasc_rt.get_all_values()
-                for row in todos_rt[1:]:
-                    if row and str(row[0]).strip() == "thyago" and len(row) >= 3 and row[2].strip():
-                        dados = json.loads(row[2])
-                        # Reconstitui arquivo local
-                        try:
-                            _relatorio_rt_rascunho_path().write_text(
-                                json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-                        except Exception:
-                            pass
-                        return dados
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return {}
+    versoes = _relatorio_rt_listar_rascunhos()["versoes"]
+    return versoes[0]["dados"] if versoes else {}
+
+
+def _relatorio_rt_descartar(chave: str) -> bool:
+    """Marca somente esta versão como descartada. O conteúdo permanece na planilha.
+
+    Em produção só conclui se a marca foi gravada na planilha; caso contrário o
+    rascunho é preservado, nada muda e o usuário pode tentar de novo. No Codespaces
+    a marca fica no arquivo local.
+    """
+    ss = st.session_state
+    marca = f"descartado em {_agora_brasilia() if '_agora_brasilia' in globals() else datetime.now().isoformat()}"
+    local = _relatorio_rt_arquivo_local(chave)
+    if _rascunho_usa_sheets():
+        aba = _relatorio_rt_aba()
+        if aba is None:
+            ss["_rt_rasc_erro_descarte"] = (
+                "A planilha de rascunhos está indisponível: o rascunho NÃO foi descartado e continua guardado. "
+                "Tente novamente em instantes."
+            )
+            return False
+        try:
+            todas = aba.get_all_values()
+            indices = [i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave]
+            if not indices and not local.exists():
+                raise LookupError("versão não encontrada")
+            if indices and aba.col_count < 4:
+                aba.add_cols(4 - aba.col_count)
+            for i in indices:
+                aba.update(range_name=f"D{i}:D{i}", values=[[marca]], value_input_option="RAW")
+        except Exception as e:
+            ss["_rt_rasc_erro_descarte"] = (
+                f"Não foi possível descartar o rascunho ({type(e).__name__}). Ele continua guardado; tente novamente."
+            )
+            return False
+    if local.exists():
+        dados = _relatorio_rt_ler_json(local.read_text(encoding="utf-8")) or {}
+        dados["_descartado"] = marca
+        local.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    if chave == ss.get("_rt_rasc_chave"):
+        _relatorio_rt_chave_sessao(nova=True)
+    ss["_rt_rasc_ref"] = None  # nada é regravado sem nova edição
+    ss.pop("_rt_rasc_erro_descarte", None)
+    ss.pop("_rt_rasc_lista_cache", None)
+    return True
 
 
 def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
+    """Aplica um rascunho ao session_state. Deve rodar antes da criação dos widgets
+    (ver _relatorio_rt_aplicar_pendente), senão o Streamlit recusa a alteração."""
     try:
         campos = dados.get("campos", {}) if isinstance(dados, dict) else {}
         if not campos:
@@ -12302,12 +12640,10 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         total = int(dados.get("rel_analises_total", campos.get("rel_analises_total", ANALISES_PADRAO)) or ANALISES_PADRAO)
         st.session_state["rel_analises_total"] = max(total, ANALISES_PADRAO)
         for k, v in campos.items():
-            if str(k).startswith("_"):
+            if str(k).startswith("_") or str(k) in _RASCUNHO_RT_NAO_RESTAURAR:
                 continue
             st.session_state[k] = v
         st.session_state["empresa_ativa"] = "aqua_gestao"
-        # Correção: não alterar key de widget após renderização.
-        # st.session_state["empresa_seletor_admin_sidebar_definitivo"] = ...
         st.session_state["_relatorio_rt_rascunho_restaurado"] = True
         return True
     except Exception as e:
@@ -12315,34 +12651,109 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
         return False
 
 
+def _relatorio_rt_aplicar_pendente():
+    """Executado no topo do script, antes de qualquer widget rel_/csr_."""
+    pendente = st.session_state.pop("_rt_rasc_pendente", None)
+    if not pendente:
+        return
+    if _relatorio_rt_aplicar_rascunho(pendente.get("dados") or {}):
+        _relatorio_rt_chave_sessao(nova=True)  # edições a partir daqui viram nova versão; nenhuma linha existente muda
+        st.session_state["_rt_rasc_ref"] = None  # próxima execução só registra referência
+        st.session_state.pop("_relatorio_rt_restore_erro", None)
+        st.session_state.pop("_rt_rasc_lista_cache", None)
+
+
+def _relatorio_rt_resumo(dados: dict) -> str:
+    campos = dados.get("campos", {}) or {}
+    cond = str(campos.get("rel_nome_condominio") or campos.get("nome_condominio") or "").strip() or "sem condomínio"
+    analises = len({k.rsplit("_", 1)[-1] for k, v in campos.items()
+                    if str(k).startswith("rel_analise_") and not str(k).startswith("rel_analise_operador_") and str(v or "").strip()})
+    return f"{cond} | salvo em {dados.get('salvo_em', 'horário não informado')} | {analises} linha(s) de análise preenchida(s)"
+
+
+# Callbacks dos botões do painel: rodam antes do script, então dispensam st.rerun()
+# no meio da página (que interromperia a execução antes da tabela de análises).
+def _relatorio_rt_cb_restaurar(dados: dict):
+    st.session_state["_rt_rasc_pendente"] = {"dados": dados}
+    _relatorio_rt_aplicar_pendente()
+
+
+def _relatorio_rt_cb_pedir_descarte(chave: str):
+    st.session_state["_rt_rasc_confirmar_descarte"] = chave
+
+
+def _relatorio_rt_cb_cancelar_descarte():
+    st.session_state.pop("_rt_rasc_confirmar_descarte", None)
+
+
+def _relatorio_rt_cb_confirmar_descarte(chave: str):
+    if _relatorio_rt_descartar(chave):
+        st.session_state.pop("_rt_rasc_confirmar_descarte", None)
+        st.session_state["_rt_rasc_msg"] = "Rascunho descartado."
+    # em caso de falha a confirmação continua aberta para nova tentativa
+
+
 def _relatorio_rt_renderizar_painel_rascunho():
     try:
-        rasc = _relatorio_rt_carregar_rascunho()
-        if rasc:
-            salvo_em = rasc.get("salvo_em", "horário não informado")
-            motivo = rasc.get("motivo", "autosave")
-            st.warning(f"🛡️ Rascunho de Relatório RT encontrado ({salvo_em} | {motivo}).")
-            c_r1, c_r2, c_r3 = st.columns([1, 1, 2])
+        ss = st.session_state
+        agora = datetime.now().timestamp()
+        cache = ss.get("_rt_rasc_lista_cache")
+        if cache and agora - cache[0] < 20:
+            lista = cache[1]  # evita ler a planilha a cada rerun
+        else:
+            lista = _relatorio_rt_listar_rascunhos()
+            ss["_rt_rasc_lista_cache"] = (agora, lista)
+        versoes = lista["versoes"][:4]
+        minha = ss.get("_rt_rasc_chave")
+        if versoes:
+            st.warning("🛡️ Rascunhos de Relatório RT disponíveis (do mais recente para o mais antigo):")
+        for v in versoes:
+            chave, rasc = v["chave"], v["dados"]
+            selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
+            st.markdown(f"- **{_relatorio_rt_resumo(rasc)}**{selo}")
+            id_btn = re.sub(r"\W", "_", chave)
+            c_r1, c_r2, _ = st.columns([1, 1, 2])
             with c_r1:
-                if st.button("♻️ Restaurar rascunho RT", key="btn_restaurar_rascunho_relatorio_rt", use_container_width=True):
-                    if _relatorio_rt_aplicar_rascunho(rasc):
-                        st.success("Rascunho restaurado. Recarregando tela...")
-                        st.rerun()
-                    else:
-                        st.error("Não foi possível restaurar o rascunho.")
+                st.button("♻️ Restaurar", key=f"btn_restaurar_rascunho_rt_{id_btn}", use_container_width=True,
+                          on_click=_relatorio_rt_cb_restaurar, args=(rasc,))
             with c_r2:
-                if st.button("🗑️ Descartar rascunho", key="btn_descartar_rascunho_relatorio_rt", use_container_width=True):
-                    try:
-                        _relatorio_rt_rascunho_path().unlink(missing_ok=True)
-                        st.success("Rascunho descartado.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao descartar rascunho: {e}")
-        if st.session_state.get("_relatorio_rt_rascunho_restaurado"):
+                st.button("🗑️ Descartar", key=f"btn_descartar_rascunho_rt_{id_btn}", use_container_width=True,
+                          on_click=_relatorio_rt_cb_pedir_descarte, args=(chave,))
+            if ss.get("_rt_rasc_confirmar_descarte") == chave:
+                st.error(
+                    f"Descartar este rascunho? **{_relatorio_rt_resumo(rasc)}**. Ele deixará de ser oferecido para restauração; "
+                    "o conteúdo continua guardado na planilha para recuperação manual. Outras versões não são afetadas."
+                )
+                c_c1, c_c2, _ = st.columns([1, 1, 2])
+                with c_c1:
+                    st.button("Sim, descartar este rascunho", key=f"btn_confirmar_descarte_rt_{id_btn}", use_container_width=True,
+                              on_click=_relatorio_rt_cb_confirmar_descarte, args=(chave,))
+                with c_c2:
+                    st.button("Cancelar", key=f"btn_cancelar_descarte_rt_{id_btn}", use_container_width=True,
+                              on_click=_relatorio_rt_cb_cancelar_descarte)
+        if len(lista["versoes"]) > len(versoes):
+            st.caption(f"Mais {len(lista['versoes']) - len(versoes)} versão(ões) antiga(s) guardada(s) na planilha.")
+        if lista["ignorados"]:
+            st.caption(f"{lista['ignorados']} versão(ões) ignorada(s) por estarem incompletas ou corrompidas.")
+        if ss.get("_relatorio_rt_restore_erro"):
+            st.error(f"Não foi possível restaurar o rascunho: {ss['_relatorio_rt_restore_erro']}")
+        if ss.get("_relatorio_rt_rascunho_restaurado"):
             st.success("✅ Rascunho do relatório RT restaurado nesta sessão.")
-            st.session_state["_relatorio_rt_rascunho_restaurado"] = False
-        ultimo = st.session_state.get("_relatorio_rt_ultimo_autosave", "")
-        if ultimo:
+            ss["_relatorio_rt_rascunho_restaurado"] = False
+        if ss.get("_rt_rasc_msg"):
+            st.success(ss.pop("_rt_rasc_msg"))
+        if ss.get("_rt_rasc_erro_descarte"):
+            st.error(ss.pop("_rt_rasc_erro_descarte"))
+        if ss.get("_rt_rasc_aviso"):
+            st.error(
+                "⚠️ Há alterações do rascunho RT que AINDA NÃO foram salvas na planilha e podem ser perdidas se o "
+                "servidor reiniciar. O sistema tentará enviá-las de novo automaticamente a cada interação. "
+                f"A última versão salva na planilha foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
+            )
+        if not _rascunho_usa_sheets():
+            st.caption("🧪 Ambiente de desenvolvimento: rascunhos RT ficam só neste computador, sem usar a planilha de produção.")
+        ultimo = ss.get("_relatorio_rt_ultimo_autosave", "")
+        if ultimo and not ss.get("_rt_rasc_aviso"):
             st.caption(f"🛡️ Autosave do relatório RT ativo. Último salvamento: {ultimo}")
     except Exception as e:
         st.caption(f"Painel de rascunho RT indisponível: {e}")
@@ -12356,19 +12767,12 @@ ADMIN_SESSION_TIMEOUT_MIN = 12 * 60  # 12 horas. O admin também pode sair manua
 
 
 def _admin_pin_configurado() -> str:
-    """Lê PIN administrativo do Streamlit Secrets, com fallback para o PIN atual."""
-    try:
-        cfg_admin = st.secrets.get("admin", {})
-        pin = str(cfg_admin.get("pin", "") or "").strip()
-        if pin:
-            return pin
-    except Exception:
-        pass
-    return "@Anajullya10"
+    """Lê PIN administrativo do Streamlit Secrets [admin] pin. Sem Secret, o login admin fica desativado."""
+    return _secret_pin("admin")
 
 
 def _admin_pin_valido(pin_digitado: str) -> bool:
-    return str(pin_digitado or "").strip() == _admin_pin_configurado()
+    return _pin_confere(pin_digitado, _admin_pin_configurado())
 
 
 def _admin_nome_empresa(codigo: str) -> str:
@@ -12415,10 +12819,9 @@ def _admin_sessao_valida() -> bool:
     if st.session_state.get("modo_atual") != "escritorio":
         return True
     if not st.session_state.get("admin_logado"):
-        # Compatibilidade: se app antigo entrou em escritório, reconstrói o estado admin.
-        st.session_state["admin_logado"] = True
-        st.session_state["admin_empresa_fixa"] = st.session_state.get("empresa_ativa", "aqua_gestao")
-        st.session_state["admin_login_em"] = datetime.now().isoformat(timespec="seconds")
+        # Escritório sem login administrativo válido: volta para a tela de entrada.
+        st.session_state["modo_atual"] = "entrada"
+        return False
     empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if empresa not in ("aqua_gestao", "bem_star"):
         empresa = "aqua_gestao"
@@ -12481,6 +12884,9 @@ def _admin_render_login_empresa():
         else:
             st.error("PIN incorreto.")
 
+
+# Restauração de rascunho RT pendente: precisa ocorrer antes da criação dos widgets.
+_relatorio_rt_aplicar_pendente()
 
 # Garante que a empresa ativa fique travada pela empresa escolhida no login administrativo.
 _admin_sessao_valida()
@@ -12768,8 +13174,8 @@ with st.sidebar:
 # MODO DE OPERAÇÃO — TELA DE ENTRADA
 # =========================================
 
-# PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "XXXX_PIN_MESTRE"
+# PIN mestre do operador: somente via Streamlit Secrets [operador] pin_mestre
+# (ver _pin_mestre_operador). Nenhum valor padrão é aceito.
 
 # =========================================
 # v5 — BLINDAGEM DO SESSION STATE DO OPERADOR
@@ -12982,7 +13388,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.stop()
 
     # Dados do operador logado
-    _op_atual = st.session_state.get("op_dados_atual", {"nome": "Operador", "acesso_total": True, "condomínios": []})
+    _op_atual = st.session_state.get("op_dados_atual") or {}
     _op_nome_logado = _op_atual.get("nome", "Operador")
     _op_acesso_total = _op_atual.get("acesso_total", False)
     _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
@@ -15665,7 +16071,8 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("👷 Gestão de Operadores")
 st.caption("Tela administrativa segura para cadastrar, editar, ativar/inativar operadores e definir exatamente quais condomínios cada PIN pode acessar.")
-st.info("🔐 PIN geral XXXX_PIN_MESTRE mantido como acesso mestre do sistema. Ele continua reservado e não pode ser usado no cadastro de operadores comuns.")
+st.info("🔐 O PIN mestre de acesso geral é definido somente no Streamlit Secrets e não aparece no sistema. "
+        + ("Status: configurado." if _pin_mestre_operador() else "Status: desativado (Secret não configurado)."))
 
 _col_op_top1, _col_op_top2 = st.columns([1, 1.35])
 with _col_op_top1:
@@ -15706,7 +16113,7 @@ def _mascarar_pin_admin(pin: str) -> str:
 
 def _op_tem_acesso_total(op: dict) -> bool:
     _conds = _condominios_organizar(op.get("condomínios", []))
-    return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds) or not _conds
+    return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds)
 
 
 def _resumo_acesso_admin(op: dict) -> str:
@@ -15890,7 +16297,7 @@ if ops_cadastrados:
         st.caption("Exportação administrativa em CSV com status, PIN mascarado e condomínios permitidos/localizados para conferência.")
 
 if not ops_cadastrados:
-    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN XXXX_PIN_MESTRE continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'.")
 
 _tab_ops1, _tab_ops2 = st.tabs(["🛡️ Administrar operadores", "➕ Cadastrar novo operador"])
 
@@ -15952,7 +16359,7 @@ with _tab_ops1:
             with _sum2:
                 st.caption("Status")
                 st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
-                st.caption("PIN geral XXXX_PIN_MESTRE não aparece aqui por segurança.")
+                st.caption("O PIN mestre não aparece aqui por segurança.")
             with _sum3:
                 st.caption("Escopo de acesso")
                 if _op_total_sel:
@@ -16116,8 +16523,8 @@ with _tab_ops1:
 
                 if not _pin_final_edit or len(_pin_final_edit) < 4:
                     st.error("PIN deve ter pelo menos 4 caracteres.")
-                elif _pin_final_edit == "XXXX_PIN_MESTRE":
-                    st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro para este operador.")
+                elif _pin_reservado(_pin_final_edit):
+                    st.error("Este PIN é reservado para acesso administrativo. Escolha outro para este operador.")
                 elif _pin_operador_em_uso(_pin_final_edit, nome_ignorar=_op_nome_sel):
                     st.error(f"O PIN {_pin_final_edit} já está em uso por outro operador.")
                 elif not _acesso_total_edit and not _conds_final_edit:
@@ -16202,7 +16609,7 @@ with _tab_ops2:
                 placeholder="Ex.: 1234",
                 max_chars=10,
                 type="password",
-                help="Mínimo 4 caracteres. Não use XXXX_PIN_MESTRE, pois este PIN é reservado para o acesso geral do sistema.",
+                help="Mínimo 4 caracteres. Não use o PIN mestre nem PINs administrativos.",
             )
         with _novo2:
             op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
@@ -16249,8 +16656,8 @@ with _tab_ops2:
             st.error("Informe o nome do operador.")
         elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif _pin_op_limpo == "XXXX_PIN_MESTRE":
-            st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro.")
+        elif _pin_reservado(_pin_op_limpo):
+            st.error("Este PIN é reservado para acesso administrativo. Escolha outro.")
         elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
             st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
         elif not op_acesso_total_novo and not _conds_op_final:
