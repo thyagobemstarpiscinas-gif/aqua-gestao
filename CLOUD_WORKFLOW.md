@@ -44,7 +44,8 @@ Depois abra a porta 8501 na aba PORTAS.
 
 Modo operador:
 
-PIN 5010
+Entre com o PIN de um operador de teste. Nunca registre PINs, senhas ou
+Secrets neste arquivo: o repositório é público.
 
 O app deve carregar os condomínios vinculados.
 
