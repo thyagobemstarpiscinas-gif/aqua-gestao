@@ -4,6 +4,7 @@ import os
 import re
 import json
 import shutil
+import hmac
 import unicodedata
 from datetime import date, datetime, timedelta
 import platform
@@ -296,7 +297,7 @@ def sheets_listar_operadores() -> list[dict]:
                 conds_raw = str(row[2]).strip()
                 ativo = str(row[3]).strip().lower() in ("sim", "ativo", "1", "true", "yes")
                 conds = _condominios_organizar(conds_raw.split("|")) if conds_raw else []
-                acesso_total = any(_normalizar_chave_acesso(c) == "todos" for c in conds) or not conds
+                acesso_total = any(_normalizar_chave_acesso(c) == "todos" for c in conds)
                 operadores.append({
                     "nome": nome,
                     "pin": pin,
@@ -1864,46 +1865,74 @@ def salvar_operadores(lista: list):
     except Exception:
         pass
 
+def _secret_pin(secao: str, chave: str = "pin") -> str:
+    """Lê um PIN do Streamlit Secrets. Retorna vazio quando não configurado
+    (nesse caso o acesso correspondente fica desativado)."""
+    try:
+        return str(st.secrets.get(secao, {}).get(chave, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _pin_confere(digitado, esperado) -> bool:
+    """Compara PINs em tempo constante. PIN vazio nunca autentica."""
+    digitado = str(digitado or "").strip()
+    esperado = str(esperado or "").strip()
+    if not digitado or not esperado:
+        return False
+    return hmac.compare_digest(digitado.encode("utf-8"), esperado.encode("utf-8"))
+
+
+def _pin_mestre_operador() -> str:
+    """PIN mestre do Modo Operador: somente Secrets [operador] pin_mestre."""
+    return _secret_pin("operador", "pin_mestre")
+
+
+def _pin_reservado(pin: str) -> bool:
+    """Indica se o PIN coincide com o PIN mestre, do RT ou administrativo (sem expor valores)."""
+    return any(_pin_confere(pin, p) for p in (_pin_mestre_operador(), _secret_pin("rt"), _secret_pin("admin")))
+
+
 def validar_pin_operador(pin: str) -> dict | None:
     """Valida PIN do operador. Retorna dict do operador ou None se inválido.
-    Também aceita PIN global XXXX_PIN_MESTRE (acesso total) e PIN do RT via secrets [rt] pin."""
+    PINs especiais vêm exclusivamente do Streamlit Secrets: [rt] pin (Responsável Técnico)
+    e [operador] pin_mestre (acesso geral). Sem o Secret, o acesso correspondente fica desativado."""
     pin_limpo = str(pin or "").strip()
+    if not pin_limpo:
+        return None
     # PIN do Responsável Técnico — lido do secrets [rt] pin
-    try:
-        _pin_rt = str(st.secrets.get("rt", {}).get("pin", "") or "").strip()
-        if _pin_rt and pin_limpo == _pin_rt:
-            return {
-                "nome": "Thyago Fernando da Silveira",
-                "pin": pin_limpo,
-                "condomínios": ["TODOS"],
-                "acesso_total": True,
-                "is_rt": True,
-            }
-    except Exception:
-        pass
-    # PIN global continua funcionando — acesso total
-    if pin_limpo == PIN_OPERADOR:
+    if _pin_confere(pin_limpo, _secret_pin("rt")):
+        return {
+            "nome": "Thyago Fernando da Silveira",
+            "pin": pin_limpo,
+            "condomínios": ["TODOS"],
+            "acesso_total": True,
+            "is_rt": True,
+        }
+    # PIN mestre — somente quando configurado no Secrets
+    if _pin_confere(pin_limpo, _pin_mestre_operador()):
         return {"nome": "Operador", "pin": pin_limpo, "condomínios": ["TODOS"], "acesso_total": True}
     # Busca nos operadores do Sheets
     try:
         operadores = sheets_listar_operadores()
         for op in operadores:
-            if op.get("pin", "").strip() == pin_limpo and op.get("ativo", True):
+            if _pin_confere(pin_limpo, op.get("pin", "")) and op.get("ativo", True):
                 op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
+                # Acesso total só com marcação explícita ("TODOS"); lista vazia não libera nada.
                 op["acesso_total"] = op.get("acesso_total", False) or any(
                     _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
-                ) or not op["condomínios"]
+                )
                 return op
     except Exception:
         pass
     # Fallback: JSON local
     operadores_local = carregar_operadores()
     for op in operadores_local:
-        if str(op.get("pin", "")).strip() == pin_limpo and op.get("ativo", True):
+        if _pin_confere(pin_limpo, op.get("pin", "")) and op.get("ativo", True):
             op["condomínios"] = _condominios_organizar(op.get("condomínios", []))
             op["acesso_total"] = op.get("acesso_total", False) or any(
                 _normalizar_chave_acesso(c) == "todos" for c in op["condomínios"]
-            ) or not op["condomínios"]
+            )
             return op
     return None
 
@@ -12327,19 +12356,12 @@ ADMIN_SESSION_TIMEOUT_MIN = 12 * 60  # 12 horas. O admin também pode sair manua
 
 
 def _admin_pin_configurado() -> str:
-    """Lê PIN administrativo do Streamlit Secrets, com fallback para o PIN atual."""
-    try:
-        cfg_admin = st.secrets.get("admin", {})
-        pin = str(cfg_admin.get("pin", "") or "").strip()
-        if pin:
-            return pin
-    except Exception:
-        pass
-    return "@Anajullya10"
+    """Lê PIN administrativo do Streamlit Secrets [admin] pin. Sem Secret, o login admin fica desativado."""
+    return _secret_pin("admin")
 
 
 def _admin_pin_valido(pin_digitado: str) -> bool:
-    return str(pin_digitado or "").strip() == _admin_pin_configurado()
+    return _pin_confere(pin_digitado, _admin_pin_configurado())
 
 
 def _admin_nome_empresa(codigo: str) -> str:
@@ -12386,10 +12408,9 @@ def _admin_sessao_valida() -> bool:
     if st.session_state.get("modo_atual") != "escritorio":
         return True
     if not st.session_state.get("admin_logado"):
-        # Compatibilidade: se app antigo entrou em escritório, reconstrói o estado admin.
-        st.session_state["admin_logado"] = True
-        st.session_state["admin_empresa_fixa"] = st.session_state.get("empresa_ativa", "aqua_gestao")
-        st.session_state["admin_login_em"] = datetime.now().isoformat(timespec="seconds")
+        # Escritório sem login administrativo válido: volta para a tela de entrada.
+        st.session_state["modo_atual"] = "entrada"
+        return False
     empresa = st.session_state.get("admin_empresa_fixa") or st.session_state.get("empresa_ativa", "aqua_gestao")
     if empresa not in ("aqua_gestao", "bem_star"):
         empresa = "aqua_gestao"
@@ -12739,8 +12760,8 @@ with st.sidebar:
 # MODO DE OPERAÇÃO — TELA DE ENTRADA
 # =========================================
 
-# PIN padrão — altere aqui para trocar o PIN do operador
-PIN_OPERADOR = "XXXX_PIN_MESTRE"
+# PIN mestre do operador: somente via Streamlit Secrets [operador] pin_mestre
+# (ver _pin_mestre_operador). Nenhum valor padrão é aceito.
 
 # =========================================
 # v5 — BLINDAGEM DO SESSION STATE DO OPERADOR
@@ -12953,7 +12974,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.stop()
 
     # Dados do operador logado
-    _op_atual = st.session_state.get("op_dados_atual", {"nome": "Operador", "acesso_total": True, "condomínios": []})
+    _op_atual = st.session_state.get("op_dados_atual") or {}
     _op_nome_logado = _op_atual.get("nome", "Operador")
     _op_acesso_total = _op_atual.get("acesso_total", False)
     _op_conds_permitidos = _condominios_organizar(_op_atual.get("condomínios", []))
@@ -15636,7 +15657,8 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("👷 Gestão de Operadores")
 st.caption("Tela administrativa segura para cadastrar, editar, ativar/inativar operadores e definir exatamente quais condomínios cada PIN pode acessar.")
-st.info("🔐 PIN geral XXXX_PIN_MESTRE mantido como acesso mestre do sistema. Ele continua reservado e não pode ser usado no cadastro de operadores comuns.")
+st.info("🔐 O PIN mestre de acesso geral é definido somente no Streamlit Secrets e não aparece no sistema. "
+        + ("Status: configurado." if _pin_mestre_operador() else "Status: desativado (Secret não configurado)."))
 
 _col_op_top1, _col_op_top2 = st.columns([1, 1.35])
 with _col_op_top1:
@@ -15677,7 +15699,7 @@ def _mascarar_pin_admin(pin: str) -> str:
 
 def _op_tem_acesso_total(op: dict) -> bool:
     _conds = _condominios_organizar(op.get("condomínios", []))
-    return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds) or not _conds
+    return op.get("acesso_total", False) or any(_normalizar_chave_acesso(c) == "todos" for c in _conds)
 
 
 def _resumo_acesso_admin(op: dict) -> str:
@@ -15861,7 +15883,7 @@ if ops_cadastrados:
         st.caption("Exportação administrativa em CSV com status, PIN mascarado e condomínios permitidos/localizados para conferência.")
 
 if not ops_cadastrados:
-    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'. O PIN XXXX_PIN_MESTRE continua funcionando como acesso geral.")
+    st.info("Nenhum operador cadastrado ainda. Use a aba 'Cadastrar novo operador'.")
 
 _tab_ops1, _tab_ops2 = st.tabs(["🛡️ Administrar operadores", "➕ Cadastrar novo operador"])
 
@@ -15923,7 +15945,7 @@ with _tab_ops1:
             with _sum2:
                 st.caption("Status")
                 st.markdown("**🟢 Ativo**" if _op_sel.get("ativo") else "**🔴 Inativo**")
-                st.caption("PIN geral XXXX_PIN_MESTRE não aparece aqui por segurança.")
+                st.caption("O PIN mestre não aparece aqui por segurança.")
             with _sum3:
                 st.caption("Escopo de acesso")
                 if _op_total_sel:
@@ -16087,8 +16109,8 @@ with _tab_ops1:
 
                 if not _pin_final_edit or len(_pin_final_edit) < 4:
                     st.error("PIN deve ter pelo menos 4 caracteres.")
-                elif _pin_final_edit == "XXXX_PIN_MESTRE":
-                    st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro para este operador.")
+                elif _pin_reservado(_pin_final_edit):
+                    st.error("Este PIN é reservado para acesso administrativo. Escolha outro para este operador.")
                 elif _pin_operador_em_uso(_pin_final_edit, nome_ignorar=_op_nome_sel):
                     st.error(f"O PIN {_pin_final_edit} já está em uso por outro operador.")
                 elif not _acesso_total_edit and not _conds_final_edit:
@@ -16173,7 +16195,7 @@ with _tab_ops2:
                 placeholder="Ex.: 1234",
                 max_chars=10,
                 type="password",
-                help="Mínimo 4 caracteres. Não use XXXX_PIN_MESTRE, pois este PIN é reservado para o acesso geral do sistema.",
+                help="Mínimo 4 caracteres. Não use o PIN mestre nem PINs administrativos.",
             )
         with _novo2:
             op_ativo_novo = st.checkbox("Operador ativo", value=True, key="op_novo_ativo")
@@ -16220,8 +16242,8 @@ with _tab_ops2:
             st.error("Informe o nome do operador.")
         elif not _pin_op_limpo or len(_pin_op_limpo) < 4:
             st.error("PIN deve ter pelo menos 4 caracteres.")
-        elif _pin_op_limpo == "XXXX_PIN_MESTRE":
-            st.error("O PIN XXXX_PIN_MESTRE é reservado para acesso geral. Escolha outro.")
+        elif _pin_reservado(_pin_op_limpo):
+            st.error("Este PIN é reservado para acesso administrativo. Escolha outro.")
         elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
             st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
         elif not op_acesso_total_novo and not _conds_op_final:
