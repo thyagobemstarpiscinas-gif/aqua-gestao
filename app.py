@@ -3826,6 +3826,28 @@ def limpar_formulario_rt_operador():
     ss["_rt_fotos_nonce"] = ss.get("_rt_fotos_nonce", 0) + 1
 
 
+# Widgets rel_ criados com index=/value= próprios (gravar a chave geraria aviso do Streamlit)
+_RT_CAMPOS_NAO_REAFIRMAR = {"rel_status_agua_select", "rel_art_modo_rt2025", "rel_art_numero_rt2025"}
+
+
+def preservar_campos_rt():
+    """Regrava os campos rel_ do relatório RT do escritório antes dos widgets.
+
+    O Streamlit só reenvia ao navegador o valor gravado na mesma execução: sem isto,
+    um valor gravado antes (mês padrão, dados do cliente carregado) aparece vazio na
+    tela e o próximo envio, como o upload de uma foto, devolve o vazio ao servidor.
+    A regravação também impede que um st.rerun() acima dos campos descarte os
+    valores dos widgets ainda não desenhados."""
+    ss = st.session_state
+    for k in [k for k in ss.keys() if str(k).startswith("rel_")]:
+        if k in _RASCUNHO_RT_NAO_RESTAURAR or k in _RT_CAMPOS_NAO_REAFIRMAR:
+            continue  # uploads não aceitam valor via session_state; os demais têm índice próprio
+        try:
+            ss[k] = ss[k]
+        except Exception:
+            pass  # widget já desenhado nesta execução: o valor já está na tela
+
+
 def buscar_cep(cep: str) -> dict:
     """Consulta ViaCEP via requests com fallback para urllib."""
     cep_limpo = re.sub(r"\D", "", cep or "")
@@ -21850,6 +21872,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-card aq-only" id="sec-relatorio-rt">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
+preservar_campos_rt()
 
 
 st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
@@ -22211,7 +22234,8 @@ if lancamentos_disponiveis:
                 f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
                 f"para o relatório {mes_ref}/{ano_ref}."
             )
-            st.rerun()
+            # Sem rerun aqui: os campos da tabela ficam abaixo e já recebem os valores nesta
+            # execução; um rerun descartaria o upload de fotos ainda não desenhado.
     except Exception as e:
         _log_sheets_erro("autoimportar_lancamentos_relatorio_mensal", e)
 
@@ -22286,7 +22310,6 @@ if st.session_state.pop("_rel_auto_importar_cliente", False):
         if not _tem_dados_tabela:
             _importar_lancamentos(lancamentos_disponiveis)
             st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) importado(s) automaticamente.")
-            st.rerun()
         else:
             st.info(f"ℹ️ {len(lancamentos_disponiveis)} lançamento(s) disponível(is). Clique em Importar para carregar (irá substituir dados atuais).")
     elif nome_rel_atual:
