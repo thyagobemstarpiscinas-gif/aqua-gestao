@@ -9,6 +9,7 @@ Executar:  python -m unittest discover -s tests -v
 import ast
 import atexit
 import json
+import os
 import re
 import shutil
 import sys
@@ -26,17 +27,19 @@ TREE = ast.parse(APP.read_text(encoding="utf-8"))
 FUNCOES = [
     "_slug_piscina_operador", "coletar_rascunho_operador", "restaurar_rascunho_operador",
     "limpar_formulario_operador", "_chave_fotos_operador", "trocar_condominio_operador",
-    "chave_fotos_rt", "limpar_formulario_rt_operador", "_rascunho_rt_operador_path", "trocar_condominio_rt_operador",
+    "chave_fotos_rt", "_campos_rt_do_condominio", "limpar_formulario_rt_operador", "_rascunho_rt_operador_path",
+    "trocar_condominio_rt_operador",
     "salvar_rascunho_operador",
 ]
-CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP", "_RT_OP_PREFIXOS", "_RT_OP_CAMPOS"}
+CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP", "_RT_OP_PREFIXOS_TEXTO", "_RT_OP_PREFIXOS", "_RT_OP_CAMPOS",
+              "_RT_OP_FORA_DO_RASCUNHO"}
 
 
 def _nos():
     nos = [n for n in TREE.body if isinstance(n, ast.Assign)
            and any(isinstance(t, ast.Name) and t.id in CONSTANTES for t in n.targets)]
-    for nome in FUNCOES:
-        nos.append(next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == nome))
+    for nome in FUNCOES:  # função ausente (versão antiga do app): só os testes que a usam falham
+        nos.extend(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == nome)
     return nos
 
 
@@ -48,10 +51,12 @@ class _St:
         self.session_state = {}
 
 
-def _sessao(resultado_salvar=True):
-    """resultado_salvar: retorno do salvar_rascunho_operador simulado (ou uma exceção a lançar)."""
-    pasta = Path(tempfile.mkdtemp(prefix="operador_teste_"))
-    atexit.register(shutil.rmtree, pasta, ignore_errors=True)
+def _sessao(resultado_salvar=True, pasta=None):
+    """resultado_salvar: retorno do salvar_rascunho_operador simulado (ou uma exceção a lançar).
+    pasta: GENERATED_DIR compartilhado (para simular duas sessões no mesmo servidor)."""
+    if pasta is None:
+        pasta = Path(tempfile.mkdtemp(prefix="operador_teste_"))
+        atexit.register(shutil.rmtree, pasta, ignore_errors=True)
     salvos = []
 
     def salvar(nome, dados, salvar_sheets=False):
@@ -60,7 +65,7 @@ def _sessao(resultado_salvar=True):
             raise resultado_salvar
         return resultado_salvar
 
-    ns = {"st": _St(), "re": re, "json": json, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
+    ns = {"st": _St(), "re": re, "json": json, "os": os, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
           "slugify_nome": slugify_nome, "_agora_brasilia": lambda: "26/10/2026 10:00:00",
           "_rascunho_usa_sheets": lambda: False}
     exec(CODIGO, ns)
@@ -293,6 +298,7 @@ class TestTrocaFluxoRT(unittest.TestCase):
         antes = dict(ss)
         self.assertFalse(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
         self.assertTrue(ss.pop("_rt_troca_bloqueada")["motivo"])
+        ss.pop("_rt_op_sessao", None)  # identificador da sessão para o nome do arquivo
         self.assertEqual(ss, antes)
 
     def test_troca_sem_dados_nao_grava_rascunho(self):
@@ -300,6 +306,94 @@ class TestTrocaFluxoRT(unittest.TestCase):
         s["ss"].update({"rel_mes_referencia": "10", "rel_ano_referencia": "2026"})
         self.assertTrue(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
         self.assertFalse(s["_rascunho_rt_operador_path"]("Condomínio Alfa").exists())
+
+
+# Formulário RT completo de um condomínio fictício: análises, dosagens, observações,
+# parecer, identificação, ART e seleções do relatório (EPI, NBR, tipo de atendimento).
+RT_COMPLETO_A = {
+    "rel_analise_data_0": "06/10/2026", "rel_analise_ph_0": "7,4", "rel_analise_cl_0": "1,5", "rel_analise_cya_0": "0",
+    "rel_analise_data_1": "13/10/2026", "rel_analise_ph_1": "7,2", "rel_analise_turbidez_1": "0,30",
+    "rel_dos_produto_0": "Cloro granulado", "rel_dos_qtd_0": "2", "rel_dos_un_0": "kg",
+    "rel_dos_finalidade_0": "Manutenção", "rel_dos_lote_0": "L-01",
+    "rel_observacoes_gerais": "Observação geral A", "rel_obs_0": "Observação item A",
+    "rel_parecer_complemento_rt": "Parecer A", "rel_diagnostico": "Diagnóstico A",
+    "rel_endereco_condominio": "Rua A, 1", "rel_cnpj_condominio": "00.000.000/0001-00",
+    "rel_representante": "Síndico A", "rel_cpf_cnpj_representante": "000.000.000-00", "rel_cep": "30000-000",
+    "rel_art_numero": "ART-A", "rel_art_status": "Emitida",
+    "rel_foto_legenda_cmaq": "Casa de máquinas A", "rel_tipo_atendimento": "Visita técnica avulsa",
+    "rel_epi_luvas_status": "Não", "rel_nbr11238_chuveiro": "Não conforme", "rel_salvar_alteracoes_cadastro": True,
+}
+PERIODO = {"rel_mes_referencia": "10", "rel_ano_referencia": "2026", "rel_data_emissao": "26/10/2026",
+           "rel_nome_condominio": "Condomínio Alfa"}
+
+
+class TestRascunhoRTCompleto(unittest.TestCase):
+    def test_todos_os_campos_voltam_intactos_e_nada_passa_para_o_outro(self):
+        s = _sessao()
+        ss = s["ss"]
+        ss.update(PERIODO, **RT_COMPLETO_A)
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        for k in RT_COMPLETO_A:  # Beta não herda nada de Alfa
+            self.assertIn(ss.get(k, ""), ("", None), k)
+        self.assertEqual({k: ss[k] for k in PERIODO}, PERIODO)  # período e data de emissão ficam
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa"))
+        self.assertEqual({k: ss.get(k) for k in RT_COMPLETO_A}, RT_COMPLETO_A)
+
+    def test_cobre_todo_campo_rel_editavel_do_fluxo_rt(self):
+        """Todo widget rel_ do fluxo RT do operador é guardado ou é refeito pelo próprio fluxo."""
+        alvo = next(n for n in ast.walk(TREE) if isinstance(n, ast.If) and ast.unparse(n.test) == "_op_is_rt"
+                    and any(isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "file_uploader" for c in ast.walk(n)))
+        chaves = set()
+        for n in ast.walk(alvo):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                for kw in n.keywords:
+                    if kw.arg == "key":
+                        txt = ast.unparse(kw.value)
+                        m = re.match(r"""^f?['"](rel_[a-z0-9_]+?)(_\{i\})?['"]$""", txt)
+                        if m:
+                            chaves.add(m.group(1) + ("_0" if m.group(2) else ""))
+        self.assertGreaterEqual(len(chaves), 15)
+        s = _sessao()
+        ss = s["ss"]
+        ss.update({k: "valor" for k in chaves})
+        guardadas = set(s["_campos_rt_do_condominio"]())
+        refeitas = {"rel_nome_condominio", "rel_data_emissao", "rel_art_modo_rt2025", "rel_art_numero_rt2025"}
+        self.assertEqual(chaves - guardadas, refeitas & chaves)
+
+    def test_campo_que_nao_pode_ser_guardado_bloqueia_a_troca(self):
+        s = _sessao()
+        ss = s["ss"]
+        ss.update(PERIODO, **RT_COMPLETO_A)
+        ss["rel_vigencia_art"] = datetime(2026, 10, 26)  # valor não serializável (simulado)
+        antes = dict(ss)
+        self.assertFalse(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertIn("rel_vigencia_art", ss.pop("_rt_troca_bloqueada")["motivo"])
+        self.assertEqual(ss, antes)
+
+    def test_restauracao_nao_sobrescreve_edicoes_posteriores(self):
+        s = _sessao()
+        ss = s["ss"]
+        ss.update(PERIODO, **RT_COMPLETO_A)
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")  # restaura uma vez
+        ss.update(rel_analise_ph_0="7,0", rel_dos_qtd_0="3", rel_observacoes_gerais="Editada depois")
+        self.assertFalse(s["_rascunho_rt_operador_path"]("Condomínio Alfa").exists())  # não há o que reaplicar
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")
+        self.assertEqual((ss["rel_analise_ph_0"], ss["rel_dos_qtd_0"], ss["rel_observacoes_gerais"]),
+                         ("7,0", "3", "Editada depois"))
+
+    def test_rascunho_de_uma_sessao_nao_aparece_em_outra(self):
+        s1 = _sessao()
+        s1["ss"].update(PERIODO, **RT_COMPLETO_A)
+        s1["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        s2 = _sessao(pasta=s1["pasta"])
+        s2["ss"].update(PERIODO)
+        s2["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")
+        self.assertEqual(s2["ss"].get("rel_dos_produto_0", ""), "")
+        self.assertNotIn("_rt_rascunho_restaurado", s2["ss"])
+        s1["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")  # a sessão 1 continua recuperando
+        self.assertEqual(s1["ss"]["rel_dos_produto_0"], "Cloro granulado")
 
 
 class TestLigacoesNoApp(unittest.TestCase):

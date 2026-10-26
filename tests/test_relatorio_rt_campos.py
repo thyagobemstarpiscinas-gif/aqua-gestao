@@ -239,6 +239,41 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
         self.assertEqual(at.session_state["rel_parecer_complemento_rt"], "Parecer fictício")
         self.assertFalse(at.exception, at.exception)
 
+    def test_rt_formulario_completo_volta_intacto_apos_trocar_e_retornar(self):
+        at = self._entrar_operador("rt-ficticio")
+        opcoes = [o for o in at.selectbox(key="rt_op_sel_cond").options if o.upper() != "TODOS"]
+        a, b = opcoes[:2]
+        at.selectbox(key="rt_op_sel_cond").select(a).run()
+        # Pela tela: identificação, ART, análises, parecer e legenda.
+        at.text_area(key="rel_endereco_condominio").input("Rua Fictícia, 10").run()
+        at.selectbox(key="rel_art_modo_rt2025").select("Informar número da ART").run()
+        at.text_input(key="rel_art_numero_rt2025").input("12345").run()
+        for chave, valor in (("rel_analise_data_0", "06/10/2026"), ("rel_analise_ph_0", "7,4"),
+                             ("rel_analise_cl_0", "1,5"), ("rel_analise_cya_0", "0"), ("rel_foto_legenda_cmaq", "Casa A")):
+            at.text_input(key=chave).input(valor)
+        at.text_area(key="rel_parecer_complemento_rt").input("Parecer fictício").run()
+        # Preenchidos por importação/escritório (sem widget nesta tela), também vão para o PDF.
+        for chave, valor in (("rel_dos_produto_0", "Cloro granulado"), ("rel_dos_qtd_0", "2"),
+                             ("rel_observacoes_gerais", "Observação geral"), ("rel_diagnostico", "Diagnóstico")):
+            at.session_state[chave] = valor
+        at.run()
+        chaves = ("rel_endereco_condominio", "rel_cnpj_condominio", "rel_representante", "rel_art_numero",
+                  "rel_art_status", "rel_analise_data_0", "rel_analise_ph_0", "rel_analise_cl_0", "rel_analise_cya_0",
+                  "rel_foto_legenda_cmaq", "rel_parecer_complemento_rt", "rel_dos_produto_0", "rel_dos_qtd_0",
+                  "rel_observacoes_gerais", "rel_diagnostico", "rel_mes_referencia", "rel_ano_referencia")
+        antes = {k: at.session_state[k] for k in chaves}
+        self.assertEqual((antes["rel_art_status"], antes["rel_dos_produto_0"]), ("Emitida", "Cloro granulado"))
+        at.selectbox(key="rt_op_sel_cond").select(b).run()
+        self.assertEqual(self._avisos(at), [])
+        for k in ("rel_analise_ph_0", "rel_parecer_complemento_rt", "rel_dos_produto_0", "rel_observacoes_gerais",
+                  "rel_diagnostico", "rel_foto_legenda_cmaq"):
+            self.assertEqual(at.session_state[k] if k in at.session_state else "", "", k)  # nada de A em B
+        self.assertNotEqual(at.session_state["rel_endereco_condominio"], "Rua Fictícia, 10")
+        at.selectbox(key="rt_op_sel_cond").select(a).run()
+        at.run()
+        self.assertEqual({k: at.session_state[k] for k in chaves}, antes)
+        self.assertFalse(at.exception, at.exception)
+
 
 class TestPeriodoEImportacao(unittest.TestCase):
     def _ns(self, ss):

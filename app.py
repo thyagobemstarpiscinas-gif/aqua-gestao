@@ -3826,50 +3826,77 @@ def chave_fotos_rt() -> str:
     return "rel_fotos_upload" if not nonce else f"rt_fotos_upload_{nonce}"
 
 
-_RT_OP_PREFIXOS = ("rel_analise_", "rel_obs_", "rel_foto_legenda_")
+# Campos de texto do relatório RT: na troca de condomínio recebem "" (gravado antes dos
+# widgets, o valor vazio chega à tela). Os demais campos rel_ (seleções, marcações) saem
+# do session_state e voltam ao padrão.
+_RT_OP_PREFIXOS_TEXTO = ("rel_analise_", "rel_obs_", "rel_foto_legenda_", "rel_dos_")
 _RT_OP_CAMPOS = ("rel_endereco_condominio", "rel_cnpj_condominio", "rel_representante", "rel_cpf_cnpj_representante",
-                 "rel_diagnostico", "rel_parecer_complemento_rt", "rel_art_numero")
+                 "rel_diagnostico", "rel_parecer_complemento_rt", "rel_art_numero", "rel_observacoes_gerais", "rel_cep")
+# Fora do rascunho por condomínio: período, data de emissão, nome (vem da seleção),
+# contadores recalculados pelo próprio fluxo, uploads e seletores com índice próprio
+# (rel_art_modo_rt2025/rel_art_numero_rt2025 são refeitos a partir de rel_art_numero/status).
+_RT_OP_FORA_DO_RASCUNHO = {"rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao", "rel_nome_condominio",
+                           "rel_analises_total", "rel_verificacoes_semanais", "rel_fotos_upload",
+                           "rel_pdf_visita_importador", "rel_regerar_pdf_visita_idx", "rel_status_agua_select",
+                           "rel_art_modo_rt2025", "rel_art_numero_rt2025"}
+
+
+def _campos_rt_do_condominio() -> dict:
+    """Todos os campos rel_ que pertencem ao condomínio (análises, dosagens, observações,
+    parecer, identificação, ART, EPI, NBR...), com os valores atuais."""
+    ss = st.session_state
+    return {k: ss[k] for k in list(ss.keys())
+            if str(k).startswith("rel_") and k not in _RT_OP_FORA_DO_RASCUNHO}
 
 
 def limpar_formulario_rt_operador():
     """Esvazia os dados específicos do condomínio no fluxo RT do operador
     (antes da criação dos widgets), para que nada de um local passe ao outro."""
     ss = st.session_state
-    for k in list(ss.keys()):
-        if str(k).startswith(_RT_OP_PREFIXOS):
+    for k, v in _campos_rt_do_condominio().items():
+        if isinstance(v, str) and (str(k).startswith(_RT_OP_PREFIXOS_TEXTO) or k in _RT_OP_CAMPOS):
             ss[k] = ""
+        else:
+            ss.pop(k, None)  # seleções/marcações voltam ao padrão; ART nunca é presumida para outro condomínio
     for k in _RT_OP_CAMPOS:
-        ss[k] = ""
-    for k in ("rel_art_modo_rt2025", "rel_art_status", "rel_art_numero_rt2025"):
-        ss.pop(k, None)  # ART nunca é presumida para outro condomínio
+        ss.setdefault(k, "")
+    for k in ("rel_art_modo_rt2025", "rel_art_numero_rt2025"):
+        ss.pop(k, None)
     ss["_rt_fotos_nonce"] = ss.get("_rt_fotos_nonce", 0) + 1
 
 
 def _rascunho_rt_operador_path(cond: str) -> Path:
-    return GENERATED_DIR / slugify_nome(cond) / "_rascunho_rt_operador.json"
+    """Um arquivo por sessão e condomínio: outra sessão nunca lê nem sobrescreve este rascunho."""
+    ss = st.session_state
+    if not ss.get("_rt_op_sessao"):
+        ss["_rt_op_sessao"] = os.urandom(6).hex()
+    return GENERATED_DIR / slugify_nome(cond) / f"_rascunho_rt_operador_{ss['_rt_op_sessao']}.json"
 
 
 def trocar_condominio_rt_operador(anterior: str, novo: str) -> bool:
     """Troca de condomínio no fluxo RT do operador sem descartar o que não foi salvo.
 
-    Os dados digitados do anterior vão para um rascunho local do condomínio (com o
-    período) antes da limpeza. Se não puderem ser guardados, ou se houver fotos
-    anexadas (o upload não pode ser guardado), nada é limpo: grava o motivo em
-    _rt_troca_bloqueada e retorna False. Ao chegar a um condomínio com rascunho do
-    mesmo período, os dados dele voltam (dados de outro mês nunca voltam)."""
+    Todos os campos do condomínio (ver _campos_rt_do_condominio) vão para um rascunho
+    local desta sessão, com o período, antes da limpeza; a gravação é conferida lendo o
+    arquivo de volta. Se algum campo não puder ser guardado, se a gravação falhar ou se
+    houver fotos anexadas (o upload não pode ser guardado), nada é limpo: grava o motivo
+    em _rt_troca_bloqueada e retorna False.
+    Ao chegar a um condomínio com rascunho do mesmo período, os dados dele voltam uma
+    única vez (o arquivo é apagado), sobre o formulário recém-limpo: edições feitas
+    depois nunca são sobrescritas. Rascunho de outro mês não volta."""
     ss = st.session_state
     motivo = ""
     try:
         if ss.get(chave_fotos_rt()):
             motivo = "há fotos anexadas, e elas não ficam guardadas no rascunho"
         elif anterior:
-            campos = {k: ss.get(k) for k in list(ss.keys())
-                      if (str(k).startswith(_RT_OP_PREFIXOS) or k in _RT_OP_CAMPOS)
-                      and (isinstance(ss.get(k), (str, int, float, bool)) or ss.get(k) is None)}
-            if any(str(v if v is not None else "").strip() for v in campos.values()):
+            campos = _campos_rt_do_condominio()
+            nao_gravaveis = [k for k, v in campos.items() if not (isinstance(v, (str, int, float, bool)) or v is None)]
+            if nao_gravaveis:
+                motivo = "o campo " + ", ".join(sorted(nao_gravaveis)[:3]) + " não pode ser guardado no rascunho"
+            elif any(str(v if v is not None else "").strip() for v in campos.values()):
                 dados = {"condominio": anterior, "mes": str(ss.get("rel_mes_referencia") or ""),
-                         "ano": str(ss.get("rel_ano_referencia") or ""), "campos": campos,
-                         "art_status": ss.get("rel_art_status")}
+                         "ano": str(ss.get("rel_ano_referencia") or ""), "campos": campos}
                 caminho = _rascunho_rt_operador_path(anterior)
                 caminho.parent.mkdir(parents=True, exist_ok=True)
                 caminho.write_text(json.dumps(dados, ensure_ascii=False), encoding="utf-8")
@@ -3890,12 +3917,10 @@ def trocar_condominio_rt_operador(anterior: str, novo: str) -> bool:
             if (dados.get("mes"), dados.get("ano")) == (str(ss.get("rel_mes_referencia") or ""),
                                                        str(ss.get("rel_ano_referencia") or "")):
                 for k, v in (dados.get("campos") or {}).items():
-                    if str(k).startswith(_RT_OP_PREFIXOS) or k in _RT_OP_CAMPOS:
+                    if str(k).startswith("rel_") and k not in _RT_OP_FORA_DO_RASCUNHO:
                         ss[k] = v
-                if dados.get("art_status"):
-                    ss["rel_art_status"] = dados["art_status"]
                 ss["_rt_rascunho_restaurado"] = novo
-                caminho.unlink()  # os dados voltaram à tela; ao sair de novo são guardados outra vez
+                caminho.unlink()  # restaurado uma única vez; ao sair de novo é guardado outra vez
     except Exception:
         pass  # rascunho ilegível: o condomínio novo começa vazio, como antes
     return True
