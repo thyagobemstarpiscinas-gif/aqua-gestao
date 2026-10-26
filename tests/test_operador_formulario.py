@@ -1,0 +1,188 @@
+"""Testes do formulário do operador e do fluxo RT: rascunho, limpeza e troca de condomínio.
+
+Carregam somente as funções envolvidas do app.py, com session_state simulado e
+pasta temporária. Nenhum acesso a Google Sheets, Drive ou rede; dados fictícios.
+
+Executar:  python -m unittest discover -s tests -v
+"""
+
+import ast
+import atexit
+import json
+import re
+import shutil
+import sys
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+RAIZ = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RAIZ))
+from utils.formatacao import slugify_nome  # noqa: E402
+
+APP = RAIZ / "app.py"
+TREE = ast.parse(APP.read_text(encoding="utf-8"))
+FUNCOES = [
+    "_slug_piscina_operador", "coletar_rascunho_operador", "restaurar_rascunho_operador",
+    "limpar_formulario_operador", "_chave_fotos_operador", "trocar_condominio_operador",
+    "chave_fotos_rt", "limpar_formulario_rt_operador",
+]
+CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP"}
+
+
+def _nos():
+    nos = [n for n in TREE.body if isinstance(n, ast.Assign)
+           and any(isinstance(t, ast.Name) and t.id in CONSTANTES for t in n.targets)]
+    for nome in FUNCOES:
+        nos.append(next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == nome))
+    return nos
+
+
+CODIGO = compile(ast.Module(body=_nos(), type_ignores=[]), str(APP), "exec")
+
+
+class _St:
+    def __init__(self):
+        self.session_state = {}
+
+
+def _sessao():
+    pasta = Path(tempfile.mkdtemp(prefix="operador_teste_"))
+    atexit.register(shutil.rmtree, pasta, ignore_errors=True)
+    salvos = []
+    ns = {"st": _St(), "re": re, "json": json, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
+          "slugify_nome": slugify_nome,
+          "salvar_rascunho_operador": lambda nome, dados, salvar_sheets=False: salvos.append((nome, dados, salvar_sheets))}
+    exec(CODIGO, ns)
+    ns["ss"] = ns["st"].session_state
+    ns["salvos"] = salvos
+    return ns
+
+
+def _preencher_visita(ss):
+    ss.update({
+        "op_data_visita": "26/10/2026", "op_operador": "Operador Teste",
+        "op_adulto_ph": "7.4", "op_adulto_crl": "1.5", "op_adulto_ct": "1.8", "op_adulto_cya": "0",
+        "op_infantil_ph": "7.2", "op_infantil_crl": "0",
+        "op_dos_adulto_prod_0": "Cloro granulado", "op_dos_adulto_qtd_0": "0", "op_dos_adulto_un_0": "kg",
+        "op_dos_adulto_fin_0": "Manutenção", "op_dos_infantil_prod_0": "Barrilha", "op_dos_infantil_qtd_0": "0,5",
+        "op_obs_campo": "Água cristalina", "op_problemas": "Bomba com ruído", "op_resp_local": "Zelador Teste",
+        "op_parecer_visita": "⚠️ Aceitável com ajustes pontuais",
+    })
+
+
+PISCINAS = ["Piscina Adulto", "Piscina Infantil"]
+
+
+class TestRascunhoOperador(unittest.TestCase):
+    def test_coletar_e_restaurar_preserva_campos_zeros_e_dosagens_por_piscina(self):
+        a = _sessao()
+        _preencher_visita(a["ss"])
+        rasc = json.loads(json.dumps(a["coletar_rascunho_operador"]("Condomínio Fictício", PISCINAS)))  # como no arquivo
+        b = _sessao()
+        b["restaurar_rascunho_operador"](rasc)
+        for k, v in a["ss"].items():
+            self.assertEqual(b["ss"].get(k), v, k)
+
+    def test_piscina_com_nome_personalizado_usa_a_mesma_chave_do_formulario(self):
+        a = _sessao()
+        slug = a["_slug_piscina_operador"]("Piscina Olímpica")
+        self.assertEqual(slug, slugify_nome("Piscina Olímpica")[:12])
+        a["ss"].update({f"op_{slug}_ph": "7.6", f"op_{slug}_cya": "0", f"op_dos_{slug}_prod_0": "Algicida"})
+        rasc = a["coletar_rascunho_operador"]("Condomínio Fictício", ["Piscina Olímpica"])
+        b = _sessao()
+        b["restaurar_rascunho_operador"](rasc)
+        self.assertEqual(b["ss"][f"op_{slug}_ph"], "7.6")
+        self.assertEqual(b["ss"][f"op_{slug}_cya"], "0")
+        self.assertEqual(b["ss"][f"op_dos_{slug}_prod_0"], "Algicida")
+
+    def test_rascunho_antigo_com_lista_geral_de_dosagens_vai_para_a_primeira_piscina(self):
+        antigo = {"piscinas": [{"nome": "Piscina Adulto", "ph": "7.3"}],
+                  "dosagens": [{"produto": "Cloro", "quantidade": "1", "unidade": "kg", "finalidade": "Rotina"}]}
+        b = _sessao()
+        b["restaurar_rascunho_operador"](antigo)
+        self.assertEqual(b["ss"]["op_adulto_ph"], "7.3")
+        self.assertEqual(b["ss"]["op_dos_adulto_prod_0"], "Cloro")
+        self.assertEqual(b["ss"]["op_dos_adulto_qtd_0"], "1")
+
+
+class TestLimpezaETroca(unittest.TestCase):
+    def test_limpar_cobre_piscinas_personalizadas_e_dosagens_por_piscina(self):
+        s = _sessao()
+        _preencher_visita(s["ss"])
+        slug = s["_slug_piscina_operador"]("Piscina Olímpica")
+        s["ss"].update({f"op_{slug}_ph": "7.6", f"op_dos_{slug}_qtd_2": "3", "_sug_pisc_adulto": [{"produto": "x"}],
+                        "op_ph_apos": "7.5"})
+        s["limpar_formulario_operador"]()
+        ss = s["ss"]
+        for k in ("op_adulto_ph", "op_adulto_cya", "op_infantil_crl", f"op_{slug}_ph", "op_dos_adulto_prod_0",
+                  "op_dos_adulto_qtd_0", "op_dos_infantil_prod_0", f"op_dos_{slug}_qtd_2", "op_obs_campo",
+                  "op_problemas", "op_resp_local", "op_ph_apos"):
+            self.assertEqual(ss[k], "", k)
+        self.assertNotIn("_sug_pisc_adulto", ss)
+        self.assertEqual(ss["op_parecer_visita"], "✅ Satisfatório")
+        self.assertEqual((ss["op_data_visita"], ss["op_operador"]), ("26/10/2026", "Operador Teste"))  # identidade/data ficam
+
+    def test_trocar_condominio_guarda_rascunho_do_anterior_e_isola_o_novo(self):
+        s = _sessao()
+        _preencher_visita(s["ss"])
+        s["ss"]["_op_piscinas_form"] = PISCINAS
+        chave_antes = s["_chave_fotos_operador"]("antes")
+        s["ss"]["_rascunho_visto_Residencial_Beta"] = True
+        s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta")
+        self.assertEqual(len(s["salvos"]), 1)
+        nome, dados, sheets = s["salvos"][0]
+        self.assertEqual((nome, sheets), ("Condomínio Alfa", False))
+        self.assertEqual(dados["piscinas"][0]["ph"], "7.4")
+        self.assertEqual(dados["dosagens_por_piscina"]["Piscina Adulto"][0]["quantidade"], "0")
+        self.assertEqual(s["ss"]["op_adulto_ph"], "")  # formulário do novo vazio
+        self.assertNotEqual(s["_chave_fotos_operador"]("antes"), chave_antes)  # fotos do anterior não seguem
+        self.assertNotIn("_rascunho_visto_Residencial_Beta", s["ss"])  # aviso de rascunho do novo volta a aparecer
+        self.assertEqual(s["ss"]["_op_cond_form"], "Residencial Beta")
+
+    def test_trocar_sem_conteudo_nao_grava_rascunho_vazio(self):
+        s = _sessao()
+        s["ss"]["op_parecer_visita"] = "✅ Satisfatório"
+        s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta")
+        self.assertEqual(s["salvos"], [])
+
+    def test_chave_das_fotos_comeca_com_o_nome_original(self):
+        s = _sessao()
+        self.assertEqual(s["_chave_fotos_operador"]("extras"), "op_fotos_extras")
+        self.assertEqual(s["chave_fotos_rt"](), "rel_fotos_upload")
+
+
+class TestFluxoRT(unittest.TestCase):
+    def test_limpar_rt_remove_dados_do_condominio_anterior(self):
+        s = _sessao()
+        ss = s["ss"]
+        ss.update({"rel_endereco_condominio": "Rua A, 1", "rel_cnpj_condominio": "00", "rel_representante": "Síndico A",
+                   "rel_analise_ph_0": "7.4", "rel_analise_cya_0": "0", "rel_parecer_complemento_rt": "Parecer A",
+                   "rel_foto_legenda_cmaq": "Casa A", "rel_art_numero": "ART-A", "rel_art_modo_rt2025": "Informar",
+                   "rel_art_status": "Emitida", "rel_mes_referencia": "10", "rel_ano_referencia": "2026"})
+        chave = s["chave_fotos_rt"]()
+        s["limpar_formulario_rt_operador"]()
+        for k in ("rel_endereco_condominio", "rel_cnpj_condominio", "rel_representante", "rel_analise_ph_0",
+                  "rel_analise_cya_0", "rel_parecer_complemento_rt", "rel_foto_legenda_cmaq", "rel_art_numero"):
+            self.assertEqual(ss[k], "", k)
+        self.assertNotIn("rel_art_modo_rt2025", ss)
+        self.assertNotIn("rel_art_status", ss)
+        self.assertEqual((ss["rel_mes_referencia"], ss["rel_ano_referencia"]), ("10", "2026"))
+        self.assertNotEqual(s["chave_fotos_rt"](), chave)
+        self.assertFalse(s["chave_fotos_rt"]().startswith("rel_"))  # fora do rascunho RT (só rel_/csr_)
+
+
+class TestLigacoesNoApp(unittest.TestCase):
+    def test_uploads_usam_as_chaves_dinamicas(self):
+        src = APP.read_text(encoding="utf-8")
+        for cat in ("antes", "depois", "cmaq", "extras"):
+            self.assertIn(f'key=_chave_fotos_operador("{cat}")', src)
+            self.assertNotIn(f'key="op_fotos_{cat}"', src)
+        self.assertNotIn('key="rel_fotos_upload"', src)
+        self.assertEqual(src.count("key=chave_fotos_rt()"), 2)
+        self.assertNotIn('st.session_state.get("rel_fotos_upload")', src)
+
+
+if __name__ == "__main__":
+    unittest.main()
