@@ -26,9 +26,10 @@ TREE = ast.parse(APP.read_text(encoding="utf-8"))
 FUNCOES = [
     "_slug_piscina_operador", "coletar_rascunho_operador", "restaurar_rascunho_operador",
     "limpar_formulario_operador", "_chave_fotos_operador", "trocar_condominio_operador",
-    "chave_fotos_rt", "limpar_formulario_rt_operador",
+    "chave_fotos_rt", "limpar_formulario_rt_operador", "_rascunho_rt_operador_path", "trocar_condominio_rt_operador",
+    "salvar_rascunho_operador",
 ]
-CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP"}
+CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP", "_RT_OP_PREFIXOS", "_RT_OP_CAMPOS"}
 
 
 def _nos():
@@ -47,16 +48,27 @@ class _St:
         self.session_state = {}
 
 
-def _sessao():
+def _sessao(resultado_salvar=True):
+    """resultado_salvar: retorno do salvar_rascunho_operador simulado (ou uma exceção a lançar)."""
     pasta = Path(tempfile.mkdtemp(prefix="operador_teste_"))
     atexit.register(shutil.rmtree, pasta, ignore_errors=True)
     salvos = []
+
+    def salvar(nome, dados, salvar_sheets=False):
+        salvos.append((nome, dados, salvar_sheets))
+        if isinstance(resultado_salvar, BaseException):
+            raise resultado_salvar
+        return resultado_salvar
+
     ns = {"st": _St(), "re": re, "json": json, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
-          "slugify_nome": slugify_nome,
-          "salvar_rascunho_operador": lambda nome, dados, salvar_sheets=False: salvos.append((nome, dados, salvar_sheets))}
+          "slugify_nome": slugify_nome, "_agora_brasilia": lambda: "26/10/2026 10:00:00",
+          "_rascunho_usa_sheets": lambda: False}
     exec(CODIGO, ns)
+    ns["salvar_rascunho_operador_real"] = ns["salvar_rascunho_operador"]
+    ns["salvar_rascunho_operador"] = salvar  # trocar_condominio_operador usa o simulado
     ns["ss"] = ns["st"].session_state
     ns["salvos"] = salvos
+    ns["pasta"] = pasta
     return ns
 
 
@@ -147,6 +159,53 @@ class TestLimpezaETroca(unittest.TestCase):
         s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta")
         self.assertEqual(s["salvos"], [])
 
+    def _troca_que_falha(self, resultado):
+        s = _sessao(resultado_salvar=resultado)
+        _preencher_visita(s["ss"])
+        s["ss"]["_op_piscinas_form"] = PISCINAS
+        antes = dict(s["ss"])
+        chave_antes = s["_chave_fotos_operador"]("antes")
+        self.assertFalse(s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta"))
+        bloq = s["ss"].pop("_op_troca_bloqueada")
+        self.assertEqual((bloq["anterior"], bloq["novo"]), ("Condomínio Alfa", "Residencial Beta"))
+        self.assertTrue(bloq["motivo"])
+        self.assertEqual(s["ss"], antes)  # nenhum campo limpo, nada trocado
+        self.assertEqual(s["_chave_fotos_operador"]("antes"), chave_antes)  # fotos continuam anexadas
+        return bloq
+
+    def test_troca_cancelada_se_salvar_rascunho_retorna_falha(self):
+        self._troca_que_falha(False)
+
+    def test_troca_cancelada_se_salvar_rascunho_lanca_excecao(self):
+        self.assertIn("OSError", self._troca_que_falha(OSError("disco cheio (simulado)"))["motivo"])
+
+    def test_troca_cancelada_se_salvar_retorna_nada(self):
+        self._troca_que_falha(None)
+
+    def test_troca_cancelada_com_assinatura_coletada(self):
+        s = _sessao()
+        _preencher_visita(s["ss"])
+        s["ss"]["op_assinatura_responsavel_b64"] = "iVBORw0KGgo="  # assinatura fictícia
+        self.assertFalse(s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertIn("assinatura", s["ss"]["_op_troca_bloqueada"]["motivo"])
+        self.assertEqual(s["ss"]["op_assinatura_responsavel_b64"], "iVBORw0KGgo=")
+        self.assertEqual(s["ss"]["op_adulto_ph"], "7.4")
+
+    def test_troca_bem_sucedida_remove_aviso_antigo(self):
+        s = _sessao()
+        _preencher_visita(s["ss"])
+        s["ss"]["_op_troca_bloqueada"] = {"motivo": "antigo"}
+        self.assertTrue(s["trocar_condominio_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertNotIn("_op_troca_bloqueada", s["ss"])
+
+    def test_salvar_rascunho_real_informa_falha_da_gravacao_local(self):
+        s = _sessao()
+        salvar = s["salvar_rascunho_operador_real"]
+        self.assertTrue(salvar("Condomínio Alfa", {"obs": "x"}))
+        self.assertTrue((s["pasta"] / slugify_nome("Condomínio Alfa") / "_rascunho_operador.json").exists())
+        (s["pasta"] / slugify_nome("Residencial Beta")).write_text("arquivo no lugar da pasta")  # mkdir falha
+        self.assertFalse(salvar("Residencial Beta", {"obs": "x"}))
+
     def test_chave_das_fotos_comeca_com_o_nome_original(self):
         s = _sessao()
         self.assertEqual(s["_chave_fotos_operador"]("extras"), "op_fotos_extras")
@@ -173,6 +232,76 @@ class TestFluxoRT(unittest.TestCase):
         self.assertFalse(s["chave_fotos_rt"]().startswith("rel_"))  # fora do rascunho RT (só rel_/csr_)
 
 
+class TestTrocaFluxoRT(unittest.TestCase):
+    def _rt(self, ss, endereco="Rua A, 1", ph="7.4"):
+        ss.update({"rel_mes_referencia": "10", "rel_ano_referencia": "2026", "rel_endereco_condominio": endereco,
+                   "rel_analise_ph_0": ph, "rel_analise_cya_0": "0", "rel_parecer_complemento_rt": "Parecer A",
+                   "rel_art_numero": "ART-A", "rel_art_status": "Emitida"})
+
+    def test_troca_guarda_rascunho_do_anterior_e_recupera_ao_voltar(self):
+        s = _sessao()
+        ss = s["ss"]
+        self._rt(ss)
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertEqual((ss["rel_endereco_condominio"], ss["rel_analise_ph_0"], ss["rel_parecer_complemento_rt"]), ("", "", ""))
+        self.assertNotIn("_rt_rascunho_restaurado", ss)
+        ss.update({"rel_endereco_condominio": "Rua B, 2", "rel_analise_ph_0": "7.0"})
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa"))
+        self.assertEqual(ss["_rt_rascunho_restaurado"], "Condomínio Alfa")
+        self.assertEqual((ss["rel_endereco_condominio"], ss["rel_analise_ph_0"], ss["rel_analise_cya_0"],
+                          ss["rel_parecer_complemento_rt"], ss["rel_art_numero"], ss["rel_art_status"]),
+                         ("Rua A, 1", "7.4", "0", "Parecer A", "ART-A", "Emitida"))
+        self.assertFalse(s["_rascunho_rt_operador_path"]("Condomínio Alfa").exists())  # não volta uma 2ª vez
+
+    def test_dados_apagados_depois_de_recuperar_nao_reaparecem(self):
+        s = _sessao()
+        ss = s["ss"]
+        self._rt(ss)
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")  # recupera
+        s["limpar_formulario_rt_operador"]()  # usuário apaga os dados de Alfa
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")
+        self.assertEqual((ss["rel_endereco_condominio"], ss["rel_parecer_complemento_rt"]), ("", ""))
+
+    def test_rascunho_de_outro_mes_nao_volta(self):
+        s = _sessao()
+        ss = s["ss"]
+        self._rt(ss)
+        ss["rel_mes_referencia"] = "09"
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        ss["rel_mes_referencia"] = "10"
+        s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")
+        self.assertEqual((ss["rel_endereco_condominio"], ss["rel_analise_ph_0"]), ("", ""))  # setembro não entra em outubro
+        self.assertNotIn("_rt_rascunho_restaurado", ss)
+
+    def test_troca_cancelada_com_fotos_anexadas(self):
+        s = _sessao()
+        ss = s["ss"]
+        self._rt(ss)
+        ss[s["chave_fotos_rt"]()] = ["foto_ficticia.png"]
+        antes = dict(ss)
+        self.assertFalse(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertIn("fotos", ss.pop("_rt_troca_bloqueada")["motivo"])
+        self.assertEqual(ss, antes)
+
+    def test_troca_cancelada_se_o_rascunho_nao_pode_ser_gravado(self):
+        s = _sessao()
+        ss = s["ss"]
+        self._rt(ss)
+        (s["pasta"] / slugify_nome("Condomínio Alfa")).write_text("arquivo no lugar da pasta")
+        antes = dict(ss)
+        self.assertFalse(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertTrue(ss.pop("_rt_troca_bloqueada")["motivo"])
+        self.assertEqual(ss, antes)
+
+    def test_troca_sem_dados_nao_grava_rascunho(self):
+        s = _sessao()
+        s["ss"].update({"rel_mes_referencia": "10", "rel_ano_referencia": "2026"})
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta"))
+        self.assertFalse(s["_rascunho_rt_operador_path"]("Condomínio Alfa").exists())
+
+
 class TestLigacoesNoApp(unittest.TestCase):
     def test_uploads_usam_as_chaves_dinamicas(self):
         src = APP.read_text(encoding="utf-8")
@@ -182,6 +311,18 @@ class TestLigacoesNoApp(unittest.TestCase):
         self.assertNotIn('key="rel_fotos_upload"', src)
         self.assertEqual(src.count("key=chave_fotos_rt()"), 2)
         self.assertNotIn('st.session_state.get("rel_fotos_upload")', src)
+
+    def test_trocas_canceladas_mantem_o_anterior_na_tela(self):
+        src = APP.read_text(encoding="utf-8")
+        self.assertIn("elif not trocar_condominio_operador(_cond_form_anterior, op_nome_cond):", src)
+        self.assertIn("op_nome_cond = _cond_form_anterior", src)
+        self.assertIn("if not trocar_condominio_rt_operador(_cond_rt_anterior, _sel_cond_rt):", src)
+        self.assertIn("_sel_cond_rt = _cond_rt_anterior", src)
+        # a seleção volta antes de os widgets serem criados
+        self.assertLess(src.index('_op_rev = st.session_state.pop("_op_cond_reverter", None)'),
+                        src.index('key="op_novo_cond"'))
+        self.assertLess(src.index('_rt_rev = st.session_state.pop("_rt_cond_reverter", None)'),
+                        src.index('key="rt_op_sel_cond"'))
 
 
 if __name__ == "__main__":
