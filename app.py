@@ -3457,6 +3457,7 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
     """
     dados["_rascunho_salvo_em"] = _agora_brasilia()
     dados["_rascunho_cond"] = nome_cond.strip()
+    salvo_local = salvo_sheets = False
 
     # 1. Arquivo local (rápido — sempre executado)
     try:
@@ -3466,6 +3467,7 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                        if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
         with open(pasta / "_rascunho_operador.json", "w", encoding="utf-8") as f:
             json.dump(dados_local, f, ensure_ascii=False, indent=2)
+        salvo_local = True
     except Exception:
         pass
 
@@ -3499,14 +3501,20 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                 else:
                     proxima = max(len(todos) + 1, 2)
                     aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[nova], value_input_option="RAW")
+                salvo_sheets = True
         except Exception:
             pass
 
-    return True
+    return salvo_local or salvo_sheets  # False: o rascunho não foi gravado em lugar nenhum
 
 
 def carregar_rascunho_operador(nome_cond: str) -> dict:
-    """Carrega rascunho: arquivo local primeiro, fallback no Sheets apos sleep."""
+    """Carrega rascunho: arquivo local primeiro, fallback no Sheets apos sleep.
+
+    Falhas de leitura não são ignoradas: o motivo fica em _op_rascunho_erro para a tela
+    avisar, e um arquivo local ilegível é copiado à parte (nunca apagado) antes que o
+    salvamento automático grave por cima."""
+    st.session_state.pop("_op_rascunho_erro", None)
     # 1. Arquivo local
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
@@ -3514,8 +3522,15 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
         if rascunho_path.exists():
             with open(rascunho_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        erro = f"rascunho local ilegível ({type(e).__name__})"
+        try:
+            copia = rascunho_path.with_name(f"_rascunho_operador_ilegivel_{datetime.now():%Y%m%d_%H%M%S}.json")
+            shutil.copy2(rascunho_path, copia)
+            erro += f"; uma cópia foi guardada em {copia.name}"
+        except Exception:
+            pass
+        st.session_state["_op_rascunho_erro"] = erro
 
     # 2. Fallback Google Sheets (nunca no Codespaces)
     if not _rascunho_usa_sheets():
@@ -3540,8 +3555,10 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
                     except Exception:
                         pass
                     return dados
-    except Exception:
-        pass
+    except Exception as e:
+        anterior = st.session_state.get("_op_rascunho_erro")
+        st.session_state["_op_rascunho_erro"] = (f"{anterior}; " if anterior else "") + \
+            f"não foi possível ler o rascunho na planilha ({type(e).__name__})"
 
     return {}
 
@@ -3574,6 +3591,14 @@ def deletar_rascunho_operador(nome_cond: str):
         pass
 
 
+_SLUG_PISCINAS_OPERADOR = {"Piscina Adulto": "adulto", "Piscina Infantil": "infantil", "Piscina Family": "family"}
+
+
+def _slug_piscina_operador(nome: str) -> str:
+    """Sufixo das chaves dos campos do operador (op_<slug>_ph...), igual ao do formulário."""
+    return _SLUG_PISCINAS_OPERADOR.get(nome, slugify_nome(nome)[:12])
+
+
 def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     """Coleta estado atual do formulário do operador para salvar como rascunho."""
     dados = {
@@ -3587,6 +3612,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
         "assinatura_responsavel_data": st.session_state.get("op_assinatura_responsavel_data", ""),
         "piscinas": [],
         "dosagens": [],
+        "dosagens_por_piscina": {},
         "op_apos_ativo": bool(st.session_state.get("op_apos_ativo", False)),
         "parametros_apos": {
             "ph_apos":           re.sub(r"[^0-9.,]", "", str(st.session_state.get("op_ph_apos", ""))).replace(",", "."),
@@ -3599,10 +3625,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     }
     # Parâmetros por piscina
     for pisc_nome in piscinas_ativas:
-        _slug = slugify_nome(pisc_nome).lower()
-        abrev = ("adulto" if "adulto" in _slug else
-                 "infantil" if "infantil" in _slug else
-                 "family" if "family" in _slug else "outra")
+        abrev = _slug_piscina_operador(pisc_nome)
         _pisc_rasc = {
             "nome":        pisc_nome,
             "ph":          st.session_state.get(f"op_{abrev}_ph", ""),
@@ -3641,6 +3664,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
                 })
         if _dos_p:
             dados["dosagens"].extend(_dos_p)
+            dados["dosagens_por_piscina"][pisc_nome] = _dos_p
     # Fallback: campos legados op_dos_prod_i
     if not dados["dosagens"]:
         for i in range(5):
@@ -3698,10 +3722,7 @@ def restaurar_rascunho_operador(rascunho: dict):
             st.session_state[_key_apos] = str(_valor_apos).replace(".", ",")
     # Parâmetros por piscina
     for p in rascunho.get("piscinas", []):
-        _slug = slugify_nome(p.get("nome","")).lower()
-        abrev = ("adulto" if "adulto" in _slug else
-                 "infantil" if "infantil" in _slug else
-                 "family" if "family" in _slug else "outra")
+        abrev = _slug_piscina_operador(p.get("nome", ""))
         for campo, key in [
             ("ph", f"op_{abrev}_ph"), ("cloro_livre", f"op_{abrev}_crl"),
             ("cloro_total", f"op_{abrev}_ct"), ("alcalinidade", f"op_{abrev}_alc"),
@@ -3709,18 +3730,25 @@ def restaurar_rascunho_operador(rascunho: dict):
             ("turbidez", f"op_{abrev}_turbidez"), ("orp", f"op_{abrev}_orp"),
             ("tds", f"op_{abrev}_tds"), ("temperatura", f"op_{abrev}_temperatura"),
         ]:
-            if p.get(campo):
-                st.session_state[key] = p[campo]
+            if p.get(campo) not in (None, ""):  # "0" é medição válida
+                st.session_state[key] = str(p[campo])
         # Compatibilidade: rascunhos salvos com os campos pós-tratamento dentro da piscina.
         for _campo_apos, _key_apos in _map_restore_apos.items():
             if p.get(_campo_apos) and not st.session_state.get(_key_apos):
                 st.session_state[_key_apos] = str(p.get(_campo_apos)).replace(".", ",")
-    # Dosagens
-    for i, d in enumerate(rascunho.get("dosagens", [])[:5]):
-        st.session_state[f"op_dos_prod_{i}"] = d.get("produto", "")
-        st.session_state[f"op_dos_qtd_{i}"]  = d.get("quantidade", "")
-        st.session_state[f"op_dos_un_{i}"]   = d.get("unidade", "")
-        st.session_state[f"op_dos_fin_{i}"]  = d.get("finalidade", "")
+    # Dosagens: o formulário usa chaves por piscina (op_dos_<slug>_prod_<i>).
+    # Rascunhos antigos só têm a lista geral: ela vai para a primeira piscina.
+    _dos_por_pisc = rascunho.get("dosagens_por_piscina")
+    if not isinstance(_dos_por_pisc, dict) or not _dos_por_pisc:
+        _primeira = next((p.get("nome") for p in rascunho.get("piscinas", []) if p.get("nome")), "Piscina Adulto")
+        _dos_por_pisc = {_primeira: rascunho.get("dosagens", [])}
+    for _nome_pisc_d, _lista_d in _dos_por_pisc.items():
+        _slug_d = _slug_piscina_operador(_nome_pisc_d)
+        for i, d in enumerate((_lista_d or [])[:5]):
+            st.session_state[f"op_dos_{_slug_d}_prod_{i}"] = str(d.get("produto", "") or "")
+            st.session_state[f"op_dos_{_slug_d}_qtd_{i}"]  = str(d.get("quantidade", "") if d.get("quantidade") is not None else "")
+            st.session_state[f"op_dos_{_slug_d}_un_{i}"]   = str(d.get("unidade", "") or "")
+            st.session_state[f"op_dos_{_slug_d}_fin_{i}"]  = str(d.get("finalidade", "") or "")
 
 
 def aplicar_restauracao_pendente_operador():
@@ -3731,6 +3759,248 @@ def aplicar_restauracao_pendente_operador():
     restaurar_rascunho_operador(rasc)
     st.session_state["_rascunho_operador_restaurado_msg"] = True
     return True
+
+
+_RE_CAMPO_PISCINA_OP = re.compile(r"^op_(?!dos_).+_(ph|crl|ct|alc|dc|cya|turbidez|orp|tds|temperatura)$")
+_RE_CAMPO_DOSAGEM_OP = re.compile(r"^op_dos_.+_(prod|qtd|un|fin)_\d+$")
+
+
+def limpar_formulario_operador():
+    """Esvazia os campos da visita do operador (antes da criação dos widgets).
+
+    Cobre também piscinas com nome personalizado e as dosagens por piscina."""
+    ss = st.session_state
+    for pisc in ["adulto", "infantil", "family", "outra"]:
+        for k in ["ph", "crl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura"]:
+            ss[f"op_{pisc}_{k}"] = ""
+    for i in range(5):
+        for c in ["prod", "qtd", "un", "fin"]:
+            ss[f"op_dos_{c}_{i}"] = ""
+    for k in list(ss.keys()):
+        if _RE_CAMPO_PISCINA_OP.match(str(k)) or _RE_CAMPO_DOSAGEM_OP.match(str(k)):
+            ss[k] = ""
+        elif str(k).startswith("_sug_pisc_"):
+            ss.pop(k, None)
+    ss["op_obs_campo"] = ""
+    ss["op_problemas"] = ""
+    ss["op_resp_local"] = ""
+    ss["op_parecer_visita"] = "✅ Satisfatório"
+    ss["op_assinatura_responsavel_b64"] = ""
+    ss["op_assinatura_responsavel_data"] = ""
+    ss["_op_ass_canvas_nonce"] = ss.get("_op_ass_canvas_nonce", 0) + 1
+    for _k_apos in ["op_ph_apos", "op_crl_apos", "op_ct_apos", "op_alc_apos", "op_dc_apos", "op_cya_apos"]:
+        ss[_k_apos] = ""
+    ss["op_apos_ativo"] = False
+
+
+def _chave_fotos_operador(categoria: str) -> str:
+    """Chave do upload de fotos do operador; muda ao trocar de condomínio para que
+    as fotos de um local não continuem anexadas (nem sejam gravadas) no outro."""
+    nonce = st.session_state.get("_op_fotos_nonce", 0)
+    return f"op_fotos_{categoria}" if not nonce else f"op_fotos_{categoria}__{nonce}"
+
+
+def trocar_condominio_operador(anterior: str, novo: str) -> bool:
+    """Isola o formulário ao trocar de condomínio: guarda o rascunho do anterior
+    (só se houver conteúdo) e limpa campos e fotos antes de exibir o novo.
+
+    Se o rascunho do anterior não puder ser guardado (falha, exceção ou assinatura
+    coletada, que o rascunho local não guarda), nada é limpo: grava o motivo em
+    _op_troca_bloqueada e retorna False para a tela manter o condomínio anterior."""
+    ss = st.session_state
+    motivo = ""
+    if anterior:
+        try:
+            dados = coletar_rascunho_operador(anterior, ss.get("_op_piscinas_form") or ["Piscina Adulto"])
+            tem_conteudo = (
+                any(str(v).strip() for p in dados.get("piscinas", []) for k, v in p.items() if k != "nome")
+                or dados.get("dosagens")
+                or any(str(dados.get(k) or "").strip() for k in ("obs", "problemas", "resp_local", "assinatura_responsavel_b64"))
+            )
+            if str(dados.get("assinatura_responsavel_b64") or "").strip():
+                motivo = "há uma assinatura do responsável coletada, e ela não fica guardada no rascunho"
+            elif tem_conteudo and not salvar_rascunho_operador(anterior, dados, salvar_sheets=False):
+                motivo = "não foi possível salvar o rascunho"
+        except Exception as e:
+            motivo = f"não foi possível salvar o rascunho ({type(e).__name__})"
+    if motivo:
+        ss["_op_troca_bloqueada"] = {"anterior": anterior, "novo": novo, "motivo": motivo}
+        return False
+    ss.pop("_op_troca_bloqueada", None)
+    limpar_formulario_operador()
+    ss["_op_fotos_nonce"] = ss.get("_op_fotos_nonce", 0) + 1
+    ss.pop(f"_rascunho_visto_{slugify_nome(novo)}", None)
+    ss["_op_cond_form"] = novo
+    return True
+
+
+def chave_fotos_rt() -> str:
+    """Chave do upload de fotos do relatório RT; muda quando o RT troca de condomínio."""
+    nonce = st.session_state.get("_rt_fotos_nonce", 0)
+    return "rel_fotos_upload" if not nonce else f"rt_fotos_upload_{nonce}"
+
+
+# Campos de texto do relatório RT: na troca de condomínio recebem "" (gravado antes dos
+# widgets, o valor vazio chega à tela). Os demais campos rel_ (seleções, marcações) saem
+# do session_state e voltam ao padrão.
+_RT_OP_PREFIXOS_TEXTO = ("rel_analise_", "rel_obs_", "rel_foto_legenda_", "rel_dos_")
+_RT_OP_CAMPOS = ("rel_endereco_condominio", "rel_cnpj_condominio", "rel_representante", "rel_cpf_cnpj_representante",
+                 "rel_diagnostico", "rel_parecer_complemento_rt", "rel_art_numero", "rel_observacoes_gerais", "rel_cep")
+# Fora do rascunho por condomínio: período, data de emissão, nome (vem da seleção),
+# contadores recalculados pelo próprio fluxo, uploads e seletores com índice próprio
+# (rel_art_modo_rt2025/rel_art_numero_rt2025 são refeitos a partir de rel_art_numero/status).
+_RT_OP_FORA_DO_RASCUNHO = {"rel_mes_referencia", "rel_ano_referencia", "rel_data_emissao", "rel_nome_condominio",
+                           "rel_analises_total", "rel_verificacoes_semanais", "rel_fotos_upload",
+                           "rel_pdf_visita_importador", "rel_regerar_pdf_visita_idx", "rel_status_agua_select",
+                           "rel_art_modo_rt2025", "rel_art_numero_rt2025"}
+
+
+def _campos_rt_do_condominio() -> dict:
+    """Todos os campos rel_ que pertencem ao condomínio (análises, dosagens, observações,
+    parecer, identificação, ART, EPI, NBR...), com os valores atuais."""
+    ss = st.session_state
+    return {k: ss[k] for k in list(ss.keys())
+            if str(k).startswith("rel_") and k not in _RT_OP_FORA_DO_RASCUNHO}
+
+
+def limpar_formulario_rt_operador():
+    """Esvazia os dados específicos do condomínio no fluxo RT do operador
+    (antes da criação dos widgets), para que nada de um local passe ao outro."""
+    ss = st.session_state
+    for k, v in _campos_rt_do_condominio().items():
+        if isinstance(v, str) and (str(k).startswith(_RT_OP_PREFIXOS_TEXTO) or k in _RT_OP_CAMPOS):
+            ss[k] = ""
+        else:
+            ss.pop(k, None)  # seleções/marcações voltam ao padrão; ART nunca é presumida para outro condomínio
+    for k in _RT_OP_CAMPOS:
+        ss.setdefault(k, "")
+    for k in ("rel_art_modo_rt2025", "rel_art_numero_rt2025"):
+        ss.pop(k, None)
+    ss["_rt_fotos_nonce"] = ss.get("_rt_fotos_nonce", 0) + 1
+
+
+def _rascunho_rt_operador_path(cond: str) -> Path:
+    """Um arquivo por sessão e condomínio: outra sessão nunca lê nem sobrescreve este rascunho."""
+    ss = st.session_state
+    if not ss.get("_rt_op_sessao"):
+        ss["_rt_op_sessao"] = os.urandom(6).hex()
+    return GENERATED_DIR / slugify_nome(cond) / f"_rascunho_rt_operador_{ss['_rt_op_sessao']}.json"
+
+
+def trocar_condominio_rt_operador(anterior: str, novo: str) -> bool:
+    """Troca de condomínio no fluxo RT do operador sem descartar o que não foi salvo.
+
+    Todos os campos do condomínio (ver _campos_rt_do_condominio) vão para um rascunho
+    local desta sessão, com o período, antes da limpeza; a gravação é conferida lendo o
+    arquivo de volta. Se algum campo não puder ser guardado, se a gravação falhar ou se
+    houver fotos anexadas (o upload não pode ser guardado), nada é limpo: grava o motivo
+    em _rt_troca_bloqueada e retorna False.
+    Ao chegar a um condomínio com rascunho do mesmo período, os dados dele voltam uma
+    única vez (o arquivo é apagado), sobre o formulário recém-limpo: edições feitas
+    depois nunca são sobrescritas. Rascunho de outro mês não volta."""
+    ss = st.session_state
+    motivo = ""
+    try:
+        if ss.get(chave_fotos_rt()):
+            motivo = "há fotos anexadas, e elas não ficam guardadas no rascunho"
+        elif anterior:
+            campos = _campos_rt_do_condominio()
+            nao_gravaveis = [k for k, v in campos.items() if not (isinstance(v, (str, int, float, bool)) or v is None)]
+            if nao_gravaveis:
+                motivo = "o campo " + ", ".join(sorted(nao_gravaveis)[:3]) + " não pode ser guardado no rascunho"
+            elif any(str(v if v is not None else "").strip() for v in campos.values()):
+                dados = {"condominio": anterior, "mes": str(ss.get("rel_mes_referencia") or ""),
+                         "ano": str(ss.get("rel_ano_referencia") or ""), "campos": campos}
+                caminho = _rascunho_rt_operador_path(anterior)
+                caminho.parent.mkdir(parents=True, exist_ok=True)
+                caminho.write_text(json.dumps(dados, ensure_ascii=False), encoding="utf-8")
+                if json.loads(caminho.read_text(encoding="utf-8")).get("campos") != campos:
+                    motivo = "não foi possível confirmar o rascunho salvo"
+    except Exception as e:
+        motivo = f"não foi possível salvar o rascunho ({type(e).__name__})"
+    if motivo:
+        ss["_rt_troca_bloqueada"] = {"anterior": anterior, "novo": novo, "motivo": motivo}
+        return False
+    ss.pop("_rt_troca_bloqueada", None)
+    limpar_formulario_rt_operador()
+    ss.pop("_rt_rascunho_restaurado", None)
+    ss.pop("_rt_restore_erro", None)
+    try:
+        caminho = _rascunho_rt_operador_path(novo)
+        if caminho.exists():
+            dados = json.loads(caminho.read_text(encoding="utf-8"))
+            if (dados.get("mes"), dados.get("ano")) == (str(ss.get("rel_mes_referencia") or ""),
+                                                       str(ss.get("rel_ano_referencia") or "")):
+                for k, v in (dados.get("campos") or {}).items():
+                    if str(k).startswith("rel_") and k not in _RT_OP_FORA_DO_RASCUNHO:
+                        ss[k] = v
+                ss["_rt_rascunho_restaurado"] = novo
+                caminho.unlink()  # restaurado uma única vez; ao sair de novo é guardado outra vez
+    except Exception as e:
+        # O condomínio novo começa vazio; o arquivo fica no disco e o usuário é avisado.
+        ss["_rt_restore_erro"] = f"{type(e).__name__}: {e}"[:200]
+    return True
+
+
+# Widgets rel_ criados com index=/value= próprios (gravar a chave geraria aviso do Streamlit)
+_RT_CAMPOS_NAO_REAFIRMAR = {"rel_status_agua_select", "rel_art_modo_rt2025", "rel_art_numero_rt2025"}
+
+
+def preservar_campos_rt():
+    """Regrava os campos rel_ do relatório RT do escritório antes dos widgets.
+
+    O Streamlit só reenvia ao navegador o valor gravado na mesma execução: sem isto,
+    um valor gravado antes (mês padrão, dados do cliente carregado) aparece vazio na
+    tela e o próximo envio, como o upload de uma foto, devolve o vazio ao servidor.
+    A regravação também impede que um st.rerun() acima dos campos descarte os
+    valores dos widgets ainda não desenhados."""
+    ss = st.session_state
+    for k in [k for k in ss.keys() if str(k).startswith("rel_")]:
+        if k in _RASCUNHO_RT_NAO_RESTAURAR or k in _RT_CAMPOS_NAO_REAFIRMAR:
+            continue  # uploads não aceitam valor via session_state; os demais têm índice próprio
+        try:
+            ss[k] = ss[k]
+        except Exception:
+            pass  # widget já desenhado nesta execução: o valor já está na tela
+
+
+def periodo_relatorio_valido(mes, ano) -> bool:
+    """Mês 1–12 e ano com 4 dígitos (2000–2100). Sem período válido nada é importado."""
+    m, a = str(mes or "").strip(), str(ano or "").strip()
+    return m.isdigit() and 1 <= int(m) <= 12 and len(a) == 4 and a.isdigit() and 2000 <= int(a) <= 2100
+
+
+def _valores_importaveis_rt() -> dict:
+    """Campos que a importação de visitas preenche: análises, dosagens e observações gerais."""
+    ss = st.session_state
+    return {k: ss.get(k) for k in list(ss.keys())
+            if str(k).startswith(("rel_analise_", "rel_dos_")) or k == "rel_observacoes_gerais"}
+
+
+def _preenchidos(valores: dict) -> dict:
+    return {k: v for k, v in valores.items() if str(v if v is not None else "").strip()}
+
+
+def tabela_rt_livre_para_importar() -> bool:
+    """True se a tabela está vazia ou idêntica à última importação (sem edição do usuário).
+    Dados digitados ou restaurados de rascunho nunca são sobrescritos automaticamente."""
+    atuais = _preenchidos(_valores_importaveis_rt())
+    return not atuais or atuais == _preenchidos(st.session_state.get("_rel_autoimport_snapshot") or {})
+
+
+def registrar_importacao_rt(periodo: str):
+    """Guarda o que a importação preencheu, para reconhecer depois se houve edição."""
+    st.session_state["_rel_autoimport_snapshot"] = _valores_importaveis_rt()
+    st.session_state["_rel_autoimport_periodo"] = periodo
+
+
+def retirar_importacao_rt() -> str:
+    """Esvazia os valores da última importação (só chamar com a tabela sem edição).
+    Retorna o período que foi retirado ("" se não havia importação)."""
+    ss = st.session_state
+    for k in _preenchidos(ss.pop("_rel_autoimport_snapshot", None) or {}):
+        ss[k] = ""
+    return ss.pop("_rel_autoimport_periodo", "")
 
 
 def buscar_cep(cep: str) -> dict:
@@ -7108,7 +7378,7 @@ def inserir_assinatura_rt_no_doc(doc: Document):
 def salvar_uploads_relatorio(pasta_condominio: Path):
     """Salva fotos localmente E no Google Drive. Retorna caminhos locais para inserir no DOCX."""
     caminhos = []
-    arquivos = st.session_state.get("rel_fotos_upload") or []
+    arquivos = st.session_state.get(chave_fotos_rt()) or []
     pasta_fotos = pasta_condominio / "fotos_relatorio"
     pasta_fotos.mkdir(exist_ok=True)
     nome_cond = (st.session_state.get("rel_nome_condominio") or
@@ -9922,7 +10192,7 @@ def _salvar_uploads_relatorio_preview(pasta_preview: Path):
     prévia antes de gerar o relatório definitivo.
     """
     caminhos = []
-    arquivos = st.session_state.get("rel_fotos_upload") or []
+    arquivos = st.session_state.get(chave_fotos_rt()) or []
     pasta_preview.mkdir(parents=True, exist_ok=True)
     for idx, arquivo in enumerate(arquivos, start=1):
         try:
@@ -13442,7 +13712,32 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.warning("Nenhum condomínio disponível para o PIN RT neste momento.")
             _sel_cond_rt = ""
         else:
-            _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, index=0)
+            _rt_rev = st.session_state.pop("_rt_cond_reverter", None)
+            if _rt_rev in _conds_rt:  # troca cancelada na execução anterior: devolve a seleção
+                st.session_state["rt_op_sel_cond"] = _rt_rev
+            _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, key="rt_op_sel_cond")
+
+        # Isolamento por condomínio no fluxo RT: ao trocar, guarda os dados do anterior
+        # num rascunho local e limpa a tela; se não der para guardar, a troca é cancelada.
+        if _sel_cond_rt:
+            _cond_rt_anterior = st.session_state.get("_rt_cond_form")
+            if _cond_rt_anterior is not None and _cond_rt_anterior != _sel_cond_rt:
+                if not trocar_condominio_rt_operador(_cond_rt_anterior, _sel_cond_rt):
+                    _bloq_rt = st.session_state.get("_rt_troca_bloqueada") or {}
+                    st.session_state["_rt_cond_reverter"] = _cond_rt_anterior
+                    st.warning(
+                        f"⚠️ A troca para **{_sel_cond_rt}** foi cancelada: {_bloq_rt.get('motivo', 'não foi possível salvar o rascunho')}. "
+                        f"Os dados de **{_cond_rt_anterior}** continuam na tela e a seleção volta para ele. "
+                        + ("Remova as fotos anexadas antes de trocar (se o relatório já foi gerado, elas já estão nele)."
+                           if "fotos" in _bloq_rt.get("motivo", "") else "Gere o relatório antes de trocar de condomínio.")
+                    )
+                    _sel_cond_rt = _cond_rt_anterior
+            if st.session_state.get("_rt_restore_erro"):
+                st.warning(f"⚠️ Não foi possível recuperar os dados guardados de **{_sel_cond_rt}** "
+                           f"({st.session_state['_rt_restore_erro']}). O rascunho foi mantido; confira os campos.")
+            if st.session_state.get("_rt_rascunho_restaurado") == _sel_cond_rt:
+                st.info(f"Dados de **{_sel_cond_rt}** digitados antes nesta sessão foram recuperados do rascunho local.")
+            st.session_state["_rt_cond_form"] = _sel_cond_rt
 
         # Mês / Ano de referência (usa chaves já existentes no relatório mensal)
         _mes_opts = [str(i).zfill(2) for i in range(1, 13)]
@@ -13586,7 +13881,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "Fotos do relatório RT",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="rel_fotos_upload",
+            key=chave_fotos_rt(),
             help="As fotos podem ser inseridas no registro fotográfico do relatório mensal RT.",
         )
         fcol1, fcol2 = st.columns(2)
@@ -13677,7 +13972,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             return "\n".join([l for l in linhas if l]).strip()
 
         def _salvar_fotos_rt_upload(cond_nome: str, mes: str, ano: str) -> list[str]:
-            arquivos = st.session_state.get("rel_fotos_upload") or []
+            arquivos = st.session_state.get(chave_fotos_rt()) or []
             if not arquivos or not cond_nome:
                 return []
 
@@ -14000,10 +14295,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
     def _buscar_clientes_sheets_completo():
         return sheets_listar_clientes_completo()
 
-    # v5: restauração protegida — falha não derruba o app
+    # v5: restauração protegida — falha não derruba o app.
+    # Aplicada antes dos widgets, sem st.rerun(): um rerun aqui encerraria a execução
+    # antes da escolha do condomínio e o Streamlit descartaria essa escolha.
     try:
-        if aplicar_restauracao_pendente_operador():
-            st.rerun()
+        aplicar_restauracao_pendente_operador()
     except Exception as _e_rest:
         st.warning(f"Aviso ao restaurar rascunho: {_e_rest}")
 
@@ -14084,6 +14380,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             opcoes_cond = []
             st.warning("Seu PIN ainda não possui condomínios vinculados. Contate o administrador.")
 
+    _op_rev = st.session_state.pop("_op_cond_reverter", None)
+    if _op_rev:  # troca cancelada na execução anterior: devolve a seleção ao condomínio mantido
+        st.session_state["op_novo_cond"] = bool(_op_rev.get("livre"))
+        st.session_state["op_nome_livre" if _op_rev.get("livre") else "op_sel_cond"] = _op_rev.get("cond", "")
     op_usar_novo = st.checkbox("Lançar em local ainda não cadastrado", key="op_novo_cond")
     if op_usar_novo:
         op_nome_cond = st.text_input("Nome do local", key="op_nome_livre", placeholder="Ex.: Residencial Aquarela")
@@ -14152,6 +14452,29 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.warning("Nenhum condomínio disponível. Verifique seu nome ou contate o administrador.")
             op_nome_cond = ""
 
+    # Isolamento por condomínio: a troca guarda o rascunho do anterior e limpa
+    # campos e fotos antes que os widgets do formulário sejam criados. Corrigir o
+    # nome de um local livre ("ainda não cadastrado") é renomeação, não troca.
+    if op_nome_cond:
+        _cond_form_anterior = st.session_state.get("_op_cond_form")
+        _local_livre = bool(st.session_state.get("op_novo_cond"))
+        if _cond_form_anterior is not None and _cond_form_anterior != op_nome_cond:
+            if _local_livre and st.session_state.get("_op_cond_form_livre"):
+                st.session_state["_op_cond_form"] = op_nome_cond
+            elif not trocar_condominio_operador(_cond_form_anterior, op_nome_cond):
+                # Nada foi limpo: o formulário continua no anterior e a seleção volta a ele.
+                _bloq = st.session_state.get("_op_troca_bloqueada") or {}
+                _local_livre = bool(st.session_state.get("_op_cond_form_livre"))
+                st.session_state["_op_cond_reverter"] = {"cond": _cond_form_anterior, "livre": _local_livre}
+                st.warning(
+                    f"⚠️ A troca para **{op_nome_cond}** foi cancelada: {_bloq.get('motivo', 'não foi possível salvar o rascunho')}. "
+                    f"Os dados de **{_cond_form_anterior}** continuam na tela e a seleção volta para ele. "
+                    "Salve a visita ou use “Limpar campos” antes de trocar de condomínio."
+                )
+                op_nome_cond = _cond_form_anterior
+        st.session_state["_op_cond_form"] = op_nome_cond
+        st.session_state["_op_cond_form_livre"] = _local_livre
+
     def _fmt_data_op():
         v = apenas_digitos(st.session_state.get("op_data_visita", ""))[:8]
         if len(v) <= 2:
@@ -14213,6 +14536,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     st.success(f"✅ Piscinas salvas: {', '.join(_piscinas_ativas)}")
                     st.rerun()
         piscinas_ativas = _piscinas_ativas
+        st.session_state["_op_piscinas_form"] = piscinas_ativas
 
         # ── Indicador de autosave ────────────────────────────────────────────
         _rasc_path = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) / "_rascunho_operador.json"
@@ -14233,6 +14557,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
         # ── Verificar rascunho existente ─────────────────────────────────────
         _rascunho_op = carregar_rascunho_operador(op_nome_cond)
+        if st.session_state.get("_op_rascunho_erro"):
+            st.warning(f"⚠️ Não foi possível verificar o rascunho de **{op_nome_cond}**: "
+                       f"{st.session_state['_op_rascunho_erro']}. Confira os dados antes de salvar a visita.")
         _key_rascunho_visto = f"_rascunho_visto_{slugify_nome(op_nome_cond)}"
         if _rascunho_op and not st.session_state.get(_key_rascunho_visto):
             _salvo_em = _rascunho_op.get("_rascunho_salvo_em", "")
@@ -14263,22 +14590,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
         # Limpa campos SE houver limpeza pendente
         if st.session_state.pop("op_limpar_campos", False):
-            for pisc in ["adulto","infantil","family","outra"]:
-                for k in ["ph","crl","ct","alc","dc","cya","turbidez","orp","tds","temperatura"]:
-                    st.session_state[f"op_{pisc}_{k}"] = ""
-            for i in range(5):
-                for s in ["prod","qtd","un","fin"]:
-                    st.session_state[f"op_dos_{s}_{i}"] = ""
-            st.session_state["op_obs_campo"] = ""
-            st.session_state["op_problemas"] = ""
-            st.session_state["op_resp_local"] = ""
-            st.session_state["op_parecer_visita"] = "✅ Satisfatório"
-            st.session_state["op_assinatura_responsavel_b64"] = ""
-            st.session_state["op_assinatura_responsavel_data"] = ""
-            st.session_state["_op_ass_canvas_nonce"] = st.session_state.get("_op_ass_canvas_nonce", 0) + 1
-            for _k_apos in ["op_ph_apos","op_crl_apos","op_ct_apos","op_alc_apos","op_dc_apos","op_cya_apos"]:
-                st.session_state[_k_apos] = ""
-            st.session_state["op_apos_ativo"] = False
+            limpar_formulario_operador()
 
         # ── Autosave: função chamada a cada mudança de campo ─────────────────
         def _autosave_rascunho():
@@ -14578,10 +14890,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.markdown('<div class="op-title">📸 Fotos da visita</div>', unsafe_allow_html=True)
         st.caption("Fotos são salvas automaticamente ao fazer upload — não somem se o sinal cair.")
 
-        op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_antes")
-        op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_depois")
-        op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_cmaq")
-        op_fotos_extras = st.file_uploader("📋 Outras fotos (bordas, ralos, equipamentos...)", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key="op_fotos_extras")
+        op_fotos_antes  = st.file_uploader("🔵 Antes do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key=_chave_fotos_operador("antes"))
+        op_fotos_depois = st.file_uploader("🟢 Depois do tratamento", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key=_chave_fotos_operador("depois"))
+        op_fotos_cmaq   = st.file_uploader("🔧 Casa de máquinas", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key=_chave_fotos_operador("cmaq"))
+        op_fotos_extras = st.file_uploader("📋 Outras fotos (bordas, ralos, equipamentos...)", type=["jpg","jpeg","png","webp","heic"], accept_multiple_files=True, key=_chave_fotos_operador("extras"))
 
         # ── Salvamento imediato ao upload ─────────────────────────────────────
         # Pasta temporária de fotos do rascunho
@@ -14612,7 +14924,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _fotos_rasc_antes  = _salvar_foto_imediato(op_fotos_antes,  "antes")
         _fotos_rasc_depois = _salvar_foto_imediato(op_fotos_depois, "depois")
         _fotos_rasc_cmaq   = _salvar_foto_imediato(op_fotos_cmaq,   "cmaq")
-        op_fotos_extras = st.session_state.get("op_fotos_extras") or []
+        op_fotos_extras = st.session_state.get(_chave_fotos_operador("extras")) or []
         _fotos_rasc_extras = _salvar_foto_imediato(op_fotos_extras, "extras")
 
         # Também mostra fotos já salvas do rascunho anterior (sessão anterior)
@@ -21749,6 +22061,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-card aq-only" id="sec-relatorio-rt">', unsafe_allow_html=True)
 st.subheader("Relatório mensal de responsabilidade técnica")
+preservar_campos_rt()
 
 
 st.caption(f"Dados fixos automáticos do RT: {RESPONSAVEL_TECNICO_ASSINATURA} | Certificações {CERTIFICACOES_RT}")
@@ -21967,9 +22280,10 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
                 st.code(st.session_state.get("_sheets_ultimo_erro", "")[:2000])
 
 def _filtrar_mes(lancamentos, mes, ano):
-    """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data."""
-    if not mes or not ano:
-        return lancamentos
+    """Filtra lançamentos pelo mês/ano, aceitando vários formatos de data.
+    Sem mês e ano válidos não há período: nenhuma visita (nunca "todos os meses")."""
+    if not periodo_relatorio_valido(mes, ano):
+        return []
     return [lc for lc in lancamentos if lancamento_pertence_mes_ano(lc.get("data", ""), mes, ano)]
 
 def _limitar_lancamentos_rt_um_por_semana(lancamentos):
@@ -22003,8 +22317,14 @@ for lc in lancamentos_local + lancamentos_sheets:
         _vistos.add(_chave)
         lancamentos_disponiveis.append(lc)
 
-# Filtra por mês se informado
-lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref)
+# Filtra pelo período do relatório (mês e ano digitados, sem preencher ano automaticamente)
+_periodo_rel_ok = periodo_relatorio_valido(st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia"))
+lancamentos_disponiveis = _filtrar_mes(lancamentos_disponiveis, mes_ref, ano_ref) if _periodo_rel_ok else []
+if nome_rel_atual and not _periodo_rel_ok:
+    st.warning(
+        "⚠️ Preencha o **mês (01 a 12)** e o **ano (ex.: 2026)** de referência para importar as visitas de campo. "
+        "Enquanto o período estiver vazio ou inválido, nenhuma visita é importada e os campos e análises atuais são mantidos."
+    )
 
 # Manter somente a visita semanal de RT (terça-feira) e impedir duplicidade na semana.
 lancamentos_disponiveis = _limitar_lancamentos_rt_um_por_semana(
@@ -22089,7 +22409,13 @@ def _importar_lancamentos(lancamentos):
 # Autoimportação real para o relatório mensal.
 # Se houver lançamentos de campo no período, o relatório é alimentado automaticamente
 # uma vez por combinação condomínio/mês/ano/quantidade/último lançamento.
-if lancamentos_disponiveis:
+# Só com período válido e com a tabela vazia ou ainda igual à última importação:
+# análises digitadas, editadas ou restauradas de rascunho nunca são sobrescritas.
+# Ao mudar de período sem visitas, os dados importados (não editados) do período
+# anterior saem da tabela, para que setembro não apareça no relatório de outubro.
+_rel_importou_agora = False
+_periodo_rel_txt = f"{mes_ref}/{ano_ref}"
+if _periodo_rel_ok and nome_rel_atual:
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
@@ -22104,13 +22430,32 @@ if lancamentos_disponiveis:
         ])
 
         if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:
-            _importar_lancamentos(lancamentos_disponiveis)
-            st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
-            st.session_state["_rel_autoimport_msg"] = (
-                f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
-                f"para o relatório {mes_ref}/{ano_ref}."
-            )
-            st.rerun()
+            if not tabela_rt_livre_para_importar():
+                _per_ant = st.session_state.get("_rel_autoimport_periodo", "")
+                st.warning(
+                    "⚠️ A tabela de análises tem dados digitados ou editados"
+                    + (f" (vindos da importação de {_per_ant})" if _per_ant and _per_ant != _periodo_rel_txt else "")
+                    + (f", por isso as visitas de {_periodo_rel_txt} não foram importadas automaticamente. "
+                       "Confira a tabela; para substituí-la, use “Importar lançamentos para o relatório”."
+                       if lancamentos_disponiveis else
+                       f" e não há visitas em {_periodo_rel_txt}. Os dados foram mantidos: confira antes de gerar o relatório.")
+                )
+            elif lancamentos_disponiveis:
+                _importar_lancamentos(lancamentos_disponiveis)
+                registrar_importacao_rt(_periodo_rel_txt)
+                _rel_importou_agora = True
+                st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
+                st.session_state["_rel_autoimport_msg"] = (
+                    f"✅ {len(lancamentos_disponiveis)} lançamento(s) de campo importado(s) automaticamente "
+                    f"para o relatório {mes_ref}/{ano_ref}."
+                )
+                # Sem rerun aqui: os campos da tabela ficam abaixo e já recebem os valores nesta
+                # execução; um rerun descartaria o upload de fotos ainda não desenhado.
+            else:
+                _per_retirado = retirar_importacao_rt()
+                st.session_state["_rel_autoimport_assinatura"] = _assinatura_auto
+                if _per_retirado and _per_retirado != _periodo_rel_txt:
+                    st.info(f"ℹ️ As análises importadas de {_per_retirado} foram retiradas: não há visitas em {_periodo_rel_txt}.")
     except Exception as e:
         _log_sheets_erro("autoimportar_lancamentos_relatorio_mensal", e)
 
@@ -22136,6 +22481,7 @@ if lancamentos_disponiveis:
     with imp1:
         if st.button("📥 Importar lançamentos para o relatório", use_container_width=True, type="primary"):
             _importar_lancamentos(lancamentos_disponiveis)
+            registrar_importacao_rt(_periodo_rel_txt)
             st.success(f"✅ {_total} lançamento(s) importado(s) com sucesso!")
             st.rerun()
 
@@ -22169,23 +22515,22 @@ if lancamentos_disponiveis:
                     st.caption(f"   📝 {lc['observacao']}")
 
 else:
-    if nome_rel_atual:
+    if nome_rel_atual and _periodo_rel_ok:
         st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
 
 
 # Importação automática após carregar cliente cadastrado: evita depender do botão manual
 # e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
-if st.session_state.pop("_rel_auto_importar_cliente", False):
+if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok:
     if lancamentos_disponiveis:
-        # Importa apenas se nao ha dados ja preenchidos na tabela — evita apagar trabalho manual
-        _tem_dados_tabela = any(
-            str(st.session_state.get(f"rel_analise_ph_{i}") or "").strip()
-            for i in range(int(st.session_state.get("rel_analises_total", 12) or 12))
-        )
-        if not _tem_dados_tabela:
+        # A importação automática acima já cuidou disto; só importa aqui se a tabela
+        # estiver livre (vazia ou igual à última importação) — evita apagar trabalho manual.
+        if _rel_importou_agora:
+            pass
+        elif tabela_rt_livre_para_importar():
             _importar_lancamentos(lancamentos_disponiveis)
+            registrar_importacao_rt(_periodo_rel_txt)
             st.success(f"✅ {len(lancamentos_disponiveis)} lançamento(s) importado(s) automaticamente.")
-            st.rerun()
         else:
             st.info(f"ℹ️ {len(lancamentos_disponiveis)} lançamento(s) disponível(is). Clique em Importar para carregar (irá substituir dados atuais).")
     elif nome_rel_atual:
@@ -22231,7 +22576,7 @@ with rd2:
         "Upload de fotos do relatório",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
-        key="rel_fotos_upload",
+        key=chave_fotos_rt(),
         help="As fotos serão salvas na pasta do condomínio e inseridas no relatório."
     )
     st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
