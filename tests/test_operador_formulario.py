@@ -29,7 +29,7 @@ FUNCOES = [
     "limpar_formulario_operador", "_chave_fotos_operador", "trocar_condominio_operador",
     "chave_fotos_rt", "_campos_rt_do_condominio", "limpar_formulario_rt_operador", "_rascunho_rt_operador_path",
     "trocar_condominio_rt_operador",
-    "salvar_rascunho_operador",
+    "salvar_rascunho_operador", "carregar_rascunho_operador",
 ]
 CONSTANTES = {"_SLUG_PISCINAS_OPERADOR", "_RE_CAMPO_PISCINA_OP", "_RE_CAMPO_DOSAGEM_OP", "_RT_OP_PREFIXOS_TEXTO", "_RT_OP_PREFIXOS", "_RT_OP_CAMPOS",
               "_RT_OP_FORA_DO_RASCUNHO"}
@@ -65,7 +65,7 @@ def _sessao(resultado_salvar=True, pasta=None):
             raise resultado_salvar
         return resultado_salvar
 
-    ns = {"st": _St(), "re": re, "json": json, "os": os, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
+    ns = {"st": _St(), "re": re, "json": json, "os": os, "shutil": shutil, "datetime": datetime, "Path": Path, "GENERATED_DIR": pasta,
           "slugify_nome": slugify_nome, "_agora_brasilia": lambda: "26/10/2026 10:00:00",
           "_rascunho_usa_sheets": lambda: False}
     exec(CODIGO, ns)
@@ -394,6 +394,45 @@ class TestRascunhoRTCompleto(unittest.TestCase):
         self.assertNotIn("_rt_rascunho_restaurado", s2["ss"])
         s1["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa")  # a sessão 1 continua recuperando
         self.assertEqual(s1["ss"]["rel_dos_produto_0"], "Cloro granulado")
+
+
+class TestErrosDeRestauracaoComunicados(unittest.TestCase):
+    def test_rascunho_do_operador_ilegivel_gera_aviso_e_e_preservado(self):
+        s = _sessao()
+        pasta = s["pasta"] / slugify_nome("Condomínio Alfa")
+        pasta.mkdir()
+        (pasta / "_rascunho_operador.json").write_text("{json corrompido", encoding="utf-8")
+        self.assertEqual(s["carregar_rascunho_operador"]("Condomínio Alfa"), {})
+        self.assertIn("ilegível", s["ss"]["_op_rascunho_erro"])
+        self.assertTrue((pasta / "_rascunho_operador.json").exists())  # original não é apagado
+        copias = list(pasta.glob("_rascunho_operador_ilegivel_*.json"))
+        self.assertEqual([c.read_text(encoding="utf-8") for c in copias], ["{json corrompido"])
+
+    def test_leitura_bem_sucedida_limpa_aviso_anterior(self):
+        s = _sessao()
+        s["salvar_rascunho_operador_real"]("Condomínio Alfa", {"obs": "x"})
+        s["ss"]["_op_rascunho_erro"] = "antigo"
+        self.assertEqual(s["carregar_rascunho_operador"]("Condomínio Alfa")["obs"], "x")
+        self.assertNotIn("_op_rascunho_erro", s["ss"])
+
+    def test_rascunho_rt_ilegivel_gera_aviso_e_e_mantido(self):
+        s = _sessao()
+        ss = s["ss"]
+        ss.update(PERIODO, **RT_COMPLETO_A)
+        s["trocar_condominio_rt_operador"]("Condomínio Alfa", "Residencial Beta")
+        caminho = s["_rascunho_rt_operador_path"]("Condomínio Alfa")
+        caminho.write_text("{corrompido", encoding="utf-8")
+        self.assertTrue(s["trocar_condominio_rt_operador"]("Residencial Beta", "Condomínio Alfa"))
+        self.assertIn("JSONDecodeError", ss["_rt_restore_erro"])
+        self.assertTrue(caminho.exists())  # mantido para recuperação manual
+        self.assertNotIn("_rt_rascunho_restaurado", ss)
+
+    def test_avisos_ligados_na_tela(self):
+        src = APP.read_text(encoding="utf-8")
+        self.assertIn('if st.session_state.get("_op_rascunho_erro"):', src)
+        self.assertIn('if st.session_state.get("_rt_restore_erro"):', src)
+        self.assertIn('st.warning(f"Aviso ao restaurar rascunho: {_e_rest}")', src)  # aplicação no operador
+        self.assertIn('st.error(f"Não foi possível restaurar o rascunho: {ss[\'_relatorio_rt_restore_erro\']}")', src)
 
 
 class TestLigacoesNoApp(unittest.TestCase):

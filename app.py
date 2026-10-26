@@ -3509,7 +3509,12 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
 
 
 def carregar_rascunho_operador(nome_cond: str) -> dict:
-    """Carrega rascunho: arquivo local primeiro, fallback no Sheets apos sleep."""
+    """Carrega rascunho: arquivo local primeiro, fallback no Sheets apos sleep.
+
+    Falhas de leitura não são ignoradas: o motivo fica em _op_rascunho_erro para a tela
+    avisar, e um arquivo local ilegível é copiado à parte (nunca apagado) antes que o
+    salvamento automático grave por cima."""
+    st.session_state.pop("_op_rascunho_erro", None)
     # 1. Arquivo local
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
@@ -3517,8 +3522,15 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
         if rascunho_path.exists():
             with open(rascunho_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        erro = f"rascunho local ilegível ({type(e).__name__})"
+        try:
+            copia = rascunho_path.with_name(f"_rascunho_operador_ilegivel_{datetime.now():%Y%m%d_%H%M%S}.json")
+            shutil.copy2(rascunho_path, copia)
+            erro += f"; uma cópia foi guardada em {copia.name}"
+        except Exception:
+            pass
+        st.session_state["_op_rascunho_erro"] = erro
 
     # 2. Fallback Google Sheets (nunca no Codespaces)
     if not _rascunho_usa_sheets():
@@ -3543,8 +3555,10 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
                     except Exception:
                         pass
                     return dados
-    except Exception:
-        pass
+    except Exception as e:
+        anterior = st.session_state.get("_op_rascunho_erro")
+        st.session_state["_op_rascunho_erro"] = (f"{anterior}; " if anterior else "") + \
+            f"não foi possível ler o rascunho na planilha ({type(e).__name__})"
 
     return {}
 
@@ -3910,6 +3924,7 @@ def trocar_condominio_rt_operador(anterior: str, novo: str) -> bool:
     ss.pop("_rt_troca_bloqueada", None)
     limpar_formulario_rt_operador()
     ss.pop("_rt_rascunho_restaurado", None)
+    ss.pop("_rt_restore_erro", None)
     try:
         caminho = _rascunho_rt_operador_path(novo)
         if caminho.exists():
@@ -3921,8 +3936,9 @@ def trocar_condominio_rt_operador(anterior: str, novo: str) -> bool:
                         ss[k] = v
                 ss["_rt_rascunho_restaurado"] = novo
                 caminho.unlink()  # restaurado uma única vez; ao sair de novo é guardado outra vez
-    except Exception:
-        pass  # rascunho ilegível: o condomínio novo começa vazio, como antes
+    except Exception as e:
+        # O condomínio novo começa vazio; o arquivo fica no disco e o usuário é avisado.
+        ss["_rt_restore_erro"] = f"{type(e).__name__}: {e}"[:200]
     return True
 
 
@@ -13716,6 +13732,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                            if "fotos" in _bloq_rt.get("motivo", "") else "Gere o relatório antes de trocar de condomínio.")
                     )
                     _sel_cond_rt = _cond_rt_anterior
+            if st.session_state.get("_rt_restore_erro"):
+                st.warning(f"⚠️ Não foi possível recuperar os dados guardados de **{_sel_cond_rt}** "
+                           f"({st.session_state['_rt_restore_erro']}). O rascunho foi mantido; confira os campos.")
             if st.session_state.get("_rt_rascunho_restaurado") == _sel_cond_rt:
                 st.info(f"Dados de **{_sel_cond_rt}** digitados antes nesta sessão foram recuperados do rascunho local.")
             st.session_state["_rt_cond_form"] = _sel_cond_rt
@@ -14538,6 +14557,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
         # ── Verificar rascunho existente ─────────────────────────────────────
         _rascunho_op = carregar_rascunho_operador(op_nome_cond)
+        if st.session_state.get("_op_rascunho_erro"):
+            st.warning(f"⚠️ Não foi possível verificar o rascunho de **{op_nome_cond}**: "
+                       f"{st.session_state['_op_rascunho_erro']}. Confira os dados antes de salvar a visita.")
         _key_rascunho_visto = f"_rascunho_visto_{slugify_nome(op_nome_cond)}"
         if _rascunho_op and not st.session_state.get(_key_rascunho_visto):
             _salvo_em = _rascunho_op.get("_rascunho_salvo_em", "")
