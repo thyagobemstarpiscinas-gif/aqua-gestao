@@ -303,7 +303,84 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         at.run()
         self._verificar_preservado(at, esperado, "nome duplicado no cadastro")
         self.assertTrue(any("cadastros com o nome" in w.value for w in at.warning))
-        self.assertFalse(self._gerar_desabilitado(at))  # identificação duvidosa não impede relatório manual
+        # Dados de origem duvidosa: geração só com confirmação explícita, nada apagado.
+        self.assertTrue(self._gerar_desabilitado(at))
+        self._confirmacao(at)[0].check().run()
+        self.assertFalse(self._gerar_desabilitado(at))
+        self._verificar_preservado(at, esperado, "após confirmar a origem")
+
+    # ---- Ambiguidade que surge depois da importação (auditoria do 75fcbfd)
+    def _cadastrar(self, id_, nome, empresa="Aqua Gestão"):
+        import streamlit as st_real
+        linha = [""] * 15
+        linha[1], linha[2], linha[8], linha[12] = id_, nome, "Ativo", empresa
+        sys.modules["gspread"].PLANILHA.worksheet("👥 Clientes").linhas.append(linha)
+        st_real.cache_data.clear()
+
+    def _visitas_alfa(self, *linhas):
+        """Substitui as visitas fictícias de Alfa (data, nome gravado na visita, pH, CRL)."""
+        aba = sys.modules["gspread"].PLANILHA.worksheet("🔬 Visitas")
+        aba.linhas = aba.linhas[:1] + [
+            ["", f"V{i}", data, "", nome, ph, crl, "1,8", "90", "", "0"] + [""] * 15
+            for i, (data, nome, ph, crl) in enumerate(linhas, start=1)]
+
+    def _analises(self, at, n=2):
+        ss = at.session_state
+        return [(ss[f"rel_analise_data_{i}"], ss[f"rel_analise_ph_{i}"], ss[f"rel_analise_cl_{i}"]) for i in range(n)]
+
+    def _confirmacao(self, at):
+        return [c for c in at.checkbox if c.label.startswith("Revisei")]
+
+    def test_visita_que_fica_ambigua_depois_de_importada_nao_apaga_analises(self):
+        self._visitas_alfa(("29/09/2026", "Alfa", "7,4", "1,5"))  # gravada com nome abreviado
+        at = self._entrar_e_carregar()
+        self._mes(at, "09")
+        self.assertEqual(self._analises(at, 1), [("29/09/2026", "7,4", "1,5")])
+        self.assertFalse(self._gerar_desabilitado(at))
+        self._cadastrar("C10", "Alfa Park Fictício")  # "Alfa" passa a ser ambígua
+        at.run()
+        self.assertEqual(self._analises(at, 1), [("29/09/2026", "7,4", "1,5")])  # antes: ('', '', '')
+        self.assertTrue(any("mais de um condomínio" in w.value for w in at.warning))
+        self.assertFalse(any("Nenhum lançamento de campo encontrado" in i.value for i in at.info))
+        # Geração só depois de validação explícita da origem dos dados.
+        self.assertTrue(self._gerar_desabilitado(at))
+        self.assertEqual(len(self._confirmacao(at)), 1)
+        self._confirmacao(at)[0].check().run()
+        self.assertFalse(self._gerar_desabilitado(at))
+        self._mes(at, "10")
+        self._mes(at, "09")  # troca de período: a validação vale só para o período validado
+        self.assertTrue(self._gerar_desabilitado(at))
+        self.assertEqual(self._analises(at, 1), [("29/09/2026", "7,4", "1,5")])
+
+    def test_ambiguidade_parcial_e_edicao_manual_preservam_todas_as_linhas(self):
+        self._visitas_alfa(("15/09/2026", "Alfa", "7,1", "1,1"), ("29/09/2026", "Condomínio Alfa Fictício", "7,4", "1,5"))
+        at = self._entrar_e_carregar()
+        self._mes(at, "09")
+        antes = self._analises(at, 2)
+        self.assertEqual(antes, [("15/09/2026", "7,1", "1,1"), ("29/09/2026", "7,4", "1,5")])
+        self._cadastrar("C10", "Alfa Park Fictício")
+        at.run()
+        self.assertEqual(self._analises(at, 2), antes)  # antes: só a linha de 29/09 era reimportada
+        at.text_input(key="rel_analise_cl_1").input("1,6").run()  # edição manual
+        at.run()
+        self.assertEqual(self._analises(at, 2), [antes[0], ("29/09/2026", "7,4", "1,6")])
+
+    def test_rascunho_restaurado_durante_ambiguidade_nao_e_apagado(self):
+        self._visitas_alfa(("29/09/2026", "Alfa", "7,4", "1,5"))
+        at = self._entrar_e_carregar()
+        self._mes(at, "09")
+        at.text_area(key="rel_diagnostico").input("Diagnóstico do rascunho").run()  # gera o rascunho
+        self._cadastrar("C10", "Alfa Park Fictício")
+        # Nova sessão (ex.: página recarregada) restaura o rascunho com a visita já ambígua.
+        at2 = self._entrar_e_carregar()
+        restaurar = [b for b in at2.button if (b.key or "").startswith("btn_restaurar_rascunho_rt_")]
+        self.assertTrue(restaurar, "rascunho não oferecido para restauração")
+        restaurar[0].click().run()
+        at2.run()
+        at2.run()
+        self.assertEqual(self._analises(at2, 1), [("29/09/2026", "7,4", "1,5")])
+        self.assertEqual(at2.session_state["rel_diagnostico"], "Diagnóstico do rascunho")
+        self.assertFalse(at2.exception, at2.exception)
 
     def test_nome_digitado_semelhante_a_cadastro_nao_importa_e_mantem_formulario(self):
         at = self._entrar_e_carregar()

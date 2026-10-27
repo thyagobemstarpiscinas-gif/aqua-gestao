@@ -2028,7 +2028,9 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
     Lança _ClientesIndisponiveis ou _VisitasIndisponiveis quando a planilha não pode
     ser lida: exceções não ficam em cache, então uma falha nunca vira "sem visitas".
     Retorna {"status", "visitas", "bloqueio", "aviso", "ambiguas"}, com status "ok"
-    (consulta feita, com ou sem visitas) ou "bloqueio" (identificação duvidosa)."""
+    (consulta feita e completa, com ou sem visitas), "ambiguo" (consulta feita, mas
+    visitas de identificação duvidosa ficaram de fora: a lista é incompleta) ou
+    "bloqueio" (o próprio nome do condomínio é duvidoso)."""
     resultado = {"status": "ok", "visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
     cadastro = _ler_cadastro_identificacao()
     alvo_n = normalizar_texto_busca(nome_condominio)
@@ -2137,10 +2139,12 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
         resultado["visitas"] = lancamentos
         resultado["ambiguas"] = ambiguas
         if ambiguas:
+            resultado["status"] = "ambiguo"  # lista incompleta: não vale como "sem visitas" nem como lista final
             resultado["aviso"] = (
                 f"⚠️ {len(ambiguas)} visita(s) gravada(s) com nome que corresponde a mais de um condomínio cadastrado "
                 f"não foram importadas: {', '.join(ambiguas[:5])}{'…' if len(ambiguas) > 5 else ''}. "
-                "Os registros continuam na planilha."
+                "Os registros continuam na planilha e os dados já preenchidos no relatório foram mantidos; "
+                "a importação automática fica suspensa até a identificação ser resolvida."
             )
         return resultado
 
@@ -2152,10 +2156,12 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
 def situacao_visitas_condominio(nome_condominio: str) -> dict:
     """Situação da consulta de visitas de um condomínio, sem lançar exceção.
 
-    status "ok": consulta feita (visitas pode estar vazia: ausência legítima);
-    status "bloqueio": identificação duvidosa (nome duplicado ou semelhante);
+    status "ok": consulta feita e completa (visitas pode estar vazia: ausência legítima);
+    status "ambiguo": consulta feita, mas visitas duvidosas ficaram de fora (incompleta);
+    status "bloqueio": o nome do condomínio é duvidoso (duplicado ou semelhante);
     status "falha": cadastro de clientes ou aba 🔬 Visitas não puderam ser lidos.
-    Fora de "ok", nada deve ser importado, retirado ou gerado a partir das visitas."""
+    Fora de "ok", nada é importado ou retirado automaticamente; "ambiguo" e "bloqueio"
+    exigem validação explícita para gerar, e "falha" suspende a geração."""
     try:
         return _situacao_visitas_cache(nome_condominio)
     except _ClientesIndisponiveis:
@@ -2168,6 +2174,32 @@ def situacao_visitas_condominio(nome_condominio: str) -> dict:
             "⚠️ Não foi possível ler a aba 🔬 Visitas da planilha. Isto é uma falha de consulta, não ausência de "
             "visitas: nada foi importado nem retirado e os dados do relatório foram mantidos. "
             "Tente novamente em instantes.")}
+
+
+def chave_validacao_origem(relatorio: str, nome_condominio: str, mes, ano) -> str:
+    """Chave da confirmação explícita de que os dados do relatório pertencem ao
+    condomínio e período; muda com o condomínio e o período, e não entra em rascunhos."""
+    return f"_validar_origem_{relatorio}_{slugify_nome(str(nome_condominio or ''))}_{str(mes or '').zfill(2)}_{ano or ''}"
+
+
+def origem_validada(situacao: dict, chave: str) -> bool:
+    """Pode gerar? "ok" sim; "falha" nunca; "ambiguo"/"bloqueio" só com confirmação explícita."""
+    status = situacao.get("status", "ok")
+    if status == "ok":
+        return True
+    if status == "falha":
+        return False
+    return bool(st.session_state.get(chave))
+
+
+def caixa_validacao_origem(situacao: dict, chave: str, nome_condominio: str, periodo: str):
+    """Mostra a confirmação explícita quando a identificação das visitas é duvidosa."""
+    if situacao.get("status") in ("ambiguo", "bloqueio"):
+        st.checkbox(
+            f"Revisei os dados do relatório e confirmo que pertencem a {nome_condominio} ({periodo}), "
+            "apesar do aviso de identificação das visitas.",
+            key=chave,
+        )
 
 
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
@@ -10948,6 +10980,10 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     if _situacao_csr.get("status") == "falha":
         # Falha de consulta não é ausência de visitas: não gera relatório incompleto.
         return {"ok": False, "erros": [_situacao_csr["aviso"]], "mensagem": _situacao_csr["aviso"]}
+    if not origem_validada(_situacao_csr, chave_validacao_origem("bem_star", csr_sel, csr_mes, csr_ano)):
+        msg = (f"{_situacao_csr['aviso']} Confirme a origem dos dados na tela do relatório Bem Star "
+               "para gerar com as visitas identificadas.")
+        return {"ok": False, "erros": [msg], "mensagem": msg}
 
     vistos = set()
     lancamentos_todos = []
@@ -14049,16 +14085,25 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.caption("Use Pré-visualizar para importar automaticamente as leituras do período e edite os campos acima quando necessário.")
 
         # Botões de ação: pré-visualizar registros técnicos e gerar PDF
+        # Confirmação explícita quando a identificação das visitas do condomínio é duvidosa.
+        _rt_eh_todos = normalizar_texto_busca(_sel_cond_rt or "") == "todos"
+        _rt_chave_validacao = chave_validacao_origem("rt_operador", _sel_cond_rt, _sel_mes, _sel_ano)
+        if _sel_cond_rt and not _rt_eh_todos:
+            caixa_validacao_origem(situacao_visitas_condominio(_sel_cond_rt), _rt_chave_validacao,
+                                   _sel_cond_rt, f"{_sel_mes}/{_sel_ano}")
+
         preview_col, gerar_col = st.columns([1, 1])
         registros_preview = st.empty()
 
         _rt_consultas_falhas = []  # condomínios cuja consulta falhou na última busca
+        _rt_consultas_duvidosas = []  # condomínios com identificação duvidosa (ambígua ou bloqueada)
 
         def _buscar_registros_rt(cond_nome, mes, ano):
             # Obtem lancamentos do Sheets e filtra por condominio/periodo/origem RT.
             # "TODOS" (quando disponível) representa somente condominios Aqua desta lista.
             # Consultas que falharam ficam em _rt_consultas_falhas (falha não é "sem registros").
             _rt_consultas_falhas.clear()
+            _rt_consultas_duvidosas.clear()
             nomes_consulta = []
             if normalizar_texto_busca(cond_nome) == "todos":
                 nomes_consulta = [c for c in _conds_rt if normalizar_texto_busca(c) != "todos"]
@@ -14074,6 +14119,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         st.warning(f"{nome_consulta}: {_situacao_rt['aviso']}")
                     if _situacao_rt.get("status") == "falha":
                         _rt_consultas_falhas.append(nome_consulta)
+                    elif _situacao_rt.get("status") in ("ambiguo", "bloqueio"):
+                        _rt_consultas_duvidosas.append(nome_consulta)
                 except Exception:
                     todos_sheets = []
                     _rt_consultas_falhas.append(nome_consulta)
@@ -14288,6 +14335,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if _rt_consultas_falhas:
                 st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
                          "Os campos foram mantidos; tente novamente quando a conexão voltar.")
+                st.stop()
+            if _rt_consultas_duvidosas and (_rt_eh_todos or not st.session_state.get(_rt_chave_validacao)):
+                st.error(
+                    "A identificação das visitas de " + ", ".join(_rt_consultas_duvidosas) + " é duvidosa. "
+                    + ("Gere o relatório desse condomínio individualmente e confirme a origem dos dados."
+                       if _rt_eh_todos else "Confirme a origem dos dados (caixa acima) para gerar.")
+                    + " Os campos foram mantidos."
+                )
                 st.stop()
 
             # Evita alterar session_state de widgets já instanciados no Streamlit.
@@ -18656,6 +18711,10 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 _lanc_sheets_csr = _situacao_csr_tela["visitas"]
                 if _situacao_csr_tela["aviso"]:
                     st.warning(_situacao_csr_tela["aviso"])
+                _ano_csr_val = str(csr_ano or "").strip() or str(datetime.now().year)
+                caixa_validacao_origem(_situacao_csr_tela,
+                                       chave_validacao_origem("bem_star", csr_sel, str(csr_mes or "").strip(), _ano_csr_val),
+                                       csr_sel, f"{str(csr_mes or '').strip()}/{_ano_csr_val}")
                 if _situacao_csr_tela["bloqueio"]:
                     _lanc_local_csr = []  # pasta local identificada só pelo nome
             except Exception:
@@ -23016,13 +23075,18 @@ st.markdown("---")
 btn_col1, btn_col2 = st.columns([2, 1])
 with btn_col1:
     _rel_consulta_falhou = _situacao_rel["status"] == "falha"
+    _rel_chave_validacao = chave_validacao_origem("rt", nome_rel_atual, mes_ref, ano_ref)
+    caixa_validacao_origem(_situacao_rel, _rel_chave_validacao, nome_rel_atual, f"{mes_ref}/{ano_ref}")
+    _rel_pode_gerar = origem_validada(_situacao_rel, _rel_chave_validacao)
     rel_gerar = st.button(
-        "🚀 Gerar relatório mensal", use_container_width=True, type="primary", disabled=_rel_consulta_falhou,
-        help="Indisponível enquanto a consulta às visitas falhar; o rascunho é mantido." if _rel_consulta_falhou else None,
+        "🚀 Gerar relatório mensal", use_container_width=True, type="primary", disabled=not _rel_pode_gerar,
+        help=None if _rel_pode_gerar else "Indisponível até a consulta voltar ou a origem dos dados ser confirmada; o rascunho é mantido.",
     )
     if _rel_consulta_falhou:
         st.caption("⏸️ Geração suspensa: a consulta às visitas falhou. Os campos e o rascunho foram mantidos; "
                    "tente novamente quando a conexão voltar.")
+    elif not _rel_pode_gerar:
+        st.caption("⏸️ Geração suspensa até você confirmar a origem dos dados (caixa acima). Nada foi apagado.")
 with btn_col2:
     if st.button("🗑️ Limpar rascunho", use_container_width=True):
         if _pasta_rasc and _pasta_rasc.exists():
@@ -24413,9 +24477,9 @@ if gerar:
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
 
-if rel_gerar and _situacao_rel["status"] == "falha":
-    st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
-             "Os campos e o rascunho foram mantidos; tente novamente quando a conexão voltar.")
+if rel_gerar and not origem_validada(_situacao_rel, _rel_chave_validacao):
+    st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou ou a origem dos dados "
+             "precisa ser confirmada. Os campos e o rascunho foram mantidos.")
 elif rel_gerar:
     ok_rel, msg_rel = gerar_relatorio_mensal()
     if ok_rel:

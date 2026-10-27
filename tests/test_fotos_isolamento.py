@@ -274,6 +274,7 @@ def _visita(id_, data, cond, id_cliente=""):
 
 CABECALHO_CLIENTES = ["", "ID", "Nome"] + [""] * 12
 IDENTIFICACAO = ["sheets_listar_clientes", "sheets_listar_lancamentos", "_visita_pertence_ao_condominio",
+                 "chave_validacao_origem", "origem_validada",
                  "_ClientesIndisponiveis", "_VisitasIndisponiveis", "_ler_cadastro_identificacao", "_resolver_condominio_da_visita",
                  "_situacao_visitas_cache", "situacao_visitas_condominio"]
 
@@ -408,6 +409,32 @@ class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
                          ("ok", ["V20", "V21"], ""))
         self.assertEqual(listar("Condomínio Inexistente"), [])
 
+    def test_lista_com_visitas_ambiguas_e_incompleta_e_nao_ok(self):
+        ns, listar, _ = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("C2", "Residencial Aurora II", "Aqua Gestão")],
+            [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V9", "13/10/2026", "Aurora")])
+        situacao = ns["situacao_visitas_condominio"]("Residencial Aurora")
+        self.assertEqual((situacao["status"], situacao["bloqueio"], [v["id_visita"] for v in situacao["visitas"]]),
+                         ("ambiguo", "", ["V1"]))  # parcial: V1 disponível para importação manual
+        self.assertEqual(situacao["ambiguas"], ["V9 (Aurora)"])
+
+    def test_validacao_explicita_por_condominio_e_periodo(self):
+        ns, _, _ = self._app([], [])
+        chave = ns["chave_validacao_origem"]("rt", "Condomínio Alfa", "9", "2026")
+        self.assertEqual(chave, ns["chave_validacao_origem"]("rt", "Condomínio Alfa", "09", "2026"))
+        self.assertNotEqual(chave, ns["chave_validacao_origem"]("rt", "Condomínio Alfa", "10", "2026"))
+        self.assertNotEqual(chave, ns["chave_validacao_origem"]("bem_star", "Condomínio Alfa", "09", "2026"))
+        self.assertTrue(chave.startswith("_"))  # fora do rascunho RT (só chaves rel_/csr_)
+        validada = ns["origem_validada"]
+        ss = ns["st"].session_state
+        self.assertTrue(validada({"status": "ok"}, chave))
+        for status in ("ambiguo", "bloqueio", "falha"):
+            self.assertFalse(validada({"status": status}, chave), status)
+        ss[chave] = True
+        self.assertTrue(validada({"status": "ambiguo"}, chave))
+        self.assertTrue(validada({"status": "bloqueio"}, chave))
+        self.assertFalse(validada({"status": "falha"}, chave))  # falha nunca é validada manualmente
+
     def test_cadastro_sem_id_tambem_conta_para_ambiguidade(self):
         _, listar, _ = self._app(
             [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("", "Residencial Aurora II", "Aqua Gestão")],
@@ -418,7 +445,7 @@ class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
 class TestAvisosDeIdentificacaoNasTelas(unittest.TestCase):
     def test_todas_as_telas_mostram_o_aviso_e_respeitam_o_bloqueio(self):
         self.assertEqual(len(re.findall(r"\bsheets_listar_lancamentos\(", SRC)), 2)  # definição + docstring
-        self.assertEqual(SRC.count("situacao_visitas_condominio("), 8)  # definição, docstring, wrapper e 5 telas
+        self.assertEqual(SRC.count("situacao_visitas_condominio("), 9)  # definição, docstring, wrapper, 5 telas e a confirmação do RT
         for trecho in ('st.warning(_situacao_csr_tela["aviso"])', 'st.warning(_situacao_rel["aviso"])',
                        "st.warning(f\"{nome_consulta}: {_situacao_rt['aviso']}\")",
                        'st.caption(_situacao_hist["aviso"])', "msg = f\"{_situacao_csr['aviso']} {msg}\""):
