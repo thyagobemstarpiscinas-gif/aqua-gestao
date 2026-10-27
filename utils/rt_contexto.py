@@ -12,6 +12,15 @@ ART_PADRAO = "Em processo de formalização"
 TRANSITORIOS = {"rel_fotos_upload", "rel_pdf_visita_importador", "rel_regerar_pdf_visita_idx",
                 "rel_art_modo_rt2025", "rel_art_numero_rt2025", "rel_status_agua_select"}
 IDENTIFICACAO = ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")
+# Campos de escolha (seletores e opções): vazio não é opção válida. Ao limpar, voltam ao
+# padrão que o próprio widget usaria; senão o widget corrige o valor na execução seguinte
+# e o salvamento automático confunde a correção com uma edição do usuário.
+PADROES_ESCOLHA = {
+    "rel_tipo_atendimento": "Contrato ativo",
+    "rel_status_agua": "CONFORME",
+    **{f"rel_epi_{e}_status": "Conforme" for e in ("luvas", "oculos", "respirador", "botas")},
+    **{f"rel_nbr11238_{c}": "Sim" for c in ("profundidade", "retrolavagem", "skimmers", "circulacao", "chuveiro")},
+}
 
 
 def campos(ss):
@@ -22,6 +31,7 @@ def campos(ss):
 def limpar(ss):
     for k, v in campos(ss).items():
         ss[k] = "" if isinstance(v, str) else (False if isinstance(v, bool) else 0)
+    ss.update(PADROES_ESCOLHA)
     ss["rel_art_status"] = ss["rel_art_status_widget"] = ART_PADRAO
     ss["rel_fotos_preservadas"] = ""
     for k in TRANSITORIOS - {"rel_fotos_upload", "rel_pdf_visita_importador"}:
