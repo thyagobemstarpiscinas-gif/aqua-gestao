@@ -1969,37 +1969,84 @@ def validar_pin_operador(pin: str) -> dict | None:
             return op
     return None
 
-def _visita_pertence_ao_condominio(nome_condominio: str, cond_linha: str, nomes_cadastrados) -> bool:
-    """Igualdade normalizada sempre vale. A tolerância por trecho do nome ("Aurora" e
-    "Residencial Aurora") só vale se o nome da visita não for exatamente o de outro
-    condomínio cadastrado: visitas de "Residencial Aurora II" não entram em
-    "Residencial Aurora". Sem a lista de cadastrados, mantém a tolerância anterior."""
-    alvo, linha = normalizar_texto_busca(nome_condominio), normalizar_texto_busca(cond_linha)
-    if not alvo or not linha:
-        return False
-    if alvo == linha:
-        return True
-    if not nomes_condominio_equivalentes(nome_condominio, cond_linha):
-        return False
-    outros = {normalizar_texto_busca(n) for n in (nomes_cadastrados or [])} - {alvo}
-    return linha not in outros
+class _ClientesIndisponiveis(Exception):
+    """O cadastro de clientes não pôde ser lido: sem ele não dá para confirmar a qual
+    condomínio uma visita pertence."""
+
+
+def _ler_cadastro_identificacao() -> list[dict]:
+    """ID, nome e empresa dos cadastros da aba 👥 Clientes, para identificar visitas.
+
+    Conta os clientes com ID (C + número, como no restante do app) e também linhas sem
+    ID que tenham status ou empresa (cadastro incompleto), ativos ou não. Lança
+    _ClientesIndisponiveis se a aba não puder ser lida — nunca devolve lista vazia
+    no lugar de uma falha."""
+    try:
+        if conectar_sheets() is None:
+            raise _ClientesIndisponiveis("sem conexão com a planilha")
+        linhas = obter_aba_sheets("👥 Clientes").get_all_values()
+    except _ClientesIndisponiveis:
+        raise
+    except Exception as e:
+        raise _ClientesIndisponiveis(f"{type(e).__name__}: {e}") from e
+    cadastro = []
+    for row in linhas:
+        _c = lambda i: str(row[i]).strip() if len(row) > i else ""  # noqa: E731
+        id_cli, nome, status, empresa = _c(1), _c(2), _c(8), _c(12)
+        if nome and (re.fullmatch(r"C[0-9]+", id_cli) or (not id_cli and (status or empresa))):
+            cadastro.append({"id": id_cli, "nome": nome, "empresa": empresa})
+    return cadastro
+
+
+def _resolver_condominio_da_visita(alvo_n: str, linha_n: str, nomes_n: set) -> str:
+    """Decide se uma visita (nome normalizado linha_n) pertence ao condomínio alvo_n.
+
+    Retorna "sim", "nao" ou "ambigua". Nome igual vale sempre. Nome abreviado (um
+    contido no outro, como "Aurora" e "Residencial Aurora") só vale quando corresponde
+    a um único condomínio cadastrado; se for exatamente o nome de outro cadastro, não
+    pertence; se corresponder a mais de um, é ambíguo e não é importado."""
+    if not alvo_n or not linha_n:
+        return "nao"
+    if linha_n == alvo_n:
+        return "sim"
+    if not (linha_n in alvo_n or alvo_n in linha_n):
+        return "nao"
+    if linha_n in nomes_n:
+        return "nao"  # é exatamente o nome de outro condomínio cadastrado
+    candidatos = {n for n in (nomes_n | {alvo_n}) if n and (n in linha_n or linha_n in n)}
+    return "sim" if candidatos == {alvo_n} else "ambigua"
 
 
 @st.cache_data(ttl=45, show_spinner=False)
-def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
-    """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas."""
+def _situacao_visitas_cache(nome_condominio: str) -> dict:
+    """Visitas do condomínio na aba 🔬 Visitas e o motivo de qualquer exclusão.
+
+    Lança _ClientesIndisponiveis (resultado não fica em cache) quando o cadastro não
+    pode ser lido. Retorna {"visitas", "bloqueio", "aviso", "ambiguas"}."""
+    resultado = {"visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
+    cadastro = _ler_cadastro_identificacao()
+    alvo_n = normalizar_texto_busca(nome_condominio)
+    mesmos = [c for c in cadastro if normalizar_texto_busca(c["nome"]) == alvo_n]
+    if len(mesmos) > 1:
+        # O "ID Cliente" gravado nas visitas antigas vinha do primeiro nome igual: não separa.
+        lista = "; ".join(f"{c['id'] or 'sem ID'} – {c['empresa'] or 'empresa não informada'}" for c in mesmos)
+        resultado["bloqueio"] = "nome_duplicado"
+        resultado["aviso"] = (
+            f"⚠️ Há {len(mesmos)} cadastros com o nome “{nome_condominio}” ({lista}). As visitas não foram "
+            "importadas, para não misturar dados de cadastros diferentes. Os registros continuam na planilha; "
+            "diferencie os nomes no cadastro de clientes para liberar a importação."
+        )
+        return resultado
+    nomes_n = {normalizar_texto_busca(c["nome"]) for c in cadastro} - {""}
     try:
         sh = conectar_sheets()
         if sh is None:
-            return []
+            return resultado
 
         aba = obter_aba_sheets("🔬 Visitas")
         todos = aba.get_all_values()
         lancamentos = []
-        try:
-            nomes_cadastrados = sheets_listar_clientes() or []
-        except Exception:
-            nomes_cadastrados = []  # sem cadastro: tolerância anterior por trecho do nome
+        ambiguas = []
 
         for row in todos:
             if len(row) < 5:
@@ -2013,7 +2060,10 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
             if not id_visita.startswith("V"):
                 continue
 
-            if not _visita_pertence_ao_condominio(nome_condominio, cond_linha, nomes_cadastrados):
+            pertence = _resolver_condominio_da_visita(alvo_n, normalizar_texto_busca(cond_linha), nomes_n)
+            if pertence == "ambigua":
+                ambiguas.append(f"{id_visita} ({cond_linha})")
+            if pertence != "sim":
                 continue
 
             def _r(i):
@@ -2055,11 +2105,38 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
                 "problemas": _r(21),
             })
 
-        return lancamentos
+        resultado["visitas"] = lancamentos
+        resultado["ambiguas"] = ambiguas
+        if ambiguas:
+            resultado["aviso"] = (
+                f"⚠️ {len(ambiguas)} visita(s) gravada(s) com nome que corresponde a mais de um condomínio cadastrado "
+                f"não foram importadas: {', '.join(ambiguas[:5])}{'…' if len(ambiguas) > 5 else ''}. "
+                "Os registros continuam na planilha."
+            )
+        return resultado
 
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
-        return []
+        return resultado
+
+
+def situacao_visitas_condominio(nome_condominio: str) -> dict:
+    """Como _situacao_visitas_cache, mas sem lançar: cadastro de clientes indisponível
+    interrompe a importação (nenhuma visita) com aviso, em vez de misturar condomínios."""
+    try:
+        return _situacao_visitas_cache(nome_condominio)
+    except _ClientesIndisponiveis:
+        return {"visitas": [], "bloqueio": "cadastro_indisponivel", "ambiguas": [], "aviso": (
+            "⚠️ Não foi possível consultar o cadastro de clientes para confirmar a qual condomínio cada visita "
+            "pertence. Nenhuma visita foi importada da planilha agora, para não misturar condomínios. "
+            "Tente novamente em instantes.")}
+
+
+def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
+    """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas.
+    Visitas de identificação duvidosa ficam de fora; o motivo está em
+    situacao_visitas_condominio(nome)["aviso"]."""
+    return situacao_visitas_condominio(nome_condominio)["visitas"]
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -10826,7 +10903,10 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     pasta_csr.mkdir(parents=True, exist_ok=True)
     dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
     lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
-    lancamentos_sheets = sheets_listar_lancamentos(csr_sel) if csr_sel else []
+    _situacao_csr = situacao_visitas_condominio(csr_sel) if csr_sel else {"visitas": [], "bloqueio": "", "aviso": ""}
+    lancamentos_sheets = _situacao_csr["visitas"]
+    if _situacao_csr["bloqueio"]:
+        lancamentos_local = []  # a pasta local é identificada só pelo nome: não confirma o cadastro
 
     vistos = set()
     lancamentos_todos = []
@@ -10877,6 +10957,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
 
     if not lancamentos_csr:
         msg = "Nenhum lançamento encontrado. Defina a agenda mensal de visitas ou registre visitas no modo campo."
+        if _situacao_csr["aviso"]:
+            msg = f"{_situacao_csr['aviso']} {msg}"
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     lanc_para_relatorio = []
@@ -13941,7 +14023,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             consolidado = []
             for nome_consulta in nomes_consulta:
                 try:
-                    todos_sheets = sheets_listar_lancamentos(nome_consulta) or []
+                    _situacao_rt = situacao_visitas_condominio(nome_consulta)
+                    todos_sheets = _situacao_rt["visitas"] or []
+                    if _situacao_rt["aviso"]:
+                        st.warning(f"{nome_consulta}: {_situacao_rt['aviso']}")
                 except Exception:
                     todos_sheets = []
 
@@ -14462,7 +14547,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if op_nome_cond:
                 with st.expander("🕒 Histórico recente", expanded=False):
                     with st.spinner("Buscando histórico..."):
-                        historico_v = sheets_listar_lancamentos(op_nome_cond)
+                        _situacao_hist = situacao_visitas_condominio(op_nome_cond)
+                        historico_v = _situacao_hist["visitas"]
+                        if _situacao_hist["aviso"]:
+                            st.caption(_situacao_hist["aviso"])
                         if not historico_v:
                             st.caption("Nenhuma visita anterior registrada.")
                         else:
@@ -18509,7 +18597,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _lanc_sheets_csr = []
         if csr_sel:
             try:
-                _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+                _situacao_csr_tela = situacao_visitas_condominio(csr_sel)
+                _lanc_sheets_csr = _situacao_csr_tela["visitas"]
+                if _situacao_csr_tela["aviso"]:
+                    st.warning(_situacao_csr_tela["aviso"])
+                if _situacao_csr_tela["bloqueio"]:
+                    _lanc_local_csr = []  # pasta local identificada só pelo nome
             except Exception:
                 _lanc_sheets_csr = []
     
@@ -22163,7 +22256,12 @@ if pasta_rel_atual and pasta_rel_atual.exists():
 # Busca lançamentos do Google Sheets (aba Visitas)
 lancamentos_sheets = []
 if nome_rel_atual:
-    lancamentos_sheets = sheets_listar_lancamentos(nome_rel_atual)
+    _situacao_rel = situacao_visitas_condominio(nome_rel_atual)
+    lancamentos_sheets = _situacao_rel["visitas"]
+    if _situacao_rel["aviso"]:
+        st.warning(_situacao_rel["aviso"])
+    if _situacao_rel["bloqueio"]:
+        lancamentos_local = []  # pasta local identificada só pelo nome: não confirma o cadastro
 
 # Filtra pelo mês de referência
 mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()

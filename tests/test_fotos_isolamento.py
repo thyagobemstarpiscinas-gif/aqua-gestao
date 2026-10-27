@@ -11,7 +11,8 @@ Defeitos cobertos (todos reproduzidos na main a42a57c antes da correção):
 4. Relatório Bem Star: o PDF recebia todas as imagens da pasta do condomínio
    (outros meses, assinaturas, fotos do RT Aqua e cópias de pré-visualização).
 5. Visitas de "Residencial Aurora II" entravam no relatório de "Residencial Aurora"
-   (comparação por trecho do nome).
+   (comparação por trecho do nome). Também: nome abreviado de vários condomínios,
+   lista de clientes indisponível e nomes idênticos em cadastros diferentes.
 
 Carregam só as funções envolvidas do app.py, com session_state simulado, pastas
 temporárias e planilha simulada. Nenhum acesso a Google Sheets, Drive ou rede.
@@ -59,6 +60,8 @@ def _carregar(nomes, extras=None):
             n.decorator_list = []  # remove @st.cache_data
             nos.append(n)
         elif isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in nomes for t in n.targets):
+            nos.append(n)
+        elif isinstance(n, ast.ClassDef) and n.name in nomes:
             nos.append(n)
     pasta = Path(tempfile.mkdtemp(prefix="fotos_teste_"))
     atexit.register(shutil.rmtree, pasta, ignore_errors=True)
@@ -247,47 +250,113 @@ class TestFotosRelatorioBemStar(unittest.TestCase):
             self.assertNotIn(f"({arq[chave].stem.replace('_', ' ').title()})", pdf, chave)
 
 
-# ---------------------------------------------------------------- 4. nomes semelhantes
+# ---------------------------------------------------------------- 4. identificação do condomínio
 class _Aba:
-    def __init__(self, linhas):
-        self.linhas = linhas
+    def __init__(self, linhas, falha=False):
+        self.linhas, self.falha = linhas, falha
 
     def get_all_values(self):
+        if self.falha:
+            raise ConnectionError("planilha indisponível (simulado)")
         return self.linhas
 
 
-def _visita(id_, data, cond):
-    return ["", id_, data, "", cond, "7,4"] + [""] * 17
+def _cliente(id_, nome, empresa):
+    """Linha da aba 👥 Clientes no layout real: B=ID, C=Nome, I=Status, M=Empresa."""
+    linha = [""] * 15
+    linha[1], linha[2], linha[8], linha[12] = id_, nome, "Ativo", empresa
+    return linha
 
 
-class TestVisitasDeCondominiosComNomesSemelhantes(unittest.TestCase):
-    def _listar(self, linhas, clientes):
-        ns = _carregar(["sheets_listar_lancamentos", "_visita_pertence_ao_condominio"], {
-            "conectar_sheets": lambda: object(), "obter_aba_sheets": lambda nome: _Aba(linhas),
-            "sheets_listar_clientes": lambda: list(clientes)})
-        return lambda nome: [v["id_visita"] for v in ns["sheets_listar_lancamentos"](nome)]
+def _visita(id_, data, cond, id_cliente=""):
+    return ["", id_, data, id_cliente, cond, "7,4"] + [""] * 17
 
-    def test_nome_contido_em_outro_condominio_cadastrado_nao_mistura_visitas(self):
-        linhas = [["", "ID"], _visita("V1", "06/10/2026", "Residencial Aurora"),
-                  _visita("V2", "06/10/2026", "Residencial Aurora II"), _visita("V3", "13/10/2026", "residencial  AURORA")]
-        listar = self._listar(linhas, ["Residencial Aurora", "Residencial Aurora II"])
+
+CABECALHO_CLIENTES = ["", "ID", "Nome"] + [""] * 12
+IDENTIFICACAO = ["sheets_listar_clientes", "sheets_listar_lancamentos", "_visita_pertence_ao_condominio",
+                 "_ClientesIndisponiveis", "_ler_cadastro_identificacao", "_resolver_condominio_da_visita",
+                 "_situacao_visitas_cache", "situacao_visitas_condominio"]
+
+
+class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
+    """Funções reais (lista de clientes e de visitas) sobre abas no layout da planilha."""
+
+    def _app(self, clientes, visitas, clientes_falham=False):
+        abas = {"👥 Clientes": _Aba([CABECALHO_CLIENTES] + clientes, falha=clientes_falham),
+                "🔬 Visitas": _Aba([["", "ID Visita", "Data", "ID Cliente", "Condomínio"]] + visitas)}
+        ns = _carregar(IDENTIFICACAO, {"conectar_sheets": lambda: object(), "obter_aba_sheets": lambda nome: abas[nome]})
+        listar = lambda nome: [v["id_visita"] for v in ns["sheets_listar_lancamentos"](nome)]  # noqa: E731
+        aviso = lambda nome: ns["situacao_visitas_condominio"](nome)["aviso"]  # noqa: E731
+        return ns, listar, aviso
+
+    def test_nome_exato_de_outro_condominio_nao_mistura(self):
+        _, listar, _ = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("C2", "Residencial Aurora II", "Aqua Gestão")],
+            [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V2", "06/10/2026", "Residencial Aurora II"),
+             _visita("V3", "13/10/2026", "residencial  AURORA")])
         self.assertEqual(listar("Residencial Aurora"), ["V1", "V3"])
         self.assertEqual(listar("Residencial Aurora II"), ["V2"])
 
-    def test_variacao_de_nome_sem_outro_cadastro_continua_aceita(self):
-        linhas = [["", "ID"], _visita("V1", "06/10/2026", "Aurora"), _visita("V2", "06/10/2026", "Condomínio Tríad")]
-        listar = self._listar(linhas, ["Residencial Aurora", "Tríad Vertical"])
-        self.assertEqual(listar("Residencial Aurora"), ["V1"])  # gravada com nome abreviado
+    def test_nome_abreviado_de_um_unico_condominio_continua_aceito(self):
+        _, listar, aviso = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("C5", "Tríad Vertical", "Aqua Gestão")],
+            [_visita("V1", "06/10/2026", "Aurora"), _visita("V2", "06/10/2026", "Condomínio Tríad")])
+        self.assertEqual(listar("Residencial Aurora"), ["V1"])
+        self.assertEqual(aviso("Residencial Aurora"), "")
         self.assertEqual(listar("Tríad Vertical"), [])  # nomes sem trecho em comum
-        self.assertEqual(listar("Condomínio Tríad"), ["V2"])
 
-    def test_sem_lista_de_clientes_mantem_o_comportamento_anterior(self):
-        linhas = [["", "ID"], _visita("V1", "06/10/2026", "Residencial Aurora"),
-                  _visita("V2", "06/10/2026", "Residencial Aurora II")]
-        ns = _carregar(["sheets_listar_lancamentos", "_visita_pertence_ao_condominio"], {
-            "conectar_sheets": lambda: object(), "obter_aba_sheets": lambda nome: _Aba(linhas),
-            "sheets_listar_clientes": lambda: (_ for _ in ()).throw(ConnectionError("planilha indisponível"))})
-        self.assertEqual([v["id_visita"] for v in ns["sheets_listar_lancamentos"]("Residencial Aurora")], ["V1", "V2"])
+    def test_defeito_1_nome_abreviado_de_varios_condominios_nao_e_importado(self):
+        _, listar, aviso = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("C2", "Residencial Aurora II", "Aqua Gestão")],
+            [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V9", "06/10/2026", "Aurora"),
+             _visita("V5", "13/10/2026", "Residencial Aurora II")])
+        self.assertEqual(listar("Residencial Aurora"), ["V1"])  # V9 ficaria nos dois
+        self.assertEqual(listar("Residencial Aurora II"), ["V5"])
+        self.assertIn("1 visita", aviso("Residencial Aurora"))
+        self.assertIn("mais de um condomínio", aviso("Residencial Aurora"))
+
+    def test_defeito_2_lista_de_clientes_indisponivel_interrompe_com_aviso(self):
+        ns, listar, aviso = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("C2", "Residencial Aurora II", "Aqua Gestão")],
+            [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V5", "13/10/2026", "Residencial Aurora II")],
+            clientes_falham=True)
+        self.assertEqual(listar("Residencial Aurora"), [])  # antes: V1 e V5 (de Aurora II)
+        situacao = ns["situacao_visitas_condominio"]("Residencial Aurora")
+        self.assertTrue(situacao["bloqueio"])
+        self.assertIn("cadastro de clientes", aviso("Residencial Aurora"))
+
+    def test_defeito_3_nomes_identicos_em_cadastros_diferentes_nao_misturam(self):
+        ns, listar, aviso = self._app(
+            [_cliente("C3", "Residencial Sol", "Aqua Gestão"), _cliente("C7", "residencial  SOL", "Bem Star Piscinas"),
+             _cliente("C8", "Edifício Lua", "Bem Star Piscinas")],
+            [_visita("V6", "08/10/2026", "Residencial Sol", "C3"), _visita("V7", "09/10/2026", "Residencial Sol", "C3"),
+             _visita("V8", "09/10/2026", "Edifício Lua", "C8")])
+        self.assertEqual(listar("Residencial Sol"), [])  # o ID gravado (C3 nas duas) não é confiável
+        self.assertTrue(ns["situacao_visitas_condominio"]("Residencial Sol")["bloqueio"])
+        texto = aviso("Residencial Sol")
+        for parte in ("C3", "C7", "Aqua Gestão", "Bem Star Piscinas"):
+            self.assertIn(parte, texto)
+        self.assertEqual(listar("Edifício Lua"), ["V8"])  # outros condomínios seguem normais
+        self.assertEqual(aviso("Edifício Lua"), "")
+
+    def test_cadastro_sem_id_tambem_conta_para_ambiguidade(self):
+        _, listar, _ = self._app(
+            [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("", "Residencial Aurora II", "Aqua Gestão")],
+            [_visita("V9", "06/10/2026", "Aurora")])
+        self.assertEqual(listar("Residencial Aurora"), [])
+
+
+class TestAvisosDeIdentificacaoNasTelas(unittest.TestCase):
+    def test_todas_as_telas_mostram_o_aviso_e_respeitam_o_bloqueio(self):
+        self.assertEqual(len(re.findall(r"\bsheets_listar_lancamentos\(", SRC)), 2)  # definição + docstring
+        self.assertEqual(SRC.count("situacao_visitas_condominio("), 8)  # definição, docstring, wrapper e 5 telas
+        for trecho in ('st.warning(_situacao_csr_tela["aviso"])', 'st.warning(_situacao_rel["aviso"])',
+                       "st.warning(f\"{nome_consulta}: {_situacao_rt['aviso']}\")",
+                       'st.caption(_situacao_hist["aviso"])', "msg = f\"{_situacao_csr['aviso']} {msg}\""):
+            self.assertIn(trecho, SRC)
+        self.assertEqual(SRC.count("lancamentos_local = []  # a pasta local é identificada só pelo nome"), 1)
+        self.assertIn('lancamentos_local = []  # pasta local identificada só pelo nome: não confirma o cadastro', SRC)
+        self.assertIn("_lanc_local_csr = []  # pasta local identificada só pelo nome", SRC)
 
 
 class TestIsolamentoDeCondominiosComNomesSemelhantes(unittest.TestCase):

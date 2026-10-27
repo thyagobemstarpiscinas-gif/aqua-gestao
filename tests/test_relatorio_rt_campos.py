@@ -166,6 +166,34 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         self.assertTrue(any("editados" in w.value for w in at.warning))
         self.assertEqual({k: at.session_state[k] for k in CAMPOS[:4]}, dados)  # dados do condomínio intactos
 
+    def test_identificacao_duvidosa_interrompe_importacao_com_aviso(self):
+        """Nomes idênticos em cadastros diferentes e cadastro indisponível: nada é importado."""
+        import streamlit as st_real
+        gspread = sys.modules["gspread"]
+        clientes = gspread.PLANILHA.worksheet("👥 Clientes")
+        linha = [""] * 15
+        linha[1], linha[2], linha[8], linha[12] = "C9", "Condomínio Alfa Fictício", "Ativo", "Bem Star Piscinas"
+        clientes.linhas.append(linha)  # mesmo nome, outra empresa
+        st_real.cache_data.clear()
+        at = self._entrar_e_carregar()  # Alfa: visita de setembro na planilha falsa
+        self.assertEqual(self._mes(at, "09"), ("", ""))  # não importa
+        avisos = [w.value for w in at.warning if "cadastros com o nome" in w.value]
+        self.assertTrue(avisos and "C1" in avisos[0] and "C9" in avisos[0])
+        self.assertEqual(at.session_state["rel_nome_condominio"], "Condomínio Alfa Fictício")  # campos intactos
+
+        clientes.linhas.pop()
+        def _falha():
+            raise ConnectionError("planilha indisponível (simulado)")
+        clientes.get_all_values = _falha
+        st_real.cache_data.clear()
+        self.assertEqual(self._mes(at, "10"), ("", ""))
+        self.assertEqual(self._mes(at, "09"), ("", ""))  # setembro não entra sem confirmar o cadastro
+        self.assertTrue(any("cadastro de clientes" in w.value for w in at.warning))
+        del clientes.get_all_values
+        st_real.cache_data.clear()
+        self.assertEqual(self._mes(at, "10"), ("", ""))
+        self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))  # cadastro de volta: importa normalmente
+
     def test_visita_do_mes_importa_e_sai_ao_trocar_de_mes(self):
         at = self._entrar_e_carregar("Residencial Beta Fictício")  # Beta: visita numa terça do mês corrente
         data0 = at.session_state["rel_analise_data_0"]
