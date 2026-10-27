@@ -18,6 +18,7 @@ Executar:  python -m unittest discover -s tests -v
 """
 
 import ast
+import json
 import importlib.util
 import os
 import shutil
@@ -221,6 +222,30 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
         bloqueio.unlink()
         at.selectbox(key="op_sel_cond").select(b).run()
         self.assertEqual((self._avisos(at), at.session_state[k_ph], at.session_state["_op_cond_form"]), ([], "", b))
+
+    def test_operador_com_outras_fotos_salva_rascunho_e_troca_de_condominio(self):
+        """KeyError 'extras': com foto em "Outras fotos" o salvamento automático falhava
+        em silêncio e a troca de condomínio ficava bloqueada."""
+        sys.path.insert(0, str(RAIZ))
+        from utils.formatacao import slugify_nome
+        at = self._entrar_operador("mestre-ficticio")
+        a, b = at.selectbox(key="op_sel_cond").options[:2]
+        at.selectbox(key="op_sel_cond").select(a).run()
+        pasta = self.pasta / "app" / "generated" / slugify_nome(a)
+        (pasta / "fotos_rascunho").mkdir(parents=True, exist_ok=True)
+        import base64  # PNG 1x1 fictício, gravado como se fosse um upload anterior
+        (pasta / "fotos_rascunho" / "rasc_extras_ralo.png").write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="))
+        k_ph = next(t.key for t in at.text_input if t.key and t.key.startswith("op_") and t.key.endswith("_ph"))
+        at.text_input(key=k_ph).input("7.4").run()  # dispara o salvamento automático
+        self.assertFalse(at.exception, at.exception)
+        rascunho = json.loads((pasta / "_rascunho_operador.json").read_text(encoding="utf-8"))
+        self.assertEqual(rascunho["fotos_rascunho"]["extras"], ["rasc_extras_ralo.png"])
+        self.assertEqual(rascunho["piscinas"][0]["ph"], "7.4")
+        at.selectbox(key="op_sel_cond").select(b).run()
+        self.assertEqual(self._avisos(at), [])
+        self.assertEqual(at.session_state["_op_cond_form"], b)
+        self.assertTrue((pasta / "fotos_rascunho" / "rasc_extras_ralo.png").exists())
 
     def test_rt_troca_cancelada_mantem_dados_e_rascunho_volta_depois(self):
         at = self._entrar_operador("rt-ficticio")

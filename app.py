@@ -1969,6 +1969,22 @@ def validar_pin_operador(pin: str) -> dict | None:
             return op
     return None
 
+def _visita_pertence_ao_condominio(nome_condominio: str, cond_linha: str, nomes_cadastrados) -> bool:
+    """Igualdade normalizada sempre vale. A tolerância por trecho do nome ("Aurora" e
+    "Residencial Aurora") só vale se o nome da visita não for exatamente o de outro
+    condomínio cadastrado: visitas de "Residencial Aurora II" não entram em
+    "Residencial Aurora". Sem a lista de cadastrados, mantém a tolerância anterior."""
+    alvo, linha = normalizar_texto_busca(nome_condominio), normalizar_texto_busca(cond_linha)
+    if not alvo or not linha:
+        return False
+    if alvo == linha:
+        return True
+    if not nomes_condominio_equivalentes(nome_condominio, cond_linha):
+        return False
+    outros = {normalizar_texto_busca(n) for n in (nomes_cadastrados or [])} - {alvo}
+    return linha not in outros
+
+
 @st.cache_data(ttl=45, show_spinner=False)
 def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
     """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas."""
@@ -1980,6 +1996,10 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
         aba = obter_aba_sheets("🔬 Visitas")
         todos = aba.get_all_values()
         lancamentos = []
+        try:
+            nomes_cadastrados = sheets_listar_clientes() or []
+        except Exception:
+            nomes_cadastrados = []  # sem cadastro: tolerância anterior por trecho do nome
 
         for row in todos:
             if len(row) < 5:
@@ -1993,7 +2013,7 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
             if not id_visita.startswith("V"):
                 continue
 
-            if not nomes_condominio_equivalentes(nome_condominio, cond_linha):
+            if not _visita_pertence_ao_condominio(nome_condominio, cond_linha, nomes_cadastrados):
                 continue
 
             def _r(i):
@@ -3678,7 +3698,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
                 })
     # Fotos já salvas na pasta de rascunho
     _pasta_fotos_rasc = GENERATED_DIR / slugify_nome(nome_cond.strip()) / "fotos_rascunho"
-    dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
+    dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": [], "extras": []}
     if _pasta_fotos_rasc.exists():
         for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
             for _cat in ["antes", "depois", "cmaq", "extras"]:
@@ -4341,7 +4361,9 @@ def carregar_imagem_corrigida_orientacao(origem):
 def deduplicar_fotos(lista):
     """Remove fotos duplicadas de uma lista de uploads ou paths.
 
-    Deduplica por hash de conteúdo (uploads) ou por path/string truncada.
+    Deduplica pelo hash do conteúdo, tanto de uploads quanto de arquivos existentes,
+    para que a mesma foto como upload e como arquivo (ou em duas pastas) apareça uma
+    vez só. Caminho inexistente ou ilegível é comparado pelo texto, como antes.
     Evita que rascunho + upload atual resultem em foto repetida no PDF.
     """
     resultado = []
@@ -4351,7 +4373,10 @@ def deduplicar_fotos(lista):
     for item in lista or []:
         try:
             if isinstance(item, (str, Path)):
-                chave = str(item)[:200]
+                try:
+                    chave = _hashlib.md5(Path(item).read_bytes()).hexdigest()
+                except Exception:
+                    chave = str(item)[:200]
             elif hasattr(item, "getvalue"):
                 pos = item.tell() if hasattr(item, "tell") else None
                 dados = item.getvalue()
@@ -10426,16 +10451,18 @@ def _bs_coletar_lancamentos_agenda_manual() -> list[dict]:
 
 
 def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> list:
-    """Coleta fotos para o relatório Bem Star sem derrubar o relatório.
+    """Coleta as fotos de campo das visitas do relatório Bem Star.
 
-    Compatibilidade segura:
-    - usa fotos já presentes nos lançamentos, quando existirem;
-    - aceita paths locais salvos como string;
-    - ignora itens inexistentes;
-    - se não houver foto, retorna lista vazia.
+    - fotos citadas nos lançamentos do período (nomes gravados pelo modo campo),
+      procuradas na pasta fotos_campo do cliente; paths absolutos e uploads também valem;
+    - sem nenhuma citada, usa as fotos de fotos_campo cujo nome traz a data (AAAAMMDD)
+      de um dos lançamentos — nunca outros meses, assinaturas, fotos do relatório RT,
+      pré-visualizações ou o rascunho, que ficam em outras pastas do mesmo cliente;
+    - a mesma foto entra uma vez só (comparação pelo conteúdo).
     Não altera Sheets, Drive, dosagem ou modo operador.
     """
     fotos = []
+    pasta_campo = GENERATED_DIR / slugify_nome(cliente) / "fotos_campo"
 
     def _add_foto(item):
         if not item:
@@ -10448,19 +10475,25 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
 
         try:
             p = Path(str(item))
+            if not p.is_absolute():
+                p = pasta_campo / p.name  # nomes gravados pelo modo campo
             if p.exists() and p.is_file():
                 fotos.append(p)
         except Exception:
             pass
 
+    datas_periodo = set()
     for lc in lancamentos or []:
         if not isinstance(lc, dict):
             continue
+        _data = normalizar_data_visita(lc.get("data", ""))
+        if re.fullmatch(r"\d{2}/\d{2}/\d{4}", _data or ""):
+            datas_periodo.add(_data[6:] + _data[3:5] + _data[:2])
 
         # Listas comuns dentro do payload.
         for chave_lista in (
             "fotos", "fotos_campo", "fotos_paths", "imagens",
-            "fotos_antes", "fotos_depois", "fotos_casa_maquinas"
+            "fotos_antes", "fotos_depois", "fotos_casa_maquinas", "fotos_cmaq", "fotos_extras",
         ):
             valor = lc.get(chave_lista)
             if isinstance(valor, list):
@@ -10476,21 +10509,22 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
         ):
             _add_foto(lc.get(chave))
 
-    # Fallback leve: tenta pasta local do cliente, se existir.
-    try:
-        pasta_cliente = GENERATED_DIR / slugify_nome(cliente)
-        if pasta_cliente.exists():
-            for padrao in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
-                for p in pasta_cliente.rglob(padrao):
-                    _add_foto(p)
-    except Exception:
-        pass
+    # Sem fotos citadas: fotos de campo gravadas nas datas das visitas do relatório.
+    if not fotos and datas_periodo:
+        try:
+            if pasta_campo.exists():
+                for p in sorted(pasta_campo.iterdir()):
+                    m = re.match(r"^(?:antes|depois|cmaq|extras)_(\d{8})_\d{6}_", p.name)
+                    if (p.is_file() and m and m.group(1) in datas_periodo
+                            and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")):
+                        fotos.append(p)
+        except Exception:
+            pass
 
     try:
         return deduplicar_fotos(fotos)
     except Exception:
         return fotos
-
 
 
 def _bs_float(valor):
@@ -15170,7 +15204,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(deduplicar_fotos(op_fotos_antes),  "antes")
                 fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_depois), "depois")
                 fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(deduplicar_fotos(op_fotos_cmaq),   "cmaq")
-                op_fotos_extras_final = st.session_state.get("op_fotos_extras") or []
+                op_fotos_extras_final = st.session_state.get(_chave_fotos_operador("extras")) or []
                 fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_extras_final), "extras")
 
                 # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
