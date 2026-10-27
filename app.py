@@ -2045,6 +2045,9 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
             "diferencie os nomes no cadastro de clientes para liberar a importação."
         )
         return resultado
+    if len(mesmos) == 1:
+        resultado["id_cliente"] = mesmos[0]["id"]  # identidade estável do cliente (vazio se o cadastro não tem ID)
+        resultado["empresa_cliente"] = mesmos[0]["empresa"]
     if not mesmos:
         # Nome digitado que não é um cadastro, mas pode representar um (abreviado, com
         # erro de digitação ou com complemento): não importa nada de outro cliente.
@@ -2183,18 +2186,20 @@ def chave_validacao_origem(relatorio: str, nome_condominio: str, mes, ano) -> st
 
 
 def origem_validada(situacao: dict, chave: str) -> bool:
-    """Pode gerar? "ok" sim; "falha" nunca; "ambiguo"/"bloqueio" só com confirmação explícita."""
+    """Pode gerar? "ok" sim; "falha" e "bloqueio" (cliente sem identificação segura)
+    nunca; "ambiguo" (visitas duvidosas de fora) só com confirmação explícita."""
     status = situacao.get("status", "ok")
     if status == "ok":
         return True
-    if status == "falha":
+    if status in ("falha", "bloqueio"):
         return False
     return bool(st.session_state.get(chave))
 
 
 def caixa_validacao_origem(situacao: dict, chave: str, nome_condominio: str, periodo: str):
-    """Mostra a confirmação explícita quando a identificação das visitas é duvidosa."""
-    if situacao.get("status") in ("ambiguo", "bloqueio"):
+    """Mostra a confirmação explícita quando visitas duvidosas ficaram de fora ("ambiguo").
+    Em "bloqueio" não há confirmação: o cliente precisa ser identificado."""
+    if situacao.get("status") == "ambiguo":
         st.checkbox(
             f"Revisei os dados do relatório e confirmo que pertencem a {nome_condominio} ({periodo}), "
             "apesar do aviso de identificação das visitas.",
@@ -4168,6 +4173,136 @@ def retirar_importacao_rt() -> str:
     for k in _preenchidos(ss.pop("_rel_autoimport_snapshot", None) or {}):
         ss[k] = ""
     return ss.pop("_rel_autoimport_periodo", "")
+
+
+# ── Identidade dos dados da tabela do relatório RT ───────────────────────────
+# Cada conjunto de análises pertence a uma empresa + cliente (ID estável do cadastro;
+# nome apenas para relatório avulso) + período. A chave fica em rel_origem_dados (vai
+# junto no rascunho); rascunhos antigos sem ela têm origem desconhecida.
+_META_TABELA_RT = ("_rel_autoimport_snapshot", "_rel_autoimport_periodo", "_rel_autoimport_assinatura")
+
+
+def identidade_dados_rt(empresa: str, situacao: dict, nome_condominio: str, mes, ano) -> dict:
+    """Identidade do relatório atual. "comprovada" é False quando o cliente não pode ser
+    identificado com segurança (nome duplicado ou semelhante a outro cadastro)."""
+    periodo = f"{str(mes or '').strip().zfill(2)}/{str(ano or '').strip()}"
+    id_cli = str((situacao or {}).get("id_cliente") or "").strip()
+    cliente = f"id:{id_cli}" if id_cli else f"nome:{normalizar_texto_busca(nome_condominio)}"
+    return {
+        "chave": f"{empresa or 'aqua_gestao'}|{cliente}|{periodo}",
+        "rotulo": f"{str(nome_condominio or '').strip()} ({periodo})",
+        "nome_periodo": f"{normalizar_texto_busca(nome_condominio)}|{periodo}",
+        "comprovada": (situacao or {}).get("status") in ("ok", "ambiguo"),
+    }
+
+
+def _tabela_rt_tem_dados() -> bool:
+    return bool(_preenchidos(_valores_importaveis_rt()))
+
+
+def _guardar_rascunho_rt_antes_da_troca() -> bool:
+    """Grava o estado atual (do condomínio que está saindo) na linha de rascunho desta
+    sessão e passa a gravar o próximo condomínio numa linha nova: cada um fica no seu."""
+    ss = st.session_state
+    try:
+        ss["_rt_rasc_ref"] = {}  # força gravar o conteúdo atual mesmo sem edição recente
+        gravado = _relatorio_rt_salvar_rascunho("troca_condominio")
+    except Exception:
+        gravado = False
+    _relatorio_rt_chave_sessao(nova=True)
+    ss["_rt_rasc_ref"] = None
+    return gravado
+
+
+def guardar_tabela_rt(origem: str, rotulo: str = "", gravar_rascunho: bool = True) -> bool:
+    """Tira as análises, dosagens e observações gerais da tela e as guarda (sessão e
+    rascunho) sob a identidade de origem. Nada é apagado: recuperar_tabela_rt devolve."""
+    ss = st.session_state
+    if gravar_rascunho:
+        _guardar_rascunho_rt_antes_da_troca()
+    guardados = ss.setdefault("_rel_por_identidade", {})
+    guardados[origem] = {
+        "valores": dict(_valores_importaveis_rt()),
+        "meta": {k: ss.get(k) for k in _META_TABELA_RT if k in ss},
+        "rotulo": rotulo or ss.get("rel_origem_rotulo", ""),
+    }
+    for k, v in guardados[origem]["valores"].items():
+        if isinstance(v, str):
+            ss[k] = ""
+    for k in _META_TABELA_RT:
+        ss.pop(k, None)
+    return True
+
+
+def recuperar_tabela_rt(chave: str) -> bool:
+    """Devolve à tela a tabela guardada para esta identidade (uma única vez)."""
+    ss = st.session_state
+    guardado = (ss.get("_rel_por_identidade") or {}).pop(chave, None)
+    if not guardado:
+        return False
+    for k, v in guardado["valores"].items():
+        ss[k] = v
+    for k, v in guardado["meta"].items():
+        ss[k] = v
+    return True
+
+
+def conciliar_identidade_tabela_rt(identidade: dict) -> dict:
+    """Garante que a tabela na tela pertence à identidade atual (chamar antes dos widgets).
+
+    - mesma origem: nada muda;
+    - tabela vazia: assume a identidade atual e recupera o que estiver guardado para ela;
+    - origem conhecida e diferente: guarda a tabela sob a origem, deixa a tela vazia e
+      recupera a tabela guardada da identidade atual (troca de condomínio ou período);
+    - origem desconhecida (rascunho antigo) com dados: não associa; pede revisão.
+    Retorna {"conflito", "guardada_de", "recuperada"}."""
+    ss = st.session_state
+    chave = identidade["chave"]
+    origem = str(ss.get("rel_origem_dados") or "")
+    resultado = {"conflito": "", "guardada_de": "", "recuperada": False}
+    if origem == chave:
+        return resultado
+    if (not identidade["comprovada"] and origem
+            and ss.get("rel_origem_nome_periodo") == identidade.get("nome_periodo")):
+        # Mesmo condomínio e período na tela; só o cadastro ficou duvidoso (ex.: nome
+        # duplicado cadastrado depois). A tabela fica como está e a geração é bloqueada.
+        resultado["conflito"] = "identidade_nao_comprovada"
+        return resultado
+    if not _tabela_rt_tem_dados():
+        resultado["recuperada"] = recuperar_tabela_rt(chave)
+    elif not origem:
+        resultado["conflito"] = "origem_desconhecida"
+        return resultado
+    else:
+        resultado["guardada_de"] = ss.get("rel_origem_rotulo") or origem
+        guardar_tabela_rt(origem)
+        resultado["recuperada"] = recuperar_tabela_rt(chave)
+    ss["rel_origem_dados"] = chave
+    ss["rel_origem_rotulo"] = identidade["rotulo"]
+    ss["rel_origem_nome_periodo"] = identidade.get("nome_periodo", "")
+    return resultado
+
+
+def resolver_origem_desconhecida_rt(identidade: dict, associar: bool):
+    """Ação explícita do usuário para tabela de origem desconhecida: associar à identidade
+    atual depois de revisar, ou guardar à parte (sem apagar) e começar com a tabela vazia."""
+    ss = st.session_state
+    if not associar:
+        guardar_tabela_rt(f"origem_desconhecida|{datetime.now():%Y%m%d%H%M%S%f}", "origem desconhecida")
+    ss["rel_origem_dados"] = identidade["chave"]
+    ss["rel_origem_rotulo"] = identidade["rotulo"]
+    ss["rel_origem_nome_periodo"] = identidade.get("nome_periodo", "")
+
+
+def fotos_rt_de_outra_identidade(chave: str, ha_fotos: bool) -> str:
+    """Registra a identidade em que as fotos do upload foram anexadas; devolve o rótulo
+    dessa identidade se for diferente da atual ("" quando não há conflito)."""
+    ss = st.session_state
+    if not ha_fotos:
+        ss.pop("_rel_fotos_origem", None)
+        return ""
+    origem = ss.setdefault("_rel_fotos_origem", {"chave": chave, "rotulo": ss.get("rel_origem_rotulo", "")})
+    return "" if origem["chave"] == chave else (origem.get("rotulo") or origem["chave"])
 
 
 def buscar_cep(cep: str) -> dict:
@@ -10981,8 +11116,10 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         # Falha de consulta não é ausência de visitas: não gera relatório incompleto.
         return {"ok": False, "erros": [_situacao_csr["aviso"]], "mensagem": _situacao_csr["aviso"]}
     if not origem_validada(_situacao_csr, chave_validacao_origem("bem_star", csr_sel, csr_mes, csr_ano)):
-        msg = (f"{_situacao_csr['aviso']} Confirme a origem dos dados na tela do relatório Bem Star "
-               "para gerar com as visitas identificadas.")
+        msg = (f"{_situacao_csr['aviso']} " + (
+            "O cliente não pode ser identificado com segurança: diferencie os nomes no cadastro para gerar."
+            if _situacao_csr.get("status") == "bloqueio" else
+            "Confirme a origem dos dados na tela do relatório Bem Star para gerar com as visitas identificadas."))
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     vistos = set()
@@ -13109,6 +13246,11 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
             if str(k).startswith("_") or str(k) in _RASCUNHO_RT_NAO_RESTAURAR:
                 continue
             st.session_state[k] = v
+        if "rel_origem_dados" not in campos:
+            # Rascunho anterior à identidade dos dados: origem desconhecida, revisão obrigatória.
+            st.session_state.pop("rel_origem_dados", None)
+            st.session_state.pop("rel_origem_rotulo", None)
+            st.session_state.pop("rel_origem_nome_periodo", None)
         st.session_state["empresa_ativa"] = "aqua_gestao"
         st.session_state["_relatorio_rt_rascunho_restaurado"] = True
         return True
@@ -14096,7 +14238,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         registros_preview = st.empty()
 
         _rt_consultas_falhas = []  # condomínios cuja consulta falhou na última busca
-        _rt_consultas_duvidosas = []  # condomínios com identificação duvidosa (ambígua ou bloqueada)
+        _rt_consultas_duvidosas = []  # condomínios com visitas ambíguas de fora (confirmação libera)
+        _rt_consultas_bloqueadas = []  # condomínios sem identificação segura (nada libera)
 
         def _buscar_registros_rt(cond_nome, mes, ano):
             # Obtem lancamentos do Sheets e filtra por condominio/periodo/origem RT.
@@ -14104,6 +14247,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             # Consultas que falharam ficam em _rt_consultas_falhas (falha não é "sem registros").
             _rt_consultas_falhas.clear()
             _rt_consultas_duvidosas.clear()
+            _rt_consultas_bloqueadas.clear()
             nomes_consulta = []
             if normalizar_texto_busca(cond_nome) == "todos":
                 nomes_consulta = [c for c in _conds_rt if normalizar_texto_busca(c) != "todos"]
@@ -14119,8 +14263,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                         st.warning(f"{nome_consulta}: {_situacao_rt['aviso']}")
                     if _situacao_rt.get("status") == "falha":
                         _rt_consultas_falhas.append(nome_consulta)
-                    elif _situacao_rt.get("status") in ("ambiguo", "bloqueio"):
+                    elif _situacao_rt.get("status") == "ambiguo":
                         _rt_consultas_duvidosas.append(nome_consulta)
+                    elif _situacao_rt.get("status") == "bloqueio":
+                        _rt_consultas_bloqueadas.append(nome_consulta)
                 except Exception:
                     todos_sheets = []
                     _rt_consultas_falhas.append(nome_consulta)
@@ -14335,6 +14481,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if _rt_consultas_falhas:
                 st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
                          "Os campos foram mantidos; tente novamente quando a conexão voltar.")
+                st.stop()
+            if _rt_consultas_bloqueadas:
+                st.error("O cliente " + ", ".join(_rt_consultas_bloqueadas) + " não pode ser identificado com "
+                         "segurança (nome duplicado ou semelhante a outro cadastro). Diferencie os nomes no cadastro "
+                         "para gerar. Os campos foram mantidos.")
                 st.stop()
             if _rt_consultas_duvidosas and (_rt_eh_todos or not st.session_state.get(_rt_chave_validacao)):
                 st.error(
@@ -22329,6 +22480,17 @@ if _clientes_rel:
             if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
                 _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
                 if _dados_rel:
+                    # Troca de cliente: a tabela do anterior vai para o rascunho e a memória
+                    # dele (nada é apagado); o novo começa sem os dados do anterior.
+                    _origem_ant = str(st.session_state.get("rel_origem_dados") or "")
+                    _ident_novo = identidade_dados_rt(
+                        st.session_state.get("empresa_ativa", "aqua_gestao"), {"id_cliente": _dados_rel.get("id", ""), "status": "ok"},
+                        _dados_rel.get("nome", ""), st.session_state.get("rel_mes_referencia"),
+                        st.session_state.get("rel_ano_referencia"))
+                    if _origem_ant and _origem_ant != _ident_novo["chave"] and _tabela_rt_tem_dados():
+                        st.session_state["_rel_tabela_guardada_msg"] = st.session_state.get("rel_origem_rotulo") or _origem_ant
+                        guardar_tabela_rt(_origem_ant)
+                        st.session_state["rel_origem_dados"] = ""  # a conciliação define a identidade nova
                     st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
                     st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
@@ -22662,6 +22824,44 @@ def _importar_lancamentos(lancamentos):
 # análises digitadas, editadas ou restauradas de rascunho nunca são sobrescritas.
 # Ao mudar de período sem visitas, os dados importados (não editados) do período
 # anterior saem da tabela, para que setembro não apareça no relatório de outubro.
+# Identidade dos dados da tabela: cada conjunto de análises pertence a empresa + cliente
+# + período. Com falha de consulta a identidade não é conhecida e nada é mexido.
+_rel_identidade = None
+_rel_conciliacao = {"conflito": "", "guardada_de": "", "recuperada": False}
+if nome_rel_atual and _periodo_rel_ok and _situacao_rel["status"] != "falha":
+    _rel_identidade = identidade_dados_rt(st.session_state.get("empresa_ativa", "aqua_gestao"), _situacao_rel,
+                                          nome_rel_atual, st.session_state.get("rel_mes_referencia"),
+                                          st.session_state.get("rel_ano_referencia"))
+    _rel_conciliacao = conciliar_identidade_tabela_rt(_rel_identidade)
+    _guardada_no_carregar = st.session_state.pop("_rel_tabela_guardada_msg", "")
+    if _guardada_no_carregar and not _rel_conciliacao["guardada_de"]:
+        _rel_conciliacao["guardada_de"] = _guardada_no_carregar
+    if _rel_conciliacao["guardada_de"]:
+        st.info(f"ℹ️ As análises de {_rel_conciliacao['guardada_de']} foram guardadas no rascunho desse condomínio "
+                f"e não aparecem em {_rel_identidade['rotulo']}. Voltando a ele, elas são recuperadas.")
+    if _rel_conciliacao["recuperada"]:
+        st.info(f"ℹ️ Análises de {_rel_identidade['rotulo']} recuperadas.")
+    if _rel_conciliacao["conflito"] == "origem_desconhecida":
+        st.warning(
+            f"⚠️ A tabela de análises veio de um rascunho sem identificação de condomínio e período. "
+            f"Revise antes de usar em {_rel_identidade['rotulo']}: a geração fica bloqueada até você escolher."
+        )
+        _rc1, _rc2 = st.columns(2)
+        _rc1.button(f"Revisei: estas análises são de {_rel_identidade['rotulo']}", key="btn_rel_origem_associar",
+                    on_click=resolver_origem_desconhecida_rt, args=(_rel_identidade, True))
+        _rc2.button("Guardar estas análises à parte e começar com a tabela vazia", key="btn_rel_origem_guardar",
+                    on_click=resolver_origem_desconhecida_rt, args=(_rel_identidade, False))
+_rel_fotos_de_outro = fotos_rt_de_outra_identidade(
+    (_rel_identidade or {}).get("chave", ""), bool(st.session_state.get(chave_fotos_rt())))
+if _rel_fotos_de_outro:
+    st.warning(f"⚠️ As fotos anexadas foram adicionadas em {_rel_fotos_de_outro}. Remova-as do upload ou volte a "
+               "esse condomínio: a geração fica bloqueada para não misturar fotos.")
+# Pode usar a tabela neste relatório? Vazia, ou da identidade atual comprovada.
+_rel_identidade_ok = (not _tabela_rt_tem_dados()) or bool(
+    _rel_identidade and _rel_identidade["comprovada"] and not _rel_conciliacao["conflito"]
+    and st.session_state.get("rel_origem_dados") == _rel_identidade["chave"])
+_rel_identidade_ok = _rel_identidade_ok and not _rel_fotos_de_outro
+
 _rel_importou_agora = False
 _periodo_rel_txt = f"{mes_ref}/{ano_ref}"
 # Só com a consulta feita (status "ok"): falha ou bloqueio não significam "sem visitas",
@@ -23077,7 +23277,7 @@ with btn_col1:
     _rel_consulta_falhou = _situacao_rel["status"] == "falha"
     _rel_chave_validacao = chave_validacao_origem("rt", nome_rel_atual, mes_ref, ano_ref)
     caixa_validacao_origem(_situacao_rel, _rel_chave_validacao, nome_rel_atual, f"{mes_ref}/{ano_ref}")
-    _rel_pode_gerar = origem_validada(_situacao_rel, _rel_chave_validacao)
+    _rel_pode_gerar = origem_validada(_situacao_rel, _rel_chave_validacao) and _rel_identidade_ok
     rel_gerar = st.button(
         "🚀 Gerar relatório mensal", use_container_width=True, type="primary", disabled=not _rel_pode_gerar,
         help=None if _rel_pode_gerar else "Indisponível até a consulta voltar ou a origem dos dados ser confirmada; o rascunho é mantido.",
@@ -23085,6 +23285,12 @@ with btn_col1:
     if _rel_consulta_falhou:
         st.caption("⏸️ Geração suspensa: a consulta às visitas falhou. Os campos e o rascunho foram mantidos; "
                    "tente novamente quando a conexão voltar.")
+    elif not _rel_identidade_ok:
+        st.caption("⏸️ Geração bloqueada: os dados na tela não pertencem comprovadamente a este condomínio e "
+                   "período (veja o aviso acima). A confirmação manual não substitui essa verificação. Nada foi apagado.")
+    elif _situacao_rel["status"] == "bloqueio":
+        st.caption("⏸️ Geração bloqueada: o cliente não pode ser identificado com segurança (veja o aviso). "
+                   "Carregue o cliente cadastrado pelo nome exato ou diferencie os nomes no cadastro.")
     elif not _rel_pode_gerar:
         st.caption("⏸️ Geração suspensa até você confirmar a origem dos dados (caixa acima). Nada foi apagado.")
 with btn_col2:
@@ -24477,7 +24683,7 @@ if gerar:
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
 
-if rel_gerar and not origem_validada(_situacao_rel, _rel_chave_validacao):
+if rel_gerar and not (origem_validada(_situacao_rel, _rel_chave_validacao) and _rel_identidade_ok):
     st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou ou a origem dos dados "
              "precisa ser confirmada. Os campos e o rascunho foram mantidos.")
 elif rel_gerar:

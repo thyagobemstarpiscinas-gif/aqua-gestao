@@ -432,7 +432,7 @@ class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
             self.assertFalse(validada({"status": status}, chave), status)
         ss[chave] = True
         self.assertTrue(validada({"status": "ambiguo"}, chave))
-        self.assertTrue(validada({"status": "bloqueio"}, chave))
+        self.assertFalse(validada({"status": "bloqueio"}, chave))  # cliente sem identificação segura: nada libera
         self.assertFalse(validada({"status": "falha"}, chave))  # falha nunca é validada manualmente
 
     def test_cadastro_sem_id_tambem_conta_para_ambiguidade(self):
@@ -440,6 +440,116 @@ class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
             [_cliente("C1", "Residencial Aurora", "Aqua Gestão"), _cliente("", "Residencial Aurora II", "Aqua Gestão")],
             [_visita("V9", "06/10/2026", "Aurora")])
         self.assertEqual(listar("Residencial Aurora"), [])
+
+
+# ---------------------------------------------------------------- 5. identidade da tabela (D1)
+IDENTIDADE = ["_valores_importaveis_rt", "_preenchidos", "_META_TABELA_RT", "identidade_dados_rt",
+              "_tabela_rt_tem_dados", "_guardar_rascunho_rt_antes_da_troca", "guardar_tabela_rt",
+              "recuperar_tabela_rt", "conciliar_identidade_tabela_rt", "resolver_origem_desconhecida_rt",
+              "fotos_rt_de_outra_identidade"]
+
+
+class TestIdentidadeDaTabelaRT(unittest.TestCase):
+    def setUp(self):
+        self.rascunhos = []
+        self.chaves = []
+
+        def salvar(motivo):
+            self.rascunhos.append({k: v for k, v in self.ss.items() if str(k).startswith("rel_")})
+            return True
+        self.ns = _carregar(IDENTIDADE, {"_relatorio_rt_salvar_rascunho": salvar,
+                                         "_relatorio_rt_chave_sessao": lambda nova=False: self.chaves.append(nova)})
+        self.ss = self.ns["st"].session_state
+
+    def _ident(self, nome, id_cli, mes="09", status="ok", empresa="aqua_gestao"):
+        return self.ns["identidade_dados_rt"](empresa, {"id_cliente": id_cli, "status": status}, nome, mes, "2026")
+
+    def _alfa(self):
+        a = self._ident("Condomínio Alfa", "C1")
+        self.ns["conciliar_identidade_tabela_rt"](a)
+        self.ss.update({"rel_analise_data_0": "15/09/2026", "rel_analise_ph_0": "7,1", "rel_dos_produto_0": "Cloro",
+                        "rel_observacoes_gerais": "Obs de Alfa", "_rel_autoimport_periodo": "09/2026",
+                        "rel_diagnostico": "manual"})
+        return a
+
+    def test_identidade_usa_id_estavel_empresa_e_periodo(self):
+        a = self._ident("Condomínio Alfa", "C1")
+        self.assertEqual(a["chave"], "aqua_gestao|id:C1|09/2026")
+        self.assertEqual(a["chave"], self._ident("condominio  ALFA renomeado", "C1")["chave"])  # ID estável
+        self.assertNotEqual(a["chave"], self._ident("Condomínio Alfa", "C1", mes="10")["chave"])
+        self.assertNotEqual(a["chave"], self._ident("Condomínio Alfa", "C1", empresa="bem_star")["chave"])
+        self.assertEqual(self._ident("Chácara Avulsa", "")["chave"], "aqua_gestao|nome:chacara avulsa|09/2026")
+        self.assertFalse(self._ident("Residencial Sol", "", status="bloqueio")["comprovada"])
+        self.assertTrue(self._ident("Condomínio Alfa", "C1", status="ambiguo")["comprovada"])
+
+    def test_troca_guarda_a_tabela_do_anterior_no_rascunho_e_nao_transporta(self):
+        a = self._alfa()
+        sol = self._ident("Residencial Sol", "", status="bloqueio")
+        r = self.ns["conciliar_identidade_tabela_rt"](sol)
+        self.assertTrue(r["guardada_de"])
+        for k in ("rel_analise_data_0", "rel_analise_ph_0", "rel_dos_produto_0", "rel_observacoes_gerais"):
+            self.assertEqual(self.ss[k], "", k)  # nada de Alfa em Sol
+        self.assertNotIn("_rel_autoimport_periodo", self.ss)
+        self.assertEqual(self.ss["rel_diagnostico"], "manual")  # campos fora da tabela não são apagados
+        self.assertEqual(self.ss["rel_origem_dados"], sol["chave"])
+        self.assertEqual(self.rascunhos[-1]["rel_analise_ph_0"], "7,1")  # gravado no rascunho de Alfa
+        self.assertEqual(self.rascunhos[-1]["rel_origem_dados"], a["chave"])
+        self.assertEqual(self.chaves, [True])  # Sol passa a gravar numa linha nova de rascunho
+
+    def test_alfa_beta_alfa_recupera_os_dados_originais(self):
+        a = self._alfa()
+        self.ss["rel_analise_ph_0"] = "7,3"  # edição manual
+        self.ns["conciliar_identidade_tabela_rt"](self._ident("Residencial Beta", "C2"))
+        self.ss.update({"rel_analise_data_0": "20/09/2026", "rel_analise_ph_0": "6,8"})  # dados de Beta
+        r = self.ns["conciliar_identidade_tabela_rt"](a)
+        self.assertTrue(r["recuperada"])
+        self.assertEqual((self.ss["rel_analise_data_0"], self.ss["rel_analise_ph_0"], self.ss["rel_dos_produto_0"],
+                          self.ss["rel_observacoes_gerais"], self.ss["_rel_autoimport_periodo"]),
+                         ("15/09/2026", "7,3", "Cloro", "Obs de Alfa", "09/2026"))
+        r = self.ns["conciliar_identidade_tabela_rt"](self._ident("Residencial Beta", "C2"))
+        self.assertEqual((self.ss["rel_analise_data_0"], self.ss["rel_analise_ph_0"]), ("20/09/2026", "6,8"))
+
+    def test_origem_desconhecida_bloqueia_e_so_resolve_por_acao_explicita(self):
+        self.ss.update({"rel_analise_data_0": "15/09/2026", "rel_analise_ph_0": "7,1"})  # rascunho antigo
+        a = self._ident("Condomínio Alfa", "C1")
+        r = self.ns["conciliar_identidade_tabela_rt"](a)
+        self.assertEqual(r["conflito"], "origem_desconhecida")
+        self.assertNotIn("rel_origem_dados", self.ss)  # não associa sozinho
+        self.assertEqual(self.ss["rel_analise_ph_0"], "7,1")  # nada apagado
+        self.ns["resolver_origem_desconhecida_rt"](a, associar=False)  # guardar à parte
+        self.assertEqual(self.ss["rel_analise_ph_0"], "")
+        guardados = self.ss["_rel_por_identidade"]
+        self.assertEqual([g["valores"]["rel_analise_ph_0"] for k, g in guardados.items() if k.startswith("origem_desconhecida")], ["7,1"])
+        self.ss["rel_analise_ph_0"] = "7,2"
+        self.ss.pop("rel_origem_dados")
+        self.ns["resolver_origem_desconhecida_rt"](a, associar=True)  # revisado e associado explicitamente
+        self.assertEqual((self.ss["rel_origem_dados"], self.ss["rel_analise_ph_0"]), (a["chave"], "7,2"))
+
+    def test_cadastro_que_fica_duvidoso_mantem_a_tabela_e_sinaliza_conflito(self):
+        self._alfa()
+        r = self.ns["conciliar_identidade_tabela_rt"](self._ident("Condomínio Alfa", "", status="bloqueio"))
+        self.assertEqual(r["conflito"], "identidade_nao_comprovada")
+        self.assertEqual(self.ss["rel_analise_ph_0"], "7,1")  # mesmo nome e período: nada sai da tela
+        self.assertEqual(self.rascunhos, [])
+        r = self.ns["conciliar_identidade_tabela_rt"](self._ident("Condomínio Alfa", "", mes="10", status="bloqueio"))
+        self.assertTrue(r["guardada_de"])  # mudou o período: a tabela de setembro é guardada
+        self.assertEqual(self.ss["rel_analise_ph_0"], "")
+
+    def test_fotos_anexadas_em_outra_identidade_sao_detectadas_sem_apagar(self):
+        f = self.ns["fotos_rt_de_outra_identidade"]
+        self.ss["rel_origem_rotulo"] = "Condomínio Alfa (09/2026)"
+        self.assertEqual(f("aqua_gestao|id:C1|09/2026", True), "")
+        self.assertEqual(f("aqua_gestao|id:C2|09/2026", True), "Condomínio Alfa (09/2026)")
+        self.assertEqual(f("aqua_gestao|id:C1|09/2026", True), "")  # voltou a Alfa
+        self.assertEqual(f("aqua_gestao|id:C2|09/2026", False), "")  # fotos removidas
+        self.assertEqual(f("aqua_gestao|id:C2|09/2026", True), "")  # novas fotos já são de C2
+
+    def test_rascunho_antigo_sem_origem_fica_com_origem_desconhecida(self):
+        src = (RAIZ / "app.py").read_text(encoding="utf-8")
+        i = src.index("def _relatorio_rt_aplicar_rascunho")
+        trecho = src[i:src.index("\ndef ", i + 10)]
+        self.assertIn('if "rel_origem_dados" not in campos:', trecho)
+        self.assertIn('st.session_state.pop("rel_origem_dados", None)', trecho)
 
 
 class TestAvisosDeIdentificacaoNasTelas(unittest.TestCase):

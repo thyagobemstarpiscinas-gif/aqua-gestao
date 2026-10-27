@@ -160,16 +160,17 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         dados = {k: at.session_state[k] for k in CAMPOS[:4]}
         self.assertEqual(at.session_state["rel_analise_data_0"], "")  # outubro: nada importado
         self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))  # setembro importado
-        self.assertEqual(self._mes(at, "10"), ("", ""))  # de volta a outubro: setembro sai da tabela
-        self.assertTrue(any("retiradas" in i.value for i in at.info))
-        self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))
+        self.assertEqual(self._mes(at, "10"), ("", ""))  # outubro não mostra setembro
+        self.assertTrue(any("foram guardadas" in i.value for i in at.info))
+        self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))  # setembro devolvido
         for mes, ano in (("", None), ("13", None), ("ab", None), ("09", "20"), ("09", "")):
             self.assertEqual(self._mes(at, mes, ano), ("29/09/2026", "7,4"), (mes, ano))  # nada importado nem apagado
             self.assertTrue(any("Preencha o **mês" in w.value for w in at.warning), (mes, ano))
+            self.assertTrue(self._gerar_desabilitado(at), (mes, ano))  # período inválido: dados sem identidade
         self._mes(at, "09", "2026")
         at.text_input(key="rel_analise_ph_0").input("7,9").run()  # edição manual
-        self.assertEqual(self._mes(at, "10"), ("29/09/2026", "7,9"))  # editada: mantida, com aviso
-        self.assertTrue(any("editados" in w.value for w in at.warning))
+        self.assertEqual(self._mes(at, "10"), ("", ""))  # editada: guardada com setembro, não vai para outubro
+        self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,9"))  # volta com a edição
         self.assertEqual({k: at.session_state[k] for k in CAMPOS[:4]}, dados)  # dados do condomínio intactos
 
     def test_identificacao_duvidosa_interrompe_importacao_com_aviso(self):
@@ -303,11 +304,12 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         at.run()
         self._verificar_preservado(at, esperado, "nome duplicado no cadastro")
         self.assertTrue(any("cadastros com o nome" in w.value for w in at.warning))
-        # Dados de origem duvidosa: geração só com confirmação explícita, nada apagado.
+        # Cliente sem identificação segura: dados mantidos na tela, geração bloqueada e
+        # nenhuma confirmação manual libera (a identidade precisa ser resolvida no cadastro).
         self.assertTrue(self._gerar_desabilitado(at))
-        self._confirmacao(at)[0].check().run()
-        self.assertFalse(self._gerar_desabilitado(at))
-        self._verificar_preservado(at, esperado, "após confirmar a origem")
+        self.assertEqual(self._confirmacao(at), [])
+        at.run()
+        self._verificar_preservado(at, esperado, "reruns com o nome duplicado")
 
     # ---- Ambiguidade que surge depois da importação (auditoria do 75fcbfd)
     def _cadastrar(self, id_, nome, empresa="Aqua Gestão"):
@@ -381,6 +383,117 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         self.assertEqual(self._analises(at2, 1), [("29/09/2026", "7,4", "1,5")])
         self.assertEqual(at2.session_state["rel_diagnostico"], "Diagnóstico do rascunho")
         self.assertFalse(at2.exception, at2.exception)
+
+    # ---- D1: análises de um condomínio nunca vão para o relatório de outro
+    def _cenario_d1(self):
+        self._cadastrar("C11", "Residencial Sol", "Aqua Gestão")
+        self._cadastrar("C12", "Residencial Sol", "Bem Star Piscinas")  # mesmo nome, outra empresa
+        self._visitas_alfa(("15/09/2026", "Condomínio Alfa Fictício", "7,1", "1,1"),
+                           ("22/09/2026", "Residencial Beta Fictício", "6,8", "2,0"))
+        at = self._entrar_e_carregar()
+        self._mes(at, "09")
+        at.text_input(key="rel_analise_cl_0").input("1,2").run()  # edição manual em Alfa
+        self.assertEqual(self._analises(at, 1), [("15/09/2026", "7,1", "1,2")])
+        return at
+
+    def _carregar(self, at, cliente):
+        at.selectbox(key="sel_cliente_rel").select(cliente).run()
+        next(b for b in at.button if b.label == "⬇️ Carregar").click().run()
+        self.assertFalse(at.exception, at.exception)
+
+    def _sem_dados_de_alfa(self, at):
+        ss = at.session_state
+        total = int(ss["rel_analises_total"] or 12)
+        valores = [ss[f"rel_analise_{c}_{i}"] for i in range(total) for c in ("data", "ph", "cl")]
+        self.assertNotIn("15/09/2026", valores)
+        self.assertNotIn("7,1", valores)
+
+    def test_d1_alfa_para_sol_nao_leva_analises_de_alfa(self):
+        at = self._cenario_d1()
+        self._carregar(at, "Residencial Sol")
+        self.assertEqual(at.session_state["rel_nome_condominio"], "Residencial Sol")
+        self._sem_dados_de_alfa(at)
+        self.assertTrue(any("foram guardadas no rascunho" in i.value for i in at.info))
+        self.assertTrue(self._gerar_desabilitado(at))  # Sol não tem identificação segura
+        self.assertEqual(self._confirmacao(at), [])  # e não há confirmação que libere
+
+    def test_d1_alfa_beta_alfa_recupera_e_relatorio_de_beta_nao_tem_alfa(self):
+        import zipfile
+        at = self._cenario_d1()
+        self._carregar(at, "Residencial Beta Fictício")
+        self.assertEqual(self._analises(at, 1), [("22/09/2026", "6,8", "2,0")])  # só a visita de Beta
+        self.assertFalse(self._gerar_desabilitado(at))
+        at.selectbox(key="rel_art_status_widget").select("Não emitida").run()  # ART exigida pela validação
+        next(b for b in at.button if b.label == "🚀 Gerar relatório mensal").click().run()
+        self.assertFalse(at.exception, at.exception)
+        docx = sorted((self.pasta / "app" / "generated").glob("**/*Beta*RELATORIO_RT.docx"))
+        self.assertTrue(docx, [e.value for e in at.error])
+        texto = zipfile.ZipFile(docx[-1]).read("word/document.xml").decode("utf-8")
+        self.assertIn("22/09/2026", texto)
+        self.assertNotIn("15/09/2026", texto)  # nenhuma análise de Alfa no documento de Beta
+        self._carregar(at, "Condomínio Alfa Fictício")
+        self.assertEqual(self._analises(at, 1), [("15/09/2026", "7,1", "1,2")])  # inclusive a edição manual
+        self.assertFalse(self._gerar_desabilitado(at))
+
+    def test_d1_troca_de_mes_guarda_e_devolve_a_tabela_do_mes(self):
+        at = self._cenario_d1()
+        self.assertEqual(self._mes(at, "10"), ("", ""))  # outubro não mostra setembro
+        self.assertEqual(self._mes(at, "09"), ("15/09/2026", "7,1"))
+        self.assertEqual(self._analises(at, 1), [("15/09/2026", "7,1", "1,2")])
+
+    def test_d1_nome_semelhante_guarda_a_tabela_e_bloqueia(self):
+        at = self._cenario_d1()
+        at.text_input(key="rel_nome_condominio").input("Alfa").run()
+        self._sem_dados_de_alfa(at)
+        self.assertTrue(self._gerar_desabilitado(at))
+        self._carregar(at, "Condomínio Alfa Fictício")
+        self.assertEqual(self._analises(at, 1), [("15/09/2026", "7,1", "1,2")])
+
+    def test_d1_reinicio_de_sessao_restaura_alfa_e_rascunho_antigo_exige_revisao(self):
+        at = self._cenario_d1()
+        self._carregar(at, "Residencial Beta Fictício")  # Alfa vai para o rascunho próprio
+        restaurado = None
+        for i in range(6):
+            at2 = self._entrar_e_carregar("Residencial Beta Fictício")
+            botoes = [b for b in at2.button if (b.key or "").startswith("btn_restaurar_rascunho_rt_")]
+            if i >= len(botoes):
+                break
+            botoes[i].click().run()
+            at2.run()
+            if at2.session_state["rel_nome_condominio"] == "Condomínio Alfa Fictício":
+                restaurado = at2
+                break
+        self.assertIsNotNone(restaurado, "rascunho de Alfa não encontrado")
+        at2 = restaurado
+        self.assertEqual(self._analises(at2, 1), [("15/09/2026", "7,1", "1,2")])
+        self.assertFalse(self._gerar_desabilitado(at2))
+        # Rascunho antigo, sem identidade: revisão explícita antes de gerar.
+        del at2.session_state["rel_origem_dados"]
+        at2.run()
+        self.assertTrue(any("rascunho sem identificação" in w.value for w in at2.warning))
+        self.assertTrue(self._gerar_desabilitado(at2))
+        self.assertEqual(self._analises(at2, 1), [("15/09/2026", "7,1", "1,2")])  # nada apagado
+        next(b for b in at2.button if b.key == "btn_rel_origem_associar").click().run()
+        self.assertFalse(self._gerar_desabilitado(at2))
+
+    def test_d1_falha_do_sheets_na_troca_e_recuperacao(self):
+        import streamlit as st_real
+        at = self._cenario_d1()
+        visitas = sys.modules["gspread"].PLANILHA.worksheet("🔬 Visitas")
+
+        def _falha():
+            raise ConnectionError("timeout (simulado)")
+        visitas.get_all_values = _falha
+        st_real.cache_data.clear()
+        self._carregar(at, "Residencial Beta Fictício")  # troca durante a falha
+        self._sem_dados_de_alfa(at)
+        self.assertTrue(self._gerar_desabilitado(at))
+        del visitas.get_all_values
+        st_real.cache_data.clear()
+        at.run()
+        self.assertEqual(self._analises(at, 1), [("22/09/2026", "6,8", "2,0")])
+        self._carregar(at, "Condomínio Alfa Fictício")
+        self.assertEqual(self._analises(at, 1), [("15/09/2026", "7,1", "1,2")])
 
     def test_nome_digitado_semelhante_a_cadastro_nao_importa_e_mantem_formulario(self):
         at = self._entrar_e_carregar()
