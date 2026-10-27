@@ -274,17 +274,23 @@ def _visita(id_, data, cond, id_cliente=""):
 
 CABECALHO_CLIENTES = ["", "ID", "Nome"] + [""] * 12
 IDENTIFICACAO = ["sheets_listar_clientes", "sheets_listar_lancamentos", "_visita_pertence_ao_condominio",
-                 "_ClientesIndisponiveis", "_ler_cadastro_identificacao", "_resolver_condominio_da_visita",
+                 "_ClientesIndisponiveis", "_VisitasIndisponiveis", "_ler_cadastro_identificacao", "_resolver_condominio_da_visita",
                  "_situacao_visitas_cache", "situacao_visitas_condominio"]
 
 
 class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
     """Funções reais (lista de clientes e de visitas) sobre abas no layout da planilha."""
 
-    def _app(self, clientes, visitas, clientes_falham=False):
+    def _app(self, clientes, visitas, clientes_falham=False, visitas_falham=False, conexoes_ok=None):
+        """conexoes_ok: quantas chamadas a conectar_sheets() funcionam (None = todas)."""
         abas = {"👥 Clientes": _Aba([CABECALHO_CLIENTES] + clientes, falha=clientes_falham),
-                "🔬 Visitas": _Aba([["", "ID Visita", "Data", "ID Cliente", "Condomínio"]] + visitas)}
-        ns = _carregar(IDENTIFICACAO, {"conectar_sheets": lambda: object(), "obter_aba_sheets": lambda nome: abas[nome]})
+                "🔬 Visitas": _Aba([["", "ID Visita", "Data", "ID Cliente", "Condomínio"]] + visitas, falha=visitas_falham)}
+        chamadas = []
+
+        def conectar_sheets():
+            chamadas.append(1)
+            return object() if conexoes_ok is None or len(chamadas) <= conexoes_ok else None
+        ns = _carregar(IDENTIFICACAO, {"conectar_sheets": conectar_sheets, "obter_aba_sheets": lambda nome: abas[nome]})
         listar = lambda nome: [v["id_visita"] for v in ns["sheets_listar_lancamentos"](nome)]  # noqa: E731
         aviso = lambda nome: ns["situacao_visitas_condominio"](nome)["aviso"]  # noqa: E731
         return ns, listar, aviso
@@ -338,6 +344,69 @@ class TestIdentificacaoDoCondominioNasVisitas(unittest.TestCase):
             self.assertIn(parte, texto)
         self.assertEqual(listar("Edifício Lua"), ["V8"])  # outros condomínios seguem normais
         self.assertEqual(aviso("Edifício Lua"), "")
+
+    # ---- três situações: consulta com visitas, consulta sem visitas, falha/bloqueio
+    CLIENTES_AURORA = [_cliente("C1", "Residencial Aurora", "Aqua Gestão"),
+                       _cliente("C2", "Residencial Aurora II", "Aqua Gestão"),
+                       _cliente("C3", "Residencial Sol", "Aqua Gestão"), _cliente("C7", "Residencial Sol", "Bem Star Piscinas")]
+
+    def test_consulta_com_visitas_e_consulta_sem_visitas_tem_status_ok(self):
+        ns, _, _ = self._app(self.CLIENTES_AURORA, [_visita("V1", "06/10/2026", "Residencial Aurora")])
+        com = ns["situacao_visitas_condominio"]("Residencial Aurora")
+        sem = ns["situacao_visitas_condominio"]("Residencial Aurora II")
+        self.assertEqual((com["status"], [v["id_visita"] for v in com["visitas"]], com["aviso"]), ("ok", ["V1"], ""))
+        self.assertEqual((sem["status"], sem["visitas"], sem["aviso"], sem["bloqueio"]), ("ok", [], "", ""))
+
+    def _falha_de_visitas(self, **kwargs):
+        ns, listar, _ = self._app(self.CLIENTES_AURORA, [_visita("V1", "06/10/2026", "Residencial Aurora")], **kwargs)
+        situacao = ns["situacao_visitas_condominio"]("Residencial Aurora")
+        self.assertEqual((situacao["status"], situacao["bloqueio"], situacao["visitas"]), ("falha", "visitas_indisponiveis", []))
+        self.assertIn("🔬 Visitas", situacao["aviso"])
+        self.assertIn("não ausência de visitas", situacao["aviso"])
+        # exceção (de visitas ou, se a conexão já caiu de vez, de cadastro): o st.cache_data não guarda a falha
+        with self.assertRaises((ns["_VisitasIndisponiveis"], ns["_ClientesIndisponiveis"])):
+            ns["_situacao_visitas_cache"]("Residencial Aurora")
+        return ns
+
+    def test_falha_de_leitura_da_aba_visitas_e_falha_e_nao_lista_vazia(self):
+        self._falha_de_visitas(visitas_falham=True)
+
+    def test_falha_de_conexao_na_leitura_das_visitas_e_falha(self):
+        self._falha_de_visitas(conexoes_ok=1)  # o cadastro foi lido; a conexão cai em seguida
+
+    def test_aba_visitas_inexistente_e_falha(self):
+        abas = {"👥 Clientes": _Aba([CABECALHO_CLIENTES] + self.CLIENTES_AURORA)}
+        ns = _carregar(IDENTIFICACAO, {"conectar_sheets": lambda: object(), "obter_aba_sheets": lambda nome: abas[nome]})
+        self.assertEqual(ns["situacao_visitas_condominio"]("Residencial Aurora")["status"], "falha")
+
+    def test_falha_do_cadastro_e_falha_e_duplicado_e_bloqueio(self):
+        ns, _, _ = self._app(self.CLIENTES_AURORA, [], clientes_falham=True)
+        self.assertEqual(ns["situacao_visitas_condominio"]("Residencial Aurora")["status"], "falha")
+        ns, _, _ = self._app(self.CLIENTES_AURORA, [])
+        self.assertEqual(ns["situacao_visitas_condominio"]("Residencial Sol")["status"], "bloqueio")
+
+    # ---- Defeito B: nome digitado que não é cadastro, mas pode representar um
+    def test_nome_digitado_semelhante_a_cadastro_e_bloqueado(self):
+        visitas = [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V2", "06/10/2026", "Aurora"),
+                   _visita("V8", "09/10/2026", "Sol"), _visita("V11", "06/10/2026", "Torre A"),
+                   _visita("V12", "06/10/2026", "Residencial Auror")]
+        ns, listar, aviso = self._app(self.CLIENTES_AURORA, visitas)
+        for nome, cadastros in (("Sol", ("C3", "C7")), ("Aurora", ("C1", "C2")), ("Residencial Auror", ("C1", "C2")),
+                                ("Residencial Aurora Torre A", ("C1",))):
+            situacao = ns["situacao_visitas_condominio"](nome)
+            self.assertEqual((situacao["status"], situacao["bloqueio"], situacao["visitas"]),
+                             ("bloqueio", "nome_semelhante", []), nome)
+            for c in cadastros:
+                self.assertIn(c, situacao["aviso"], nome)
+
+    def test_relatorio_avulso_sem_correspondencia_continua_e_nao_recebe_visitas_de_clientes(self):
+        visitas = [_visita("V1", "06/10/2026", "Residencial Aurora"), _visita("V20", "06/10/2026", "Chácara Avulsa"),
+                   _visita("V21", "07/10/2026", "chacara  avulsa")]
+        ns, listar, aviso = self._app(self.CLIENTES_AURORA, visitas)
+        situacao = ns["situacao_visitas_condominio"]("Chácara Avulsa")
+        self.assertEqual((situacao["status"], [v["id_visita"] for v in situacao["visitas"]], situacao["aviso"]),
+                         ("ok", ["V20", "V21"], ""))
+        self.assertEqual(listar("Condomínio Inexistente"), [])
 
     def test_cadastro_sem_id_tambem_conta_para_ambiguidade(self):
         _, listar, _ = self._app(

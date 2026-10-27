@@ -1974,6 +1974,10 @@ class _ClientesIndisponiveis(Exception):
     condomínio uma visita pertence."""
 
 
+class _VisitasIndisponiveis(Exception):
+    """A aba 🔬 Visitas não pôde ser lida: o resultado não é "nenhuma visita"."""
+
+
 def _ler_cadastro_identificacao() -> list[dict]:
     """ID, nome e empresa dos cadastros da aba 👥 Clientes, para identificar visitas.
 
@@ -2021,30 +2025,55 @@ def _resolver_condominio_da_visita(alvo_n: str, linha_n: str, nomes_n: set) -> s
 def _situacao_visitas_cache(nome_condominio: str) -> dict:
     """Visitas do condomínio na aba 🔬 Visitas e o motivo de qualquer exclusão.
 
-    Lança _ClientesIndisponiveis (resultado não fica em cache) quando o cadastro não
-    pode ser lido. Retorna {"visitas", "bloqueio", "aviso", "ambiguas"}."""
-    resultado = {"visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
+    Lança _ClientesIndisponiveis ou _VisitasIndisponiveis quando a planilha não pode
+    ser lida: exceções não ficam em cache, então uma falha nunca vira "sem visitas".
+    Retorna {"status", "visitas", "bloqueio", "aviso", "ambiguas"}, com status "ok"
+    (consulta feita, com ou sem visitas) ou "bloqueio" (identificação duvidosa)."""
+    resultado = {"status": "ok", "visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
     cadastro = _ler_cadastro_identificacao()
     alvo_n = normalizar_texto_busca(nome_condominio)
     mesmos = [c for c in cadastro if normalizar_texto_busca(c["nome"]) == alvo_n]
     if len(mesmos) > 1:
         # O "ID Cliente" gravado nas visitas antigas vinha do primeiro nome igual: não separa.
         lista = "; ".join(f"{c['id'] or 'sem ID'} – {c['empresa'] or 'empresa não informada'}" for c in mesmos)
-        resultado["bloqueio"] = "nome_duplicado"
+        resultado["status"], resultado["bloqueio"] = "bloqueio", "nome_duplicado"
         resultado["aviso"] = (
             f"⚠️ Há {len(mesmos)} cadastros com o nome “{nome_condominio}” ({lista}). As visitas não foram "
             "importadas, para não misturar dados de cadastros diferentes. Os registros continuam na planilha; "
             "diferencie os nomes no cadastro de clientes para liberar a importação."
         )
         return resultado
+    if not mesmos:
+        # Nome digitado que não é um cadastro, mas pode representar um (abreviado, com
+        # erro de digitação ou com complemento): não importa nada de outro cliente.
+        semelhantes = []
+        for c in cadastro:
+            n = normalizar_texto_busca(c["nome"])
+            if n and (n in alvo_n or alvo_n in n):
+                semelhantes.append(c)
+        if alvo_n and semelhantes:
+            lista = "; ".join(f"{c['nome']} ({c['id'] or 'sem ID'} – {c['empresa'] or 'empresa não informada'})"
+                              for c in semelhantes[:5])
+            resultado["status"], resultado["bloqueio"] = "bloqueio", "nome_semelhante"
+            resultado["aviso"] = (
+                f"⚠️ O nome “{nome_condominio}” não corresponde exatamente a um cadastro e pode representar: {lista}. "
+                "As visitas não foram importadas automaticamente e os dados do formulário foram mantidos. "
+                "Para importar, carregue o cliente cadastrado pelo nome exato."
+            )
+            return resultado
     nomes_n = {normalizar_texto_busca(c["nome"]) for c in cadastro} - {""}
     try:
         sh = conectar_sheets()
         if sh is None:
-            return resultado
-
+            raise _VisitasIndisponiveis("sem conexão com a planilha")
         aba = obter_aba_sheets("🔬 Visitas")
         todos = aba.get_all_values()
+    except _VisitasIndisponiveis:
+        raise
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_lancamentos", e)
+        raise _VisitasIndisponiveis(f"{type(e).__name__}: {e}") from e
+    try:
         lancamentos = []
         ambiguas = []
 
@@ -2117,18 +2146,27 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
 
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
-        return resultado
+        raise _VisitasIndisponiveis(f"{type(e).__name__}: {e}") from e
 
 
 def situacao_visitas_condominio(nome_condominio: str) -> dict:
-    """Como _situacao_visitas_cache, mas sem lançar: cadastro de clientes indisponível
-    interrompe a importação (nenhuma visita) com aviso, em vez de misturar condomínios."""
+    """Situação da consulta de visitas de um condomínio, sem lançar exceção.
+
+    status "ok": consulta feita (visitas pode estar vazia: ausência legítima);
+    status "bloqueio": identificação duvidosa (nome duplicado ou semelhante);
+    status "falha": cadastro de clientes ou aba 🔬 Visitas não puderam ser lidos.
+    Fora de "ok", nada deve ser importado, retirado ou gerado a partir das visitas."""
     try:
         return _situacao_visitas_cache(nome_condominio)
     except _ClientesIndisponiveis:
-        return {"visitas": [], "bloqueio": "cadastro_indisponivel", "ambiguas": [], "aviso": (
+        return {"status": "falha", "visitas": [], "bloqueio": "cadastro_indisponivel", "ambiguas": [], "aviso": (
             "⚠️ Não foi possível consultar o cadastro de clientes para confirmar a qual condomínio cada visita "
-            "pertence. Nenhuma visita foi importada da planilha agora, para não misturar condomínios. "
+            "pertence. Nenhuma visita foi importada agora e os dados do relatório foram mantidos. "
+            "Tente novamente em instantes.")}
+    except _VisitasIndisponiveis:
+        return {"status": "falha", "visitas": [], "bloqueio": "visitas_indisponiveis", "ambiguas": [], "aviso": (
+            "⚠️ Não foi possível ler a aba 🔬 Visitas da planilha. Isto é uma falha de consulta, não ausência de "
+            "visitas: nada foi importado nem retirado e os dados do relatório foram mantidos. "
             "Tente novamente em instantes.")}
 
 
@@ -10903,10 +10941,13 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     pasta_csr.mkdir(parents=True, exist_ok=True)
     dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
     lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
-    _situacao_csr = situacao_visitas_condominio(csr_sel) if csr_sel else {"visitas": [], "bloqueio": "", "aviso": ""}
+    _situacao_csr = situacao_visitas_condominio(csr_sel) if csr_sel else {"status": "ok", "visitas": [], "bloqueio": "", "aviso": ""}
     lancamentos_sheets = _situacao_csr["visitas"]
     if _situacao_csr["bloqueio"]:
         lancamentos_local = []  # a pasta local é identificada só pelo nome: não confirma o cadastro
+    if _situacao_csr.get("status") == "falha":
+        # Falha de consulta não é ausência de visitas: não gera relatório incompleto.
+        return {"ok": False, "erros": [_situacao_csr["aviso"]], "mensagem": _situacao_csr["aviso"]}
 
     vistos = set()
     lancamentos_todos = []
@@ -14011,9 +14052,13 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         preview_col, gerar_col = st.columns([1, 1])
         registros_preview = st.empty()
 
+        _rt_consultas_falhas = []  # condomínios cuja consulta falhou na última busca
+
         def _buscar_registros_rt(cond_nome, mes, ano):
             # Obtem lancamentos do Sheets e filtra por condominio/periodo/origem RT.
             # "TODOS" (quando disponível) representa somente condominios Aqua desta lista.
+            # Consultas que falharam ficam em _rt_consultas_falhas (falha não é "sem registros").
+            _rt_consultas_falhas.clear()
             nomes_consulta = []
             if normalizar_texto_busca(cond_nome) == "todos":
                 nomes_consulta = [c for c in _conds_rt if normalizar_texto_busca(c) != "todos"]
@@ -14027,8 +14072,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     todos_sheets = _situacao_rt["visitas"] or []
                     if _situacao_rt["aviso"]:
                         st.warning(f"{nome_consulta}: {_situacao_rt['aviso']}")
+                    if _situacao_rt.get("status") == "falha":
+                        _rt_consultas_falhas.append(nome_consulta)
                 except Exception:
                     todos_sheets = []
+                    _rt_consultas_falhas.append(nome_consulta)
 
                 normalizados = normalize_rt_records(list(todos_sheets))
                 filtrados = select_records_by_condominium(normalizados, nome_consulta)
@@ -14214,7 +14262,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
         if preview_col.button("🔎 Pré-visualizar registros técnicos"):
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
-            if not regs:
+            if _rt_consultas_falhas:
+                registros_preview.error("A consulta às visitas falhou; nenhum campo foi alterado. "
+                                        "Tente novamente quando a conexão voltar.")
+            elif not regs:
                 st.session_state["_rt2025_qtd_registros_auto"] = 0
                 st.session_state["rel_analises_total"] = _linhas_esperadas_rt
                 garantir_campos_analises(_linhas_esperadas_rt, minimo=1)
@@ -14234,6 +14285,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.stop()
 
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
+            if _rt_consultas_falhas:
+                st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
+                         "Os campos foram mantidos; tente novamente quando a conexão voltar.")
+                st.stop()
 
             # Evita alterar session_state de widgets já instanciados no Streamlit.
             # O nome, mês e ano usados no PDF vêm das variáveis locais selecionadas acima.
@@ -22255,6 +22310,7 @@ if pasta_rel_atual and pasta_rel_atual.exists():
 
 # Busca lançamentos do Google Sheets (aba Visitas)
 lancamentos_sheets = []
+_situacao_rel = {"status": "ok", "visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
 if nome_rel_atual:
     _situacao_rel = situacao_visitas_condominio(nome_rel_atual)
     lancamentos_sheets = _situacao_rel["visitas"]
@@ -22283,6 +22339,8 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
                 f"Operador: {lc.get('operador', '')} | "
                 f"ID: {lc.get('id_visita', '')}"
             )
+    elif _situacao_rel["status"] != "ok":
+        st.warning(_situacao_rel["aviso"])  # falha de consulta ou identificação duvidosa, não ausência de visitas
     else:
         st.warning(
             "Nenhuma visita foi encontrada na aba 🔬 Visitas para este condomínio. "
@@ -22547,7 +22605,9 @@ def _importar_lancamentos(lancamentos):
 # anterior saem da tabela, para que setembro não apareça no relatório de outubro.
 _rel_importou_agora = False
 _periodo_rel_txt = f"{mes_ref}/{ano_ref}"
-if _periodo_rel_ok and nome_rel_atual:
+# Só com a consulta feita (status "ok"): falha ou bloqueio não significam "sem visitas",
+# então nada é importado nem retirado e a tabela fica como está.
+if _periodo_rel_ok and nome_rel_atual and _situacao_rel["status"] == "ok":
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
@@ -22647,13 +22707,13 @@ if lancamentos_disponiveis:
                     st.caption(f"   📝 {lc['observacao']}")
 
 else:
-    if nome_rel_atual and _periodo_rel_ok:
+    if nome_rel_atual and _periodo_rel_ok and _situacao_rel["status"] == "ok":
         st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
 
 
 # Importação automática após carregar cliente cadastrado: evita depender do botão manual
 # e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
-if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok:
+if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok and _situacao_rel["status"] == "ok":
     if lancamentos_disponiveis:
         # A importação automática acima já cuidou disto; só importa aqui se a tabela
         # estiver livre (vazia ou igual à última importação) — evita apagar trabalho manual.
@@ -22955,7 +23015,14 @@ with col_rasc3:
 st.markdown("---")
 btn_col1, btn_col2 = st.columns([2, 1])
 with btn_col1:
-    rel_gerar = st.button("🚀 Gerar relatório mensal", use_container_width=True, type="primary")
+    _rel_consulta_falhou = _situacao_rel["status"] == "falha"
+    rel_gerar = st.button(
+        "🚀 Gerar relatório mensal", use_container_width=True, type="primary", disabled=_rel_consulta_falhou,
+        help="Indisponível enquanto a consulta às visitas falhar; o rascunho é mantido." if _rel_consulta_falhou else None,
+    )
+    if _rel_consulta_falhou:
+        st.caption("⏸️ Geração suspensa: a consulta às visitas falhou. Os campos e o rascunho foram mantidos; "
+                   "tente novamente quando a conexão voltar.")
 with btn_col2:
     if st.button("🗑️ Limpar rascunho", use_container_width=True):
         if _pasta_rasc and _pasta_rasc.exists():
@@ -24346,7 +24413,10 @@ if gerar:
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
 
-if rel_gerar:
+if rel_gerar and _situacao_rel["status"] == "falha":
+    st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
+             "Os campos e o rascunho foram mantidos; tente novamente quando a conexão voltar.")
+elif rel_gerar:
     ok_rel, msg_rel = gerar_relatorio_mensal()
     if ok_rel:
         st.success(msg_rel)

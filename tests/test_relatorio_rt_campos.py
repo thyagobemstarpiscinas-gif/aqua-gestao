@@ -71,6 +71,12 @@ class _AppReal(unittest.TestCase):
     """Cópia do app em pasta temporária, planilha falsa, credenciais fictícias, sem rede."""
 
     def setUp(self):
+        if AppTest is not None:
+            # Conexão e abas ficam em cache de recurso do processo: cada teste começa
+            # com a planilha falsa dele, nunca com a de um teste anterior.
+            import streamlit as st_real
+            st_real.cache_data.clear()
+            st_real.cache_resource.clear()
         self.pasta = Path(tempfile.mkdtemp(prefix="rt_campos_"))
         self.addCleanup(shutil.rmtree, self.pasta, ignore_errors=True)
         # Cópia do app: o que ele gravar (generated/, json locais) fica na pasta temporária.
@@ -193,6 +199,119 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         st_real.cache_data.clear()
         self.assertEqual(self._mes(at, "10"), ("", ""))
         self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))  # cadastro de volta: importa normalmente
+
+    # ---- Defeito A: falha de consulta não pode apagar nem gerar com dados incompletos
+    def _tabela(self, at):
+        ss = at.session_state
+        return {k: ss[k] for k in ("rel_analise_data_0", "rel_analise_ph_0", "rel_analise_cl_0", "rel_diagnostico",
+                                   "rel_endereco_condominio", "rel_nome_condominio")}
+
+    def _rascunho_rt_local(self):
+        arquivos = sorted((self.pasta / "app" / "generated").glob("_rascunho_relatorio_rt*.json"),
+                          key=lambda p: p.stat().st_mtime)
+        return json.loads(arquivos[-1].read_text(encoding="utf-8"))["campos"] if arquivos else {}
+
+    def _gerar_desabilitado(self, at):
+        return next(b for b in at.button if b.label == "🚀 Gerar relatório mensal").disabled
+
+    def _preparar_setembro_com_edicoes(self):
+        at = self._entrar_e_carregar()
+        self.assertEqual(self._mes(at, "09"), ("29/09/2026", "7,4"))
+        at.text_area(key="rel_diagnostico").input("Diagnóstico digitado pelo RT").run()  # valor manual
+        at.text_area(key="rel_endereco_condominio").input("Rua A, 1 — bloco B").run()
+        self.assertFalse(at.exception, at.exception)
+        return at
+
+    def _verificar_preservado(self, at, esperado, passo):
+        self.assertEqual(self._tabela(at), esperado, passo)
+        self.assertFalse(at.exception, at.exception)
+
+    def test_falha_de_leitura_da_aba_visitas_preserva_tudo_e_suspende_a_geracao(self):
+        import streamlit as st_real
+        at = self._preparar_setembro_com_edicoes()
+        esperado = self._tabela(at)
+        rascunho_antes = self._rascunho_rt_local()
+        visitas = sys.modules["gspread"].PLANILHA.worksheet("🔬 Visitas")
+
+        def _falha():
+            raise ConnectionError("timeout ao ler a aba (simulado)")
+        visitas.get_all_values = _falha
+        st_real.cache_data.clear()
+        at.run()
+        self._verificar_preservado(at, esperado, "rerun com a aba indisponível")
+        self.assertTrue(any("🔬 Visitas" in w.value and "falha de consulta" in w.value for w in at.warning))
+        self.assertFalse(any("Nenhum lançamento de campo encontrado" in i.value for i in at.info))
+        self.assertTrue(self._gerar_desabilitado(at))
+        self._mes(at, "10")
+        self._mes(at, "09")  # troca de mês durante a falha
+        self._verificar_preservado(at, {**esperado}, "troca de mês com a aba indisponível")
+        # O salvamento automático não troca a versão válida por uma vazia.
+        rascunho = self._rascunho_rt_local()
+        self.assertEqual((rascunho.get("rel_analise_data_0"), rascunho.get("rel_diagnostico")),
+                         ("29/09/2026", "Diagnóstico digitado pelo RT"))
+        self.assertEqual(rascunho_antes.get("rel_analise_ph_0"), rascunho.get("rel_analise_ph_0"))
+
+        del visitas.get_all_values  # conexão volta
+        st_real.cache_data.clear()
+        at.run()
+        self._verificar_preservado(at, esperado, "após a recuperação")
+        self.assertFalse(self._gerar_desabilitado(at))
+        self.assertFalse(any("falha de consulta" in w.value for w in at.warning))
+
+        # Nova visita depois da recuperação, com a tabela editada pelo usuário: nada é sobrescrito.
+        at.text_input(key="rel_analise_ph_0").input("7,9").run()
+        linha = ["", "V2", "22/09/2026", "", "Condomínio Alfa Fictício", "7,0", "1,2", "1,4", "80", "", "0"] + [""] * 15
+        visitas.linhas.append(linha)
+        st_real.cache_data.clear()
+        at.run()
+        self.assertEqual((at.session_state["rel_analise_data_0"], at.session_state["rel_analise_ph_0"]), ("29/09/2026", "7,9"))
+        self.assertTrue(any("editados" in w.value for w in at.warning))
+
+    def test_queda_de_conexao_preserva_tudo_e_recupera(self):
+        import streamlit as st_real
+        at = self._preparar_setembro_com_edicoes()
+        esperado = self._tabela(at)
+        gspread = sys.modules["gspread"]
+        autorizar = gspread.authorize
+
+        def _sem_conexao(creds):
+            raise ConnectionError("sem rede (simulado)")
+        gspread.authorize = _sem_conexao
+        st_real.cache_data.clear()
+        st_real.cache_resource.clear()
+        try:
+            at.run()
+            self._verificar_preservado(at, esperado, "sem conexão")
+            self.assertTrue(any("cadastro de clientes" in w.value for w in at.warning))
+            self.assertTrue(self._gerar_desabilitado(at))
+        finally:
+            gspread.authorize = autorizar
+        st_real.cache_data.clear()
+        st_real.cache_resource.clear()
+        at.run()
+        self._verificar_preservado(at, esperado, "conexão de volta")
+        self.assertFalse(self._gerar_desabilitado(at))
+
+    def test_bloqueio_por_cadastro_duplicado_preserva_analises_importadas(self):
+        import streamlit as st_real
+        at = self._preparar_setembro_com_edicoes()
+        esperado = self._tabela(at)
+        linha = [""] * 15
+        linha[1], linha[2], linha[8], linha[12] = "C9", "Condomínio Alfa Fictício", "Ativo", "Bem Star Piscinas"
+        sys.modules["gspread"].PLANILHA.worksheet("👥 Clientes").linhas.append(linha)
+        st_real.cache_data.clear()
+        at.run()
+        self._verificar_preservado(at, esperado, "nome duplicado no cadastro")
+        self.assertTrue(any("cadastros com o nome" in w.value for w in at.warning))
+        self.assertFalse(self._gerar_desabilitado(at))  # identificação duvidosa não impede relatório manual
+
+    def test_nome_digitado_semelhante_a_cadastro_nao_importa_e_mantem_formulario(self):
+        at = self._entrar_e_carregar()
+        at.text_input(key="rel_nome_condominio").input("Alfa").run()  # abreviação digitada à mão
+        self.assertEqual(self._mes(at, "09"), ("", ""))  # setembro de Alfa não entra
+        self.assertTrue(any("não corresponde exatamente a um cadastro" in w.value for w in at.warning))
+        self.assertEqual((at.session_state["rel_nome_condominio"], at.session_state["rel_endereco_condominio"]),
+                         ("Alfa", "Rua A, 1"))
 
     def test_visita_do_mes_importa_e_sai_ao_trocar_de_mes(self):
         at = self._entrar_e_carregar("Residencial Beta Fictício")  # Beta: visita numa terça do mês corrente
