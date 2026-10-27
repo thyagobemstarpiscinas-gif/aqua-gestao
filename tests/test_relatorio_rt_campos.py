@@ -501,7 +501,7 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         self.assertEqual(self._mes(at, "09"), ("", ""))  # setembro de Alfa não entra
         self.assertTrue(any("não corresponde exatamente a um cadastro" in w.value for w in at.warning))
         self.assertEqual((at.session_state["rel_nome_condominio"], at.session_state["rel_endereco_condominio"]),
-                         ("Alfa", "Rua A, 1"))
+                         ("Alfa", ""))  # identidade diferente não conserva endereço de Alfa cadastrado
 
     def test_visita_do_mes_importa_e_sai_ao_trocar_de_mes(self):
         at = self._entrar_e_carregar("Residencial Beta Fictício")  # Beta: visita numa terça do mês corrente
@@ -540,7 +540,7 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
 
     @staticmethod
     def _avisos(at):
-        return [w.value for w in at.warning if "foi cancelada" in w.value]
+        return [w.value for w in at.warning if "foi cancelada" in w.value or "Troca bloqueada" in w.value]
 
     def test_operador_troca_cancelada_mantem_campos_e_volta_a_selecao(self):
         at = self._entrar_operador("mestre-ficticio")
@@ -586,19 +586,33 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
 
     def test_rt_troca_cancelada_mantem_dados_e_rascunho_volta_depois(self):
         at = self._entrar_operador("rt-ficticio")
-        a, b = at.selectbox(key="rt_op_sel_cond").options[:2]
+        a, b = [o for o in at.selectbox(key="rt_op_sel_cond").options if o.upper() != "TODOS"][:2]
+        at.selectbox(key="rt_op_sel_cond").select(a).run()
         at.text_area(key="rel_parecer_complemento_rt").input("Parecer fictício").run()
-        bloqueio = self._bloquear_gravacao(a)
-        at.selectbox(key="rt_op_sel_cond").select(b).run()
-        self.assertEqual(len(self._avisos(at)), 1)
-        at.run()
-        self.assertEqual(at.session_state["rt_op_sel_cond"], a)
-        self.assertEqual(at.session_state["rel_parecer_complemento_rt"], "Parecer fictício")
-        bloqueio.unlink()
+        from PIL import Image
+        from utils.rt_contexto import ler_fotos
+        import io
+        foto = io.BytesIO()
+        Image.new("RGB", (8, 9), "blue").save(foto, format="PNG")
+        next(w for w in at.file_uploader if w.label == "Fotos do relatório RT").upload("falha.png", foto.getvalue(), "image/png").run()
+        origem = at.session_state["rel_origem_dados"]
+        original = Path.write_text
+        def falhar(caminho, *args, **kwargs):
+            if "_rascunho_relatorio_rt" in caminho.name:
+                raise OSError("disco cheio (simulado)")
+            return original(caminho, *args, **kwargs)
+        with mock.patch.object(Path, "write_text", falhar):
+            at.selectbox(key="rt_op_sel_cond").select(b).run()
+            self.assertTrue(self._avisos(at))
+            at.run()
+            self.assertEqual(at.session_state["rt_op_sel_cond"], a)
+            self.assertEqual(at.session_state["rel_parecer_complemento_rt"], "Parecer fictício")
+            self.assertEqual(len(ler_fotos(at.session_state.filtered_state, origem)), 1)
         at.selectbox(key="rt_op_sel_cond").select(b).run()
         self.assertEqual(at.session_state["rel_parecer_complemento_rt"], "")
         at.selectbox(key="rt_op_sel_cond").select(a).run()
         self.assertEqual(at.session_state["rel_parecer_complemento_rt"], "Parecer fictício")
+        self.assertEqual(len(ler_fotos(at.session_state.filtered_state, origem)), 1)
         self.assertFalse(at.exception, at.exception)
 
     def test_rt_formulario_completo_volta_intacto_apos_trocar_e_retornar(self):

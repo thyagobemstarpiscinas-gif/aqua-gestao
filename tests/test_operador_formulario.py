@@ -430,7 +430,7 @@ class TestErrosDeRestauracaoComunicados(unittest.TestCase):
     def test_avisos_ligados_na_tela(self):
         src = APP.read_text(encoding="utf-8")
         self.assertIn('if st.session_state.get("_op_rascunho_erro"):', src)
-        self.assertIn('if st.session_state.get("_rt_restore_erro"):', src)
+        self.assertIn('if st.session_state.get("_rt_contexto_erro"):', src)
         self.assertIn('st.warning(f"Aviso ao restaurar rascunho: {_e_rest}")', src)  # aplicação no operador
         self.assertIn('st.error(f"Não foi possível restaurar o rascunho: {ss[\'_relatorio_rt_restore_erro\']}")', src)
 
@@ -449,8 +449,8 @@ class TestLigacoesNoApp(unittest.TestCase):
         src = APP.read_text(encoding="utf-8")
         self.assertIn("elif not trocar_condominio_operador(_cond_form_anterior, op_nome_cond):", src)
         self.assertIn("op_nome_cond = _cond_form_anterior", src)
-        self.assertIn("if not trocar_condominio_rt_operador(_cond_rt_anterior, _sel_cond_rt):", src)
-        self.assertIn("_sel_cond_rt = _cond_rt_anterior", src)
+        self.assertIn("preparar_contexto_rt()", src)
+        self.assertIn('ss["_rt_cond_reverter"] = ss.get("rel_nome_condominio")', src)
         # a seleção volta antes de os widgets serem criados
         self.assertLess(src.index('_op_rev = st.session_state.pop("_op_cond_reverter", None)'),
                         src.index('key="op_novo_cond"'))

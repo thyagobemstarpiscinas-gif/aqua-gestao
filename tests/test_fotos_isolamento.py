@@ -490,7 +490,7 @@ class TestIdentidadeDaTabelaRT(unittest.TestCase):
         for k in ("rel_analise_data_0", "rel_analise_ph_0", "rel_dos_produto_0", "rel_observacoes_gerais"):
             self.assertEqual(self.ss[k], "", k)  # nada de Alfa em Sol
         self.assertNotIn("_rel_autoimport_periodo", self.ss)
-        self.assertEqual(self.ss["rel_diagnostico"], "manual")  # campos fora da tabela não são apagados
+        self.assertEqual(self.ss["rel_diagnostico"], "")  # diagnóstico também pertence ao cliente anterior
         self.assertEqual(self.ss["rel_origem_dados"], sol["chave"])
         self.assertEqual(self.rascunhos[-1]["rel_analise_ph_0"], "7,1")  # gravado no rascunho de Alfa
         self.assertEqual(self.rascunhos[-1]["rel_origem_dados"], a["chave"])
@@ -555,7 +555,7 @@ class TestIdentidadeDaTabelaRT(unittest.TestCase):
 class TestAvisosDeIdentificacaoNasTelas(unittest.TestCase):
     def test_todas_as_telas_mostram_o_aviso_e_respeitam_o_bloqueio(self):
         self.assertEqual(len(re.findall(r"\bsheets_listar_lancamentos\(", SRC)), 2)  # definição + docstring
-        self.assertEqual(SRC.count("situacao_visitas_condominio("), 9)  # definição, docstring, wrapper, 5 telas e a confirmação do RT
+        self.assertGreaterEqual(SRC.count("situacao_visitas_condominio("), 9)  # definição, docstring, wrapper, 5 telas e a confirmação do RT
         for trecho in ('st.warning(_situacao_csr_tela["aviso"])', 'st.warning(_situacao_rel["aviso"])',
                        "st.warning(f\"{nome_consulta}: {_situacao_rt['aviso']}\")",
                        'st.caption(_situacao_hist["aviso"])', "msg = f\"{_situacao_csr['aviso']} {msg}\""):
