@@ -529,9 +529,10 @@ class TestLigacaoNoApp(unittest.TestCase):
         self.assertLess(i_pres, src.index('key="rel_nome_condominio"', i_sub))
         i_auto = src.index('if st.session_state.get("_rel_autoimport_assinatura") != _assinatura_auto:')
         self.assertNotIn("st.rerun()", src[i_auto:src.index("except Exception", i_auto)])
-        self.assertIn("if _periodo_rel_ok and nome_rel_atual:", src)
+        self.assertIn("if _periodo_rel_ok and nome_rel_atual and _situacao_rel[\"status\"] == \"ok\":", src)
         self.assertIn("elif lancamentos_disponiveis:\n                _importar_lancamentos", src)
-        i_cli = src.index('if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok:')
+        i_cli = src.index('if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok '
+                          'and _situacao_rel["status"] == "ok":')
         self.assertNotIn("st.rerun()", src[i_cli:src.index('st.markdown("**Dados do condomínio / local atendido**")', i_cli)])
 
 
