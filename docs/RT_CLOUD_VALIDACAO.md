@@ -27,8 +27,25 @@ A sincronização já existente dos rascunhos foi preservada. O aviso atual já 
 Os 213 testes em 25 processos do pacote anterior são evidência histórica anterior a esta mudança. Não foram repetidos; não se deve apresentar esse resultado como aprovação integral desta versão. Streamlit e gspread não estão instalados neste ambiente; AppTest, navegador, credenciais/permissões reais e Streamlit Cloud não foram verificados.
 
 ## Integração e próxima etapa
-Preservar no GitHub modelos DOCX, assinaturas e demais arquivos omitidos do backup. Não substituir todo o repositório por este ZIP. O patch incluído representa somente esta etapa sobre o ZIP Windows, não o delta completo contra o PR #5. Nenhum push, commit, merge ou deploy foi realizado.
+Preservar no GitHub modelos DOCX, assinaturas e demais arquivos omitidos do backup. Não substituir todo o repositório por este ZIP. O patch incluído representa somente esta etapa sobre o ZIP Windows, não o delta completo contra o PR #5. Na preparação original do ZIP não houve push, commit, merge ou deploy. Posteriormente o código foi enviado ao PR #6, que permanece em rascunho, sem merge ou deploy.
 
 Antes da publicação, revisar a integração com a aba nova e verificar o fluxo remoto em homologação com uma planilha de teste. Não usar produção para essa verificação sem autorização.
 
 Documentação consultada: https://docs.gspread.org/en/latest/api/models/worksheet.html ; https://docs.streamlit.io/develop/concepts/connections/connecting-to-data .
+
+
+## Revisão e fluxo simulado adicional — 29/10/2026
+
+Base revisada: PR #6, commit a3536a93df0b7e0a737aace472a936d1d7a0aef5. A revisão verificou o adaptador Sheets, os pontos de chamada do renderizador e recuperadores e a preservação dos demais arquivos na integração. Não havia comentários ou revisões externas no PR na consulta realizada. Nenhuma alteração na aplicação foi necessária nesta etapa.
+
+Foram acrescentados quatro testes em tests/test_rt_cloud_fluxo.py. Todos passaram, sem erros ou ignorados:
+- Renderizador final → publicação na planilha em memória → perda integral do disco → nova sessão em outro período → recuperação pelos dois aplicadores reais, com datas preservadas.
+- Prévia, falha de DOCX/PDF/manifesto e contexto inválido não alteram os registros remotos anteriores.
+- Falha de Sheets mantém os documentos simulados já gerados e exibe aviso de últimos valores não atualizados.
+- Recuperação após geração final recusa outra empresa ou outro ID e preserva os campos ativos.
+
+As funções reais do app foram extraídas por AST. Documentos, validação do contexto e serviços foram simulados; os testes não são AppTest nem inspecionam DOCX/PDF reais. A rede foi bloqueada pelos fixtures e o disco era temporário. Comando: python -m unittest discover -s tests -p test_rt_cloud_fluxo.py -v. Resultado: 4/4, zero falhas, erros ou ignorados. Sintaxe do novo teste aprovada.
+
+Esses resultados complementam os 24 testes direcionados anteriores; a suíte de 213 testes não foi repetida. Nenhum serviço ou credencial de produção foi usado, nenhuma aba real foi criada e não houve merge/deploy.
+
+Próxima verificação externa, ainda não executada: ambiente de homologação com planilha separada de dados fictícios e credenciais próprias. Conferir criação/permissões da aba nova, gerar um relatório final, recuperar em outra sessão/mês e verificar o resultado após reiniciar a instância de teste. Não reutilizar a planilha de produção. A publicação desse ambiente requer autorização separada de deploy.
