@@ -108,6 +108,14 @@ st.download_button = _download_button_nome_seguro
 SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
 DRIVE_FOTOS_FOLDER_ID = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
 
+from utils.ambiente import destinos_google
+try:
+    AMBIENTE_APP, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID = destinos_google(
+        st.secrets, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID)
+except ValueError as erro_configuracao:
+    st.error(str(erro_configuracao))
+    st.stop()
+
 
 def conectar_drive():
     """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
@@ -3272,6 +3280,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if AMBIENTE_APP == "homologacao":
+    st.warning("HOMOLOGAÇÃO — utilize somente dados fictícios neste aplicativo.")
 
 # =========================================
 # PROTEÇÃO CONTRA TRADUÇÃO AUTOMÁTICA DO NAVEGADOR

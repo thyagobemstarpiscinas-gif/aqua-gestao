@@ -49,3 +49,12 @@ As funções reais do app foram extraídas por AST. Documentos, validação do c
 Esses resultados complementam os 24 testes direcionados anteriores; a suíte de 213 testes não foi repetida. Nenhum serviço ou credencial de produção foi usado, nenhuma aba real foi criada e não houve merge/deploy.
 
 Próxima verificação externa, ainda não executada: ambiente de homologação com planilha separada de dados fictícios e credenciais próprias. Conferir criação/permissões da aba nova, gerar um relatório final, recuperar em outra sessão/mês e verificar o resultado após reiniciar a instância de teste. Não reutilizar a planilha de produção. A publicação desse ambiente requer autorização separada de deploy.
+
+
+## Preparação de homologação isolada — 29/10/2026
+
+A configuração de destinos Google foi extraída para utils/ambiente.py. A seção opcional aqua_app nos secrets permite declarar homologacao e dois IDs exclusivos de teste. No modo explícito de homologação, IDs ausentes, inválidos ou iguais aos de produção interrompem o app. Sem a seção, os destinos existentes permanecem iguais. Foi acrescentado aviso visual no modo de homologação. Não houve alteração de autenticação, dosagem, nomes de abas ou regras de empresas.
+
+Oito testes novos em tests/test_ambiente.py passaram, sem falhas, erros ou ignorados, incluindo execução do bloco real de interrupção por configuração insegura. Sintaxe de app.py, helper e testes verificada. O fluxo remoto simulado de quatro testes foi repetido após essa mudança e passou. Os testes de configuração usam mapeamentos fictícios; não iniciam Streamlit nem abrem conexão. Nenhuma credencial real foi usada e nenhum conteúdo da planilha de produção foi lido.
+
+Foi feita apenas busca de metadados no Drive: identificadas a planilha de produção e uma cópia antiga, sem evidência de que a cópia contenha apenas dados fictícios. Nenhuma foi selecionada para homologação. A criação/publicação do ambiente externo permanece pendente. Roteiro completo: HOMOLOGACAO_RT.md.
