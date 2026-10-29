@@ -171,11 +171,12 @@ class TestDocumentosProtegidos(unittest.TestCase):
             self.assertEqual(before,after)
 
     def test_d1_a_app_bloqueia_troca_com_disco_indisponivel(self):
-        at=self._cenario_d1();original=Path.write_text
-        def falhar(p,*args,**kwargs):
-            if '_rascunho_relatorio_rt' in p.name:raise OSError('DISCO_FICTICIO_CHEIO')
-            return original(p,*args,**kwargs)
-        with patch.object(Path,'write_text',falhar):
+        import os
+        at=self._cenario_d1();original=os.replace
+        def falhar(origem,destino,*args,**kwargs):
+            if '_rascunho_relatorio_rt' in str(destino) or '_rascunhos_rt_sync' in str(destino):raise OSError('DISCO_FICTICIO_CHEIO')
+            return original(origem,destino,*args,**kwargs)
+        with patch('utils.rascunho_sync.os.replace',falhar):
             at.text_input(key='rel_analise_cl_0').input('9,87').run()
             self._carregar(at,'Residencial Beta Fictício')
             self.assertEqual(at.session_state['rel_nome_condominio'],'Condomínio Alfa Fictício')
