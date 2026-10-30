@@ -1,6 +1,27 @@
 """Seleciona destinos Google sem abrir conexão ou ler credenciais."""
 from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 import re
+import subprocess
+
+
+@lru_cache(maxsize=1)
+def registrar_commit_homologacao():
+    """Registra somente o SHA local; uma falha de diagnóstico não interrompe o app."""
+    try:
+        resultado = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=3, check=True,
+        )
+        sha = resultado.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("SHA inválido")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        sha = "indisponivel"
+    print(f"AQUA_HOMOLOGACAO_COMMIT={sha}", flush=True)
+    return sha
 
 
 def destinos_google(secrets, sheets_producao, drive_producao):
@@ -26,4 +47,5 @@ def destinos_google(secrets, sheets_producao, drive_producao):
         if valor == original:
             raise ValueError("Homologação não pode usar destinos de produção.")
         destinos.append(valor)
+    registrar_commit_homologacao()
     return ambiente, *destinos
