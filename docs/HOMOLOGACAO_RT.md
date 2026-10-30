@@ -28,9 +28,25 @@ Referência da branch consultada na rodada de verificação: `3e3c2aa5b6841f3f2e
 
 - Separação do painel Bem Star confirmada no cenário acima; não equivale a auditoria de todos os caminhos de autorização.
 - Na rodada anterior, a imagem da prévia ficou indisponível no Cloud por dependência ausente; geração DOCX/PDF funcionou, conforme registro da sessão. Diagnóstico e correção dessa dependência ainda precisam de verificação técnica.
-- Falta comprovar o SHA instalado e repetir a recuperação após reinício controlado do processo de homologação.
+- Falta comprovar o SHA instalado. A recuperação após reinício controlado passou na rodada detalhada abaixo.
 - Pendências locais de rascunhos e concorrência entre escritores continuam com as limitações descritas em RT_CLOUD_VALIDACAO.md.
 - Merge e publicação em produção continuam fora da autorização desta etapa.
+
+## Reinício controlado — 30/10/2026, 20h24–20h28 (Brasília)
+
+Reboot solicitado pelo painel Manage app exclusivamente em aqua-gestao-homologacao-rt.streamlit.app. Logs registraram Disconnecting às 23:24:30 UTC, novo Starting up às 23:24:33, nova clonagem da branch, provisionamento e Uvicorn iniciado às 23:24:52. A sessão voltou à tela de login.
+
+Após novo login administrativo Aqua Gestão e carregamento de Condomínio Alfa Fictício, os dois botões de recuperação trouxeram:
+- Origem exibida: 09/2026.
+- pH 1: 7,31.
+- Produto 1: PRODUTO_HOMOLOG_ALFA; quantidade 2,75.
+- Data 1 previamente preenchida nesta nova sessão: 06/10/2026, preservada após as duas recuperações.
+
+Resultado: recuperação após reboot com nova clonagem aprovada nesse cenário. Não houve geração final nesta rodada; o autosave criou/atualizou rascunho fictício durante a interação. Não foi feito apagamento manual do disco. Produção não foi acessada.
+
+Os logs identificam repositório, branch e app.py, mas não exibem o SHA instalado. A branch consultada no GitHub antes da recuperação apontava para 23439f3122c5df79f1245a34159d8a12148be135; isso não comprova isoladamente o SHA em execução.
+
+A prévia confirmou a falha específica: ModuleNotFoundError: No module named 'fitz'. A interface informou PDF gerado, com download disponível; falta PyMuPDF para a imagem da prévia. Nenhuma dependência ou código foi alterado nesta rodada.
 
 ---
 
