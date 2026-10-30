@@ -39,6 +39,10 @@ try:
 except Exception:  # pragma: no cover - ambiente sem streamlit
     AppTest = None
 
+if AppTest is not None:
+    from apptest_protegido import instalar
+    instalar()
+
 PIN_FICTICIO = "pin-ficticio-teste"
 CAMPOS = ("rel_nome_condominio", "rel_endereco_condominio", "rel_representante",
           "rel_cnpj_condominio", "rel_mes_referencia", "rel_ano_referencia")
@@ -596,12 +600,12 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
         Image.new("RGB", (8, 9), "blue").save(foto, format="PNG")
         next(w for w in at.file_uploader if w.label == "Fotos do relatório RT").upload("falha.png", foto.getvalue(), "image/png").run()
         origem = at.session_state["rel_origem_dados"]
-        original = Path.write_text
-        def falhar(caminho, *args, **kwargs):
-            if "_rascunho_relatorio_rt" in caminho.name:
+        original = os.replace
+        def falhar(origem, destino, *args, **kwargs):
+            if "_rascunho_relatorio_rt" in str(destino) or "_rascunhos_rt_sync" in str(destino):
                 raise OSError("disco cheio (simulado)")
-            return original(caminho, *args, **kwargs)
-        with mock.patch.object(Path, "write_text", falhar):
+            return original(origem, destino, *args, **kwargs)
+        with mock.patch("utils.rascunho_sync.os.replace", falhar):
             at.selectbox(key="rt_op_sel_cond").select(b).run()
             self.assertTrue(self._avisos(at))
             at.run()
