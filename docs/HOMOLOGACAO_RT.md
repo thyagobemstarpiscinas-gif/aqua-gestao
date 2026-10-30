@@ -24,13 +24,35 @@ Referência da branch consultada na rodada de verificação: `3e3c2aa5b6841f3f2e
 - Campos de operador, observações gerais e parecer técnico-operacional inicialmente vazios, sem marcadores RT.
 - Nenhum relatório Bem Star foi gerado nesta verificação; nenhum cadastro foi alterado.
 
-### Limites e pendências
+### Limites e pendências na rodada anterior (superados quando indicado abaixo)
 
 - Separação do painel Bem Star confirmada no cenário acima; não equivale a auditoria de todos os caminhos de autorização.
 - Na rodada anterior, a imagem da prévia ficou indisponível no Cloud por dependência ausente; geração DOCX/PDF funcionou, conforme registro da sessão. Diagnóstico e correção dessa dependência ainda precisam de verificação técnica.
 - Falta comprovar o SHA instalado. A recuperação após reinício controlado passou na rodada detalhada abaixo.
 - Pendências locais de rascunhos e concorrência entre escritores continuam com as limitações descritas em RT_CLOUD_VALIDACAO.md.
 - Merge e publicação em produção continuam fora da autorização desta etapa.
+
+## Encerramento técnico da homologação — 30/10/2026
+
+- Incluído PyMuPDF em requirements.txt; o Cloud instalou pymupdf 2.0.
+- Diagnóstico de commit em utils/ambiente.py executa git rev-parse HEAD no diretório do projeto, com timeout de 3 s, validação do SHA e saída restrita ao hash ou “indisponivel”. Só é chamado após validar destinos de homologação; produção não executa esse diagnóstico. Resultado é memorizado por processo. Não lê nem imprime secrets.
+- Commit em execução comprovado nos logs: 54e46338bb60ad6b3fdd75203f4fda67296c2300.
+- Login administrativo Aqua Gestão e carregamento de Alfa fictício após o reboot funcionaram.
+- Prévia exibiu “Prévia renderizada em imagem: 3 de 3 página(s).” e imagens com logo e cores. Não houve geração final nesta rodada.
+- Verificação local: 8 testes de configuração aprovados; 4 verificações adicionais (SHA válido com cache, saída inválida sanitizada, timeout tolerado e produção sem subprocesso) aprovadas; 4 testes do fluxo Cloud simulado repetidos e aprovados.
+- As duas pendências de infraestrutura (SHA instalado e imagem da prévia) estão encerradas para esse commit. As limitações funcionais/documentadas de rascunhos pendentes, concorrência e dados legados permanecem.
+
+### Publicação preparada, aguardando autorização
+
+Main consultada: a42a57ca0e2e55b981dd9a22bf91e2d1f0804280. PR #5 segue em rascunho sobre main; PR #6 segue em rascunho sobre a branch do #5.
+
+Sequência prevista: integrar #6 na branch do #5 primeiro; conferir o resultado combinado; só então integrar #5 em main. Isso evita publicar em produção uma etapa intermediária sem as correções do #6. Revalidar hashes e situação dos PRs no momento da execução.
+
+Antes de integrar em main, identificar o merge resultante e manter a referência acima para reversão. Se necessário, reverter o merge de publicação em um novo commit, sem reescrever o histórico. Reversão de código não remove registros já gravados no Sheets.
+
+Após publicação, conferir inicialização, login, leitura de cadastros e separação de empresas. Escritas em produção e geração de relatório com cliente real exigem escopo autorizado; não utilizar marcadores fictícios nos cadastros reais. Não copiar credenciais ou IDs da homologação para produção.
+
+Nenhum merge ou publicação em produção foi executado. Não há alegação de suíte integral de 213 testes nesta revisão: esse número é histórico da versão anterior.
 
 ## Reinício controlado — 30/10/2026, 20h24–20h28 (Brasília)
 
