@@ -108,6 +108,14 @@ st.download_button = _download_button_nome_seguro
 SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
 DRIVE_FOTOS_FOLDER_ID = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
 
+from utils.ambiente import destinos_google
+try:
+    AMBIENTE_APP, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID = destinos_google(
+        st.secrets, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID)
+except ValueError as erro_configuracao:
+    st.error(str(erro_configuracao))
+    st.stop()
+
 
 def conectar_drive():
     """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
@@ -1969,17 +1977,118 @@ def validar_pin_operador(pin: str) -> dict | None:
             return op
     return None
 
+class _ClientesIndisponiveis(Exception):
+    """O cadastro de clientes não pôde ser lido: sem ele não dá para confirmar a qual
+    condomínio uma visita pertence."""
+
+
+class _VisitasIndisponiveis(Exception):
+    """A aba 🔬 Visitas não pôde ser lida: o resultado não é "nenhuma visita"."""
+
+
+def _ler_cadastro_identificacao() -> list[dict]:
+    """ID, nome e empresa dos cadastros da aba 👥 Clientes, para identificar visitas.
+
+    Conta os clientes com ID (C + número, como no restante do app) e também linhas sem
+    ID que tenham status ou empresa (cadastro incompleto), ativos ou não. Lança
+    _ClientesIndisponiveis se a aba não puder ser lida — nunca devolve lista vazia
+    no lugar de uma falha."""
+    try:
+        if conectar_sheets() is None:
+            raise _ClientesIndisponiveis("sem conexão com a planilha")
+        linhas = obter_aba_sheets("👥 Clientes").get_all_values()
+    except _ClientesIndisponiveis:
+        raise
+    except Exception as e:
+        raise _ClientesIndisponiveis(f"{type(e).__name__}: {e}") from e
+    cadastro = []
+    for row in linhas:
+        _c = lambda i: str(row[i]).strip() if len(row) > i else ""  # noqa: E731
+        id_cli, nome, status, empresa = _c(1), _c(2), _c(8), _c(12)
+        if nome and (re.fullmatch(r"C[0-9]+", id_cli) or (not id_cli and (status or empresa))):
+            cadastro.append({"id": id_cli, "nome": nome, "empresa": empresa})
+    return cadastro
+
+
+def _resolver_condominio_da_visita(alvo_n: str, linha_n: str, nomes_n: set) -> str:
+    """Decide se uma visita (nome normalizado linha_n) pertence ao condomínio alvo_n.
+
+    Retorna "sim", "nao" ou "ambigua". Nome igual vale sempre. Nome abreviado (um
+    contido no outro, como "Aurora" e "Residencial Aurora") só vale quando corresponde
+    a um único condomínio cadastrado; se for exatamente o nome de outro cadastro, não
+    pertence; se corresponder a mais de um, é ambíguo e não é importado."""
+    if not alvo_n or not linha_n:
+        return "nao"
+    if linha_n == alvo_n:
+        return "sim"
+    if not (linha_n in alvo_n or alvo_n in linha_n):
+        return "nao"
+    if linha_n in nomes_n:
+        return "nao"  # é exatamente o nome de outro condomínio cadastrado
+    candidatos = {n for n in (nomes_n | {alvo_n}) if n and (n in linha_n or linha_n in n)}
+    return "sim" if candidatos == {alvo_n} else "ambigua"
+
+
 @st.cache_data(ttl=45, show_spinner=False)
-def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
-    """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas."""
+def _situacao_visitas_cache(nome_condominio: str) -> dict:
+    """Visitas do condomínio na aba 🔬 Visitas e o motivo de qualquer exclusão.
+
+    Lança _ClientesIndisponiveis ou _VisitasIndisponiveis quando a planilha não pode
+    ser lida: exceções não ficam em cache, então uma falha nunca vira "sem visitas".
+    Retorna {"status", "visitas", "bloqueio", "aviso", "ambiguas"}, com status "ok"
+    (consulta feita e completa, com ou sem visitas), "ambiguo" (consulta feita, mas
+    visitas de identificação duvidosa ficaram de fora: a lista é incompleta) ou
+    "bloqueio" (o próprio nome do condomínio é duvidoso)."""
+    resultado = {"status": "ok", "visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
+    cadastro = _ler_cadastro_identificacao()
+    alvo_n = normalizar_texto_busca(nome_condominio)
+    mesmos = [c for c in cadastro if normalizar_texto_busca(c["nome"]) == alvo_n]
+    if len(mesmos) > 1:
+        # O "ID Cliente" gravado nas visitas antigas vinha do primeiro nome igual: não separa.
+        lista = "; ".join(f"{c['id'] or 'sem ID'} – {c['empresa'] or 'empresa não informada'}" for c in mesmos)
+        resultado["status"], resultado["bloqueio"] = "bloqueio", "nome_duplicado"
+        resultado["aviso"] = (
+            f"⚠️ Há {len(mesmos)} cadastros com o nome “{nome_condominio}” ({lista}). As visitas não foram "
+            "importadas, para não misturar dados de cadastros diferentes. Os registros continuam na planilha; "
+            "diferencie os nomes no cadastro de clientes para liberar a importação."
+        )
+        return resultado
+    if len(mesmos) == 1:
+        resultado["id_cliente"] = mesmos[0]["id"]  # identidade estável do cliente (vazio se o cadastro não tem ID)
+        resultado["empresa_cliente"] = mesmos[0]["empresa"]
+    if not mesmos:
+        # Nome digitado que não é um cadastro, mas pode representar um (abreviado, com
+        # erro de digitação ou com complemento): não importa nada de outro cliente.
+        semelhantes = []
+        for c in cadastro:
+            n = normalizar_texto_busca(c["nome"])
+            if n and (n in alvo_n or alvo_n in n):
+                semelhantes.append(c)
+        if alvo_n and semelhantes:
+            lista = "; ".join(f"{c['nome']} ({c['id'] or 'sem ID'} – {c['empresa'] or 'empresa não informada'})"
+                              for c in semelhantes[:5])
+            resultado["status"], resultado["bloqueio"] = "bloqueio", "nome_semelhante"
+            resultado["aviso"] = (
+                f"⚠️ O nome “{nome_condominio}” não corresponde exatamente a um cadastro e pode representar: {lista}. "
+                "As visitas não foram importadas automaticamente e os dados do formulário foram mantidos. "
+                "Para importar, carregue o cliente cadastrado pelo nome exato."
+            )
+            return resultado
+    nomes_n = {normalizar_texto_busca(c["nome"]) for c in cadastro} - {""}
     try:
         sh = conectar_sheets()
         if sh is None:
-            return []
-
+            raise _VisitasIndisponiveis("sem conexão com a planilha")
         aba = obter_aba_sheets("🔬 Visitas")
         todos = aba.get_all_values()
+    except _VisitasIndisponiveis:
+        raise
+    except Exception as e:
+        _log_sheets_erro("sheets_listar_lancamentos", e)
+        raise _VisitasIndisponiveis(f"{type(e).__name__}: {e}") from e
+    try:
         lancamentos = []
+        ambiguas = []
 
         for row in todos:
             if len(row) < 5:
@@ -1993,7 +2102,10 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
             if not id_visita.startswith("V"):
                 continue
 
-            if not nomes_condominio_equivalentes(nome_condominio, cond_linha):
+            pertence = _resolver_condominio_da_visita(alvo_n, normalizar_texto_busca(cond_linha), nomes_n)
+            if pertence == "ambigua":
+                ambiguas.append(f"{id_visita} ({cond_linha})")
+            if pertence != "sim":
                 continue
 
             def _r(i):
@@ -2035,11 +2147,79 @@ def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
                 "problemas": _r(21),
             })
 
-        return lancamentos
+        resultado["visitas"] = lancamentos
+        resultado["ambiguas"] = ambiguas
+        if ambiguas:
+            resultado["status"] = "ambiguo"  # lista incompleta: não vale como "sem visitas" nem como lista final
+            resultado["aviso"] = (
+                f"⚠️ {len(ambiguas)} visita(s) gravada(s) com nome que corresponde a mais de um condomínio cadastrado "
+                f"não foram importadas: {', '.join(ambiguas[:5])}{'…' if len(ambiguas) > 5 else ''}. "
+                "Os registros continuam na planilha e os dados já preenchidos no relatório foram mantidos; "
+                "a importação automática fica suspensa até a identificação ser resolvida."
+            )
+        return resultado
 
     except Exception as e:
         _log_sheets_erro("sheets_listar_lancamentos", e)
-        return []
+        raise _VisitasIndisponiveis(f"{type(e).__name__}: {e}") from e
+
+
+def situacao_visitas_condominio(nome_condominio: str) -> dict:
+    """Situação da consulta de visitas de um condomínio, sem lançar exceção.
+
+    status "ok": consulta feita e completa (visitas pode estar vazia: ausência legítima);
+    status "ambiguo": consulta feita, mas visitas duvidosas ficaram de fora (incompleta);
+    status "bloqueio": o nome do condomínio é duvidoso (duplicado ou semelhante);
+    status "falha": cadastro de clientes ou aba 🔬 Visitas não puderam ser lidos.
+    Fora de "ok", nada é importado ou retirado automaticamente; "ambiguo" e "bloqueio"
+    exigem validação explícita para gerar, e "falha" suspende a geração."""
+    try:
+        return _situacao_visitas_cache(nome_condominio)
+    except _ClientesIndisponiveis:
+        return {"status": "falha", "visitas": [], "bloqueio": "cadastro_indisponivel", "ambiguas": [], "aviso": (
+            "⚠️ Não foi possível consultar o cadastro de clientes para confirmar a qual condomínio cada visita "
+            "pertence. Nenhuma visita foi importada agora e os dados do relatório foram mantidos. "
+            "Tente novamente em instantes.")}
+    except _VisitasIndisponiveis:
+        return {"status": "falha", "visitas": [], "bloqueio": "visitas_indisponiveis", "ambiguas": [], "aviso": (
+            "⚠️ Não foi possível ler a aba 🔬 Visitas da planilha. Isto é uma falha de consulta, não ausência de "
+            "visitas: nada foi importado nem retirado e os dados do relatório foram mantidos. "
+            "Tente novamente em instantes.")}
+
+
+def chave_validacao_origem(relatorio: str, nome_condominio: str, mes, ano) -> str:
+    """Chave da confirmação explícita de que os dados do relatório pertencem ao
+    condomínio e período; muda com o condomínio e o período, e não entra em rascunhos."""
+    return f"_validar_origem_{relatorio}_{slugify_nome(str(nome_condominio or ''))}_{str(mes or '').zfill(2)}_{ano or ''}"
+
+
+def origem_validada(situacao: dict, chave: str) -> bool:
+    """Pode gerar? "ok" sim; "falha" e "bloqueio" (cliente sem identificação segura)
+    nunca; "ambiguo" (visitas duvidosas de fora) só com confirmação explícita."""
+    status = situacao.get("status", "ok")
+    if status == "ok":
+        return True
+    if status in ("falha", "bloqueio"):
+        return False
+    return bool(st.session_state.get(chave))
+
+
+def caixa_validacao_origem(situacao: dict, chave: str, nome_condominio: str, periodo: str):
+    """Mostra a confirmação explícita quando visitas duvidosas ficaram de fora ("ambiguo").
+    Em "bloqueio" não há confirmação: o cliente precisa ser identificado."""
+    if situacao.get("status") == "ambiguo":
+        st.checkbox(
+            f"Revisei os dados do relatório e confirmo que pertencem a {nome_condominio} ({periodo}), "
+            "apesar do aviso de identificação das visitas.",
+            key=chave,
+        )
+
+
+def sheets_listar_lancamentos(nome_condominio: str) -> list[dict]:
+    """Retorna lançamentos de visitas de um condomínio a partir da aba 🔬 Visitas.
+    Visitas de identificação duvidosa ficam de fora; o motivo está em
+    situacao_visitas_condominio(nome)["aviso"]."""
+    return situacao_visitas_condominio(nome_condominio)["visitas"]
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -3101,6 +3281,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+if AMBIENTE_APP == "homologacao":
+    st.warning("HOMOLOGAÇÃO — utilize somente dados fictícios neste aplicativo.")
+
 # =========================================
 # PROTEÇÃO CONTRA TRADUÇÃO AUTOMÁTICA DO NAVEGADOR
 # =========================================
@@ -3678,7 +3861,7 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
                 })
     # Fotos já salvas na pasta de rascunho
     _pasta_fotos_rasc = GENERATED_DIR / slugify_nome(nome_cond.strip()) / "fotos_rascunho"
-    dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": []}
+    dados["fotos_rascunho"] = {"antes": [], "depois": [], "cmaq": [], "extras": []}
     if _pasta_fotos_rasc.exists():
         for _fp in sorted(_pasta_fotos_rasc.glob("rasc_*")):
             for _cat in ["antes", "depois", "cmaq", "extras"]:
@@ -4001,6 +4184,186 @@ def retirar_importacao_rt() -> str:
     for k in _preenchidos(ss.pop("_rel_autoimport_snapshot", None) or {}):
         ss[k] = ""
     return ss.pop("_rel_autoimport_periodo", "")
+
+
+# ── Identidade dos dados da tabela do relatório RT ───────────────────────────
+# Cada conjunto de análises pertence a uma empresa + cliente (ID estável do cadastro;
+# nome apenas para relatório avulso) + período. A chave fica em rel_origem_dados (vai
+# junto no rascunho); rascunhos antigos sem ela têm origem desconhecida.
+_META_TABELA_RT = ("_rel_autoimport_snapshot", "_rel_autoimport_periodo", "_rel_autoimport_assinatura")
+
+
+def identidade_dados_rt(empresa: str, situacao: dict, nome_condominio: str, mes, ano) -> dict:
+    """Identidade do relatório atual. "comprovada" é False quando o cliente não pode ser
+    identificado com segurança (nome duplicado ou semelhante a outro cadastro)."""
+    periodo = f"{str(mes or '').strip().zfill(2)}/{str(ano or '').strip()}"
+    id_cli = str((situacao or {}).get("id_cliente") or "").strip()
+    cliente = f"id:{id_cli}" if id_cli else f"nome:{normalizar_texto_busca(nome_condominio)}"
+    return {
+        "chave": f"{empresa or 'aqua_gestao'}|{cliente}|{periodo}",
+        "rotulo": f"{str(nome_condominio or '').strip()} ({periodo})",
+        "nome_periodo": f"{normalizar_texto_busca(nome_condominio)}|{periodo}",
+        "comprovada": (situacao or {}).get("status") in ("ok", "ambiguo"),
+    }
+
+
+def _tabela_rt_tem_dados() -> bool:
+    ss = st.session_state
+    conteudo = dict(_valores_importaveis_rt())
+    conteudo.update({k: v for k, v in ss.items() if str(k).startswith(("rel_obs_", "rel_rec_"))
+                    or k in ("rel_diagnostico", "rel_parecer_complemento_rt", "rel_art_numero",
+                             "rel_fotos_preservadas", "rel_nbr_11238", "rel_nr_26", "rel_nr_06")})
+    return bool(_preenchidos(conteudo))
+
+
+def _guardar_rascunho_rt_antes_da_troca(restauracao_explicita: bool = False) -> bool:
+    ss = st.session_state
+    try:
+        ss["_rt_rasc_ref"] = {}
+        gravado = _relatorio_rt_salvar_rascunho("troca_condominio")
+    except Exception as e:
+        ss["_relatorio_rt_autosave_erro"] = str(e)
+        gravado = False
+    if not gravado:
+        if restauracao_explicita:
+            try:
+                from utils.rascunho_sync import hash_conteudo
+                registro = _relatorio_rt_gestor_sync().ler(ss.get("_rt_rasc_chave", ""))
+                if registro and registro["estado"] in ("pendente", "conflito"):
+                    atual = _relatorio_rt_coletar_rascunho()
+                    if registro["hash"] != hash_conteudo(atual):
+                        # Só uma escolha explícita de restauração pode separar a
+                        # edição ativa da cópia pendente, sem perder nenhuma delas.
+                        from utils.rascunho_sync import escrever_atomico
+                        backup = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+                        atual["_chave"] = backup
+                        _relatorio_rt_gestor_sync().preparar(backup, atual)
+                        escrever_atomico(_relatorio_rt_arquivo_local(backup), atual)
+                    gravado = True
+            except Exception:
+                gravado = False
+    if not gravado:
+        ss["_rt_contexto_erro"] = "Troca bloqueada: não foi possível preservar o rascunho. Tente novamente após recuperar o armazenamento."
+        return False
+    _relatorio_rt_chave_sessao(nova=True)
+    ss["_rt_rasc_ref"] = None
+    return True
+
+def guardar_tabela_rt(origem: str, rotulo: str = "", gravar_rascunho: bool = True, restauracao_explicita: bool = False) -> bool:
+    """Transação: persiste o contexto completo antes de limpar qualquer campo."""
+    from utils.rt_contexto import campos, limpar, sincronizar_fotos
+    ss = st.session_state
+    atual = ss.get("_rt_contexto_identificacao") or {}
+    solicitados = {k: ss.get(k) for k in ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")}
+    # Nome/período digitados já podem ser do destino; o rascunho ainda é da origem.
+    for k, v in atual.items():
+        ss[k] = v
+    try:
+        if "chave_fotos_rt" in globals():
+            sincronizar_fotos(ss, origem, ss.get(chave_fotos_rt()) or [])
+        valores = campos(ss)
+        if gravar_rascunho:
+            salvo = (_guardar_rascunho_rt_antes_da_troca(restauracao_explicita=True)
+                     if restauracao_explicita else _guardar_rascunho_rt_antes_da_troca())
+            if not salvo:
+                return False
+    except Exception as e:
+        ss["_rt_contexto_erro"] = f"Troca bloqueada: {type(e).__name__}: {e}"
+        return False
+    ss.setdefault("_rel_por_identidade", {})[origem] = {
+        "valores": valores, "meta": {k: ss.get(k) for k in _META_TABELA_RT if k in ss},
+        "rotulo": rotulo or ss.get("rel_origem_rotulo", "")}
+    limpar(ss)
+    ss.update(solicitados)
+    for k in _META_TABELA_RT:
+        ss.pop(k, None)
+    ss.pop("_rt_contexto_erro", None)
+    return True
+
+def recuperar_tabela_rt(chave: str) -> bool:
+    """Devolve à tela a tabela guardada para esta identidade (uma única vez)."""
+    ss = st.session_state
+    guardado = (ss.get("_rel_por_identidade") or {}).pop(chave, None)
+    if not guardado:
+        return False
+    for k, v in guardado["valores"].items():
+        ss[k] = v
+    for k, v in guardado["meta"].items():
+        ss[k] = v
+    return True
+
+
+def conciliar_identidade_tabela_rt(identidade: dict) -> dict:
+    """Garante que a tabela na tela pertence à identidade atual (chamar antes dos widgets).
+
+    - mesma origem: nada muda;
+    - tabela vazia: assume a identidade atual e recupera o que estiver guardado para ela;
+    - origem conhecida e diferente: guarda a tabela sob a origem, deixa a tela vazia e
+      recupera a tabela guardada da identidade atual (troca de condomínio ou período);
+    - origem desconhecida (rascunho antigo) com dados: não associa; pede revisão.
+    Retorna {"conflito", "guardada_de", "recuperada"}."""
+    ss = st.session_state
+    chave = identidade["chave"]
+    origem = str(ss.get("rel_origem_dados") or "")
+    resultado = {"conflito": "", "guardada_de": "", "recuperada": False}
+    if origem == chave:
+        return resultado
+    if (not identidade["comprovada"] and origem
+            and ss.get("rel_origem_nome_periodo") == identidade.get("nome_periodo")):
+        # Mesmo condomínio e período na tela; só o cadastro ficou duvidoso (ex.: nome
+        # duplicado cadastrado depois). A tabela fica como está e a geração é bloqueada.
+        resultado["conflito"] = "identidade_nao_comprovada"
+        return resultado
+    if not origem and ss.get("_rt_origem_desconhecida"):
+        resultado["conflito"] = "origem_desconhecida"
+        return resultado
+    if not origem and not _tabela_rt_tem_dados():
+        resultado["recuperada"] = recuperar_tabela_rt(chave)
+    elif not origem:
+        resultado["conflito"] = "origem_desconhecida"
+        return resultado
+    else:
+        # Identificação cadastral comprovada pode iniciar outro período do MESMO
+        # cliente. ART, análises e textos técnicos continuam estritamente por período.
+        mesma_pessoa = origem.rsplit("|", 1)[0] == chave.rsplit("|", 1)[0]
+        cadastro = {k: ss.get(k, "") for k in ("rel_cnpj_condominio", "rel_endereco_condominio",
+                    "rel_representante", "rel_cpf_cnpj_representante")} if mesma_pessoa else {}
+        if not guardar_tabela_rt(origem):
+            resultado["conflito"] = "falha_salvamento"
+            return resultado
+        resultado["guardada_de"] = (ss.get("_rel_por_identidade", {}).get(origem) or {}).get("rotulo") or origem
+        resultado["recuperada"] = recuperar_tabela_rt(chave)
+        if not resultado["recuperada"]:
+            ss.update(cadastro)
+    ss["_rt_contexto_identificacao"] = {k: ss.get(k) for k in ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")}
+    ss["rel_origem_dados"] = chave
+    ss["rel_origem_rotulo"] = identidade["rotulo"]
+    ss["rel_origem_nome_periodo"] = identidade.get("nome_periodo", "")
+    return resultado
+
+
+def resolver_origem_desconhecida_rt(identidade: dict, associar: bool):
+    """Ação explícita do usuário para tabela de origem desconhecida: associar à identidade
+    atual depois de revisar, ou guardar à parte (sem apagar) e começar com a tabela vazia."""
+    ss = st.session_state
+    if not associar:
+        if not guardar_tabela_rt(f"origem_desconhecida|{datetime.now():%Y%m%d%H%M%S%f}", "origem desconhecida"):
+            return False
+    ss.pop("_rt_origem_desconhecida", None)
+    ss["rel_origem_dados"] = identidade["chave"]
+    ss["rel_origem_rotulo"] = identidade["rotulo"]
+    ss["rel_origem_nome_periodo"] = identidade.get("nome_periodo", "")
+
+
+def fotos_rt_de_outra_identidade(chave: str, ha_fotos: bool) -> str:
+    """Registra a identidade em que as fotos do upload foram anexadas; devolve o rótulo
+    dessa identidade se for diferente da atual ("" quando não há conflito)."""
+    ss = st.session_state
+    if not ha_fotos:
+        ss.pop("_rel_fotos_origem", None)
+        return ""
+    origem = ss.setdefault("_rel_fotos_origem", {"chave": chave, "rotulo": ss.get("rel_origem_rotulo", "")})
+    return "" if origem["chave"] == chave else (origem.get("rotulo") or origem["chave"])
 
 
 def buscar_cep(cep: str) -> dict:
@@ -4341,7 +4704,9 @@ def carregar_imagem_corrigida_orientacao(origem):
 def deduplicar_fotos(lista):
     """Remove fotos duplicadas de uma lista de uploads ou paths.
 
-    Deduplica por hash de conteúdo (uploads) ou por path/string truncada.
+    Deduplica pelo hash do conteúdo, tanto de uploads quanto de arquivos existentes,
+    para que a mesma foto como upload e como arquivo (ou em duas pastas) apareça uma
+    vez só. Caminho inexistente ou ilegível é comparado pelo texto, como antes.
     Evita que rascunho + upload atual resultem em foto repetida no PDF.
     """
     resultado = []
@@ -4351,7 +4716,10 @@ def deduplicar_fotos(lista):
     for item in lista or []:
         try:
             if isinstance(item, (str, Path)):
-                chave = str(item)[:200]
+                try:
+                    chave = _hashlib.md5(Path(item).read_bytes()).hexdigest()
+                except Exception:
+                    chave = str(item)[:200]
             elif hasattr(item, "getvalue"):
                 pos = item.tell() if hasattr(item, "tell") else None
                 dados = item.getvalue()
@@ -4534,7 +4902,7 @@ def salvar_snapshot_formulario() -> dict:
         "whatsapp_cliente": (st.session_state.get("whatsapp_cliente") or "").strip(),
         "email_cliente": (st.session_state.get("email_cliente") or "").strip(),
         "observacoes_internas": (st.session_state.get("observacoes_internas") or "").strip(),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
@@ -4558,6 +4926,10 @@ def obter_parametros_ultimos_relatorio() -> list[dict]:
             "alc": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
             "dc": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
             "cya": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
+            "turbidez": (st.session_state.get(f"rel_analise_turbidez_{i}") or "").strip(),
+            "orp": (st.session_state.get(f"rel_analise_orp_{i}") or "").strip(),
+            "tds": (st.session_state.get(f"rel_analise_tds_{i}") or "").strip(),
+            "temperatura": (st.session_state.get(f"rel_analise_temperatura_{i}") or "").strip(),
             "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
         })
     return itens
@@ -4606,6 +4978,31 @@ def obter_dosagens_ultimas_relatorio() -> list[dict]:
     return itens
 
 
+def recuperar_ultimos_valores_rt(tipo: str):
+    from utils.ultimos_sheets import carregar_ultimos
+    try:
+        erros = validar_contexto_rt()
+        if erros:
+            raise ValueError(" | ".join(erros))
+        dados = carregar_ultimos(GENERATED_DIR, st.session_state.get("rel_origem_dados"), conectar_sheets)
+        if tipo == "parametros":
+            total = int(st.session_state.get("rel_analises_total") or ANALISES_PADRAO)
+            total = max(total, len(dados["parametros_ultimos"]))
+            for i, item in enumerate(dados["parametros_ultimos"]):
+                st.session_state.setdefault(f"rel_analise_data_{i}", "")
+                for campo in ("ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador"):
+                    st.session_state[f"rel_analise_{campo}_{i}"] = item.get(campo, "")
+            st.session_state["rel_analises_total"] = total
+            st.session_state["_rt_ultimos_linhas"] = (st.session_state["rel_origem_dados"], total)
+        elif tipo == "dosagens":
+            aplicar_dosagens_ultimas_no_relatorio(dados)
+        else:
+            raise ValueError("Tipo de recuperação inválido.")
+        st.session_state["_rt_ultimos_aviso"] = f"Valores recuperados do relatório de {dados['periodo']}."
+    except Exception as e:
+        st.session_state["_rt_ultimos_aviso"] = f"Não foi possível recuperar os últimos valores: {e}"
+
+
 def aplicar_dosagens_ultimas_no_relatorio(dados_salvos: dict | None):
     dosagens = []
     if isinstance(dados_salvos, dict):
@@ -4621,9 +5018,22 @@ def aplicar_dosagens_ultimas_no_relatorio(dados_salvos: dict | None):
 
 
 def aplicar_snapshot_relatorio_independente(dados: dict):
+    from utils.rt_contexto import limpar, TRANSITORIOS
+    ss = st.session_state
+    if ss.get("rel_origem_dados") and not guardar_tabela_rt(ss["rel_origem_dados"]):
+        raise ValueError(ss.get("_rt_contexto_erro"))
+    limpar(ss)
+    aliases = {"nome_condominio": "rel_nome_condominio", "cnpj_condominio": "rel_cnpj_condominio",
+               "endereco_condominio": "rel_endereco_condominio", "nome_sindico": "rel_representante",
+               "cpf_sindico": "rel_cpf_cnpj_representante"}
     for key, value in dados.items():
-        if key not in ("dosagens_ultimas", "parametros_ultimos", "analises_ultimas", "analises"):
-            st.session_state[key] = value
+        destino = aliases.get(key, key)
+        if str(destino).startswith("rel_") and destino not in TRANSITORIOS and not str(destino).startswith("rel_origem_"):
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                ss[destino] = value
+    ss.pop("rel_origem_dados", None)
+    ss["_rt_origem_desconhecida"] = True
+    ss.pop("rel_fotos_preservadas", None)  # anexos sem identidade exigem seleção explícita
     aplicar_parametros_ultimos_no_relatorio(dados)
     aplicar_dosagens_ultimas_no_relatorio(dados)
 
@@ -4634,7 +5044,7 @@ def obter_snapshot_relatorio_independente() -> dict:
         "endereco_condominio": (st.session_state.get("rel_endereco_condominio") or "").strip(),
         "nome_sindico": (st.session_state.get("rel_representante") or "").strip(),
         "cpf_sindico": (st.session_state.get("rel_cpf_cnpj_representante") or "").strip(),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
@@ -4646,6 +5056,8 @@ def obter_snapshot_relatorio_independente() -> dict:
 
 
 def sincronizar_relatorio_com_cadastro():
+    if st.session_state.get("rel_origem_dados"):
+        return
     if not (st.session_state.get("rel_nome_condominio") or "").strip():
         st.session_state.rel_nome_condominio = (st.session_state.get("nome_condominio") or "").strip()
     if not (st.session_state.get("rel_cnpj_condominio") or "").strip():
@@ -4662,6 +5074,11 @@ def sincronizar_relatorio_com_cadastro():
 
 def carregar_dados_cadastro_no_relatorio():
     _nome_base_cad = (st.session_state.get("nome_condominio") or "").strip()
+    _origem = st.session_state.get("rel_origem_dados")
+    if _origem and _nome_base_cad != st.session_state.get("rel_nome_condominio"):
+        if not guardar_tabela_rt(_origem):
+            return False
+        st.session_state["rel_origem_dados"] = ""
     _dados_locais_cad = _carregar_dados_cliente_local(_nome_base_cad) if _nome_base_cad else {}
     # Cadastro pode ter várias visitas operacionais, mas o relatório RT mantém
     # somente um lançamento por semana.
@@ -4788,7 +5205,7 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.dia_pagamento = dados_salvos.get("dia_pagamento", "")
     st.session_state.forma_pagamento = dados_salvos.get("forma_pagamento", "Pix")
     st.session_state.valor_mensal_extenso = dados_salvos.get("valor_mensal_extenso", "")
-    st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Emitida")
+    st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Em processo de formalização")
     st.session_state.rel_art_status_widget = st.session_state.rel_art_status
     st.session_state.rel_art_numero = dados_salvos.get("rel_art_numero", "")
     st.session_state.rel_art_inicio = dados_salvos.get("rel_art_inicio", "")
@@ -6648,7 +7065,7 @@ def on_change_rel_art_numero():
 
 
 def on_change_rel_art_status():
-    status = (st.session_state.get("rel_art_status") or "Emitida").strip()
+    status = (st.session_state.get("rel_art_status") or "Em processo de formalização").strip()
     if status != "Emitida":
         st.session_state.rel_art_numero = ""
         st.session_state.rel_art_inicio = ""
@@ -6656,7 +7073,7 @@ def on_change_rel_art_status():
 
 
 def obter_status_art_texto(dados_relatorio: dict) -> str:
-    status = (dados_relatorio.get("art_status") or "Emitida").strip()
+    status = (dados_relatorio.get("art_status") or "Em processo de formalização").strip()
     numero = (dados_relatorio.get("art_numero") or "").strip()
     inicio = (dados_relatorio.get("art_inicio") or "").strip()
     fim = (dados_relatorio.get("art_fim") or "").strip()
@@ -6665,8 +7082,8 @@ def obter_status_art_texto(dados_relatorio: dict) -> str:
         if inicio and fim:
             return f"ART nº {numero_final} | Vigência: {inicio} a {fim}"
         return f"ART nº {numero_final}"
-    if status == "Em tramitação":
-        return "ART em tramitação administrativa"
+    if status in ("Em tramitação", "Em processo de formalização"):
+        return "ART não emitida — em processo de formalização"
     return "ART não emitida até a data de emissão deste relatório"
 
 
@@ -7478,18 +7895,18 @@ def coletar_analises_relatorio() -> list[dict]:
     garantir_campos_analises(qtd, minimo=1)
     for i in range(qtd):
         itens.append({
-            "data": (st.session_state.get(f"rel_analise_data_{i}") or "").strip(),
-            "ph": (st.session_state.get(f"rel_analise_ph_{i}") or "").strip(),
-            "cloro_livre": (st.session_state.get(f"rel_analise_cl_{i}") or "").strip(),
-            "cloro_total": (st.session_state.get(f"rel_analise_ct_{i}") or "").strip(),
-            "alcalinidade": (st.session_state.get(f"rel_analise_alc_{i}") or "").strip(),
-            "dureza": (st.session_state.get(f"rel_analise_dc_{i}") or "").strip(),
-            "cianurico": (st.session_state.get(f"rel_analise_cya_{i}") or "").strip(),
-            "turbidez": (st.session_state.get(f"rel_analise_turbidez_{i}") or "").strip(),
-            "orp": (st.session_state.get(f"rel_analise_orp_{i}") or "").strip(),
-            "tds": (st.session_state.get(f"rel_analise_tds_{i}") or "").strip(),
-            "temperatura": (st.session_state.get(f"rel_analise_temperatura_{i}") or "").strip(),
-            "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
+            "data": str(st.session_state.get(f"rel_analise_data_{i}", "")).strip(),
+            "ph": str(st.session_state.get(f"rel_analise_ph_{i}", "")).strip(),
+            "cloro_livre": str(st.session_state.get(f"rel_analise_cl_{i}", "")).strip(),
+            "cloro_total": str(st.session_state.get(f"rel_analise_ct_{i}", "")).strip(),
+            "alcalinidade": str(st.session_state.get(f"rel_analise_alc_{i}", "")).strip(),
+            "dureza": str(st.session_state.get(f"rel_analise_dc_{i}", "")).strip(),
+            "cianurico": str(st.session_state.get(f"rel_analise_cya_{i}", "")).strip(),
+            "turbidez": str(st.session_state.get(f"rel_analise_turbidez_{i}", "")).strip(),
+            "orp": str(st.session_state.get(f"rel_analise_orp_{i}", "")).strip(),
+            "tds": str(st.session_state.get(f"rel_analise_tds_{i}", "")).strip(),
+            "temperatura": str(st.session_state.get(f"rel_analise_temperatura_{i}", "")).strip(),
+            "operador": str(st.session_state.get(f"rel_analise_operador_{i}", "")).strip(),
         })
     return itens
 
@@ -7498,11 +7915,11 @@ def coletar_dosagens_relatorio() -> list[dict]:
     itens = []
     for i in range(7):
         itens.append({
-            "produto": (st.session_state.get(f"rel_dos_produto_{i}") or "").strip(),
-            "fabricante_lote": (st.session_state.get(f"rel_dos_lote_{i}") or "").strip(),
-            "quantidade": (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip(),
-            "unidade": (st.session_state.get(f"rel_dos_un_{i}") or "").strip(),
-            "finalidade": (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip(),
+            "produto": str(st.session_state.get(f"rel_dos_produto_{i}", "")).strip(),
+            "fabricante_lote": str(st.session_state.get(f"rel_dos_lote_{i}", "")).strip(),
+            "quantidade": str(st.session_state.get(f"rel_dos_qtd_{i}", "")).strip(),
+            "unidade": str(st.session_state.get(f"rel_dos_un_{i}", "")).strip(),
+            "finalidade": str(st.session_state.get(f"rel_dos_finalidade_{i}", "")).strip(),
         })
     return itens
 
@@ -7667,10 +8084,10 @@ def montar_dados_relatorio() -> dict:
         "tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo").strip(),
         "mes_referencia": (st.session_state.get("rel_mes_referencia") or "").strip(),
         "ano_referencia": (st.session_state.get("rel_ano_referencia") or "").strip(),
-        "art_status": (st.session_state.get("rel_art_status") or "Emitida").strip(),
-        "art_numero": (st.session_state.get("rel_art_numero") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
-        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
-        "art_fim": (st.session_state.get("rel_art_fim") or "").strip() if (st.session_state.get("rel_art_status") or "Emitida").strip() == "Emitida" else "N/A",
+        "art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
+        "art_numero": (st.session_state.get("rel_art_numero") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
+        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
+        "art_fim": (st.session_state.get("rel_art_fim") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
         "art_texto": "",
         "data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()).strip(),
         "status_agua": status_final,
@@ -10210,33 +10627,12 @@ def _salvar_uploads_relatorio_preview(pasta_preview: Path):
     return caminhos
 
 def _resolver_fotos_relatorio_rt(pasta_condominio: Path, nome_condominio: str, mes: str = "", ano: str = "", preview: bool = False) -> tuple[list[Path], str]:
-    """Resolve as fotos do relatório RT usando a mesma lógica para prévia e geração final."""
-    if preview:
-        pasta_preview = pasta_condominio / "_previa_exata_relatorio" / "fotos_upload"
-        fotos_upload = _salvar_uploads_relatorio_preview(pasta_preview)
-        origem_upload = "anexos atuais do formulário"
-    else:
-        fotos_upload = salvar_uploads_relatorio(pasta_condominio)
-        origem_upload = "anexos atuais do formulário"
-
-    if fotos_upload:
-        return fotos_upload, origem_upload
-
-    mes_ano_rel = _mes_ano_preview_relatorio(mes, ano)
-    fotos_drive = buscar_fotos_drive_para_relatorio(nome_condominio, mes_ano_rel)
-    if fotos_drive:
-        return fotos_drive, f"Google Drive ({mes_ano_rel})"
-
-    pasta_fotos_campo = pasta_condominio / "fotos_campo"
-    if pasta_fotos_campo.exists():
-        fotos_campo = sorted(
-            [f for f in pasta_fotos_campo.glob("*") if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
-        )
-        if fotos_campo:
-            return fotos_campo, "pasta local fotos_campo"
-
-    return [], "nenhuma foto encontrada"
-
+    from utils.rt_contexto import materializar_fotos, sincronizar_fotos
+    ss = st.session_state
+    chave = str(ss.get("rel_origem_dados") or "")
+    sincronizar_fotos(ss, chave, ss.get(chave_fotos_rt()) or [])
+    fotos = materializar_fotos(ss, chave, GENERATED_DIR)
+    return fotos, "anexos preservados deste condomínio e período" if fotos else "nenhuma foto vinculada"
 
 def _carregar_clientes_bem_star_relatorio() -> dict:
     clientes = {c.get("nome", ""): c for c in (sheets_listar_clientes_completo() or []) if c.get("nome")}
@@ -10426,16 +10822,18 @@ def _bs_coletar_lancamentos_agenda_manual() -> list[dict]:
 
 
 def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> list:
-    """Coleta fotos para o relatório Bem Star sem derrubar o relatório.
+    """Coleta as fotos de campo das visitas do relatório Bem Star.
 
-    Compatibilidade segura:
-    - usa fotos já presentes nos lançamentos, quando existirem;
-    - aceita paths locais salvos como string;
-    - ignora itens inexistentes;
-    - se não houver foto, retorna lista vazia.
+    - fotos citadas nos lançamentos do período (nomes gravados pelo modo campo),
+      procuradas na pasta fotos_campo do cliente; paths absolutos e uploads também valem;
+    - sem nenhuma citada, usa as fotos de fotos_campo cujo nome traz a data (AAAAMMDD)
+      de um dos lançamentos — nunca outros meses, assinaturas, fotos do relatório RT,
+      pré-visualizações ou o rascunho, que ficam em outras pastas do mesmo cliente;
+    - a mesma foto entra uma vez só (comparação pelo conteúdo).
     Não altera Sheets, Drive, dosagem ou modo operador.
     """
     fotos = []
+    pasta_campo = GENERATED_DIR / slugify_nome(cliente) / "fotos_campo"
 
     def _add_foto(item):
         if not item:
@@ -10448,19 +10846,25 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
 
         try:
             p = Path(str(item))
+            if not p.is_absolute():
+                p = pasta_campo / p.name  # nomes gravados pelo modo campo
             if p.exists() and p.is_file():
                 fotos.append(p)
         except Exception:
             pass
 
+    datas_periodo = set()
     for lc in lancamentos or []:
         if not isinstance(lc, dict):
             continue
+        _data = normalizar_data_visita(lc.get("data", ""))
+        if re.fullmatch(r"\d{2}/\d{2}/\d{4}", _data or ""):
+            datas_periodo.add(_data[6:] + _data[3:5] + _data[:2])
 
         # Listas comuns dentro do payload.
         for chave_lista in (
             "fotos", "fotos_campo", "fotos_paths", "imagens",
-            "fotos_antes", "fotos_depois", "fotos_casa_maquinas"
+            "fotos_antes", "fotos_depois", "fotos_casa_maquinas", "fotos_cmaq", "fotos_extras",
         ):
             valor = lc.get(chave_lista)
             if isinstance(valor, list):
@@ -10476,21 +10880,22 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
         ):
             _add_foto(lc.get(chave))
 
-    # Fallback leve: tenta pasta local do cliente, se existir.
-    try:
-        pasta_cliente = GENERATED_DIR / slugify_nome(cliente)
-        if pasta_cliente.exists():
-            for padrao in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
-                for p in pasta_cliente.rglob(padrao):
-                    _add_foto(p)
-    except Exception:
-        pass
+    # Sem fotos citadas: fotos de campo gravadas nas datas das visitas do relatório.
+    if not fotos and datas_periodo:
+        try:
+            if pasta_campo.exists():
+                for p in sorted(pasta_campo.iterdir()):
+                    m = re.match(r"^(?:antes|depois|cmaq|extras)_(\d{8})_\d{6}_", p.name)
+                    if (p.is_file() and m and m.group(1) in datas_periodo
+                            and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")):
+                        fotos.append(p)
+        except Exception:
+            pass
 
     try:
         return deduplicar_fotos(fotos)
     except Exception:
         return fotos
-
 
 
 def _bs_float(valor):
@@ -10792,7 +11197,19 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     pasta_csr.mkdir(parents=True, exist_ok=True)
     dados_rel_json = carregar_dados_condominio(pasta_csr) if pasta_csr.exists() else {}
     lancamentos_local = (dados_rel_json or {}).get("lancamentos_campo", [])
-    lancamentos_sheets = sheets_listar_lancamentos(csr_sel) if csr_sel else []
+    _situacao_csr = situacao_visitas_condominio(csr_sel) if csr_sel else {"status": "ok", "visitas": [], "bloqueio": "", "aviso": ""}
+    lancamentos_sheets = _situacao_csr["visitas"]
+    if _situacao_csr["bloqueio"]:
+        lancamentos_local = []  # a pasta local é identificada só pelo nome: não confirma o cadastro
+    if _situacao_csr.get("status") == "falha":
+        # Falha de consulta não é ausência de visitas: não gera relatório incompleto.
+        return {"ok": False, "erros": [_situacao_csr["aviso"]], "mensagem": _situacao_csr["aviso"]}
+    if not origem_validada(_situacao_csr, chave_validacao_origem("bem_star", csr_sel, csr_mes, csr_ano)):
+        msg = (f"{_situacao_csr['aviso']} " + (
+            "O cliente não pode ser identificado com segurança: diferencie os nomes no cadastro para gerar."
+            if _situacao_csr.get("status") == "bloqueio" else
+            "Confirme a origem dos dados na tela do relatório Bem Star para gerar com as visitas identificadas."))
+        return {"ok": False, "erros": [msg], "mensagem": msg}
 
     vistos = set()
     lancamentos_todos = []
@@ -10843,6 +11260,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
 
     if not lancamentos_csr:
         msg = "Nenhum lançamento encontrado. Defina a agenda mensal de visitas ou registre visitas no modo campo."
+        if _situacao_csr["aviso"]:
+            msg = f"{_situacao_csr['aviso']} {msg}"
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     lanc_para_relatorio = []
@@ -10888,7 +11307,64 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
     }
 
 
+def preparar_contexto_rt():
+    """Concilia a solicitação antes de qualquer prévia ou widget do relatório."""
+    preservar_campos_rt()  # também protege widgets de um rerun cancelado no modo RT
+    ss = st.session_state
+    nome = str(ss.get("rel_nome_condominio") or "").strip()
+    mes, ano = ss.get("rel_mes_referencia"), ss.get("rel_ano_referencia")
+    if not nome or not periodo_relatorio_valido(mes, ano):
+        return
+    situacao = situacao_visitas_condominio(nome)
+    # Uma falha de consulta não autoriza associar dados a um cliente desconhecido.
+    if situacao.get("status") == "falha":
+        return
+    identidade = identidade_dados_rt(ss.get("empresa_ativa", "aqua_gestao"), situacao, nome, mes, ano)
+    resultado = conciliar_identidade_tabela_rt(identidade)
+    if resultado.get("guardada_de"):
+        ss["_rel_tabela_guardada_msg"] = resultado["guardada_de"]
+    if resultado.get("recuperada"):
+        ss["_rel_contexto_recuperado"] = True
+    if resultado.get("conflito") == "falha_salvamento":
+        ss.pop("_rt_upload_hashes", None)  # cleanup de widget não é remoção explícita de foto
+        if ss.get("_rt_cond_form") is not None or ss.get("rt_op_sel_cond") is not None:
+            ss["_rt_cond_reverter"] = ss.get("rel_nome_condominio")
+            ss["_rt_periodo_reverter"] = (ss.get("rel_mes_referencia"), ss.get("rel_ano_referencia"))
+        st.rerun()  # a transação já recolocou nome/período da origem
+
+
+def validar_contexto_rt(relatorio: str = "rt") -> list[str]:
+    """Porta única para DOCX/PDF de prévia e final, antes de qualquer escrita."""
+    from utils.rt_contexto import ler_fotos
+    ss = st.session_state
+    erros = []
+    nome = str(ss.get("rel_nome_condominio") or "").strip()
+    mes, ano = ss.get("rel_mes_referencia"), ss.get("rel_ano_referencia")
+    if ss.get("empresa_ativa", "aqua_gestao") != "aqua_gestao":
+        erros.append("Relatório RT não pode usar o contexto de outra empresa.")
+    if not nome or not periodo_relatorio_valido(mes, ano):
+        return erros + ["Informe condomínio e período válido antes de gerar prévia ou relatório."]
+    situacao = situacao_visitas_condominio(nome)
+    identidade = identidade_dados_rt(ss.get("empresa_ativa", "aqua_gestao"), situacao, nome, mes, ano)
+    if not origem_validada(situacao, chave_validacao_origem(relatorio, nome, mes, ano)):
+        erros.append("Consulta ou identidade das visitas não validada; prévia e relatório suspensos.")
+    if not identidade["comprovada"] or ss.get("rel_origem_dados") != identidade["chave"]:
+        erros.append("Os dados não pertencem comprovadamente ao condomínio e período atuais.")
+    if ss.get("_rt_contexto_erro"):
+        erros.append(ss["_rt_contexto_erro"])
+    if fotos_rt_de_outra_identidade(identidade["chave"], bool(ss.get(chave_fotos_rt()))):
+        erros.append("Fotografias anexadas em outro condomínio ou período.")
+    try:
+        ler_fotos(ss, identidade["chave"])
+    except (ValueError, KeyError, TypeError) as e:
+        erros.append(f"Integridade das fotografias: {e}")
+    return erros
+
+
 def _renderizar_relatorio_rt(preview: bool = False) -> dict:
+    erros_contexto = validar_contexto_rt()
+    if erros_contexto:
+        return {"ok": False, "preview": preview, "empresa": "Aqua Gestão", "erros": erros_contexto, "mensagem": " | ".join(erros_contexto)}
     dados_relatorio = montar_dados_relatorio()
     erros = validar_relatorio_mensal(dados_relatorio)
     if erros:
@@ -10900,8 +11376,11 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
             "mensagem": " | ".join(erros),
         }
 
+    snapshot_ultimos = obter_snapshot_relatorio_independente() if not preview else None
+    chave_ultimos = st.session_state.get("rel_origem_dados")
     nome_condominio = dados_relatorio["nome_condominio"]
-    pasta_condominio = GENERATED_DIR / slugify_nome(nome_condominio)
+    import hashlib
+    pasta_condominio = GENERATED_DIR / "_rt_contextos" / hashlib.sha256(st.session_state["rel_origem_dados"].encode()).hexdigest()
     pasta_condominio.mkdir(parents=True, exist_ok=True)
 
     if not preview:
@@ -10955,6 +11434,12 @@ def _renderizar_relatorio_rt(preview: bool = False) -> dict:
             },
             extras={"fotos": [p.name for p in fotos_salvas]},
         )
+        if ok_pdf and relatorio_docx.is_file() and relatorio_pdf.is_file():
+            try:
+                from utils.ultimos_sheets import registrar_ultimos
+                registrar_ultimos(GENERATED_DIR, chave_ultimos, snapshot_ultimos, conectar_sheets)
+            except Exception as e:
+                st.warning(f"Documentos gerados, mas os últimos valores não foram atualizados: {e}")
         st.session_state.ultimos_docs_gerados = st.session_state.get("ultimos_docs_gerados") or {}
         st.session_state.ultimos_docs_gerados.update({
             "relatorio_docx": str(relatorio_docx) if relatorio_docx.exists() else None,
@@ -12205,8 +12690,8 @@ def inicializar_campos():
         "rel_cpf_cnpj_representante": "",
         "rel_salvar_alteracoes_cadastro": False,
         "rel_ano_referencia": str(datetime.now().year),
-        "rel_art_status": "Emitida",
-        "rel_art_status_widget": "Emitida",
+        "rel_art_status": "Em processo de formalização",
+        "rel_art_status_widget": "Em processo de formalização",
         "rel_art_numero": "",
         "rel_art_inicio": "",
         "rel_art_fim": "",
@@ -12273,8 +12758,8 @@ def limpar_formulario():
     st.session_state.rel_salvar_alteracoes_cadastro = False
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
-    st.session_state.rel_art_status = "Emitida"
-    st.session_state.rel_art_status_widget = "Emitida"
+    st.session_state.rel_art_status = "Em processo de formalização"
+    st.session_state.rel_art_status_widget = "Em processo de formalização"
     st.session_state.rel_art_numero = ""
     st.session_state.rel_art_inicio = ""
     st.session_state.rel_art_fim = ""
@@ -12337,7 +12822,7 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_mes_referencia": (st.session_state.get("rel_mes_referencia") or ""),
         "rel_ano_referencia": (st.session_state.get("rel_ano_referencia") or ""),
         "rel_data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Emitida"),
+        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização"),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or ""),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or ""),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or ""),
@@ -12451,35 +12936,7 @@ def excluir_rascunho_relatorio(pasta_condominio: Path):
 inicializar_campos()
 sincronizar_relatorio_com_cadastro()
 
-# Auto-restaurar rascunho ao iniciar sessão
-if not st.session_state.get("_rascunho_restaurado"):
-    nome_atual = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
-    if nome_atual:
-        pasta_rasc = GENERATED_DIR / slugify_nome(nome_atual)
-        rasc = carregar_rascunho_relatorio(pasta_rasc)
-        if rasc:
-            aplicar_rascunho_no_formulario(rasc)
-    st.session_state["_rascunho_restaurado"] = True
-
-# Quando nome do condomínio do relatório muda, tenta restaurar rascunho automaticamente
-_nome_rel_check = (st.session_state.get("rel_nome_condominio") or "").strip()
-_ultimo_nome_rasc = st.session_state.get("_ultimo_nome_rasc_check", "")
-if _nome_rel_check and _nome_rel_check != _ultimo_nome_rasc:
-    st.session_state["_ultimo_nome_rasc_check"] = _nome_rel_check
-    _pasta_check = GENERATED_DIR / slugify_nome(_nome_rel_check)
-    if _pasta_check.exists():
-        _rasc_auto = carregar_rascunho_relatorio(_pasta_check)
-        if _rasc_auto:
-            aplicar_rascunho_no_formulario(_rasc_auto)
-
-pasta_formulario_atual = obter_pasta_atual_do_formulario()
-if pasta_formulario_atual and pasta_formulario_atual.exists():
-    dados_auto = carregar_dados_condominio(pasta_formulario_atual)
-    if dados_auto:
-        dosagens_preenchidas = any((st.session_state.get(f"rel_dos_produto_{i}") or "").strip() or (st.session_state.get(f"rel_dos_lote_{i}") or "").strip() or (st.session_state.get(f"rel_dos_qtd_{i}") or "").strip() or (st.session_state.get(f"rel_dos_un_{i}") or "").strip() or (st.session_state.get(f"rel_dos_finalidade_{i}") or "").strip() for i in range(7))
-        if not dosagens_preenchidas:
-            aplicar_dosagens_ultimas_no_relatorio(dados_auto)
-
+# Rascunhos legados exigem restauração explícita e revisão de identidade.
 
 # _EMERGENCIA_RELATORIO_RT_FUNCOES_V1_
 # =========================================
@@ -12537,12 +12994,12 @@ def _relatorio_rt_coletar_rascunho() -> dict:
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "_salvo_iso": datetime.now().isoformat(timespec="microseconds"),
-        "empresa_ativa": "aqua_gestao",
+        "empresa_ativa": st.session_state.get("empresa_ativa", "aqua_gestao"),
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
     }
     for k, v in st.session_state.items():
-        if str(k).startswith(("rel_", "csr_")) or str(k) in ("nome_condominio", "cnpj_condominio", "endereco_condominio"):
+        if str(k).startswith("rel_"):
             try:
                 if isinstance(v, (str, int, float, bool)) or v is None:
                     dados["campos"][k] = v
@@ -12640,45 +13097,18 @@ def _relatorio_rt_ordem(dados: dict, posicao: int = 0) -> tuple:
     return (iso, posicao)
 
 
+def _relatorio_rt_gestor_sync():
+    from utils.rascunho_sync import GestorRascunhos
+    return GestorRascunhos(_relatorio_rt_rascunho_path().parent,
+        st.session_state.get("empresa_ativa", "aqua_gestao"), st.session_state,
+        _relatorio_rt_arquivo_local, _relatorio_rt_desserializar,
+        _relatorio_rt_gravar_linha, _relatorio_rt_eh_chave, _relatorio_rt_ordem, _relatorio_rt_serializar)
+
+
 def _relatorio_rt_listar_rascunhos(incluir_descartados: bool = False) -> dict:
-    """Versões disponíveis, da mais recente para a mais antiga.
-
-    Retorna {"versoes": [{"chave", "dados", "linha", "origem", "descartado"}], "ignorados": n}.
-    Em produção a planilha é a referência; cópias locais (temporárias) só entram quando
-    a planilha está indisponível ou quando são mais novas que a versão da planilha.
-    """
-    versoes, ignorados = {}, 0
-    aba = _relatorio_rt_aba()
-    if aba is not None:
-        for i, row in enumerate(aba.get_all_values()[1:], start=2):
-            chave = str(row[0]).strip() if row else ""
-            if not _relatorio_rt_eh_chave(chave):
-                continue
-            dados = _relatorio_rt_desserializar(row)
-            if dados is None:
-                ignorados += 1
-                continue
-            status = str(row[3]).strip() if len(row) > 3 else ""
-            atual = versoes.get(chave)
-            if atual is None or _relatorio_rt_ordem(dados, i) > _relatorio_rt_ordem(atual["dados"], atual["linha"] or 0):
-                versoes[chave] = {"chave": chave, "dados": dados, "linha": i, "origem": "planilha",
-                                  "descartado": status.lower().startswith("descartado")}
-    base = _relatorio_rt_rascunho_path()
-    for p in sorted(base.parent.glob("_rascunho_relatorio_rt*.json")) if base.parent.exists() else []:
-        dados = _relatorio_rt_ler_json(p.read_text(encoding="utf-8"))
-        if not dados:
-            continue
-        chave = dados.get("_chave") or (RASCUNHO_RT_USUARIO if p == base else p.stem)
-        atual = versoes.get(chave)
-        if atual is None or _relatorio_rt_ordem(dados) > _relatorio_rt_ordem(atual["dados"]):
-            versoes[chave] = {"chave": chave, "dados": dados, "linha": None,
-                              "origem": "local" if aba is not None or _rascunho_usa_sheets() else "desenvolvimento",
-                              "descartado": bool(dados.get("_descartado")) or bool(atual and atual["descartado"])}
-    lista = sorted(versoes.values(), key=lambda v: _relatorio_rt_ordem(v["dados"], v["linha"] or 0), reverse=True)
-    if not incluir_descartados:
-        lista = [v for v in lista if not v["descartado"]]
-    return {"versoes": lista, "ignorados": ignorados}
-
+    gestor = _relatorio_rt_gestor_sync()
+    gestor.reconstruir()  # só controles de sincronização; não altera campos ativos
+    return gestor.listar(_relatorio_rt_aba(), incluir_descartados)
 
 def _relatorio_rt_descartada(row: list) -> bool:
     return len(row) > 3 and str(row[3]).strip().lower().startswith("descartado")
@@ -12724,59 +13154,48 @@ def _relatorio_rt_coluna(n: int) -> str:
 RASCUNHO_RT_INTERVALO_REENVIO = 15  # segundos entre tentativas de sincronizar com a planilha
 
 
-def _relatorio_rt_enviar_planilha(aba, chave: str, dados: dict) -> str:
-    """Grava a versão na planilha e devolve a chave usada (nova, se a linha foi descartada).
-    Levanta exceção se não for possível persistir."""
-    if aba is None:
-        raise ConnectionError("planilha indisponível")
-    if _relatorio_rt_gravar_linha(aba, chave, dados):
+def _relatorio_rt_enviar_planilha(aba, chave: str, dados: dict, retentativa: bool = True) -> str:
+    gestor = _relatorio_rt_gestor_sync()
+    if gestor.enviar(aba, chave, dados, retentativa=retentativa):
         return chave
-    # esta versão foi descartada por outro acesso: a edição segue numa linha nova
-    nova = _relatorio_rt_chave_sessao(nova=True) if chave == st.session_state.get("_rt_rasc_chave") \
-        else f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
-    dados["_chave"] = nova
-    _relatorio_rt_arquivo_local(nova).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-    if not _relatorio_rt_gravar_linha(aba, nova, dados):
-        raise RuntimeError("linha nova marcada como descartada")
+    if retentativa:
+        raise ValueError("Rascunho descartado: reenvio cancelado.")
+    # Uma edição ativa posterior a descarte segue em nova chave, sem reviver a antiga.
+    nova = _relatorio_rt_chave_sessao(nova=True) if chave == st.session_state.get("_rt_rasc_chave") else f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    dados = dict(dados, _chave=nova)
+    gestor.preparar(nova, dados)
+    from utils.rascunho_sync import escrever_atomico
+    escrever_atomico(_relatorio_rt_arquivo_local(nova), dados)
+    if not gestor.enviar(aba, nova, dados, retentativa=True):
+        raise ValueError("Nova chave foi descartada; cópia local preservada.")
     return nova
 
-
 def _relatorio_rt_sincronizar_pendentes() -> bool:
-    """Reenvia à planilha as versões que ficaram só no disco local por falha anterior.
-
-    Usa o conteúdo exato do arquivo local de cada versão (não o formulário atual) e
-    respeita um intervalo entre tentativas. Retorna True quando não resta pendência."""
+    gestor = _relatorio_rt_gestor_sync()
     ss = st.session_state
-    pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+    pendentes = gestor.reconstruir()
     if not pendentes:
-        return True
+        return not bool(ss.get("_rt_rasc_aviso"))
     agora = datetime.now().timestamp()
     if agora < ss.get("_rt_rasc_proxima_tentativa", 0):
         return False
     aba = _relatorio_rt_aba(criar=True)
-    restantes = []
+    erros = []
     for chave in pendentes:
         try:
-            dados = _relatorio_rt_ler_json(_relatorio_rt_arquivo_local(chave).read_text(encoding="utf-8"))
-        except Exception:
-            dados = None
-        if not dados or dados.get("_descartado"):
-            continue  # cópia local não existe mais (ex.: reinício) ou foi descartada: nada a enviar
-        try:
-            _relatorio_rt_enviar_planilha(aba, chave, dados)
-            ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+            r = gestor.ler(chave)
+            if not gestor.enviar(aba, chave, r["dados"], retentativa=True):
+                continue  # descarte confirmado; nunca cria nova chave em retentativa
         except Exception as e:
-            restantes.append(chave)
-            ss["_rt_rasc_aviso"] = f"{type(e).__name__}: {e}"
+            erros.append(f"{type(e).__name__}: {e}")
+    restantes = gestor.reconstruir()
     ss.pop("_rt_rasc_lista_cache", None)
-    if restantes:
-        ss["_rt_rasc_sync_pendente"] = restantes
+    if restantes or erros:
+        ss["_rt_rasc_aviso"] = "; ".join(erros) or ss.get("_rt_rasc_aviso", "Cópia local pendente")
         ss["_rt_rasc_proxima_tentativa"] = agora + RASCUNHO_RT_INTERVALO_REENVIO
         return False
-    for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
-        ss.pop(k, None)
+    ss.pop("_rt_rasc_proxima_tentativa", None)
     return True
-
 
 def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
     """Salva o rascunho RT somente quando o usuário alterou algo.
@@ -12821,14 +13240,26 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
 
         chave = _relatorio_rt_chave_sessao()
         dados["_chave"] = chave
-        _relatorio_rt_arquivo_local(chave).write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+        from utils.rascunho_sync import escrever_atomico
+        gestor = _relatorio_rt_gestor_sync()
+        registro_anterior = gestor.ler(chave)
+        if registro_anterior and registro_anterior["estado"] == "descartado":
+            chave = _relatorio_rt_chave_sessao(nova=True)
+            dados["_chave"] = chave
+            registro_anterior = None
+        registro = gestor.preparar(chave, dados, local_apenas=not _rascunho_usa_sheets())
+        dados = registro["dados"]
+        escrever_atomico(_relatorio_rt_arquivo_local(chave), dados)
         ss["_rt_rasc_ref"] = dict(campos)  # a edição está guardada (local); a sincronização segue abaixo
         ss.pop("_rt_rasc_lista_cache", None)
         if not _rascunho_usa_sheets():
             ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
+            ss.pop("_rt_contexto_erro", None)
+            ss.pop("_relatorio_rt_autosave_erro", None)
             return True  # Codespaces: o disco local é o armazenamento
         try:
-            _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados)
+            _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados,
+                retentativa=bool(registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")))
         except Exception as e:
             pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
             if chave not in pendentes:
@@ -12846,9 +13277,12 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
         else:
             for k in ("_rt_rasc_sync_pendente", "_rt_rasc_proxima_tentativa", "_rt_rasc_aviso"):
                 ss.pop(k, None)
+        ss.pop("_rt_contexto_erro", None)
+        ss.pop("_relatorio_rt_autosave_erro", None)
         return True
     except Exception as e:
         ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
+        ss["_rt_rasc_aviso"] = f"Salvamento não concluído; cópia anterior preservada: {type(e).__name__}: {e}"
         return False
     finally:
         ss["_rt_rasc_gravando"] = False
@@ -12856,7 +13290,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
 
 def _relatorio_rt_carregar_rascunho() -> dict:
     versoes = _relatorio_rt_listar_rascunhos()["versoes"]
-    return versoes[0]["dados"] if versoes else {}
+    return versoes[0]["dados"] if versoes and not any(v.get("conflito") for v in versoes) else {}
 
 
 def _relatorio_rt_descartar(chave: str) -> bool:
@@ -12880,6 +13314,12 @@ def _relatorio_rt_descartar(chave: str) -> bool:
         try:
             todas = aba.get_all_values()
             indices = [i for i, row in enumerate(todas[1:], start=2) if row and str(row[0]).strip() == chave]
+            from utils.rascunho_sync import empresa_dados
+            empresa = ss.get("empresa_ativa", "aqua_gestao")
+            for i in indices:
+                remoto = _relatorio_rt_desserializar(todas[i - 1])
+                if remoto is not None and empresa_dados(remoto) != empresa:
+                    raise ValueError("Rascunho remoto de outra empresa: descarte bloqueado")
             if not indices and not local.exists():
                 raise LookupError("versão não encontrada")
             if indices and aba.col_count < 4:
@@ -12891,10 +13331,18 @@ def _relatorio_rt_descartar(chave: str) -> bool:
                 f"Não foi possível descartar o rascunho ({type(e).__name__}). Ele continua guardado; tente novamente."
             )
             return False
-    if local.exists():
-        dados = _relatorio_rt_ler_json(local.read_text(encoding="utf-8")) or {}
-        dados["_descartado"] = marca
-        local.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        if local.exists():
+            dados = _relatorio_rt_ler_json(local.read_text(encoding="utf-8")) or {}
+            dados["_descartado"] = marca
+            from utils.rascunho_sync import escrever_atomico
+            _relatorio_rt_gestor_sync().descartar(chave, marca)
+            escrever_atomico(local, dados)
+        else:
+            _relatorio_rt_gestor_sync().descartar(chave, marca)
+    except Exception as e:
+        ss["_rt_rasc_erro_descarte"] = f"Não foi possível confirmar o descarte no disco local: {e}. A marca remota, se confirmada, continua válida."
+        return False
     if chave == ss.get("_rt_rasc_chave"):
         _relatorio_rt_chave_sessao(nova=True)
     ss["_rt_rasc_ref"] = None  # nada é regravado sem nova edição
@@ -12906,30 +13354,53 @@ def _relatorio_rt_descartar(chave: str) -> bool:
 def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
     """Aplica um rascunho ao session_state. Deve rodar antes da criação dos widgets
     (ver _relatorio_rt_aplicar_pendente), senão o Streamlit recusa a alteração."""
+    anterior = dict(st.session_state)
+    if isinstance(anterior.get("_rel_por_identidade"), dict):
+        anterior["_rel_por_identidade"] = dict(anterior["_rel_por_identidade"])
     try:
-        campos = dados.get("campos", {}) if isinstance(dados, dict) else {}
-        if not campos:
-            return False
-        total = int(dados.get("rel_analises_total", campos.get("rel_analises_total", ANALISES_PADRAO)) or ANALISES_PADRAO)
+        from utils.rt_contexto import normalizar_rascunho, limpar
+        campos, total = normalizar_rascunho(dados, st.session_state.get("empresa_ativa", "aqua_gestao"), ANALISES_PADRAO)
+        origem_atual = st.session_state.get("rel_origem_dados")
+        if origem_atual and not guardar_tabela_rt(origem_atual, restauracao_explicita=True):
+            raise ValueError(st.session_state.get("_rt_contexto_erro") or "Não foi possível guardar o contexto atual.")
+        limpar(st.session_state)
         st.session_state["rel_analises_total"] = max(total, ANALISES_PADRAO)
         for k, v in campos.items():
-            if str(k).startswith("_") or str(k) in _RASCUNHO_RT_NAO_RESTAURAR:
+            if not str(k).startswith("rel_") or str(k) in _RASCUNHO_RT_NAO_RESTAURAR or k == "rel_analises_total":
                 continue
             st.session_state[k] = v
-        st.session_state["empresa_ativa"] = "aqua_gestao"
+        st.session_state["_rt_origem_desconhecida"] = not bool(campos.get("rel_origem_dados"))
+        if "rel_origem_dados" not in campos:
+            # Rascunho anterior à identidade dos dados: origem desconhecida, revisão obrigatória.
+            st.session_state.pop("rel_origem_dados", None)
+            st.session_state.pop("rel_origem_rotulo", None)
+            st.session_state.pop("rel_origem_nome_periodo", None)
+        st.session_state["_rt_contexto_identificacao"] = {k: st.session_state.get(k) for k in ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")}
+        if st.session_state.get("rt_op_sel_cond") is not None:
+            st.session_state["_rt_cond_reverter"] = st.session_state.get("rel_nome_condominio")
+            if periodo_relatorio_valido(st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia")):
+                st.session_state["_rt_periodo_reverter"] = (st.session_state["rel_mes_referencia"], st.session_state["rel_ano_referencia"])
         st.session_state["_relatorio_rt_rascunho_restaurado"] = True
         return True
     except Exception as e:
+        for k in list(st.session_state):
+            if k not in anterior:
+                st.session_state.pop(k, None)
+        for k, v in anterior.items():
+            # Uploaders e widgets intactos não podem ser reatribuídos no Streamlit.
+            if k not in st.session_state or (st.session_state[k] is not v and st.session_state[k] != v):
+                st.session_state[k] = v
         st.session_state["_relatorio_rt_restore_erro"] = f"{type(e).__name__}: {e}"
         return False
 
 
 def _relatorio_rt_aplicar_pendente():
     """Executado no topo do script, antes de qualquer widget rel_/csr_."""
-    pendente = st.session_state.pop("_rt_rasc_pendente", None)
+    pendente = st.session_state.get("_rt_rasc_pendente")
     if not pendente:
         return
     if _relatorio_rt_aplicar_rascunho(pendente.get("dados") or {}):
+        st.session_state.pop("_rt_rasc_pendente", None)
         _relatorio_rt_chave_sessao(nova=True)  # edições a partir daqui viram nova versão; nenhuma linha existente muda
         st.session_state["_rt_rasc_ref"] = None  # próxima execução só registra referência
         st.session_state.pop("_relatorio_rt_restore_erro", None)
@@ -12947,8 +13418,15 @@ def _relatorio_rt_resumo(dados: dict) -> str:
 # Callbacks dos botões do painel: rodam antes do script, então dispensam st.rerun()
 # no meio da página (que interromperia a execução antes da tabela de análises).
 def _relatorio_rt_cb_restaurar(dados: dict):
+    anterior = st.session_state.get("_rt_rasc_pendente")
+    tinha_pendente = "_rt_rasc_pendente" in st.session_state
     st.session_state["_rt_rasc_pendente"] = {"dados": dados}
     _relatorio_rt_aplicar_pendente()
+    if "_relatorio_rt_restore_erro" in st.session_state:
+        if tinha_pendente:
+            st.session_state["_rt_rasc_pendente"] = anterior
+        else:
+            st.session_state.pop("_rt_rasc_pendente", None)
 
 
 def _relatorio_rt_cb_pedir_descarte(chave: str):
@@ -12971,31 +13449,40 @@ def _relatorio_rt_renderizar_painel_rascunho():
         ss = st.session_state
         agora = datetime.now().timestamp()
         cache = ss.get("_rt_rasc_lista_cache")
-        if cache and agora - cache[0] < 20:
+        if cache and agora - cache[0] < 20 and cache[1].get("empresa") == ss.get("empresa_ativa", "aqua_gestao"):
             lista = cache[1]  # evita ler a planilha a cada rerun
         else:
             lista = _relatorio_rt_listar_rascunhos()
             ss["_rt_rasc_lista_cache"] = (agora, lista)
-        versoes = lista["versoes"][:4]
+        for aviso in lista.get("avisos", []):
+            st.warning(aviso)
+        versoes = lista["versoes"]
         minha = ss.get("_rt_rasc_chave")
         if versoes:
             st.warning("🛡️ Rascunhos de Relatório RT disponíveis (do mais recente para o mais antigo):")
+        descartes_exibidos = set()
         for v in versoes:
             chave, rasc = v["chave"], v["dados"]
             selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
             st.markdown(f"- **{_relatorio_rt_resumo(rasc)}**{selo}")
             id_btn = re.sub(r"\W", "_", chave)
+            if v.get("conflito"):
+                id_btn += "_" + v["origem"] + "_" + v["hash"][:12]
+                st.warning("Cópias divergentes: " + ("local pendente" if v.get("pendente") else v["origem"]) + ". Restaure explicitamente para continuar em nova chave.")
             c_r1, c_r2, _ = st.columns([1, 1, 2])
             with c_r1:
                 st.button("♻️ Restaurar", key=f"btn_restaurar_rascunho_rt_{id_btn}", use_container_width=True,
                           on_click=_relatorio_rt_cb_restaurar, args=(rasc,))
             with c_r2:
-                st.button("🗑️ Descartar", key=f"btn_descartar_rascunho_rt_{id_btn}", use_container_width=True,
-                          on_click=_relatorio_rt_cb_pedir_descarte, args=(chave,))
-            if ss.get("_rt_rasc_confirmar_descarte") == chave:
+                if chave not in descartes_exibidos:
+                    st.button("🗑️ Descartar", key=f"btn_descartar_rascunho_rt_{id_btn}", use_container_width=True,
+                              on_click=_relatorio_rt_cb_pedir_descarte, args=(chave,))
+            mostrar_descarte = chave not in descartes_exibidos
+            descartes_exibidos.add(chave)
+            if mostrar_descarte and ss.get("_rt_rasc_confirmar_descarte") == chave:
                 st.error(
                     f"Descartar este rascunho? **{_relatorio_rt_resumo(rasc)}**. Ele deixará de ser oferecido para restauração; "
-                    "o conteúdo continua guardado na planilha para recuperação manual. Outras versões não são afetadas."
+                    "O descarte se aplica às cópias local e remota desta chave. O conteúdo é preservado; outras chaves não são afetadas."
                 )
                 c_c1, c_c2, _ = st.columns([1, 1, 2])
                 with c_c1:
@@ -13017,10 +13504,12 @@ def _relatorio_rt_renderizar_painel_rascunho():
             st.success(ss.pop("_rt_rasc_msg"))
         if ss.get("_rt_rasc_erro_descarte"):
             st.error(ss.pop("_rt_rasc_erro_descarte"))
+        if ss.get("_relatorio_rt_autosave_erro"):
+            st.error("Salvamento do rascunho não concluído; a cópia anterior foi preservada. " + ss["_relatorio_rt_autosave_erro"])
         if ss.get("_rt_rasc_aviso"):
             st.error(
                 "⚠️ Há alterações do rascunho RT que AINDA NÃO foram salvas na planilha e podem ser perdidas se o "
-                "servidor reiniciar. O sistema tentará enviá-las de novo automaticamente a cada interação. "
+                "disco local for perdido. A pendência sobrevive à reabertura neste disco; conteúdo remoto divergente não será sobrescrito. "
                 f"A última versão salva na planilha foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
             )
         if not _rascunho_usa_sheets():
@@ -13717,37 +14206,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.session_state["rt_op_sel_cond"] = _rt_rev
             _sel_cond_rt = st.selectbox("Selecionar condomínio", options=_conds_rt, key="rt_op_sel_cond")
 
-        # Isolamento por condomínio no fluxo RT: ao trocar, guarda os dados do anterior
-        # num rascunho local e limpa a tela; se não der para guardar, a troca é cancelada.
-        if _sel_cond_rt:
-            _cond_rt_anterior = st.session_state.get("_rt_cond_form")
-            if _cond_rt_anterior is not None and _cond_rt_anterior != _sel_cond_rt:
-                if not trocar_condominio_rt_operador(_cond_rt_anterior, _sel_cond_rt):
-                    _bloq_rt = st.session_state.get("_rt_troca_bloqueada") or {}
-                    st.session_state["_rt_cond_reverter"] = _cond_rt_anterior
-                    st.warning(
-                        f"⚠️ A troca para **{_sel_cond_rt}** foi cancelada: {_bloq_rt.get('motivo', 'não foi possível salvar o rascunho')}. "
-                        f"Os dados de **{_cond_rt_anterior}** continuam na tela e a seleção volta para ele. "
-                        + ("Remova as fotos anexadas antes de trocar (se o relatório já foi gerado, elas já estão nele)."
-                           if "fotos" in _bloq_rt.get("motivo", "") else "Gere o relatório antes de trocar de condomínio.")
-                    )
-                    _sel_cond_rt = _cond_rt_anterior
-            if st.session_state.get("_rt_restore_erro"):
-                st.warning(f"⚠️ Não foi possível recuperar os dados guardados de **{_sel_cond_rt}** "
-                           f"({st.session_state['_rt_restore_erro']}). O rascunho foi mantido; confira os campos.")
-            if st.session_state.get("_rt_rascunho_restaurado") == _sel_cond_rt:
-                st.info(f"Dados de **{_sel_cond_rt}** digitados antes nesta sessão foram recuperados do rascunho local.")
-            st.session_state["_rt_cond_form"] = _sel_cond_rt
-
+        # O formulário completo, períodos e fotos usam a mesma transação do escritório.
         # Mês / Ano de referência (usa chaves já existentes no relatório mensal)
         _mes_opts = [str(i).zfill(2) for i in range(1, 13)]
         _ano_atual = datetime.now().year
         _ano_opts = [str(y) for y in range(_ano_atual - 2, _ano_atual + 2)]
+        _periodo_reverter = st.session_state.pop("_rt_periodo_reverter", None)
+        if _periodo_reverter:
+            st.session_state["rt_periodo_mes"], st.session_state["rt_periodo_ano"] = _periodo_reverter
+        st.session_state.setdefault("rt_periodo_mes", st.session_state.get("rel_mes_referencia", datetime.now().strftime("%m")))
+        st.session_state.setdefault("rt_periodo_ano", str(st.session_state.get("rel_ano_referencia", _ano_atual)))
         colm1, colm2, colm3 = st.columns([1, 1, 1])
         with colm1:
-            _sel_mes = st.selectbox("Mês", options=_mes_opts, index=_mes_opts.index(st.session_state.get("rel_mes_referencia", datetime.now().strftime("%m"))))
+            _sel_mes = st.selectbox("Mês", options=_mes_opts, key="rt_periodo_mes")
         with colm2:
-            _sel_ano = st.selectbox("Ano", options=_ano_opts, index=_ano_opts.index(str(st.session_state.get("rel_ano_referencia", str(_ano_atual)))))
+            _sel_ano = st.selectbox("Ano", options=_ano_opts, key="rt_periodo_ano")
         with colm3:
             _data_emissao = st.date_input("Data de emissão", value=date.today())
 
@@ -13756,6 +14229,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         _data_emissao_padrao = _data_emissao.strftime("%d/%m/%Y")
         if not str(st.session_state.get("rel_data_emissao") or "").strip():
             st.session_state["rel_data_emissao"] = _data_emissao_padrao
+
+        if _sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos":
+            st.session_state["rel_nome_condominio"] = _sel_cond_rt
+            preparar_contexto_rt()
+            if st.session_state.get("rel_nome_condominio") != _sel_cond_rt:
+                st.session_state["_rt_cond_reverter"] = st.session_state.get("rel_nome_condominio")
+                st.rerun()
+            if st.session_state.get("_rt_contexto_erro"):
+                st.warning(st.session_state["_rt_contexto_erro"])
 
         if _sel_cond_rt and normalizar_texto_busca(_sel_cond_rt) != "todos":
             _cli_sel_rt = _mapa_cli_rt.get(_sel_cond_rt, {})
@@ -13782,6 +14264,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             "(mesmos campos e mesmo modelo PDF oficial)."
         )
 
+        _relatorio_rt_renderizar_painel_rascunho()
         st.markdown("**Identificação do documento**")
         rid1, rid2 = st.columns(2)
         with rid1:
@@ -13804,7 +14287,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             elif _art_status_atual == "Não emitida":
                 _art_padrao_rt = "Não emitida"
             else:
-                _art_padrao_rt = "Informar número da ART"
+                _art_padrao_rt = "Em tramitação administrativa"
 
             _art_sel_rt = st.selectbox(
                 "Nº ART – CRQ",
@@ -13818,7 +14301,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.session_state["rel_art_numero"] = formatar_art_numero(_art_num_rt)
                 st.session_state["rel_art_status"] = "Emitida"
             else:
-                st.session_state["rel_art_numero"] = _art_sel_rt
+                st.session_state["rel_art_numero"] = ""
                 st.session_state["rel_art_status"] = "Em tramitação" if _art_sel_rt == "Em tramitação administrativa" else "Não emitida"
             st.text_input("Data de Emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: st.session_state.__setitem__("rel_data_emissao", normalizar_data_visita(st.session_state.get("rel_data_emissao", ""))))
 
@@ -13892,12 +14375,27 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         st.caption("Use Pré-visualizar para importar automaticamente as leituras do período e edite os campos acima quando necessário.")
 
         # Botões de ação: pré-visualizar registros técnicos e gerar PDF
+        # Confirmação explícita quando a identificação das visitas do condomínio é duvidosa.
+        _rt_eh_todos = normalizar_texto_busca(_sel_cond_rt or "") == "todos"
+        _rt_chave_validacao = chave_validacao_origem("rt_operador", _sel_cond_rt, _sel_mes, _sel_ano)
+        if _sel_cond_rt and not _rt_eh_todos:
+            caixa_validacao_origem(situacao_visitas_condominio(_sel_cond_rt), _rt_chave_validacao,
+                                   _sel_cond_rt, f"{_sel_mes}/{_sel_ano}")
+
         preview_col, gerar_col = st.columns([1, 1])
         registros_preview = st.empty()
+
+        _rt_consultas_falhas = []  # condomínios cuja consulta falhou na última busca
+        _rt_consultas_duvidosas = []  # condomínios com visitas ambíguas de fora (confirmação libera)
+        _rt_consultas_bloqueadas = []  # condomínios sem identificação segura (nada libera)
 
         def _buscar_registros_rt(cond_nome, mes, ano):
             # Obtem lancamentos do Sheets e filtra por condominio/periodo/origem RT.
             # "TODOS" (quando disponível) representa somente condominios Aqua desta lista.
+            # Consultas que falharam ficam em _rt_consultas_falhas (falha não é "sem registros").
+            _rt_consultas_falhas.clear()
+            _rt_consultas_duvidosas.clear()
+            _rt_consultas_bloqueadas.clear()
             nomes_consulta = []
             if normalizar_texto_busca(cond_nome) == "todos":
                 nomes_consulta = [c for c in _conds_rt if normalizar_texto_busca(c) != "todos"]
@@ -13907,9 +14405,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             consolidado = []
             for nome_consulta in nomes_consulta:
                 try:
-                    todos_sheets = sheets_listar_lancamentos(nome_consulta) or []
+                    _situacao_rt = situacao_visitas_condominio(nome_consulta)
+                    todos_sheets = _situacao_rt["visitas"] or []
+                    if _situacao_rt["aviso"]:
+                        st.warning(f"{nome_consulta}: {_situacao_rt['aviso']}")
+                    if _situacao_rt.get("status") == "falha":
+                        _rt_consultas_falhas.append(nome_consulta)
+                    elif _situacao_rt.get("status") == "ambiguo":
+                        _rt_consultas_duvidosas.append(nome_consulta)
+                    elif _situacao_rt.get("status") == "bloqueio":
+                        _rt_consultas_bloqueadas.append(nome_consulta)
                 except Exception:
                     todos_sheets = []
+                    _rt_consultas_falhas.append(nome_consulta)
 
                 normalizados = normalize_rt_records(list(todos_sheets))
                 filtrados = select_records_by_condominium(normalizados, nome_consulta)
@@ -13930,17 +14438,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             for idx, reg in enumerate(registros[:qtd]):
                 raw = reg.get("raw", {}) or {}
                 st.session_state[f"rel_analise_data_{idx}"] = str(raw.get("data") or reg.get("data") or "").strip()
-                st.session_state[f"rel_analise_ph_{idx}"] = str(raw.get("ph") or "").strip()
-                st.session_state[f"rel_analise_cl_{idx}"] = str(raw.get("cloro_livre") or "").strip()
-                st.session_state[f"rel_analise_ct_{idx}"] = str(raw.get("cloro_total") or "").strip()
-                st.session_state[f"rel_analise_alc_{idx}"] = str(raw.get("alcalinidade") or "").strip()
-                st.session_state[f"rel_analise_dc_{idx}"] = str(raw.get("dureza") or "").strip()
-                st.session_state[f"rel_analise_cya_{idx}"] = str(raw.get("cianurico") or "").strip()
-                st.session_state[f"rel_analise_turbidez_{idx}"] = str(raw.get("turbidez") or "").strip()
-                st.session_state[f"rel_analise_orp_{idx}"] = str(raw.get("orp") or "").strip()
-                st.session_state[f"rel_analise_tds_{idx}"] = str(raw.get("tds") or "").strip()
-                st.session_state[f"rel_analise_temperatura_{idx}"] = str(raw.get("temperatura") or "").strip()
-                st.session_state[f"rel_analise_operador_{idx}"] = str(raw.get("operador") or "").strip()
+                st.session_state[f"rel_analise_ph_{idx}"] = str(raw.get("ph", "")).strip()
+                st.session_state[f"rel_analise_cl_{idx}"] = str(raw.get("cloro_livre", "")).strip()
+                st.session_state[f"rel_analise_ct_{idx}"] = str(raw.get("cloro_total", "")).strip()
+                st.session_state[f"rel_analise_alc_{idx}"] = str(raw.get("alcalinidade", "")).strip()
+                st.session_state[f"rel_analise_dc_{idx}"] = str(raw.get("dureza", "")).strip()
+                st.session_state[f"rel_analise_cya_{idx}"] = str(raw.get("cianurico", "")).strip()
+                st.session_state[f"rel_analise_turbidez_{idx}"] = str(raw.get("turbidez", "")).strip()
+                st.session_state[f"rel_analise_orp_{idx}"] = str(raw.get("orp", "")).strip()
+                st.session_state[f"rel_analise_tds_{idx}"] = str(raw.get("tds", "")).strip()
+                st.session_state[f"rel_analise_temperatura_{idx}"] = str(raw.get("temperatura", "")).strip()
+                st.session_state[f"rel_analise_operador_{idx}"] = str(raw.get("operador", "")).strip()
 
             _ultimo_raw = (registros[-1].get("raw", {}) or {}) if registros else {}
             if not str(st.session_state.get("rel_diagnostico") or "").strip():
@@ -13972,24 +14480,8 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             return "\n".join([l for l in linhas if l]).strip()
 
         def _salvar_fotos_rt_upload(cond_nome: str, mes: str, ano: str) -> list[str]:
-            arquivos = st.session_state.get(chave_fotos_rt()) or []
-            if not arquivos or not cond_nome:
-                return []
-
-            pasta_fotos = GENERATED_DIR / slugify_nome(cond_nome) / "fotos_relatorio_rt_manual"
-            pasta_fotos.mkdir(parents=True, exist_ok=True)
-
-            salvos = []
-            for idx, arq in enumerate(arquivos):
-                _nome_base = limpar_nome_arquivo(Path(arq.name).stem) or f"foto_rt_{idx+1}"
-                _suf = (Path(arq.name).suffix or ".jpg").lower()
-                destino = pasta_fotos / f"{ano}{mes}_{_nome_base}_{idx+1}{_suf}"
-                try:
-                    destino.write_bytes(arq.getbuffer())
-                    salvos.append(str(destino))
-                except Exception:
-                    continue
-            return salvos
+            fotos, _ = _resolver_fotos_relatorio_rt(GENERATED_DIR, cond_nome, mes, ano, preview=True)
+            return [str(p) for p in fotos]
 
         def _montar_registros_rt_do_fluxo_padrao(cond_nome, mes, ano):
             """Monta registros manuais RT2025 diretamente da tabela exibida na tela.
@@ -14094,12 +14586,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             return registros
 
         if preview_col.button("🔎 Pré-visualizar registros técnicos"):
+            _erros_contexto_rt = validar_contexto_rt("rt_operador")
+            if _erros_contexto_rt:
+                st.error(" | ".join(_erros_contexto_rt))
+                st.stop()
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
-            if not regs:
+            if _rt_consultas_falhas:
+                registros_preview.error("A consulta às visitas falhou; nenhum campo foi alterado. "
+                                        "Tente novamente quando a conexão voltar.")
+            elif not regs:
                 st.session_state["_rt2025_qtd_registros_auto"] = 0
                 st.session_state["rel_analises_total"] = _linhas_esperadas_rt
                 garantir_campos_analises(_linhas_esperadas_rt, minimo=1)
                 registros_preview.info("Nenhum registro técnico (RT) encontrado para o período selecionado.")
+            elif not tabela_rt_livre_para_importar():
+                registros_preview.warning("Análises editadas foram preservadas; a consulta não substitui a tabela.")
             else:
                 _preencher_campos_rt_por_registros(regs)
                 registros_preview.write(f"{len(regs)} registro(s) técnico(s) encontrado(s)")
@@ -14109,12 +14610,33 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     registros_preview.caption(f"{r.get('data','?')} | Origem: RT | ID: {_idv}")
 
         if gerar_col.button("📄 Gerar Relatório RT em PDF", use_container_width=True):
+            _erros_contexto_rt = validar_contexto_rt("rt_operador")
+            if _erros_contexto_rt:
+                st.error(" | ".join(_erros_contexto_rt))
+                st.stop()
             erro_sel = validate_generation_selection(_sel_cond_rt)
             if erro_sel:
                 st.warning(erro_sel)
                 st.stop()
 
             regs = _buscar_registros_rt(_sel_cond_rt, _sel_mes, _sel_ano)
+            if _rt_consultas_falhas:
+                st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou. "
+                         "Os campos foram mantidos; tente novamente quando a conexão voltar.")
+                st.stop()
+            if _rt_consultas_bloqueadas:
+                st.error("O cliente " + ", ".join(_rt_consultas_bloqueadas) + " não pode ser identificado com "
+                         "segurança (nome duplicado ou semelhante a outro cadastro). Diferencie os nomes no cadastro "
+                         "para gerar. Os campos foram mantidos.")
+                st.stop()
+            if _rt_consultas_duvidosas and (_rt_eh_todos or not st.session_state.get(_rt_chave_validacao)):
+                st.error(
+                    "A identificação das visitas de " + ", ".join(_rt_consultas_duvidosas) + " é duvidosa. "
+                    + ("Gere o relatório desse condomínio individualmente e confirme a origem dos dados."
+                       if _rt_eh_todos else "Confirme a origem dos dados (caixa acima) para gerar.")
+                    + " Os campos foram mantidos."
+                )
+                st.stop()
 
             # Evita alterar session_state de widgets já instanciados no Streamlit.
             # O nome, mês e ano usados no PDF vêm das variáveis locais selecionadas acima.
@@ -14173,6 +14695,15 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             except Exception as e:
                 st.error(f"Erro ao gerar relatório RT: {e}")
 
+        if st.session_state.get("rel_origem_dados"):
+            try:
+                from utils.rt_contexto import sincronizar_fotos
+                sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], st.session_state.get(chave_fotos_rt()) or [])
+                _relatorio_rt_salvar_rascunho("autosave_rt_operador")
+                if st.session_state.get("_rt_rasc_aviso") or st.session_state.get("_relatorio_rt_autosave_erro"):
+                    st.warning("Não foi possível confirmar o salvamento do relatório RT. A troca será bloqueada até recuperar o armazenamento.")
+            except Exception as e:
+                st.warning(f"Não foi possível preservar o contexto RT: {e}")
         st.markdown("---")
 
     if st.button("🔒 Sair / Trocar operador", use_container_width=False):
@@ -14428,7 +14959,10 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             if op_nome_cond:
                 with st.expander("🕒 Histórico recente", expanded=False):
                     with st.spinner("Buscando histórico..."):
-                        historico_v = sheets_listar_lancamentos(op_nome_cond)
+                        _situacao_hist = situacao_visitas_condominio(op_nome_cond)
+                        historico_v = _situacao_hist["visitas"]
+                        if _situacao_hist["aviso"]:
+                            st.caption(_situacao_hist["aviso"])
                         if not historico_v:
                             st.caption("Nenhuma visita anterior registrada.")
                         else:
@@ -15170,7 +15704,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(deduplicar_fotos(op_fotos_antes),  "antes")
                 fotos_depois_nomes, fotos_depois_ids, fotos_depois_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_depois), "depois")
                 fotos_cmaq_nomes,   fotos_cmaq_ids,   fotos_cmaq_b64   = _salvar_categoria(deduplicar_fotos(op_fotos_cmaq),   "cmaq")
-                op_fotos_extras_final = st.session_state.get("op_fotos_extras") or []
+                op_fotos_extras_final = st.session_state.get(_chave_fotos_operador("extras")) or []
                 fotos_extras_nomes, fotos_extras_ids, fotos_extras_b64 = _salvar_categoria(deduplicar_fotos(op_fotos_extras_final), "extras")
 
                 # ── Incorporar fotos salvas do rascunho (sessão anterior) ──────
@@ -18475,7 +19009,16 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _lanc_sheets_csr = []
         if csr_sel:
             try:
-                _lanc_sheets_csr = sheets_listar_lancamentos(csr_sel)
+                _situacao_csr_tela = situacao_visitas_condominio(csr_sel)
+                _lanc_sheets_csr = _situacao_csr_tela["visitas"]
+                if _situacao_csr_tela["aviso"]:
+                    st.warning(_situacao_csr_tela["aviso"])
+                _ano_csr_val = str(csr_ano or "").strip() or str(datetime.now().year)
+                caixa_validacao_origem(_situacao_csr_tela,
+                                       chave_validacao_origem("bem_star", csr_sel, str(csr_mes or "").strip(), _ano_csr_val),
+                                       csr_sel, f"{str(csr_mes or '').strip()}/{_ano_csr_val}")
+                if _situacao_csr_tela["bloqueio"]:
+                    _lanc_local_csr = []  # pasta local identificada só pelo nome
             except Exception:
                 _lanc_sheets_csr = []
     
@@ -21946,6 +22489,11 @@ if _ultimos:
 # =========================================
 
 
+preparar_contexto_rt()
+preservar_campos_rt()
+if st.session_state.get("_rt_contexto_erro"):
+    st.error(st.session_state["_rt_contexto_erro"])
+
 st.markdown('<div class="section-card" id="sec-preview-relatorio">', unsafe_allow_html=True)
 st.subheader("👁️ Pré-visualizar relatório final")
 st.caption("A prévia usa a empresa ativa no acesso administrativo, mantendo Aqua Gestão e Bem Star separadas dentro do sistema.")
@@ -21963,53 +22511,6 @@ _prev_usar_form = st.checkbox(
 )
 
 _prev_tab1, _prev_tab2, _prev_tab3 = st.tabs(["📄 Prévia exata do relatório final", "🧩 Modelo visual de referência", "⬆️ Carregar Relatório"])
-
-with _prev_tab1:
-    if _prev_usar_form:
-        with st.spinner("Montando prévia exata com os dados atuais..."):
-            _prev_result = gerar_previa_exata_relatorio(_prev_empresa_val)
-
-        if _prev_result.get("ok"):
-            _pdf_ok = bool(_prev_result.get("pdf_ok")) and _prev_result.get("pdf") and Path(_prev_result["pdf"]).exists()
-            _docx_ok = _prev_result.get("docx") and Path(_prev_result["docx"]).exists()
-            st.success(f"✅ {_prev_result.get('mensagem', 'Prévia exata atualizada com sucesso.')}")
-            st.caption(f"Fotos usadas: {len(_prev_result.get('fotos', []))} · origem: {_prev_result.get('origem_fotos', 'não identificada')}")
-
-            if _pdf_ok:
-                exibir_pdf_previa_exata(Path(_prev_result["pdf"]), height=1220 if _prev_empresa_val == "Aqua Gestão" else 1320)
-            else:
-                st.warning(f"O DOCX da prévia foi gerado, mas o PDF não foi convertido automaticamente. Erro: {_prev_result.get('erro_pdf')}")
-
-            _col_prev_1, _col_prev_2 = st.columns(2)
-            with _col_prev_1:
-                if _docx_ok:
-                    with open(_prev_result["docx"], "rb") as _f:
-                        st.download_button(
-                            "⬇️ Baixar DOCX da prévia exata",
-                            data=_f,
-                            file_name=Path(_prev_result["docx"]).name,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True,
-                            key="btn_dl_previa_exata_docx",
-                        )
-            with _col_prev_2:
-                if _pdf_ok:
-                    with open(_prev_result["pdf"], "rb") as _f:
-                        st.download_button(
-                            "⬇️ Baixar PDF da prévia exata",
-                            data=_f,
-                            file_name=Path(_prev_result["pdf"]).name,
-                            mime="application/pdf",
-                            use_container_width=True,
-                            key="btn_dl_previa_exata_pdf",
-                        )
-        else:
-            st.warning("Não foi possível montar a prévia exata com os dados atuais.")
-            for _erro_prev in _prev_result.get("erros", []) or [_prev_result.get("mensagem", "")]:
-                if _erro_prev:
-                    st.write(f"- {_erro_prev}")
-    else:
-        st.info("Ative a opção de prévia exata para usar o mesmo gerador DOCX/PDF do relatório final com os dados reais do formulário.")
 
 with _prev_tab2:
     _prev_dados, _, _ = _obter_dados_preview_relatorio(_prev_empresa_val, False)
@@ -22088,6 +22589,19 @@ if _clientes_rel:
             if _sel_rel and _sel_rel != "— Selecionar cliente cadastrado —":
                 _dados_rel = next((c for c in _clientes_rel if c["nome"] == _sel_rel), {})
                 if _dados_rel:
+                    # Troca de cliente: a tabela do anterior vai para o rascunho e a memória
+                    # dele (nada é apagado); o novo começa sem os dados do anterior.
+                    _origem_ant = str(st.session_state.get("rel_origem_dados") or "")
+                    _ident_novo = identidade_dados_rt(
+                        st.session_state.get("empresa_ativa", "aqua_gestao"), {"id_cliente": _dados_rel.get("id", ""), "status": "ok"},
+                        _dados_rel.get("nome", ""), st.session_state.get("rel_mes_referencia"),
+                        st.session_state.get("rel_ano_referencia"))
+                    if _origem_ant and _origem_ant != _ident_novo["chave"]:
+                        st.session_state["_rel_tabela_guardada_msg"] = st.session_state.get("rel_origem_rotulo") or _origem_ant
+                        if not guardar_tabela_rt(_origem_ant):
+                            st.error(st.session_state.get("_rt_contexto_erro", "Falha ao preservar o relatório."))
+                            st.stop()
+                        st.session_state["rel_origem_dados"] = ""  # a conciliação define a identidade nova
                     st.session_state["rel_nome_condominio"]   = _dados_rel.get("nome", "")
                     st.session_state["rel_cnpj_condominio"]   = formatar_cnpj(_dados_rel.get("cnpj", ""))
                     st.session_state["rel_endereco_condominio"] = _dados_rel.get("endereco", "")
@@ -22128,8 +22642,14 @@ if pasta_rel_atual and pasta_rel_atual.exists():
 
 # Busca lançamentos do Google Sheets (aba Visitas)
 lancamentos_sheets = []
+_situacao_rel = {"status": "ok", "visitas": [], "bloqueio": "", "aviso": "", "ambiguas": []}
 if nome_rel_atual:
-    lancamentos_sheets = sheets_listar_lancamentos(nome_rel_atual)
+    _situacao_rel = situacao_visitas_condominio(nome_rel_atual)
+    lancamentos_sheets = _situacao_rel["visitas"]
+    if _situacao_rel["aviso"]:
+        st.warning(_situacao_rel["aviso"])
+    if _situacao_rel["bloqueio"]:
+        lancamentos_local = []  # pasta local identificada só pelo nome: não confirma o cadastro
 
 # Filtra pelo mês de referência
 mes_ref = (st.session_state.get("rel_mes_referencia") or "").strip()
@@ -22151,6 +22671,8 @@ with st.expander("🧪 Diagnóstico de visitas importadas", expanded=False):
                 f"Operador: {lc.get('operador', '')} | "
                 f"ID: {lc.get('id_visita', '')}"
             )
+    elif _situacao_rel["status"] != "ok":
+        st.warning(_situacao_rel["aviso"])  # falha de consulta ou identificação duvidosa, não ausência de visitas
     else:
         st.warning(
             "Nenhuma visita foi encontrada na aba 🔬 Visitas para este condomínio. "
@@ -22365,8 +22887,8 @@ def _importar_lancamentos(lancamentos):
         else:
             lc_dados = lc
         def _fmt_antes_apos(_antes, _apos):
-            _antes = str(_antes or "").strip()
-            _apos = str(_apos or "").strip()
+            _antes = str(_antes if _antes is not None else "").strip()
+            _apos = str(_apos if _apos is not None else "").strip()
             if _antes and _apos:
                 return f"{_antes.replace('.', ',')} / {_apos.replace('.', ',')}"
             return (_antes or _apos).replace(".", ",")
@@ -22413,9 +22935,51 @@ def _importar_lancamentos(lancamentos):
 # análises digitadas, editadas ou restauradas de rascunho nunca são sobrescritas.
 # Ao mudar de período sem visitas, os dados importados (não editados) do período
 # anterior saem da tabela, para que setembro não apareça no relatório de outubro.
+# Identidade dos dados da tabela: cada conjunto de análises pertence a empresa + cliente
+# + período. Com falha de consulta a identidade não é conhecida e nada é mexido.
+_rel_identidade = None
+_rel_conciliacao = {"conflito": "", "guardada_de": "", "recuperada": False}
+if nome_rel_atual and _periodo_rel_ok and _situacao_rel["status"] != "falha":
+    _rel_identidade = identidade_dados_rt(st.session_state.get("empresa_ativa", "aqua_gestao"), _situacao_rel,
+                                          nome_rel_atual, st.session_state.get("rel_mes_referencia"),
+                                          st.session_state.get("rel_ano_referencia"))
+    _rel_conciliacao = conciliar_identidade_tabela_rt(_rel_identidade)
+    if st.session_state.pop("_rel_contexto_recuperado", False):
+        _rel_conciliacao["recuperada"] = True
+    _guardada_no_carregar = st.session_state.pop("_rel_tabela_guardada_msg", "")
+    if _guardada_no_carregar and not _rel_conciliacao["guardada_de"]:
+        _rel_conciliacao["guardada_de"] = _guardada_no_carregar
+    if _rel_conciliacao["guardada_de"]:
+        st.info(f"ℹ️ As análises de {_rel_conciliacao['guardada_de']} foram guardadas no rascunho desse condomínio "
+                f"e não aparecem em {_rel_identidade['rotulo']}. Voltando a ele, elas são recuperadas.")
+    if _rel_conciliacao["recuperada"]:
+        st.info(f"ℹ️ Análises de {_rel_identidade['rotulo']} recuperadas.")
+    if _rel_conciliacao["conflito"] == "origem_desconhecida":
+        st.warning(
+            f"⚠️ A tabela de análises veio de um rascunho sem identificação de condomínio e período. "
+            f"Revise antes de usar em {_rel_identidade['rotulo']}: a geração fica bloqueada até você escolher."
+        )
+        _rc1, _rc2 = st.columns(2)
+        _rc1.button(f"Revisei: estas análises são de {_rel_identidade['rotulo']}", key="btn_rel_origem_associar",
+                    on_click=resolver_origem_desconhecida_rt, args=(_rel_identidade, True))
+        _rc2.button("Guardar estas análises à parte e começar com a tabela vazia", key="btn_rel_origem_guardar",
+                    on_click=resolver_origem_desconhecida_rt, args=(_rel_identidade, False))
+_rel_fotos_de_outro = fotos_rt_de_outra_identidade(
+    (_rel_identidade or {}).get("chave", ""), bool(st.session_state.get(chave_fotos_rt())))
+if _rel_fotos_de_outro:
+    st.warning(f"⚠️ As fotos anexadas foram adicionadas em {_rel_fotos_de_outro}. Remova-as do upload ou volte a "
+               "esse condomínio: a geração fica bloqueada para não misturar fotos.")
+# Pode usar a tabela neste relatório? Vazia, ou da identidade atual comprovada.
+_rel_identidade_ok = (not _tabela_rt_tem_dados()) or bool(
+    _rel_identidade and _rel_identidade["comprovada"] and not _rel_conciliacao["conflito"]
+    and st.session_state.get("rel_origem_dados") == _rel_identidade["chave"])
+_rel_identidade_ok = _rel_identidade_ok and not _rel_fotos_de_outro
+
 _rel_importou_agora = False
 _periodo_rel_txt = f"{mes_ref}/{ano_ref}"
-if _periodo_rel_ok and nome_rel_atual:
+# Só com a consulta feita (status "ok"): falha ou bloqueio não significam "sem visitas",
+# então nada é importado nem retirado e a tabela fica como está.
+if _periodo_rel_ok and nome_rel_atual and _situacao_rel["status"] == "ok":
     try:
         _ultimo_lc = lancamentos_disponiveis[-1] if lancamentos_disponiveis else {}
         _assinatura_auto = "|".join([
@@ -22515,13 +23079,13 @@ if lancamentos_disponiveis:
                     st.caption(f"   📝 {lc['observacao']}")
 
 else:
-    if nome_rel_atual and _periodo_rel_ok:
+    if nome_rel_atual and _periodo_rel_ok and _situacao_rel["status"] == "ok":
         st.info(f"Nenhum lançamento de campo encontrado para **{nome_rel_atual}**{f' no mês {mes_ref}/{ano_ref}' if mes_ref else ''}. O operador precisa registrar as visitas pelo modo campo.")
 
 
 # Importação automática após carregar cliente cadastrado: evita depender do botão manual
 # e alimenta o relatório de RT com as visitas já registradas no modo campo/Sheets.
-if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok:
+if st.session_state.pop("_rel_auto_importar_cliente", False) and _periodo_rel_ok and _situacao_rel["status"] == "ok":
     if lancamentos_disponiveis:
         # A importação automática acima já cuidou disto; só importa aqui se a tabela
         # estiver livre (vazia ou igual à última importação) — evita apagar trabalho manual.
@@ -22579,6 +23143,13 @@ with rd2:
         key=chave_fotos_rt(),
         help="As fotos serão salvas na pasta do condomínio e inseridas no relatório."
     )
+    from utils.rt_contexto import ler_fotos
+    try:
+        _fotos_recuperadas_rt = ler_fotos(st.session_state, str(st.session_state.get("rel_origem_dados") or ""))
+        if _fotos_recuperadas_rt:
+            st.caption(f"📷 {len(_fotos_recuperadas_rt)} foto(s) preservada(s) neste condomínio e período.")
+    except (ValueError, KeyError, TypeError) as _foto_erro:
+        st.warning(f"Fotografias do rascunho: {_foto_erro}")
     st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
 
 r1, r2, r3, r4 = st.columns(4)
@@ -22587,10 +23158,10 @@ with r1:
 with r2:
     st.text_input("Ano de referência", key="rel_ano_referencia", placeholder="2026")
 with r3:
-    opcoes_art = ["Emitida", "Não emitida", "Em tramitação"]
-    status_atual_art = (st.session_state.get("rel_art_status") or "Emitida").strip()
+    opcoes_art = ["Em processo de formalização", "Não emitida", "Em tramitação", "Emitida"]
+    status_atual_art = (st.session_state.get("rel_art_status") or "Em processo de formalização").strip()
     if status_atual_art not in opcoes_art:
-        status_atual_art = "Emitida"
+        status_atual_art = "Em processo de formalização"
         st.session_state["rel_art_status"] = status_atual_art
     if st.session_state.get("rel_art_status_widget") not in opcoes_art:
         st.session_state["rel_art_status_widget"] = status_atual_art
@@ -22642,6 +23213,9 @@ _linhas_freq = calcular_linhas_analises_rt_mensal(
     st.session_state.get("rel_ano_referencia"),
 )
 st.info(f"Regra fixa: 1 lançamento por semana → {_linhas_freq} linha(s) no mês selecionado.")
+_linhas_recuperadas = st.session_state.get("_rt_ultimos_linhas")
+if _linhas_recuperadas and _linhas_recuperadas[0] == st.session_state.get("rel_origem_dados"):
+    _linhas_freq = max(_linhas_freq, _linhas_recuperadas[1])
 if int(st.session_state.get("rel_analises_total", 0) or 0) != _linhas_freq:
     st.session_state["rel_analises_total"] = _linhas_freq
     garantir_campos_analises(_linhas_freq, minimo=1)
@@ -22655,6 +23229,8 @@ with c_auto2:
 
 st.text_area("Diagnóstico técnico", key="rel_diagnostico", height=120, placeholder="Será preenchido automaticamente conforme os parâmetros, mas permanece editável.")
 
+if st.session_state.get("_rt_ultimos_aviso"):
+    st.info(st.session_state.pop("_rt_ultimos_aviso"))
 st.markdown("**Análises físico-químicas**")
 
 # _PAINEL_RASCUNHO_RELATORIO_RT_V1_
@@ -22664,8 +23240,8 @@ _linhas_minimas_rel = calcular_linhas_analises_rt_mensal(
     st.session_state.get("rel_mes_referencia"),
     st.session_state.get("rel_ano_referencia"),
 )
-st.session_state["rel_analises_total"] = _linhas_minimas_rel
-garantir_campos_analises(_linhas_minimas_rel, minimo=1)
+st.session_state["rel_analises_total"] = max(_linhas_minimas_rel, _linhas_freq)
+garantir_campos_analises(st.session_state["rel_analises_total"], minimo=1)
 ctrl_a1, ctrl_a2, ctrl_a3 = st.columns([1, 1.35, 2.25])
 with ctrl_a1:
     if st.button("Adicionar análise extra", use_container_width=True):
@@ -22673,13 +23249,7 @@ with ctrl_a1:
         st.rerun()
 with ctrl_a2:
     if st.button("Carregar parâmetros usados pela última vez", use_container_width=True):
-        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
-        if nome_rel:
-            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
-            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
-            aplicar_parametros_ultimos_no_relatorio(dados_rel_salvos)
-        else:
-            aplicar_parametros_ultimos_no_relatorio(obter_snapshot_relatorio_independente())
+        recuperar_ultimos_valores_rt("parametros")
         st.rerun()
 with ctrl_a3:
     st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
@@ -22708,6 +23278,9 @@ for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) o
 
 # _AUTOSAVE_RELATORIO_RT_APOS_LINHAS_V1_
 try:
+    from utils.rt_contexto import sincronizar_fotos
+    if st.session_state.get("rel_origem_dados"):
+        sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], st.session_state.get(chave_fotos_rt()) or [])
     _relatorio_rt_salvar_rascunho("autosave_apos_renderizar_linhas")
 except Exception as _e_autosave_rel:
     st.caption(f"Autosave RT indisponível: {_e_autosave_rel}")
@@ -22716,13 +23289,7 @@ st.markdown("**Dosagens de produtos químicos**")
 ctrl_d1, ctrl_d2 = st.columns([1.1, 2.4])
 with ctrl_d1:
     if st.button("Carregar usados pela última vez", use_container_width=True):
-        nome_rel = (st.session_state.get("rel_nome_condominio") or st.session_state.get("nome_condominio") or "").strip()
-        if nome_rel:
-            pasta_rel = GENERATED_DIR / slugify_nome(nome_rel)
-            dados_rel_salvos = carregar_dados_condominio(pasta_rel) if pasta_rel.exists() else None
-            aplicar_dosagens_ultimas_no_relatorio(dados_rel_salvos)
-        else:
-            aplicar_dosagens_ultimas_no_relatorio(obter_snapshot_relatorio_independente())
+        recuperar_ultimos_valores_rt("dosagens")
         st.rerun()
 with ctrl_d2:
     st.caption("Ao gerar o relatório, as dosagens deste condomínio passam a ficar salvas como usadas pela última vez.")
@@ -22786,52 +23353,89 @@ for rotulo, chave_base in [
 
 st.caption("O relatório mensal pode ser gerado independentemente de contrato. Basta preencher os dados do local neste próprio módulo.")
 
-# ---- Barra de rascunho ----
-_nome_rasc = (st.session_state.get("rel_nome_condominio") or "").strip()
-_pasta_rasc = GENERATED_DIR / slugify_nome(_nome_rasc) if _nome_rasc else None
-_rasc_existente = carregar_rascunho_relatorio(_pasta_rasc) if _pasta_rasc and _pasta_rasc.exists() else None
-
-col_rasc1, col_rasc2, col_rasc3 = st.columns([1.2, 1.2, 1.6])
-with col_rasc1:
-    if st.button("💾 Salvar rascunho", use_container_width=True):
-        if _nome_rasc:
-            _pasta_rasc.mkdir(parents=True, exist_ok=True)
-            salvar_rascunho_relatorio(_pasta_rasc)
-            st.success("Rascunho salvo! Os dados serão restaurados mesmo após reiniciar o sistema.")
-        else:
-            st.warning("Informe o nome do condomínio antes de salvar o rascunho.")
-
-with col_rasc2:
-    if _rasc_existente:
-        if st.button(f"↩️ Restaurar rascunho ({_rasc_existente.get('salvo_em','?')})", use_container_width=True):
-            aplicar_rascunho_no_formulario(_rasc_existente)
-            st.success("Rascunho restaurado!")
-            st.rerun()
+# Salvamento explícito usa a mesma persistência transacional do autosave.
+if st.button("💾 Salvar rascunho", use_container_width=True):
+    st.session_state["_rt_rasc_ref"] = {}
+    if _relatorio_rt_salvar_rascunho("manual"):
+        st.success("Rascunho completo preservado. Use o painel de versões para restaurar.")
     else:
-        st.button("↩️ Sem rascunho salvo", disabled=True, use_container_width=True)
-
-with col_rasc3:
-    if _rasc_existente:
-        st.markdown(
-            f"<div style='font-size:0.82rem;color:#3a7a3a;padding:8px 0;'>"
-            f"✅ Rascunho disponível — salvo em {_rasc_existente.get('salvo_em','?')}</div>",
-            unsafe_allow_html=True
-        )
-    else:
-        st.caption("Salve o rascunho para não perder dados ao reiniciar o sistema.")
+        st.error("Não foi possível confirmar o salvamento. Os dados continuam na tela.")
 
 st.markdown("---")
 btn_col1, btn_col2 = st.columns([2, 1])
 with btn_col1:
-    rel_gerar = st.button("🚀 Gerar relatório mensal", use_container_width=True, type="primary")
+    _rel_consulta_falhou = _situacao_rel["status"] == "falha"
+    _rel_chave_validacao = chave_validacao_origem("rt", nome_rel_atual, mes_ref, ano_ref)
+    caixa_validacao_origem(_situacao_rel, _rel_chave_validacao, nome_rel_atual, f"{mes_ref}/{ano_ref}")
+    _rel_pode_gerar = not validar_contexto_rt()
+    rel_gerar = st.button(
+        "🚀 Gerar relatório mensal", use_container_width=True, type="primary", disabled=not _rel_pode_gerar,
+        help=None if _rel_pode_gerar else "Indisponível até a consulta voltar ou a origem dos dados ser confirmada; o rascunho é mantido.",
+    )
+    if _rel_consulta_falhou:
+        st.caption("⏸️ Geração suspensa: a consulta às visitas falhou. Os campos e o rascunho foram mantidos; "
+                   "tente novamente quando a conexão voltar.")
+    elif not _rel_identidade_ok:
+        st.caption("⏸️ Geração bloqueada: os dados na tela não pertencem comprovadamente a este condomínio e "
+                   "período (veja o aviso acima). A confirmação manual não substitui essa verificação. Nada foi apagado.")
+    elif _situacao_rel["status"] == "bloqueio":
+        st.caption("⏸️ Geração bloqueada: o cliente não pode ser identificado com segurança (veja o aviso). "
+                   "Carregue o cliente cadastrado pelo nome exato ou diferencie os nomes no cadastro.")
+    elif not _rel_pode_gerar:
+        st.caption("⏸️ Geração suspensa até você confirmar a origem dos dados (caixa acima). Nada foi apagado.")
 with btn_col2:
-    if st.button("🗑️ Limpar rascunho", use_container_width=True):
-        if _pasta_rasc and _pasta_rasc.exists():
-            excluir_rascunho_relatorio(_pasta_rasc)
-            st.success("Rascunho excluído.")
-            st.rerun()
+    st.caption("Restauração e descarte ficam no painel de versões, identificados por condomínio e período.")
 
 st.markdown('</div>', unsafe_allow_html=True)
+
+# A prévia lê o mesmo formulário completo usado pelo relatório final.
+with _prev_tab1:
+    if _prev_usar_form:
+        with st.spinner("Montando prévia exata com os dados atuais..."):
+            _prev_result = gerar_previa_exata_relatorio(_prev_empresa_val)
+
+        if _prev_result.get("ok"):
+            _pdf_ok = bool(_prev_result.get("pdf_ok")) and _prev_result.get("pdf") and Path(_prev_result["pdf"]).exists()
+            _docx_ok = _prev_result.get("docx") and Path(_prev_result["docx"]).exists()
+            st.success(f"✅ {_prev_result.get('mensagem', 'Prévia exata atualizada com sucesso.')}")
+            st.caption(f"Fotos usadas: {len(_prev_result.get('fotos', []))} · origem: {_prev_result.get('origem_fotos', 'não identificada')}")
+
+            if _pdf_ok:
+                exibir_pdf_previa_exata(Path(_prev_result["pdf"]), height=1220 if _prev_empresa_val == "Aqua Gestão" else 1320)
+            else:
+                st.warning(f"O DOCX da prévia foi gerado, mas o PDF não foi convertido automaticamente. Erro: {_prev_result.get('erro_pdf')}")
+
+            _col_prev_1, _col_prev_2 = st.columns(2)
+            with _col_prev_1:
+                if _docx_ok:
+                    with open(_prev_result["docx"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar DOCX da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["docx"]).name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_docx",
+                        )
+            with _col_prev_2:
+                if _pdf_ok:
+                    with open(_prev_result["pdf"], "rb") as _f:
+                        st.download_button(
+                            "⬇️ Baixar PDF da prévia exata",
+                            data=_f,
+                            file_name=Path(_prev_result["pdf"]).name,
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_previa_exata_pdf",
+                        )
+        else:
+            st.warning("Não foi possível montar a prévia exata com os dados atuais.")
+            for _erro_prev in _prev_result.get("erros", []) or [_prev_result.get("mensagem", "")]:
+                if _erro_prev:
+                    st.write(f"- {_erro_prev}")
+    else:
+        st.info("Ative a opção de prévia exata para usar o mesmo gerador DOCX/PDF do relatório final com os dados reais do formulário.")
+
 
 
 # =========================================
@@ -24214,7 +24818,10 @@ if gerar:
 if gerar_aditivo_rapido:
     gerar_somente_aditivo_rapido()
 
-if rel_gerar:
+if rel_gerar and not (origem_validada(_situacao_rel, _rel_chave_validacao) and _rel_identidade_ok):
+    st.error("Não é possível gerar o relatório agora: a consulta às visitas falhou ou a origem dos dados "
+             "precisa ser confirmada. Os campos e o rascunho foram mantidos.")
+elif rel_gerar:
     ok_rel, msg_rel = gerar_relatorio_mensal()
     if ok_rel:
         st.success(msg_rel)

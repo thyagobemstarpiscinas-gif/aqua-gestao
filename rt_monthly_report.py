@@ -572,7 +572,7 @@ def build_monthly_rt_pdf_bytes(
     deviation_lines = summary["deviations"]
     recommendations = _recommendations_from_deviations(ordered)
 
-    art_line = str(art_number or "").strip() or "Não informada"
+    art_line = str(art_number or "").strip() or "ART não emitida — em processo de formalização"
 
     story = []
 

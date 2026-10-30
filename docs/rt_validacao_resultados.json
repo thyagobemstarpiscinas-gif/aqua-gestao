@@ -1,0 +1,79 @@
+{
+  "base_sha": "f128aafa178260b9089bc1b8e10a842bf52dda80",
+  "app_blob_sha": "64438649ebe6c5fe95dae1911b0cc01995bd1a8e",
+  "unique_tests_passed": 176,
+  "method": "Execução por módulos e retestes dos casos afetados; repetições não somadas.",
+  "units": {
+    "run": 141,
+    "failures": 0,
+    "errors": 0,
+    "skipped": [],
+    "success": true
+  },
+  "form_module_before_final_fixes": {
+    "run": 26,
+    "failures": 2,
+    "errors": 0,
+    "skipped": [],
+    "success": false
+  },
+  "final_affected_cases_and_critical_tests": {
+    "run": 11,
+    "failures": 0,
+    "errors": 0,
+    "skipped": [],
+    "success": true
+  },
+  "final_rt_selector_and_failure_tests": {
+    "run": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": [],
+    "success": true
+  },
+  "remaining_failures": 0,
+  "remaining_errors": 0,
+  "skipped": 0,
+  "documents": [
+    {
+      "file": "20261027_Residencial_Beta_Fictício_RELATORIO_RT.docx",
+      "sha256": "dda69a2c337a5031885965d8a929e9ce63f561571ce6e12cbce333b5a86d7884",
+      "size_bytes": 121759,
+      "beta_analysis": true,
+      "art_not_issued": true,
+      "foreign_alpha_markers": false,
+      "foreign_alpha_photo": false
+    },
+    {
+      "file": "20261027_Residencial_Beta_Fictício_RELATORIO_RT.pdf",
+      "sha256": "7acd8c6fa542dd05fcf8210aa513983924d2ae6570573a9d7454928ed197d991",
+      "size_bytes": 971390,
+      "beta_analysis": true,
+      "art_not_issued": true,
+      "foreign_alpha_markers": false,
+      "foreign_alpha_photo": false
+    },
+    {
+      "file": "Beta_PREVIA_VALIDADA.docx",
+      "sha256": "5115c3df8d1b403759e93239869eb52c90a98cfa8c4f22bc02153c672941f04b",
+      "size_bytes": 121759,
+      "beta_analysis": true,
+      "art_not_issued": true,
+      "foreign_alpha_markers": false,
+      "foreign_alpha_photo": false
+    },
+    {
+      "file": "Beta_PREVIA_VALIDADA.pdf",
+      "sha256": "e12bbb7cab2df15cf85d115a47fb3e05e1e960498c3bfdd586c7aee29914249b",
+      "size_bytes": 971390,
+      "beta_analysis": true,
+      "art_not_issued": true,
+      "foreign_alpha_markers": false,
+      "foreign_alpha_photo": false
+    }
+  ],
+  "production_access": false,
+  "merge": false,
+  "deploy": false,
+  "github_write": "403 Resource not accessible by integration"
+}
