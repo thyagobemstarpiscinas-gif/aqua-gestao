@@ -1,4 +1,42 @@
-# Homologação final RT — roteiro de encerramento
+# Homologação final RT — roteiro e resultados
+
+## Situação atual — 30/10/2026
+
+Ambiente separado criado e publicado com autorização do responsável: https://aqua-gestao-homologacao-rt.streamlit.app/ . PR #6 permanece em rascunho, dependente do #5, sem merge e sem publicação em produção.
+
+Referência da branch consultada na rodada de verificação: `3e3c2aa5b6841f3f2e40b8e8d92da9ea221aa284`. O SHA efetivamente executado pelo Cloud não foi confirmado por logs ou metadados de deploy; a referência da branch não comprova o commit instalado.
+
+### Evidências da rodada anterior, conforme registro da sessão
+
+- Leitura da planilha de teste e recuperação dos valores de Alfa pelos dois botões, com origem 09/2026 e datas de outubro preservadas.
+- Recuperação em nova sessão após despertar do Cloud. Isso não comprova reinício do processo nem descarte físico do disco.
+- Beta não herdou os dados de Alfa; seus próprios marcadores foram preservados ao negar recuperação sem histórico.
+- Rascunho inválido recusado com “Total de análises inválido”, preservando pH, produto, diagnóstico e foto de Beta após rerun.
+- Rascunho válido restaurado com a foto de Beta; ao restaurar Alfa, a foto de Beta não apareceu.
+- Nomes colidentes de Residencial Sol bloquearam importação e geração por ambiguidade.
+- PDF final de Beta com quatro páginas, marcador e foto próprios, sem marcadores de Alfa. Prévias não alteraram os registros finais na planilha.
+
+### Verificação realizada na continuação
+
+- Login administrativo com empresa Bem Star confirmado pela tela: “Empresa logada: Bem Star Piscinas”.
+- Carteira e cadastro mostram um cliente: Condomínio Gama Fictício.
+- Seletor do relatório Bem Star aberto: uma única opção, Condomínio Gama Fictício; nenhum cliente Aqua Gestão listado.
+- Campos de operador, observações gerais e parecer técnico-operacional inicialmente vazios, sem marcadores RT.
+- Nenhum relatório Bem Star foi gerado nesta verificação; nenhum cadastro foi alterado.
+
+### Limites e pendências
+
+- Separação do painel Bem Star confirmada no cenário acima; não equivale a auditoria de todos os caminhos de autorização.
+- Na rodada anterior, a imagem da prévia ficou indisponível no Cloud por dependência ausente; geração DOCX/PDF funcionou, conforme registro da sessão. Diagnóstico e correção dessa dependência ainda precisam de verificação técnica.
+- Falta comprovar o SHA instalado e repetir a recuperação após reinício controlado do processo de homologação.
+- Pendências locais de rascunhos e concorrência entre escritores continuam com as limitações descritas em RT_CLOUD_VALIDACAO.md.
+- Merge e publicação em produção continuam fora da autorização desta etapa.
+
+---
+
+## Roteiro original de preparação (histórico)
+
+As instruções abaixo registram o planejamento anterior. Afirmações de ambiente ainda não criado ou deploy não autorizado referem-se à preparação, superada pela situação atual acima.
 
 ## Situação
 
