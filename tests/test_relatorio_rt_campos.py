@@ -626,7 +626,7 @@ class TestTrocaDeCondominioNoAppReal(_AppReal):
         at.selectbox(key="rt_op_sel_cond").select(a).run()
         # Pela tela: identificação, ART, análises, parecer e legenda.
         at.text_area(key="rel_endereco_condominio").input("Rua Fictícia, 10").run()
-        at.selectbox(key="rel_art_modo_rt2025").select("Informar número da ART").run()
+        at.selectbox(key="rel_art_modo_rt2025").select("Emitida — informar número").run()  # rótulo atual (antes: "Informar número da ART")
         at.text_input(key="rel_art_numero_rt2025").input("12345").run()
         for chave, valor in (("rel_analise_data_0", "06/10/2026"), ("rel_analise_ph_0", "7,4"),
                              ("rel_analise_cl_0", "1,5"), ("rel_analise_cya_0", "0"), ("rel_foto_legenda_cmaq", "Casa A")):

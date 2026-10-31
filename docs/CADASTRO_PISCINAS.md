@@ -42,4 +42,10 @@ git diff --check
 O teste adicional do total legado foi executado após o ajuste correspondente.
 
 Não foi feita homologação em navegador, gravação no Sheets real ou implantação.
-A integração visual desses dados no relatório RT é a próxima etapa.
+
+## Revisão posterior (31/10/2026)
+
+* A escrita da linha voltou a `USER_ENTERED` (o PR usava `RAW`, que gravaria volumes e a
+  data H como texto, diferente das linhas antigas). A coluna P continua texto.
+* Nome duplicado em "Novo cliente" mostra mensagem específica.
+* A apresentação no relatório RT foi concluída: ver [RT_RELATORIO_PROFISSIONAL.md](RT_RELATORIO_PROFISSIONAL.md).

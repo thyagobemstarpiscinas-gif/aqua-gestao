@@ -122,7 +122,7 @@ class TestDocumentosProtegidos(unittest.TestCase):
             self.assertNotIn('MARCADOR_DIAG_ALFA',text);self.assertNotIn('MARCADOR_OBS_ALFA',text)
             self.assertNotIn('999999991',text)
             self.assertNotIn('15/09/2026',text);self.assertIn('22/09/2026',text)
-            self.assertIn('formaliza',text)
+            self.assertIn('processo de emiss',text)  # situação padrão da ART (antes: 'formalização')
         self._carregar(at,'Condomínio Alfa Fictício')
         self.assertEqual(at.session_state['rel_diagnostico'],'MARCADOR_DIAG_ALFA')
         self.assertEqual(at.session_state['rel_art_numero'],'999999991')

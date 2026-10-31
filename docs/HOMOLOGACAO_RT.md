@@ -1,5 +1,9 @@
 # Homologação final RT — roteiro e resultados
 
+> **Nota de 31/10/2026:** os PRs #5 e #6 foram integrados em `main` em 30/10/2026. As
+> menções abaixo a "#5/#6 em rascunho" e à publicação "aguardando autorização" são
+> registros históricos daquela rodada. Etapa seguinte: [RT_RELATORIO_PROFISSIONAL.md](RT_RELATORIO_PROFISSIONAL.md).
+
 ## Situação atual — 30/10/2026
 
 Ambiente separado criado e publicado com autorização do responsável: https://aqua-gestao-homologacao-rt.streamlit.app/ . PR #6 permanece em rascunho, dependente do #5, sem merge e sem publicação em produção.

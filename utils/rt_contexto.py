@@ -11,7 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-ART_PADRAO = "Em processo de formalização"
+ART_PADRAO = "Em processo de emissão"  # antes: "Em processo de formalização" (normalizado em utils/rt_relatorio.py)
 TRANSITORIOS = {"rel_fotos_upload", "rel_pdf_visita_importador", "rel_regerar_pdf_visita_idx",
                 "rel_art_modo_rt2025", "rel_art_numero_rt2025", "rel_status_agua_select"}
 IDENTIFICACAO = ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")
@@ -158,11 +158,32 @@ def sincronizar_fotos(ss, chave, uploads):
     # Remoção no uploader vale para os anexos ativos, sem apagar fotos restauradas.
     for digest in set(ss.get("_rt_upload_hashes") or []) - set(novos):
         fotos.pop(digest, None)
-    fotos.update(novos)
+    # Mesma imagem já preservada: mantém a entrada existente (legenda e piscina).
+    fotos.update({d: f for d, f in novos.items() if d not in fotos})
     ss["_rt_upload_hashes"] = list(novos)
     if fotos or ss.get("rel_fotos_preservadas"):
         ss["rel_fotos_preservadas"] = json.dumps({"identidade": chave, "fotos": list(fotos.values())})
     return list(fotos.values())
+
+
+def atualizar_metadados_fotos(ss, chave, metas):
+    """Legenda e piscina por SHA-256, dentro do JSON do próprio contexto."""
+    from utils.rt_relatorio import aplicar_metadados
+    fotos = ler_fotos(ss, chave)
+    if fotos and aplicar_metadados(fotos, metas):
+        ss["rel_fotos_preservadas"] = json.dumps({"identidade": chave, "fotos": fotos})
+        return True
+    return False
+
+
+def remover_foto(ss, chave, digest):
+    """Remoção explícita de uma fotografia preservada deste contexto."""
+    fotos = [f for f in ler_fotos(ss, chave) if f["sha256"] != digest]
+    ss["rel_fotos_preservadas"] = json.dumps({"identidade": chave, "fotos": fotos})
+    # O uploader é recriado vazio (as demais fotos já estão preservadas no JSON);
+    # sem isso a mesma imagem voltaria na próxima sincronização.
+    ss["_rt_upload_hashes"] = []
+    ss["_rt_fotos_nonce"] = ss.get("_rt_fotos_nonce", 0) + 1
 
 
 def materializar_fotos(ss, chave, raiz):
