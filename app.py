@@ -11719,48 +11719,6 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         ))
 
 
-        if "BS_CoverTitle" not in styles.byName:
-            styles.add(ParagraphStyle(
-                name="BS_CoverTitle",
-                parent=styles["Title"],
-                fontName="Helvetica-Bold",
-                fontSize=27,
-                leading=31,
-                textColor=AZUL_ESCURO,
-                alignment=TA_CENTER,
-                spaceAfter=8,
-            ))
-        if "BS_CoverSub" not in styles.byName:
-            styles.add(ParagraphStyle(
-                name="BS_CoverSub",
-                parent=styles["Normal"],
-                fontName="Helvetica",
-                fontSize=10,
-                leading=13,
-                textColor=CINZA_TEXTO,
-                alignment=TA_CENTER,
-            ))
-        if "BS_CoverClient" not in styles.byName:
-            styles.add(ParagraphStyle(
-                name="BS_CoverClient",
-                parent=styles["Normal"],
-                fontName="Helvetica-Bold",
-                fontSize=18,
-                leading=22,
-                textColor=AZUL_ESCURO,
-                alignment=TA_CENTER,
-            ))
-        if "BS_CoverMeta" not in styles.byName:
-            styles.add(ParagraphStyle(
-                name="BS_CoverMeta",
-                parent=styles["Normal"],
-                fontName="Helvetica",
-                fontSize=10,
-                leading=13,
-                textColor=TEXTO,
-                alignment=TA_CENTER,
-            ))
-
         def P(txt, style="BS_Body"):
             raw = str(txt or "")
             safe = _html_escape(raw)
@@ -11774,82 +11732,14 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             return Paragraph(safe, styles[style])
 
 
-        def _capa_premium_background(canvas, doc_obj):
-            """Desenha fundo geométrico exclusivo da folha de rosto."""
-            canvas.saveState()
-            w, h = A4
-
-            # Fundo branco base
-            canvas.setFillColor(colors.white)
-            canvas.rect(0, 0, w, h, fill=1, stroke=0)
-
-            # Bloco superior azul corporativo
-            canvas.setFillColor(colors.HexColor("#15707C"))
-            canvas.rect(0, h - 9.8 * cm, w, 9.8 * cm, fill=1, stroke=0)
-
-            # Bloco azul escuro lateral para peso executivo
-            canvas.setFillColor(colors.HexColor("#0D3D75"))
-            canvas.rect(0, 0, 1.35 * cm, h, fill=1, stroke=0)
-
-            # Triângulo geométrico superior direito
-            canvas.setFillColor(colors.HexColor("#0A315F"))
-            p = canvas.beginPath()
-            p.moveTo(w - 6.2 * cm, h)
-            p.lineTo(w, h)
-            p.lineTo(w, h - 5.7 * cm)
-            p.close()
-            canvas.drawPath(p, fill=1, stroke=0)
-
-            # Linha de destaque
-            canvas.setStrokeColor(colors.HexColor("#42B7CE"))
-            canvas.setLineWidth(2.2)
-            canvas.line(2.1 * cm, h - 2.25 * cm, w - 2.1 * cm, h - 2.25 * cm)
-
-            # Rodapé institucional da capa
-            canvas.setFillColor(colors.HexColor("#5C6670"))
-            canvas.setFont("Helvetica", 7.4)
-            canvas.drawCentredString(
-                w / 2,
-                1.18 * cm,
-                f"Bem Star Piscinas Ltda | CNPJ {CNPJ_BEM_STAR} | Uberlândia/MG"
-            )
-
-            canvas.restoreState()
-
-
-
         def _capa_bem_star_background(canvas, doc_obj):
-            """Fundo geométrico premium exclusivo da folha de rosto."""
-            canvas.saveState()
-            w, h = A4
-
-            canvas.setFillColor(colors.white)
-            canvas.rect(0, 0, w, h, fill=1, stroke=0)
-
-            # Bloco azul corporativo no terço superior
-            canvas.setFillColor(colors.HexColor("#15707C"))
-            canvas.rect(0, h - 9.2 * cm, w, 9.2 * cm, fill=1, stroke=0)
-
-            # Bloco lateral azul escuro
-            canvas.setFillColor(colors.HexColor("#0D3D75"))
-            canvas.rect(0, 0, 1.25 * cm, h, fill=1, stroke=0)
-
-            # Detalhe geométrico no canto superior direito
-            canvas.setFillColor(colors.HexColor("#0A315F"))
-            p = canvas.beginPath()
-            p.moveTo(w - 6.2 * cm, h)
-            p.lineTo(w, h)
-            p.lineTo(w, h - 5.7 * cm)
-            p.close()
-            canvas.drawPath(p, fill=1, stroke=0)
-
-            # Linha de destaque
-            canvas.setStrokeColor(colors.HexColor("#42B7CE"))
-            canvas.setLineWidth(2)
-            canvas.line(2.0 * cm, h - 2.25 * cm, w - 2.0 * cm, h - 2.25 * cm)
-
-            canvas.restoreState()
-
+            from utils.capa_bem_star import desenhar_capa_bem_star
+            desenhar_capa_bem_star(
+                canvas, cliente=nome_cliente, mes_nome=mes_nome, ano=ano,
+                periodo_ini=periodo_ini, periodo_fim=periodo_fim,
+                data_emissao=data_emissao, logo_path=logo_bem_star_path,
+                cnpj=CNPJ_BEM_STAR,
+            )
 
         def _header_footer(canvas, doc_obj):
             canvas.saveState()
@@ -11918,114 +11808,9 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
 
         story = []
 
-        # CAPA DOSSIÊ BEM STAR — INÍCIO
-        capa_titulo = ParagraphStyle(
-            name="CapaTituloBemStar",
-            fontName="Helvetica-Bold",
-            fontSize=27,
-            leading=32,
-            textColor=colors.HexColor("#15707C"),
-            alignment=TA_CENTER,
-            spaceAfter=6,
-        )
-        capa_subtitulo = ParagraphStyle(
-            name="CapaSubtituloBemStar",
-            fontName="Helvetica",
-            fontSize=11,
-            leading=15,
-            textColor=colors.HexColor("#444444"),
-            alignment=TA_CENTER,
-            spaceAfter=6,
-        )
-        capa_label = ParagraphStyle(
-            name="CapaLabelBemStar",
-            fontName="Helvetica-Bold",
-            fontSize=8,
-            leading=11,
-            textColor=colors.HexColor("#666666"),
-            alignment=TA_CENTER,
-            spaceAfter=5,
-        )
-        capa_cliente = ParagraphStyle(
-            name="CapaClienteBemStar",
-            fontName="Helvetica-Bold",
-            fontSize=19,
-            leading=23,
-            textColor=colors.HexColor("#15707C"),
-            alignment=TA_CENTER,
-            spaceAfter=5,
-        )
-        capa_meta = ParagraphStyle(
-            name="CapaMetaBemStar",
-            fontName="Helvetica",
-            fontSize=10,
-            leading=14,
-            textColor=colors.HexColor("#333333"),
-            alignment=TA_CENTER,
-            spaceAfter=4,
-        )
-        capa_rodape = ParagraphStyle(
-            name="CapaRodapeBemStar",
-            fontName="Helvetica",
-            fontSize=8,
-            leading=11,
-            textColor=colors.HexColor("#444444"),
-            alignment=TA_CENTER,
-        )
-
-        story.append(Spacer(1, 36 * mm))
-
-        if logo_bem_star_path:
-            try:
-                logo_capa = RLImage(
-                    str(logo_bem_star_path),
-                    width=10.8 * cm,
-                    height=3.2 * cm,
-                    kind="proportional",
-                )
-                logo_capa.hAlign = "CENTER"
-                story.append(logo_capa)
-            except Exception:
-                story.append(Paragraph("BEM STAR PISCINAS", capa_titulo))
-        else:
-            story.append(Paragraph("BEM STAR PISCINAS", capa_titulo))
-
-        story.append(Spacer(1, 26 * mm))
-
-        story.append(Paragraph("RELATÓRIO OPERACIONAL", capa_titulo))
-        story.append(Paragraph("DE MANUTENÇÃO", capa_titulo))
-        story.append(Paragraph(
-            "Dashboard gerencial impresso de manutenção de piscinas",
-            capa_subtitulo
-        ))
-
-        story.append(Spacer(1, 30 * mm))
-
-        story.append(Paragraph("CLIENTE / LOCAL ATENDIDO", capa_label))
-        story.append(Paragraph(nome_cliente, capa_cliente))
-        story.append(Paragraph(f"Período de Referência: {mes_nome}/{ano}", capa_meta))
-
-        story.append(Spacer(1, 42 * mm))
-
-        story.append(Paragraph(
-            "Finalidade: Registro de parâmetros físico-químicos e da rotina operacional.",
-            capa_rodape
-        ))
-        story.append(Paragraph(
-            f"Data de emissão: {data_emissao}",
-            capa_rodape
-        ))
-
-        story.append(Spacer(1, 5 * mm))
-
-        story.append(Paragraph(
-            f"Bem Star Piscinas Ltda | CNPJ {CNPJ_BEM_STAR} | Uberlândia/MG",
-            capa_rodape
-        ))
-
-        # Obrigatório: dashboard começa somente na próxima página.
+        # A capa é desenhada em uma única página pelo callback exclusivo.
+        story.append(Spacer(1, 1 * mm))
         story.append(PageBreak())
-        # CAPA DOSSIÊ BEM STAR — FIM
 
 
         story.append(Spacer(1, 3 * mm))
