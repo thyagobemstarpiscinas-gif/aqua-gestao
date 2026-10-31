@@ -11475,6 +11475,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
     - Não altera Sheets, modo operador, dosagem automática, login ou relatórios Aqua Gestão.
     """
     try:
+        from utils.relogio import hoje_brasilia
         from reportlab.lib import colors
         from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
         from reportlab.lib.pagesizes import A4
@@ -11511,6 +11512,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         operador = str(ctx.get("operador") or "").strip() or "—"
         obs_geral = str(ctx.get("obs_geral") or "").strip()
         parecer = str(ctx.get("parecer_tecnico") or "").strip()
+        data_emissao = hoje_brasilia()
         lancamentos = [l for l in (ctx.get("lancamentos", []) or []) if isinstance(l, dict)]
         fotos = ctx.get("fotos", []) or []
 
@@ -12010,7 +12012,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             capa_rodape
         ))
         story.append(Paragraph(
-            f"Data de emissão: {hoje_br()}",
+            f"Data de emissão: {data_emissao}",
             capa_rodape
         ))
 
@@ -12195,7 +12197,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         stats = [
             ("pH", ph_vals, "7,2–7,8", lambda v: 7.2 <= v <= 7.8, 2),
             ("Cloro Livre", crl_vals, "1,0–3,0", lambda v: 1.0 <= v <= 3.0, 2),
-            ("Cloro Total", ct_vals, "—", lambda v: True, 2),
+            ("Cloro Total", ct_vals, "—", None, 2),
             ("Cloro Combinado", clc_vals, "<0,40", lambda v: v < 0.40, 2),
             ("Alcalinidade", alc_vals, "80–120", lambda v: 80 <= v <= 120, 0),
             ("Dureza", dc_vals, "150–400", lambda v: 150 <= v <= 400, 0),
@@ -12205,8 +12207,10 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         stat_rows = [[P("Parâmetro", "BS_TableHead"), P("Mín.", "BS_TableHead"), P("Méd.", "BS_TableHead"), P("Máx.", "BS_TableHead"), P("Faixa", "BS_TableHead"), P("Na faixa", "BS_TableHead")]]
         for nome, vals, faixa, regra, casas in stats:
             if vals:
-                ok = sum(1 for v in vals if regra(v))
-                conf = f"{ok}/{len(vals)} ({round(ok/len(vals)*100)}%)"
+                conf = "—"
+                if regra is not None:
+                    ok = sum(1 for v in vals if regra(v))
+                    conf = f"{ok}/{len(vals)} ({round(ok/len(vals)*100)}%)"
                 stat_rows.append([
                     P(nome, "BS_Table"),
                     P(_fmt(min(vals), casas), "BS_Table"),
@@ -12308,20 +12312,6 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         _bullet("Cloro combinado", f"Leituras abaixo do critério operacional de <b>0,40 mg/L</b>: <b>{clc_pct}%</b> ({clc_ok}/{clc_tot}). Média: <b>{_fmt(sum(clc_vals)/len(clc_vals) if clc_vals else None)} mg/L</b>.")
         _bullet("Recomendação geral", "Manter a rotina de aferição, acompanhar pH e cloro residual, além de preservar a filtração e realizar a retrolavagem conforme a necessidade operacional.")
 
-        if obs_geral:
-            _bullet("Observação da equipe", obs_geral)
-
-        if parecer:
-            blocos_parecer = [
-                re.sub(r"\s+", " ", b.strip())
-                for b in parecer.split("\n\n")
-                if b.strip()
-            ][:6]
-
-            if blocos_parecer:
-                texto_parecer = "<br/>".join([f"• {b}" for b in blocos_parecer])
-                _bullet("Parecer complementar", texto_parecer)
-
         t_bullets = Table(bullet_rows, colWidths=[8*mm, 16.1*cm])
         t_bullets.setStyle(TableStyle([
             ("VALIGN", (0,0), (-1,-1), "TOP"),
@@ -12335,9 +12325,18 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
         story.append(t_bullets)
         story.append(Spacer(1, 5 * mm))
 
+        # Textos editáveis fluem entre páginas, sem limite de blocos ou célula
+        # indivisível que possa cortar o parecer ou causar LayoutError.
+        for titulo, texto in (("Observação da equipe", obs_geral),
+                              ("Parecer complementar", parecer)):
+            if texto:
+                story.append(P(titulo, "BS_H1"))
+                for bloco in re.split(r"\n\s*\n", texto):
+                    if bloco.strip():
+                        story.append(P(bloco.strip(), "BS_Body"))
+                        story.append(Spacer(1, 2 * mm))
+
         # Encerramento compacto
-        story.append(Spacer(1, 7 * mm))
-        story.append(P("Encerramento do Período", "BS_H1"))
         encerramento = Table(
             [[
                 P(
@@ -12349,7 +12348,7 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
                 P(
                     f"_______________________________________________<br/>{RESPONSAVEL_TÉCNICO}<br/>"
                     f"Sócio-Administrador / Responsável pela operação — Bem Star Piscinas Ltda<br/>"
-                    f"Operador responsável: {operador}<br/>Uberlândia/MG, {hoje_br()}",
+                    f"Operador responsável: {operador}<br/>Uberlândia/MG, {data_emissao}",
                     "BS_Body"
                 )
             ]],
@@ -12363,7 +12362,11 @@ def gerar_pdf_relatorio_mensal_bem_star_modelo(output_path: Path, ctx: dict) -> 
             ("TOPPADDING", (0,0), (-1,-1), 7),
             ("BOTTOMPADDING", (0,0), (-1,-1), 7),
         ]))
-        story.append(encerramento)
+        story.append(KeepTogether([
+            Spacer(1, 7 * mm),
+            P("Encerramento do Período", "BS_H1"),
+            encerramento,
+        ]))
 
         # REGISTRO FOTOGRÁFICO — fotos passadas via ctx["fotos"] (list[Path])
         _fotos_pdf = [f for f in (fotos or []) if isinstance(f, Path) and f.exists()]
