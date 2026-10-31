@@ -10742,9 +10742,9 @@ def _bs_lancamento_por_data(lancamentos: list[dict], data_visita: str) -> dict:
 
 
 def _bs_preencher_padrao_se_vazio(key: str, valor):
-    """Preenche session_state apenas se a chave ainda não existe."""
-    if key not in st.session_state and valor not in (None, ""):
-        st.session_state[key] = str(valor)
+    """Inicializa a agenda da seleção atual sem sobrescrever seu rascunho."""
+    from utils.contexto_bem_star import preencher_campo_agenda_bem_star
+    preencher_campo_agenda_bem_star(st.session_state, key, valor)
 
 
 def _bs_coletar_lancamentos_agenda_manual() -> list[dict]:
