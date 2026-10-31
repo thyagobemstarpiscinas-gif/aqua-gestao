@@ -1,3 +1,4 @@
+from utils.cadastro_piscinas import TIPOS as TIPOS_PISCINA, SLOTS as SLOTS_PISCINA, volume as volume_cadastro, ler_metadados as ler_piscinas_cadastro, serializar as serializar_piscinas_cadastro
 
 
 import os
@@ -1602,7 +1603,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "Aqua Gestão", cep: str = ""):
+                           empresa: str = "Aqua Gestão", cep: str = "", piscinas_cadastro: str | None = None):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
@@ -1637,13 +1638,16 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
 
         # Verifica duplicata
         if nome.lower().strip() in nomes_existentes:
-            return True  # Já existe, considera sucesso
+            return False  # Não sobrescrever cadastro local de cliente já existente
 
         # Próximo ID baseado no maior existente
         proximo_num = (max(nums) + 1) if nums else 1
         id_cliente = f"C{proximo_num:03d}"
 
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        _meta_piscinas = ler_piscinas_cadastro(piscinas_cadastro)
+        if _meta_piscinas is not None:
+            vol_total += sum(volume_cadastro(p.get("vol")) for p in _meta_piscinas["extras"])
         nova_linha = [
             "",                                    # A - vazia
             id_cliente,                            # B - ID
@@ -1662,6 +1666,9 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             cep,                                   # O - CEP
         ]
 
+        if piscinas_cadastro is not None:
+            nova_linha.append(piscinas_cadastro)
+
         # Determina posicao alfabetica dentro do bloco de clientes
         nome_novo_lower = nome.lower().strip()
         linha_insercao = ultima_linha_cliente + 2  # fallback: final do bloco
@@ -1673,7 +1680,9 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
                     if nome_val2.lower().strip() > nome_novo_lower:
                         linha_insercao = i + 1
                         break
-        aba.insert_row(nova_linha, linha_insercao, value_input_option="USER_ENTERED")
+        if piscinas_cadastro is not None and getattr(aba, "col_count", 16) < 16:
+            aba.add_cols(16 - aba.col_count)
+        aba.insert_row(nova_linha, linha_insercao, value_input_option="RAW")
         st.cache_data.clear()
         return True
     except Exception as e:
@@ -1769,6 +1778,15 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "empresa":      _empresa_cl,
                 "piscinas_extras": [],  # carregado do JSON local se disponível
             }
+            try:
+                _meta_piscinas = ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+            except ValueError as _erro_piscinas_remotas:
+                _meta_piscinas = None
+                cliente_base["erro_cadastro_piscinas"] = str(_erro_piscinas_remotas)
+            if _meta_piscinas is not None:
+                cliente_base["cadastro_piscinas"] = _meta_piscinas
+                cliente_base["tipos_piscinas"] = _meta_piscinas["tipos"]
+                cliente_base["piscinas_extras"] = _meta_piscinas["extras"]
             clientes.append(_enriquecer_cliente_com_dados_locais(cliente_base))
         return clientes
     except Exception as e:
@@ -1779,7 +1797,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "", cep: str = "") -> bool:
+                           empresa: str = "", cep: str = "", piscinas_cadastro: str | None = None) -> bool:
     """Edita cliente existente na aba Clientes pelo ID."""
     import re as _re
     try:
@@ -1789,12 +1807,21 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        _meta_piscinas = ler_piscinas_cadastro(piscinas_cadastro)
+        if _meta_piscinas is not None:
+            vol_total += sum(volume_cadastro(p.get("vol")) for p in _meta_piscinas["extras"])
         for i, row in enumerate(todos):
             if len(row) > 1 and str(row[1]).strip() == id_cliente.strip():
                 linha_sheets = i + 1
                 # Preserva empresa existente se não informada
                 _empresa_atual = str(row[12]).strip() if len(row) > 12 else ""
                 _empresa_final = empresa if empresa else (_empresa_atual or "Aqua Gestão")
+                # Um volume total legado sem distribuição não é atribuído a uma
+                # piscina por inferência nem apagado ao informar apenas os tipos.
+                if vol_total == 0 and not any(volume_cadastro(row[j]) for j in (9, 10, 11) if len(row) > j):
+                    _antigo_meta = ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+                    if not _antigo_meta or not _antigo_meta["extras"]:
+                        vol_total = volume_cadastro(row[3] if len(row) > 3 else "")
                 nova = [
                     "",
                     id_cliente,
@@ -1812,7 +1839,14 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     cnpj,                          # N - CNPJ
                     cep,                           # O - CEP
                 ]
-                aba.update(range_name=f"A{linha_sheets}:O{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                _fim_coluna = "O"
+                if piscinas_cadastro is not None:
+                    ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+                    nova.append(piscinas_cadastro)
+                    _fim_coluna = "P"
+                    if getattr(aba, "col_count", 16) < 16:
+                        aba.add_cols(16 - aba.col_count)
+                aba.update(range_name=f"A{linha_sheets}:{_fim_coluna}{linha_sheets}", values=[nova], value_input_option="RAW")
                 return True
         return False
     except Exception as e:
@@ -4647,6 +4681,8 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
 
     for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family", "verificacoes_semanais", "analises_mensais_padrao"]:
         valor_local = dados_locais.get(chave)
+        if chave.startswith("vol_") and cliente_final.get("cadastro_piscinas") is not None:
+            continue
         if valor_local not in (None, ""):
             cliente_final[chave] = valor_local
 
@@ -4673,8 +4709,10 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
         cliente_final["cnpj"] = dados_locais.get("cnpj_condominio", cliente_final.get("cnpj", ""))
     if dados_locais.get("nome_sindico") and not cliente_final.get("contato"):
         cliente_final["contato"] = dados_locais.get("nome_sindico", "")
-    if "piscinas_extras" in dados_locais:
-        cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+    if cliente_final.get("cadastro_piscinas") is None:
+        if "piscinas_extras" in dados_locais:
+            cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+        cliente_final["tipos_piscinas"] = dados_locais.get("tipos_piscinas", {})
 
     return cliente_final
 
@@ -16368,6 +16406,9 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
+    st.session_state.pop("_cc_cliente_carregado", None)
+    for _slot in SLOTS_PISCINA:
+        st.session_state[f"cc_tipo_piscina_{_slot}"] = "Não informado"
     # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
     st.session_state["cc_verificacoes_semanais"] = 3
     st.session_state["cc_srv_rt"] = False
@@ -16389,6 +16430,7 @@ if _cc_modo == "✏️ Editar cliente existente":
         _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
         _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
         if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
+            st.session_state["_cc_cliente_carregado"] = (_cc_cliente_editar.get("id"), _empresa_cadastro_nome)
             st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
@@ -16407,6 +16449,9 @@ if _cc_modo == "✏️ Editar cliente existente":
                 st.session_state["cc_verificacoes_semanais"] = int(_cc_cliente_editar.get("verificacoes_semanais", 3) or 3)
             except Exception:
                 st.session_state["cc_verificacoes_semanais"] = 3
+            for _slot in SLOTS_PISCINA:
+                _tipo = (_cc_cliente_editar.get("tipos_piscinas") or {}).get(_slot, "Não informado")
+                st.session_state[f"cc_tipo_piscina_{_slot}"] = _tipo if _tipo in TIPOS_PISCINA else "Não informado"
             _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
             st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
             st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
@@ -16644,6 +16689,14 @@ with _cv_extra4:
         placeholder="ex: 120")
 
 
+st.markdown("**Tipo de cada piscina**")
+st.caption("O tipo é informado separadamente do nome e do volume. Cadastros antigos permanecem como Não informado até sua revisão.")
+for _slot, _rotulo in zip(SLOTS_PISCINA, ("Adulto", "Infantil", "Family", "Extra 1", "Extra 2")):
+    _chave_tipo = f"cc_tipo_piscina_{_slot}"
+    if st.session_state.get(_chave_tipo) not in TIPOS_PISCINA:
+        st.session_state[_chave_tipo] = "Não informado"
+    st.selectbox(f"Tipo — {_rotulo}", TIPOS_PISCINA, key=_chave_tipo)
+
 st.markdown("**🧪 Rotina de verificação técnica**")
 # Sanitiza a frequência antes de criar o widget. Isso evita erro visual do Streamlit
 # ao alternar entre Novo cliente / Editar cliente existente com estados antigos.
@@ -16672,9 +16725,28 @@ def _parse_vol(v):
     try: return float(str(v).replace(",",".").strip() or 0)
     except: return 0.0
 
+_cc_erro_piscinas = ""
+if _cc_modo == "✏️ Editar cliente existente":
+    if st.session_state.get("_cc_cliente_carregado") != (_cc_cliente_editar.get("id"), _empresa_cadastro_nome) or not _cc_cliente_editar.get("id"):
+        _cc_erro_piscinas = "Clique em Carregar dados para editar o cliente selecionado."
+    elif _cc_cliente_editar.get("erro_cadastro_piscinas"):
+        _cc_erro_piscinas = _cc_cliente_editar["erro_cadastro_piscinas"]
+    if _cc_erro_piscinas:
+        st.warning(_cc_erro_piscinas)
+try:
+    for _valor_vol in (cc_vol_adulto, cc_vol_infantil, cc_vol_family,
+                       st.session_state.get("cc_pisc_extra1_vol"), st.session_state.get("cc_pisc_extra2_vol")):
+        volume_cadastro(_valor_vol)
+    for _idx_extra in (1, 2):
+        if volume_cadastro(st.session_state.get(f"cc_pisc_extra{_idx_extra}_vol")) and not st.session_state.get(f"cc_pisc_extra{_idx_extra}_nome", "").strip():
+            raise ValueError("Informe o nome de cada piscina extra que possui volume.")
+except ValueError as _erro_vol:
+    _cc_erro_piscinas = str(_erro_vol)
+    st.error(_cc_erro_piscinas)
+
 # ── Botão salvar ─────────────────────────────────────────────────────────────
 _btn_label = "💾 Salvar cliente no Google Sheets" if _cc_modo == "➕ Novo cliente" else "💾 Salvar alterações"
-if st.button(_btn_label, type="primary", use_container_width=True):
+if st.button(_btn_label, type="primary", use_container_width=True, disabled=bool(_cc_erro_piscinas)):
     if not cc_nome.strip():
         st.error("Informe o nome do cliente.")
     else:
@@ -16692,19 +16764,25 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
-            for _en, _ev in [
+            for _slot_extra, (_en, _ev) in zip(("extra1", "extra2"), [
                 (st.session_state.get("cc_pisc_extra1_nome","").strip(),
                  st.session_state.get("cc_pisc_extra1_vol","").strip()),
                 (st.session_state.get("cc_pisc_extra2_nome","").strip(),
                  st.session_state.get("cc_pisc_extra2_vol","").strip()),
-            ]:
+            ]):
                 if _en:
                     try:
                         _ev_f = float(_ev.replace(",",".")) if _ev else 0
                     except:
                         _ev_f = 0
-                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f, "tipo": st.session_state.get(f"cc_tipo_piscina_{_slot_extra}", "Não informado")})
 
+            if _cc_modo == "✏️ Editar cliente existente":
+                _piscs_extras_form.extend(_cc_cliente_editar.get("piscinas_extras", [])[2:])
+            _tipos_piscinas_form = {_slot: st.session_state.get(f"cc_tipo_piscina_{_slot}", "Não informado") for _slot in SLOTS_PISCINA}
+            for _idx, _slot in enumerate(("extra1", "extra2")):
+                _tipos_piscinas_form[_slot] = _piscs_extras_form[_idx].get("tipo", "Não informado") if len(_piscs_extras_form) > _idx else "Não informado"
+            _piscinas_json_form = serializar_piscinas_cadastro(_tipos_piscinas_form, _piscs_extras_form)
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
                 ok = sheets_editar_cliente(
                     id_cliente=_cc_cliente_editar["id"],
@@ -16713,7 +16791,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
-                    cep=cc_cep.strip(),
+                    cep=cc_cep.strip(), piscinas_cadastro=_piscinas_json_form,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
@@ -16723,9 +16801,13 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
-                    cep=cc_cep.strip(),
+                    cep=cc_cep.strip(), piscinas_cadastro=_piscinas_json_form,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+
+            if not ok:
+                st.error("Não foi possível salvar o cadastro remoto. Os dados anteriores foram preservados; revise a conexão e a coluna P de Clientes.")
+                st.stop()
 
             _pasta_cliente = GENERATED_DIR / slugify_nome(cc_nome.strip())
             _pasta_cliente.mkdir(parents=True, exist_ok=True)
@@ -16752,6 +16834,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                 "servicos": _cc_servicos_norm,
                 "operadores_vinculados": _cc_operadores_sel,
                 "piscinas_extras": _piscs_extras_form,
+                "tipos_piscinas": _tipos_piscinas_form,
             })
             # Monta lista de piscinas ativas para o operador (sem precisar configurar)
             _piscinas_adm = []
