@@ -96,7 +96,7 @@ class MensalNuvem(unittest.TestCase):
         s['bs_mensal_fotos']=[]; anexar_foto(s['bs_mensal_fotos'],foto(),'teste.png',A)
         return s
 
-    def test_salva_dividido_restaura_e_baixa_por_id_exato(self):
+    def test_salva_dividido_restaura_fotos_sem_drive(self):
         s=self.estado(); aba=Mock(); enviar=Mock(return_value='id-drive-teste')
         salvar_complementos(s,aba,enviar)
         rows=aba.append_rows.call_args.args[0]
@@ -104,18 +104,28 @@ class MensalNuvem(unittest.TestCase):
         self.assertTrue(all(len(r[5]) <= 38000 for r in rows))
         campos=carregar_complementos(A,rows)
         self.assertEqual(campos['csr_obs_rel'],s['csr_obs_rel']); self.assertNotIn('rel_diagnostico',campos)
-        self.assertNotIn('bytes',campos['bs_mensal_fotos'][0])
+        self.assertEqual(campos['bs_mensal_fotos'][0]['bytes'],s['bs_mensal_fotos'][0]['bytes'])
+        enviar.assert_not_called()
         baixar=Mock(return_value=s['bs_mensal_fotos'][0]['bytes'])
         with tempfile.TemporaryDirectory() as d:
             paths,meta=materializar_fotos(campos['bs_mensal_fotos'],A,d,baixar)
             self.assertEqual(len(paths),1)
-            baixar.assert_called_once_with('id-drive-teste')
+            baixar.assert_not_called()
         self.assertIsNone(carregar_complementos(B,rows))
 
-    def test_falha_drive_nao_grava_manifesto_incompleto(self):
-        s=self.estado(); aba=Mock()
-        with self.assertRaises(ValueError): salvar_complementos(s,aba,Mock(return_value=None))
-        aba.append_rows.assert_not_called()
+    def test_falha_planilha_preserva_anexos_e_nao_declara_sucesso(self):
+        s=self.estado(); aba=Mock(); aba.append_rows.side_effect=RuntimeError('indisponível')
+        with self.assertRaises(RuntimeError): salvar_complementos(s,aba)
+        self.assertTrue(s['bs_mensal_fotos'][0]['bytes'])
+
+    def test_imagem_salva_adulterada_e_bloqueada(self):
+        s=self.estado(); aba=Mock(); salvar_complementos(s,aba)
+        rows=aba.append_rows.call_args.args[0]
+        payload=''.join(r[5] for r in rows)
+        obj=json.loads(payload);obj['campos']['bs_mensal_fotos'][0]['sha256']='0'*64
+        payload=json.dumps(obj,ensure_ascii=False);partes=[payload[i:i+38000] for i in range(0,len(payload),38000)]
+        alterado=[[rows[0][0],rows[0][1],str(i),str(len(partes)),sha256(payload.encode()).hexdigest(),p] for i,p in enumerate(partes)]
+        with self.assertRaises(ValueError): carregar_complementos(A,alterado)
 
     def test_revisao_parcial_nao_recupera_versao_antiga_silenciosamente(self):
         s=self.estado(); aba=Mock(); salvar_complementos(s,aba,Mock(return_value='fid'))

@@ -4,6 +4,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 import io
+import base64
 import json
 import math
 import re
@@ -186,28 +187,37 @@ def materializar_fotos(lista, contexto, raiz, baixar=None):
     return paths, metadados
 
 
-def salvar_complementos(estado, aba, enviar):
-    """Commit append-only: JSON dividido e verificado, imagens no Drive por ID exato."""
+def salvar_complementos(estado, aba, enviar=None):
+    """Commit append-only: fotos e campos divididos em células e verificados por hash.
+
+    Não depende de permissões de gravação no Drive. O argumento enviar é mantido
+    por compatibilidade com o chamador, mas não é utilizado para novos anexos.
+    """
     contexto = list(estado.get('_bs_rel_contexto') or [])
     ctx = contexto_id(contexto)
     fotos = estado.get('bs_mensal_fotos', [])
+    anexos = []
     for foto in fotos:
         if foto.get('contexto') != ctx:
             raise ValueError('Anexo de outro contexto.')
-        if not foto.get('drive_id'):
-            fid = enviar(foto['bytes'], f'BEMSTAR_MENSAL_{ctx.split(":")[1][:16]}_{foto["sha256"]}.jpg', f'BemStar-Mensal_{ctx.split(":")[1]}', f'{contexto[3]}-{contexto[2]}')
-            if not fid:
-                raise ValueError('Não foi possível salvar a foto no Drive. Os dados continuam nesta sessão; tente novamente.')
-            foto['drive_id'] = fid
+        item = {k: v for k, v in foto.items() if k != 'bytes'}
+        dados = foto.get('bytes')
+        if dados:
+            if sha256(dados).hexdigest() != foto['sha256']:
+                raise ValueError('Integridade da imagem não confirmada; anexe novamente.')
+            item['conteudo_b64'] = base64.b64encode(dados).decode('ascii')
+        elif not foto.get('drive_id'):
+            raise ValueError('Conteúdo da imagem indisponível; anexe novamente.')
+        anexos.append(item)
     campos = {k: v for k, v in dict(estado).items()
               if k.startswith('bs_agenda_') or k.startswith('bs_mensal_') or k in {
                   'csr_operador_rel', 'csr_obs_rel', 'bs_rel_parecer_tecnico', 'bs_rel_freq_semana',
                   'bs_rel_dias_semana', 'bs_rel_incluir_visitas_vazias'}}
     campos = deepcopy(campos)
-    campos['bs_mensal_fotos'] = [{k: v for k, v in f.items() if k != 'bytes'} for f in fotos]
+    campos['bs_mensal_fotos'] = anexos
     payload = json.dumps({'contexto': contexto, 'campos': campos}, ensure_ascii=False, sort_keys=True)
-    if len(payload) > 800_000:
-        raise ValueError('Complementos excedem o limite do rascunho; reduza os textos.')
+    if len(payload) > 12_000_000:
+        raise ValueError('Complementos excedem 12 MB; reduza o número ou a resolução das imagens.')
     partes = [payload[i:i+38000] for i in range(0, len(payload), 38000)]
     revisao, digest = uuid.uuid4().hex, sha256(payload.encode()).hexdigest()
     aba.append_rows([[ctx, revisao, str(i), str(len(partes)), digest, parte]
@@ -241,8 +251,18 @@ def carregar_complementos(contexto, linhas):
         if any(not (k.startswith('bs_agenda_') or k.startswith('bs_mensal_') or k in permitidas) for k in campos):
             raise ValueError('Campos inválidos no rascunho.')
         for f in campos.get('bs_mensal_fotos', []):
-            if f.get('contexto') != ctx or not f.get('drive_id'):
-                raise ValueError('Imagem sem referência válida.')
+            if f.get('contexto') != ctx:
+                raise ValueError('Imagem de outro contexto.')
+            if f.get('conteudo_b64'):
+                try:
+                    dados = base64.b64decode(f.pop('conteudo_b64'), validate=True)
+                except Exception as exc:
+                    raise ValueError('Imagem salva com conteúdo inválido.') from exc
+                if sha256(dados).hexdigest() != f.get('sha256'):
+                    raise ValueError('Integridade da imagem salva não confirmada.')
+                f['bytes'] = dados
+            elif not f.get('drive_id'):
+                raise ValueError('Imagem sem conteúdo ou referência válida.')
         return campos
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError('Rascunho inválido; os dados da tela foram preservados.') from exc

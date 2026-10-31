@@ -11261,9 +11261,9 @@ def _renderizar_relatorio_bem_star(preview: bool = False) -> dict:
         "empresa": "Bem Star Piscinas",
         "preview": preview,
         "mensagem": (
-            f"Prévia Bem Star mensal atualizada com {len(ctx['lancamentos'])} visita(s)."
+            f"Prévia Bem Star mensal atualizada com {len({l['data'] for l in ctx['lancamentos']})} data(s) de visita."
             if preview else
-            f"Relatório mensal Bem Star gerado com {len(ctx['lancamentos'])} visita(s)."
+            f"Relatório mensal Bem Star gerado com {len({l['data'] for l in ctx['lancamentos']})} data(s) de visita."
         ),
         "docx": docx_path,
         "pdf": pdf_path,
@@ -17535,7 +17535,7 @@ if _empresa_ativa_codigo() != "bem_star":
 # =========================================
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
-    st.subheader("Bem Star — Relatório Técnico Simples / Operacional")
+    st.subheader("Bem Star — Relatório Mensal Operacional")
     st.caption("Módulo exclusivo da Bem Star Piscinas para limpeza, manutenção, visitas operacionais, análises básicas, dosagens e relatório sem RT.")
     
     with st.expander("📋 Cadastrar / selecionar cliente sem RT", expanded=False):
@@ -17927,6 +17927,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         # Faça a troca antes de instanciar seus widgets, inclusive quando uma
         # atualização da lista selecionar outro cliente automaticamente.
         from utils.contexto_bem_star import preparar_contexto_bem_star
+        from utils.bem_star_mensal import contexto_id
+        try:
+            contexto_id((str(csr_dados_sel.get("id") or ""), csr_sel, str(csr_mes).strip().zfill(2), str(csr_ano).strip()))
+        except ValueError as _erro_periodo_bs:
+            st.warning(str(_erro_periodo_bs))
+            st.stop()
         _contexto_bs_mudou = preparar_contexto_bem_star(
             st.session_state, csr_sel, csr_mes, csr_ano,
             str(csr_dados_sel.get("id") or ""),

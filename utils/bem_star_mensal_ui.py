@@ -72,7 +72,7 @@ def renderizar_fotos(st):
     # Uploader tem chave exclusiva do contexto e não participa do rascunho serializado.
     epoch = ss.get('_bs_mensal_upload_epoch', 0)
     uploads = st.file_uploader('Adicionar imagens', type=['jpg', 'jpeg', 'png', 'webp'],
-                               accept_multiple_files=True, key=f'_bs_upload_{cid}_{epoch}')
+                               accept_multiple_files=True, max_upload_size=10, key=f'_bs_upload_{cid}_{epoch}')
     vistos = ss.setdefault('_bs_mensal_upload_vistos', {})
     import hashlib
     processados = vistos.setdefault(cid, [])
@@ -93,7 +93,7 @@ def renderizar_fotos(st):
             if foto.get('bytes'):
                 st.image(foto['bytes'], width=300)
             else:
-                st.caption('Imagem salva no Drive. Será recuperada ao gerar o PDF.')
+                st.caption('Imagem salva na nuvem. Será recuperada ao gerar o PDF.')
             # Chaves transitórias por contexto, valores canônicos no item do anexo.
             prefixo = f'_bs_foto_{cid}_{digest}_'
             opcoes = list(dict.fromkeys(nomes + [foto.get('piscina', 'Geral')]))
