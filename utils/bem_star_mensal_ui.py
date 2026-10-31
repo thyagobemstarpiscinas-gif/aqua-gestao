@@ -32,7 +32,9 @@ def renderizar_piscinas(st, lancamentos):
 
 def renderizar_agenda(st, lancamentos, datas, preencher):
     ss = st.session_state
-    originais = {(l['data'], l['piscina']): l for l in expandir(lancamentos)}
+    originais = {}
+    for linha in expandir(lancamentos):
+        originais.setdefault((linha['data'], linha['piscina']), linha)
     for data in datas:
         with st.expander(f'Visita — {data}', expanded=False):
             for nome in ss.get('bs_mensal_piscinas', []) or []:

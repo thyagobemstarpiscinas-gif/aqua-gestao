@@ -17784,7 +17784,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _vistos_csr = set()
         _lanc_todos_csr = []
         for _lc in _lanc_local_csr + _lanc_sheets_csr:
-            _ch = f"{_lc.get('data','')}-{_lc.get('operador','')}-{_lc.get('ph','')}"
+            _ch = json.dumps(_lc, ensure_ascii=False, sort_keys=True, default=str)
             if _ch not in _vistos_csr:
                 _vistos_csr.add(_ch)
                 _lanc_todos_csr.append(_lc)

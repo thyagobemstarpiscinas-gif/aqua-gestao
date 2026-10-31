@@ -34,6 +34,12 @@ class MensalDados(unittest.TestCase):
         self.assertEqual({l['piscina']:l['ph'] for l in linhas}, {'Adulto':'7.2','Infantil':'8.3'})
         self.assertEqual(linhas[0]['fotos'], ['original.jpg'])
 
+    def test_duas_coletas_na_mesma_data_nao_sao_apagadas_pela_agenda(self):
+        originais=[{'data':'07/09/2026','piscina':'Adulto','ph':'7.4','id_visita':'V1'},
+                   {'data':'07/09/2026','piscina':'Adulto','ph':'7.8','id_visita':'V2'}]
+        resultado=unir_agenda(originais,[{'data':'07/09/2026','piscina':'Adulto','ph':'7.2'}])
+        self.assertEqual([(l['id_visita'],l['ph']) for l in resultado],[('V1','7.2'),('V2','7.8')])
+
     def test_coleta_por_piscina_e_mesma_data_sem_colisao(self):
         s = {'bs_mensal_piscinas':['Adulto','Infantil']}
         s[chave_campo('Adulto','07/09/2026','ph')] = '7,4'

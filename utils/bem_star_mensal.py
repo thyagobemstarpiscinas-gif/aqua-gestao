@@ -79,20 +79,22 @@ def expandir(lancamentos):
 
 def unir_agenda(originais, manuais):
     """Edita por data + piscina; preserva as outras piscinas e as referências das fotos."""
-    resultado = {}
-    for linha in expandir(originais):
-        chave = (linha['data'], linha['piscina'])
-        if chave not in resultado:
-            resultado[chave] = linha
+    resultado = expandir(originais)
     for linha in expandir(manuais):
         chave = (linha['data'], linha['piscina'])
-        anterior = resultado.get(chave, {})
+        indice = next((i for i, item in enumerate(resultado)
+                       if (item['data'], item['piscina']) == chave), None)
+        anterior = resultado[indice] if indice is not None else {}
         novo = {**anterior, **linha}
         for k in ['fotos', 'fotos_b64', 'fotos_limpeza', 'fotos_parametros', 'fotos_dosagens']:
             if anterior.get(k):
                 novo[k] = deepcopy(anterior[k])
-        resultado[chave] = novo
-    return sorted(resultado.values(), key=lambda x: (data_ordem(x['data']), x['piscina']))
+        if indice is None:
+            resultado.append(novo)
+        else:
+            # A agenda edita a primeira visita exibida, sem apagar outras coletas no mesmo dia.
+            resultado[indice] = novo
+    return sorted(resultado, key=lambda x: (data_ordem(x['data']), x['piscina']))
 
 
 def token_pool(nome):
