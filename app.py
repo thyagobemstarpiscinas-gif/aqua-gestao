@@ -19168,6 +19168,17 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             else:
                 st.info("Nenhuma visita salva no Sheets para este cliente. Importe um PDF acima ou salve uma visita pelo modo operador.")
 
+        # A agenda e o parecer pertencem a um cliente e período específicos.
+        # Faça a troca antes de instanciar seus widgets, inclusive quando uma
+        # atualização da lista selecionar outro cliente automaticamente.
+        from utils.contexto_bem_star import preparar_contexto_bem_star
+        _contexto_bs_mudou = preparar_contexto_bem_star(
+            st.session_state, csr_sel, csr_mes, csr_ano,
+            str(csr_dados_sel.get("id") or ""),
+        )
+        if _contexto_bs_mudou:
+            st.info("Cliente ou período alterado. A agenda e o parecer agora correspondem à seleção atual; confira os dados antes de gerar.")
+
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
             placeholder="Condições gerais da piscina, ocorrências, recomendações...")
