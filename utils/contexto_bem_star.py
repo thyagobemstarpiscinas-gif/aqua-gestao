@@ -11,7 +11,7 @@ def preparar_contexto_bem_star(estado, cliente, mes, ano, id_cliente=""):
         return False
 
     def pertence(chave):
-        return chave.startswith("bs_agenda_") or chave in {
+        return chave.startswith(("bs_agenda_", "bs_mensal_")) or chave in {
             "csr_operador_rel", "csr_obs_rel", "bs_rel_parecer_tecnico",
             "bs_rel_freq_semana", "bs_rel_dias_semana", "bs_rel_incluir_visitas_vazias",
         }
@@ -26,7 +26,8 @@ def preparar_contexto_bem_star(estado, cliente, mes, ano, id_cliente=""):
         estado[chave] = ""
     estado.update({"csr_operador_rel": "", "csr_obs_rel": "",
                    "bs_rel_parecer_tecnico": "", "bs_rel_freq_semana": 1,
-                   "bs_rel_dias_semana": [], "bs_rel_incluir_visitas_vazias": False})
+                   "bs_rel_dias_semana": [], "bs_rel_incluir_visitas_vazias": False,
+                   "bs_mensal_piscinas": [], "bs_mensal_outras": "", "bs_mensal_fotos": []})
     restaurados = deepcopy(rascunhos.get(contexto, {}))
     estado.update(restaurados)
     estado["_bs_rel_campos_restaurados"] = set(restaurados)
