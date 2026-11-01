@@ -2856,7 +2856,8 @@ ASSINATURA_RT_CANDIDATOS = [
 ]
 
 LOGO_CANDIDATOS = [
-    # Logo oficial atual enviada pelo usuário. Mantida em primeiro lugar para o PDF refletir a identidade Aqua Gestão.
+    # Arte ACQUA validada; arquivos anteriores apenas como fallback.
+    BASE_DIR / "acqua_gestao_logo_rt.png",
     BASE_DIR / "aqua_gestao_logo.png.png",
     BASE_DIR / "aqua_gestao_logo.png",
     BASE_DIR / "aqua_gestao_logo.jpg",
@@ -3238,7 +3239,7 @@ def build_monthly_rt_pdf_bytes(
         story.append(Spacer(1, 1.2 * mm))
 
     story.append(Spacer(1, 2 * mm))
-    refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025; ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
+    refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
     story.append(_p(refs, st_small))
 
     assinatura = [
@@ -7461,13 +7462,13 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["Instrumento Normativo", "Atendimento Declarado"],
             ["Lei Federal nº 2.800/1956", "Regulamenta a profissão de Químico e as atribuições do Técnico em Química."],
             ["Decreto nº 85.877/1981 e normas profissionais aplicáveis do Sistema CFQ/CRQs", "Define atividades técnicas relacionadas ao controle de tratamento de água."],
-            ["Resolução CFQ nº 332/2025", "Dispõe sobre Responsabilidade Técnica e emissão de ART."],
-            ["Portaria GM/MS nº 888/2021", "Referência sanitária complementar para parâmetros de água."],
+            ["Resolução CFQ nº 332/2025, alterada pela nº 345/2026", "Responsabilidade técnica e ART; enquadramento conforme estabelecimento e serviço."],
+            ["NR-6 e NR-26", "EPI, sinalização e segurança no trabalho com produtos químicos, conforme campo de aplicação."],
         ], widths=[58*mm, 122*mm]))
 
         story.append(P("2. NORMAS TÉCNICAS ABNT APLICÁVEIS", "AqH1"))
-        story.append(P("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "AqH2"))
-        story.append(P("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados no local com o aparelho Photometer Color Q.", "AqBody"))
+        story.append(P("2.1 Controle da água — referências operacionais", "AqH2"))
+        story.append(P("As faixas abaixo são referências operacionais configuradas no sistema, sujeitas à revisão do RT; não certificam atendimento à edição vigente da norma de qualidade da água. A ABNT NBR 10339:2018, versão corrigida 2019, trata de projeto, execução e manutenção. O catálogo registra a NBR 10818:2016 como cancelada com revisão em 21/09/2026; os limites da revisão devem ser conferidos no texto integral antes de atualizar os critérios. O método e o equipamento efetivamente usados devem constar dos registros de campo.", "AqBody"))
         story.append(table([
             ["Parâmetro", "Mínimo", "Máximo", "Unidade", "Método"],
             ["pH", "7,2", "7,8", "—", "Photometer"],
@@ -7477,14 +7478,14 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["Dureza Cálcica", "150", "300", "mg/L CaCO3", "Photometer"],
             ["Ácido Cianúrico", "30", "50", "mg/L", "Photometer"],
         ], widths=[58*mm, 30*mm, 30*mm, 35*mm, 27*mm]))
-        story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas no local. Tais determinações requerem coleta e envio a laboratório acreditado pela ANVISA/Inmetro, sob responsabilidade de contratação do cliente.", "AqWarn"))
+        story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas no local. Tais determinações requerem coleta e envio a laboratório competente para os ensaios requeridos, sob responsabilidade de contratação do cliente.", "AqWarn"))
 
-        story.append(P("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "AqH2"))
+        story.append(P("2.2 Segurança e higiene operacional — ABNT NBR 10339", "AqH2"))
         conf = dados_relatorio.get("conformidades", {}) or {}
         nbr_status = conf.get("nbr_11238_status", {}) or {}
         nbr_obs = conf.get("nbr_11238", "") or "Sem observações adicionais registradas."
         story.append(table([
-            ["Requisito NBR 11238", "Evidência / Observação", "Conforme?"],
+            ["Requisito operacional", "Evidência / Observação", "Conforme?"],
             ["Sinalização de profundidade visível", nbr_obs, _texto_sim_nao_marcado(nbr_status.get("profundidade", ""))],
             ["Retrolavagem do sistema de filtragem", "", _texto_sim_nao_marcado(nbr_status.get("retrolavagem", ""))],
             ["Limpeza de skimmers e decantadores", "", _texto_sim_nao_marcado(nbr_status.get("skimmers", ""))],
@@ -7497,26 +7498,26 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         nr26_obs = conf.get("nr_26", "") or "Checklist de GHS/FDS/FISPQ sem observações adicionais registradas."
         story.append(table([
             ["Item de Verificação – NR-26 / GHS", "Observação", "Status"],
-            ["FISPQs disponíveis e atualizadas para os produtos", nr26_obs, "OK"],
-            ["Rótulos GHS nos recipientes", "", "OK / Pend."],
-            ["Sinalização de perigo no estoque de produtos químicos", "", "OK / Pend."],
-            ["Separação de oxidantes e ácidos", "", "OK / Pend."],
-            ["Procedimento de emergência / derramamento disponível", "", "OK / Pend."],
+            ["Fichas com dados de segurança disponíveis e atualizadas", nr26_obs, "Ver checklist"],
+            ["Rótulos GHS nos recipientes", "", "Ver checklist"],
+            ["Sinalização de perigo no estoque de produtos químicos", "", "Ver checklist"],
+            ["Separação de oxidantes e ácidos", "", "Ver checklist"],
+            ["Procedimento de emergência / derramamento disponível", "", "Ver checklist"],
         ], widths=[83*mm, 72*mm, 25*mm]))
         story.append(P("3.2 NR-06 – Equipamentos de Proteção Individual (EPI)", "AqH2"))
         epis = dados_relatorio.get("epis", {}) or {}
         def epi_status(base):
-            stt = epis.get(f"{base}_status", "Conforme") or "Conforme"
-            ca = epis.get(f"{base}_ca", "") or "Conforme"
-            fornecido = "Sim" if stt == "Conforme" else "Não"
-            fiscalizado = "Sim" if stt == "Conforme" else "Não"
+            stt = epis.get(f"{base}_status", "Não informado") or "Não informado"
+            ca = epis.get(f"{base}_ca", "") or "Não informado"
+            fornecido = {"Conforme": "Sim", "Pendente": "Não", "N/A": "N/A"}.get(stt, "Não informado")
+            fiscalizado = fornecido
             return ca, fornecido, fiscalizado
         luvas = epi_status("luvas"); oculos = epi_status("oculos"); respirador = epi_status("respirador"); botas = epi_status("botas")
         story.append(table([
             ["EPI", "CA nº", "Fornecido?", "Uso Fiscalizado?"],
             ["Luvas de nitrila resistentes a produtos químicos", luvas[0], luvas[1], luvas[2]],
             ["Óculos de proteção contra respingos", oculos[0], oculos[1], oculos[2]],
-            ["Respirador para vapores químicos", respirador[0], respirador[1], respirador[2]],
+            ["Proteção respiratória, quando indicada pela avaliação de riscos", respirador[0], respirador[1], respirador[2]],
             ["Botas/calçado fechado resistente a produtos químicos", botas[0], botas[1], botas[2]],
         ], widths=[82*mm, 42*mm, 28*mm, 28*mm]))
 
@@ -7544,7 +7545,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
         story.append(P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"))
-        story.append(P("A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações que podem reduzir a transparência da água e prejudicar a ação do desinfetante. Este controle técnico complementar está alinhado aos requisitos de qualidade e limpidez da ABNT NBR 10818:2016 e às boas práticas de operação, recirculação e filtração previstas na ABNT NBR 10339:2018.", "AqBody"))
+        story.append(P("A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações que podem reduzir a transparência da água e prejudicar a ação do desinfetante. A turbidez complementa o controle operacional e não comprova qualidade microbiológica. Interpretar segundo o método, a resolução do instrumento e a edição aplicável da norma de qualidade da água; a NBR 10818:2016 consta cancelada com revisão em 21/09/2026.", "AqBody"))
         try:
             _graficos = graficos_por_piscina(dados_relatorio.get("analises", []) or [], pdf_path.parent / f"{pdf_path.stem}_graficos",
                                              dados_relatorio.get("nome_condominio", ""),
@@ -7765,7 +7766,9 @@ def _texto_sim_nao_marcado(valor) -> str:
         return "☑ Sim   ☐ Não"
     if v in ("não", "nao", "false", "0", "pendente", "não conforme", "nao conforme"):
         return "☐ Sim   ☑ Não"
-    return "☐ Sim   ☐ Não"
+    if v == "n/a":
+        return "Não aplicável"
+    return "Não verificado"
 
 
 def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> str:
@@ -7787,7 +7790,9 @@ def _status_nbr11238_por_texto(texto_requisito: str, dados_relatorio: dict) -> s
     return _texto_sim_nao_marcado("")
 
 def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
-    tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
+    tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito operacional", "Evidência / Observação"])
+    if tabela_nbr is None:
+        tabela_nbr = encontrar_tabela_por_keywords(doc, ["Requisito NBR 11238", "Evidência / Observação"])
     if tabela_nbr is not None and len(tabela_nbr.rows) > 1:
         observacao = dados_relatorio["conformidades"].get("nbr_11238", "") or "Sem observações adicionais registradas."
         for idx in range(1, len(tabela_nbr.rows)):
@@ -7807,29 +7812,29 @@ def preencher_bloco_conformidades(doc: Document, dados_relatorio: dict):
             if len(row.cells) > 1 and idx == 1:
                 set_cell_text(row.cells[1], observacao)
             if len(row.cells) > 2 and idx == 1:
-                set_cell_text(row.cells[2], "OK" if observacao else "Pend.")
+                set_cell_text(row.cells[2], "Ver checklist" if dados_relatorio["conformidades"].get("nr_26", "").strip() else "Não informado")
 
     tabela_nr6 = encontrar_tabela_por_keywords(doc, ["Equipamentos de Proteção Individual", "CA nº", "Luvas de nitrila"])
     if tabela_nr6 is not None and len(tabela_nr6.rows) > 1:
         ca_map = dados_relatorio["epis"]
         linhas_epi = [
-            ("luvas", ca_map.get("luvas_status", "Conforme"), ca_map.get("luvas_ca", "")),
-            ("oculos", ca_map.get("oculos_status", "Conforme"), ca_map.get("oculos_ca", "")),
-            ("respirador", ca_map.get("respirador_status", "Conforme"), ca_map.get("respirador_ca", "")),
-            ("botas", ca_map.get("botas_status", "Conforme"), ca_map.get("botas_ca", "")),
+            ("luvas", ca_map.get("luvas_status", "Não informado"), ca_map.get("luvas_ca", "")),
+            ("oculos", ca_map.get("oculos_status", "Não informado"), ca_map.get("oculos_ca", "")),
+            ("respirador", ca_map.get("respirador_status", "Não informado"), ca_map.get("respirador_ca", "")),
+            ("botas", ca_map.get("botas_status", "Não informado"), ca_map.get("botas_ca", "")),
         ]
         mapa_status = {
             "Conforme": ("Sim", "Sim"),
             "Pendente": ("Não", "Não"),
-            "Não informado": ("Não", "Não"),
-            "N/A": ("Não", "Não"),
+            "Não informado": ("Não informado", "Não informado"),
+            "N/A": ("N/A", "N/A"),
         }
         for row in tabela_nr6.rows[1:]:
             texto = normalizar_texto(row.cells[0].text)
             for chave, status_epi, ca in linhas_epi:
                 if chave in texto and len(row.cells) > 1:
                     # Coluna 1 = CA nº: apenas o número ou N/A, NUNCA o status
-                    ca_valor = ca.strip() if (ca or "").strip() else "N/A"
+                    ca_valor = ca.strip() if (ca or "").strip() else "Não informado"
                     set_cell_text(row.cells[1], ca_valor)
                     fornecido, fiscalizado = mapa_status.get(status_epi, ("Não", "Não"))
                     if len(row.cells) > 2:
@@ -8050,11 +8055,11 @@ def coletar_conformidades_relatorio() -> dict:
     return {
         "nbr_11238": (st.session_state.get("rel_nbr_11238") or "").strip(),
         "nbr_11238_status": {
-            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "Sim").strip(),
-            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "Sim").strip(),
-            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "Sim").strip(),
-            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "Sim").strip(),
-            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "Sim").strip(),
+            "profundidade": (st.session_state.get("rel_nbr11238_profundidade") or "Não verificado").strip(),
+            "retrolavagem": (st.session_state.get("rel_nbr11238_retrolavagem") or "Não verificado").strip(),
+            "skimmers": (st.session_state.get("rel_nbr11238_skimmers") or "Não verificado").strip(),
+            "circulacao": (st.session_state.get("rel_nbr11238_circulacao") or "Não verificado").strip(),
+            "chuveiro": (st.session_state.get("rel_nbr11238_chuveiro") or "Não verificado").strip(),
         },
         "nr_26": (st.session_state.get("rel_nr_26") or "").strip(),
         "nr_06": (st.session_state.get("rel_nr_06") or "").strip(),
@@ -8063,13 +8068,13 @@ def coletar_conformidades_relatorio() -> dict:
 
 def coletar_epis_relatorio() -> dict:
     return {
-        "luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme").strip(),
+        "luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Não informado").strip(),
         "luvas_ca": (st.session_state.get("rel_epi_luvas_ca") or "").strip(),
-        "oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Conforme").strip(),
+        "oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Não informado").strip(),
         "oculos_ca": (st.session_state.get("rel_epi_oculos_ca") or "").strip(),
-        "respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Conforme").strip(),
+        "respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Não informado").strip(),
         "respirador_ca": (st.session_state.get("rel_epi_respirador_ca") or "").strip(),
-        "botas_status": (st.session_state.get("rel_epi_botas_status") or "Conforme").strip(),
+        "botas_status": (st.session_state.get("rel_epi_botas_status") or "Não informado").strip(),
         "botas_ca": (st.session_state.get("rel_epi_botas_ca") or "").strip(),
     }
 
@@ -8254,7 +8259,7 @@ def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
     doc.add_paragraph(f"Certificações relevantes: {dados_relatorio['certificacoes']}")
     doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
     doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
-    doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025; ABNT NBR 10339; NR-26; NR-06.")
+    doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339; NR-26; NR-06.")
     doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
 
     doc.add_paragraph("Observações automáticas:")
@@ -8278,14 +8283,27 @@ def atualizar_textos_normativos(doc: Document):
         ("CRQ-IV – CRQ 024025748", CRQ),
         ("CRQ-IV", "CRQ-MG 2ª Região"),
         # Normas
-        ("Resolução CFQ nº 491/2020", "Resolução CFQ nº 332/2025"),
+        ("Resolução CFQ nº 332/2025", "Resolução CFQ nº 332/2025, alterada pela nº 345/2026"),
+        ("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados in loco com o aparelho Photometer Color Q (análise quantitativa em campo):", "As faixas abaixo são referências operacionais configuradas no sistema, sujeitas à revisão do RT segundo a edição aplicável da norma de qualidade da água. Método e equipamento devem ser confirmados nos registros de campo."),
+        ("laboratório acreditado pela ANVISA/Inmetro", "laboratório competente para os ensaios requeridos"),
+        ("2.1  NBR 10818 – Qualidade da Água de Piscina", "2.1 Referências operacionais de controle da água"),
+        ("2.2  NBR 11238 – Segurança e Higiene em Piscinas", "2.2 Segurança e higiene operacional — ABNT NBR 10339"),
+        ("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da NBR 10818.", "Faixas operacionais configuradas no sistema, sujeitas à revisão do RT; não constituem certificação de conformidade à edição vigente da norma de qualidade da água."),
+        ("CONFORME – Todos os parâmetros dentro dos limites da NBR 10818", "CONFORME – Avaliação operacional declarada pelo RT"),
+        ("Parâmetro (NBR 10818)", "Parâmetro (referência operacional)"),
+        ("Resolução CFQ nº 491/2020", "Resolução CFQ nº 332/2025, alterada pela nº 345/2026"),
         ("Res. Normativa CFQ nº 01/1982", "Decreto nº 85.877/1981 e normas profissionais aplicáveis do Sistema CFQ/CRQs"),
         ("Portaria MS nº 888/2021", "Portaria GM/MS nº 888/2021 (referência sanitária complementar para água de consumo humano)"),
-        ("NBR 10818", "ABNT NBR 10339"),
+        ("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "2.1 Controle da água — referências operacionais"),
+        ("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "2.2 Segurança e higiene operacional — ABNT NBR 10339"),
+        ("Requisito NBR 11238", "Requisito operacional"),
     ]
     # Aplica na ordem para evitar substituições aninhadas incorretas
     for de, para in trocas_ordenadas:
         substituir_placeholders_doc(doc, {de: para})
+    nota = "Referências de qualidade da água: o catálogo ABNT registra a NBR 10818:2016 como cancelada com revisão em 21/09/2026. As faixas operacionais do sistema dependem de revisão do RT segundo a edição aplicável; este relatório não certifica conformidade normativa integral. A NBR 11238:1990 foi cancelada em 2018; o checklist registra condições operacionais verificadas."
+    if not any(nota in p.text for p in doc.paragraphs):
+        doc.add_paragraph(nota)
 
 
 def _docx_inserir_capa_rt(doc, dados_relatorio: dict):
@@ -9227,7 +9245,9 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     BRANCO  = colors.white
     PRETO   = colors.black
 
-    def E(n, **k): return ParagraphStyle(n, fontName=_font_reg, **k)
+    def E(n, **k):
+        k.setdefault("fontName", _font_reg)
+        return ParagraphStyle(n, **k)
     def P(t, s):   return Paragraph(str(t or ""), s)
     def Sp(h=3):   return Spacer(1, h*mm)
     def HR():      return HRFlowable(width="100%", thickness=0.5, color=CINZA_M, spaceAfter=3, spaceBefore=3)
@@ -9337,7 +9357,13 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     story = []
 
     # CAPA
-    story += [Sp(30),
+    story.append(Sp(12))
+    _logo_bs = encontrar_logo_bem_star()
+    if _logo_bs:
+        _img_bs = Image(str(_logo_bs), width=70*mm, height=40*mm, kind="proportional")
+        _img_bs.hAlign = "CENTER"
+        story.append(_img_bs)
+    story += [Sp(8),
         P("RELATORIO DE VISITA TECNICA OPERACIONAL", E_CAPA_TAG),
         P("BEM STAR PISCINAS", E_CAPA_MAIN),
         P("Manutencao e Limpeza Operacional com Inteligencia Quimica Hidrica", E_CAPA_SUB),
@@ -9592,7 +9618,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     operador  = lancamento.get("operador","") or "—"
 
     def _logo_relatorio_visita():
-        """Retorna a logo da Aqua Gestão para o PDF, usando arquivo local ou logo oficial embutida."""
+        """Retorna a logo da ACQUA GESTÃO para o PDF, usando arquivo local ou logo oficial embutida."""
         try:
             _logo_path = encontrar_logo()
         except Exception:
@@ -9615,7 +9641,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     _logo_pdf.hAlign = "LEFT"
     marca_bloco = Table([[
         _logo_pdf,
-        Paragraph("<b>AQUA GESTÃO</b><br/><font size=8 color='#8a9ab0'>Controle Técnico de Piscinas</font>", estilo("hdr_brand", fontSize=14, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", leading=15)),
+        Paragraph("<b>ACQUA GESTÃO</b><br/><font size=8 color='#8a9ab0'>Controle Técnico de Piscinas</font>", estilo("hdr_brand", fontSize=14, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", leading=15)),
     ]], colWidths=[2.75*cm, 7.6*cm])
     marca_bloco.setStyle(TableStyle([
         ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
@@ -9999,7 +10025,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     elems.append(t_ass)
 
     elems.append(Spacer(1, 4))
-    elems.append(Paragraph("Aqua Gestão – Controle Técnico de Piscinas · Documento de uso operacional", s_center))
+    elems.append(Paragraph("ACQUA GESTÃO – Controle Técnico de Piscinas · Documento de uso operacional", s_center))
 
     doc.build(elems)
     buffer.seek(0)
@@ -10065,10 +10091,14 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     try:
         from reportlab.lib.utils import ImageReader
         from reportlab.platypus import Image as RLImage
-        _lb = _b64.b64decode(LOGO_AQUA_OFICIAL_B64)
-        logo_elem = RLImage(io.BytesIO(_lb), width=3.5*cm, height=1.6*cm)
+        _logo_path = encontrar_logo()
+        if _logo_path:
+            logo_elem = RLImage(str(_logo_path), width=3.5*cm, height=1.6*cm, kind="proportional")
+        else:
+            _lb = _b64.b64decode(LOGO_AQUA_OFICIAL_B64)
+            logo_elem = RLImage(io.BytesIO(_lb), width=3.5*cm, height=1.6*cm, kind="proportional")
     except Exception:
-        logo_elem = Paragraph("<b>AQUA GESTAO</b>", S("lf", fontSize=12, textColor=NAVY, fontName="Helvetica-Bold"))
+        logo_elem = Paragraph("<b>ACQUA GESTAO</b>", S("lf", fontSize=12, textColor=NAVY, fontName="Helvetica-Bold"))
 
     hdr = Table([
         [logo_elem, Paragraph("<b>RELATORIO DE SUPERVISAO TECNICA</b><br/><font size='8' color='#C8960C'>Visita do Responsavel Tecnico Habilitado</font>",
@@ -10137,9 +10167,9 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     normas = [
         ["Instrumento Normativo","Atendimento"],
         ["Lei Federal no 2.800/1956","Atribuicoes do Tecnico em Quimica"],
-        ["Resolucao CFQ no 332/2025","Responsabilidade Tecnica e ART"],
-        ["ABNT NBR 10339","Parametros de qualidade da agua de piscina"],
-        ["Portaria GM/MS no 888/2021","Referencia sanitaria para agua"],
+        ["Resolucoes CFQ no 332/2025 e 345/2026","Responsabilidade tecnica e ART, conforme enquadramento"],
+        ["ABNT NBR 10339:2018, corrigida 2019","Projeto, execucao, manutencao e seguranca de piscinas"],
+        ["NR-6 e NR-26","EPI e seguranca no trabalho com produtos quimicos"],
     ]
     tn = Table([[Paragraph(c,s_sm) for c in r] for r in normas], colWidths=["45%","55%"])
     tn.setStyle(TableStyle([
@@ -10174,7 +10204,7 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     for pisc in piscinas:
         elems.append(Paragraph(f"Piscina: <b>{pisc.get('nome','Piscina')}</b>",s_bold))
         elems.append(Spacer(1,3))
-        rows = [[Paragraph(c,s_sm) for c in ["Parametro","Valor","Faixa NBR 10339","Status","Freq."]]]
+        rows = [[Paragraph(c,s_sm) for c in ["Parametro","Valor","Faixa operacional","Status","Freq."]]]
         for label,key,mn,mx,quinz in PARAMS:
             raw = pisc.get(key,"")
             try: v = float(str(raw).replace(",","."))
@@ -10253,7 +10283,7 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     elems.append(HRFlowable(width="100%",thickness=0.5,color=BORDA,spaceAfter=6))
     decl = ("Declaro que a presente visita de supervisao tecnica foi realizada por mim, Responsavel Tecnico "
             "habilitado perante o Conselho Regional de Quimica de Minas Gerais (CRQ-MG 2a Regiao, CRQ 024025748), "
-            "em atendimento as obrigacoes estabelecidas pela Resolucao CFQ no 332/2025 e a ABNT NBR 10339. "
+            "com referencia nas Resolucoes CFQ no 332/2025 e 345/2026 e na ABNT NBR 10339, conforme escopo aplicavel. "
             "Os resultados refletem as condicoes verificadas no momento da visita. "
             "A ART encontra-se em tramitacao junto ao CRQ-MG 2a Regiao.")
     db = Table([[Paragraph(decl, s_just)]], colWidths=["100%"])
@@ -10289,7 +10319,7 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     elems.append(Spacer(1,6))
     elems.append(HRFlowable(width="100%",thickness=0.8,color=NAVY,spaceAfter=4))
     elems.append(Paragraph(
-        "Aqua Gestao | CRQ 024025748 | Responsabilidade Tecnica | ART em tramitacao - CRQ-MG 2a Regiao",
+        "ACQUA GESTÃO | CRQ 024025748 | Responsabilidade Tecnica | ART em tramitacao - CRQ-MG 2a Regiao",
         s_gold))
 
     doc.build(elems)
@@ -11881,13 +11911,13 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_nbr_11238": (st.session_state.get("rel_nbr_11238") or ""),
         "rel_nr_26": (st.session_state.get("rel_nr_26") or ""),
         "rel_nr_06": (st.session_state.get("rel_nr_06") or ""),
-        "rel_epi_luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Conforme"),
+        "rel_epi_luvas_status": (st.session_state.get("rel_epi_luvas_status") or "Não informado"),
         "rel_epi_luvas_ca": (st.session_state.get("rel_epi_luvas_ca") or ""),
-        "rel_epi_oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Conforme"),
+        "rel_epi_oculos_status": (st.session_state.get("rel_epi_oculos_status") or "Não informado"),
         "rel_epi_oculos_ca": (st.session_state.get("rel_epi_oculos_ca") or ""),
-        "rel_epi_respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Conforme"),
+        "rel_epi_respirador_status": (st.session_state.get("rel_epi_respirador_status") or "Não informado"),
         "rel_epi_respirador_ca": (st.session_state.get("rel_epi_respirador_ca") or ""),
-        "rel_epi_botas_status": (st.session_state.get("rel_epi_botas_status") or "Conforme"),
+        "rel_epi_botas_status": (st.session_state.get("rel_epi_botas_status") or "Não informado"),
         "rel_epi_botas_ca": (st.session_state.get("rel_epi_botas_ca") or ""),
         "rel_analises_total": qtd,
         "analises": [],
@@ -22486,30 +22516,30 @@ for i in range(5):
     cols[1].text_input(f"Prazo {i+1}", key=f"rel_rec_prazo_{i}", label_visibility="collapsed", placeholder="Prazo")
     cols[2].text_input(f"Responsável {i+1}", key=f"rel_rec_resp_{i}", label_visibility="collapsed", placeholder="Responsável")
 
-st.markdown("**NBR 11238 — Segurança e higiene operacional**")
+st.markdown("**Segurança e higiene operacional — ABNT NBR 10339**")
 st.caption("Marque os requisitos verificados. Esses campos alimentam a coluna ‘Conforme?’ do relatório final.")
 _nbr_cols = st.columns([1.6, 1.2, 1.6, 1.6, 1.2])
 with _nbr_cols[0]:
-    st.radio("Sinalização de profundidade visível", ["Sim", "Não"], key="rel_nbr11238_profundidade", horizontal=True)
+    st.radio("Sinalização de profundidade visível", ["Não verificado", "Sim", "Não", "N/A"], key="rel_nbr11238_profundidade", horizontal=True)
 with _nbr_cols[1]:
-    st.radio("Retrolavagem do filtro", ["Sim", "Não"], key="rel_nbr11238_retrolavagem", horizontal=True)
+    st.radio("Retrolavagem do filtro", ["Não verificado", "Sim", "Não", "N/A"], key="rel_nbr11238_retrolavagem", horizontal=True)
 with _nbr_cols[2]:
-    st.radio("Limpeza de skimmers/decantadores", ["Sim", "Não"], key="rel_nbr11238_skimmers", horizontal=True)
+    st.radio("Limpeza de skimmers/decantadores", ["Não verificado", "Sim", "Não", "N/A"], key="rel_nbr11238_skimmers", horizontal=True)
 with _nbr_cols[3]:
-    st.radio("Área de circulação antiderrapante", ["Sim", "Não"], key="rel_nbr11238_circulacao", horizontal=True)
+    st.radio("Área de circulação antiderrapante", ["Não verificado", "Sim", "Não", "N/A"], key="rel_nbr11238_circulacao", horizontal=True)
 with _nbr_cols[4]:
-    st.radio("Chuveiro antes do acesso", ["Sim", "Não"], key="rel_nbr11238_chuveiro", horizontal=True)
+    st.radio("Chuveiro antes do acesso", ["Não verificado", "Sim", "Não", "N/A"], key="rel_nbr11238_chuveiro", horizontal=True)
 
 cx1, cx2, cx3 = st.columns(3)
 with cx1:
-    st.text_area("NBR 11238 — Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Ex.: sinalização visível, retrolavagem realizada, área antiderrapante preservada...")
+    st.text_area("Segurança operacional — Evidência / observação", key="rel_nbr_11238", height=90, placeholder="Ex.: sinalização visível, retrolavagem realizada, área antiderrapante preservada...")
 with cx2:
     st.text_area("NR-26 / GHS – Checklist", key="rel_nr_26", height=90, placeholder="FISPQs/FDS, rótulos GHS, sinalização, incompatibilidade, emergência...")
 with cx3:
     st.text_area("NR-06 / EPI – Checklist", key="rel_nr_06", height=90, placeholder="Fornecimento, fiscalização e uso dos EPIs...")
 
 st.markdown("**EPIs — preenchimento rápido**")
-status_epi_opcoes = ["Conforme", "Pendente", "Não informado", "N/A"]
+status_epi_opcoes = ["Não informado", "Conforme", "Pendente", "N/A"]
 for rotulo, chave_base in [
     ("Luvas", "luvas"),
     ("Óculos", "oculos"),

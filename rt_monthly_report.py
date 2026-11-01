@@ -716,7 +716,7 @@ def build_monthly_rt_pdf_bytes(
 
     refs = (
         "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; "
-        "Resolução CFQ nº 332/2025; ABNT NBR 10339:2018 (versão corrigida de 2019). "
+        "Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339:2018 (versão corrigida de 2019). "
         "A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
     )
     story.append(Spacer(1, 2.2 * mm))
