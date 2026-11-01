@@ -8900,6 +8900,26 @@ def _resolver_fotos_visita_para_relatorio(lancamento: dict) -> dict[str, list[st
     return resultado
 
 
+def resolver_piscinas_operador(cliente: dict | None, dados_locais: dict | None) -> dict:
+    """Cadastro remoto é a fonte principal; lista local explícita é fallback legado.
+
+    Uma única piscina adulto cadastrada é configuração válida. Volume total sem
+    distribuição não identifica piscina e não deve criar configuração presumida.
+    A função não grava nem altera o cadastro ou o rascunho do operador.
+    """
+    from utils.rt_relatorio import piscinas_do_cliente
+    piscinas = piscinas_do_cliente(cliente).get("piscinas", [])
+    nomes = list(dict.fromkeys(p["nome"] for p in piscinas))
+    if nomes:
+        return {"piscinas": nomes, "configuradas": True, "fonte": "cadastro"}
+    legado = (dados_locais or {}).get("piscinas")
+    if isinstance(legado, list):
+        nomes = list(dict.fromkeys(str(n).strip() for n in legado if isinstance(n, str) and n.strip()))
+        if nomes:
+            return {"piscinas": nomes, "configuradas": True, "fonte": "local"}
+    return {"piscinas": [], "configuradas": False, "fonte": "ausente"}
+
+
 def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     """Gera HTML profissional do relatório de visita para download como PDF."""
 
@@ -14118,10 +14138,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         # Carrega configuração de piscinas salva ou usa padrão
         _pasta_cond_op = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
         _dados_cond_op = (carregar_dados_condominio(_pasta_cond_op) or {}) if _pasta_cond_op.exists() else {}
-        _piscinas_config = _dados_cond_op.get("piscinas", ["Piscina Adulto"])
+        _config_piscinas_op = resolver_piscinas_operador(clientes_mapa_op.get(op_nome_cond), _dados_cond_op)
+        _piscinas_config = _config_piscinas_op["piscinas"] or ["Piscina Adulto"]
 
-        # Piscinas vem automaticamente do cadastro da ADM — operador nao configura
-        if _piscinas_config and _piscinas_config != ["Piscina Adulto"]:
+        # Cadastro remoto também funciona após reinícios do Cloud, sem JSON local.
+        if _config_piscinas_op["configuradas"]:
             # ADM ja cadastrou as piscinas — usa direto
             _piscinas_ativas = _piscinas_config
             st.info(f"🏊 {len(_piscinas_ativas)} piscina(s) deste local: {chr(10).join(f'  • {p}' for p in _piscinas_ativas)}")
