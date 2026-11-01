@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.datas_visitas import normalizar_data_visita
-from utils.normas_piscinas import avaliar_leitura, cloro_combinado
+from utils.normas_piscinas import avaliar_leitura, cloro_combinado, fora_limite, texto_limite, texto_ideal
 
 
 RT_NAME = "Thyago Fernando da Silveira"
@@ -33,14 +33,12 @@ MONTH_NAMES_PT = {
     12: "Dezembro",
 }
 
-RANGES = {
-    "ph": (7.2, 7.8),
-    "crl": (0.5, 3.0),
-    # CT não possui faixa de conformidade independente: avaliar CC = CT - CRL.
-    "alcalinidade": (80.0, 120.0),
-    "dureza": (150.0, 300.0),
-    "cya": (30.0, 50.0),
-}
+# Parâmetros com limite aceitável na ABNT NBR 10818:2026 (Tabela 3, piscina
+# coletiva, tratamento clorado simples). Os limites vêm de utils.normas_piscinas.
+# CT não possui faixa de conformidade independente: avaliar CC = CT - CRL.
+# TDS e temperatura não são classificados por número isolado.
+RANGES = ("ph", "crl", "alcalinidade", "dureza", "cya", "turbidez", "orp")
+
 
 COLORS = {
     "navy": "#143A63",
@@ -235,10 +233,7 @@ def _status_for_value(field: str, value: Any) -> str:
         return "missing"
     if field not in RANGES:
         return "ok"
-    mn, mx = RANGES[field]
-    if num < mn or num > mx:
-        return "out"
-    return "ok"
+    return "out" if fora_limite(field, num) else "ok"
 
 
 def prepare_monitoring_table_rows(records: list[dict[str, Any]]) -> list[list[dict[str, str]]]:
@@ -316,6 +311,7 @@ def _collect_deviation_data(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
         "alcalinidade": "alcalinidade",
         "dureza": "dureza",
         "cya": "CYA",
+        "orp": "ORP",
     }
     for row in rows:
         data = row.get("data") or "—"
@@ -349,7 +345,7 @@ def _deviation_sentences(rows: list[dict[str, Any]]) -> list[str]:
 def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
     found = set()
     for row in rows:
-        for field in ["ph", "crl", "alcalinidade", "dureza", "cya"]:
+        for field in ["ph", "crl", "alcalinidade", "dureza", "cya", "orp"]:
             if _status_for_value(field, row.get(field)) == "out":
                 found.add(field)
         cc, erro = cloro_combinado(_to_float(row.get("crl")), _to_float(row.get("ct")))
@@ -362,9 +358,9 @@ def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
 
     recs: list[str] = []
     if "ph" in found:
-        recs.append("Ajustar pH para a faixa operacional de 7,2 a 7,8 e repetir leitura após estabilização.")
+        recs.append(f"Ajustar pH para o limite da NBR 10818:2026 ({texto_limite('ph')}; faixa ideal {texto_ideal('ph')}) e repetir leitura após estabilização.")
     if "crl" in found:
-        recs.append("Reavaliar cloro livre, revisar demanda oxidante e confirmar residual após recirculação.")
+        recs.append(f"Reavaliar cloro residual livre (limite {texto_limite('crl')} mg/L para tratamento clorado simples), revisar demanda oxidante e confirmar residual após recirculação.")
     if "alcalinidade" in found:
         recs.append("Corrigir alcalinidade total para melhorar estabilidade do pH e reduzir oscilações operacionais.")
     if "dureza" in found:
@@ -375,6 +371,8 @@ def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
         recs.append("Repetir as medições de cloro livre e total: CT inferior ao CRL é inconsistente.")
     if "cc" in found:
         recs.append("Investigar demanda oxidante e cloraminas; corrigir cloro combinado e confirmar o resultado por nova análise.")
+    if "orp" in found:
+        recs.append("Conferir o potencial de oxirredução (mínimo 650 mV, quando aplicável) e a calibração do sensor.")
     if "turbidez" in found:
         recs.append("Investigar turbidez, filtração e retenção de partículas, com nova medição após as providências.")
 
@@ -709,7 +707,7 @@ def build_monthly_rt_pdf_bytes(
     monitor_tbl.setStyle(TableStyle(style_cmds))
     story.append(monitor_tbl)
     story.append(Spacer(1, 1.8 * mm))
-    story.append(P("CC: cloro combinado = CT − CRL, somente quando CT ≥ CRL. Leituras inconsistentes exigem conferência.", "Small"))
+    story.append(P("CC: cloro combinado = CT - CRL, somente quando CT é maior ou igual ao CRL. Leituras inconsistentes exigem conferência.", "Small"))
     story.append(Spacer(1, 2.4 * mm))
 
     synthesis = "Leituras sem não conformidades críticas no período." if not deviation_lines else "Foram identificados desvios que exigem ação corretiva com rastreabilidade."
@@ -744,7 +742,8 @@ def build_monthly_rt_pdf_bytes(
 
     refs = (
         "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; "
-        "Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339:2018 (versão corrigida de 2019). "
+        "Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10818:2026 (qualidade da água); "
+        "ABNT NBR 10339:2018 (versão corrigida de 2019). "
         "A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
     )
     story.append(Spacer(1, 2.2 * mm))

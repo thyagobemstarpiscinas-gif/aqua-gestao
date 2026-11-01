@@ -60,6 +60,24 @@ from rt_monthly_report import (
     build_monthly_rt_pdf_bytes,
     validate_generation_selection,
 )
+from utils.normas_piscinas import limites as _nbr_limites, texto_limite as _nbr_texto_limite
+
+# Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
+# tratamento clorado simples), centralizados em utils.normas_piscinas e usados
+# nos alertas e documentos. CYA não tem mínimo: usa-se 0 para comparação.
+NBR_LIM = {
+    "ph": _nbr_limites("ph"),
+    "crl": _nbr_limites("crl"),
+    "alc": _nbr_limites("alcalinidade"),
+    "dc": _nbr_limites("dureza"),
+    "cya": (0.0, _nbr_limites("cya")[1]),
+}
+NBR_TXT = {
+    "ph": _nbr_texto_limite("ph"), "crl": _nbr_texto_limite("crl"),
+    "alc": _nbr_texto_limite("alcalinidade"), "dc": _nbr_texto_limite("dureza"),
+    "cya": _nbr_texto_limite("cya"), "cc": _nbr_texto_limite("cc"),
+}
+NBR_CC_MAX = _nbr_limites("cc")[1]
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -387,7 +405,7 @@ def sheets_salvar_operador(nome: str, pin: str, condomínios: list, ativo: bool 
             return False
 
         if _pin_operador_em_uso(pin_limpo, nome_ignorar=nome_limpo):
-            st.session_state["_operadores_erro"] = f"O PIN {pin_limpo} já está em uso por outro operador."
+            st.session_state["_operadores_erro"] = "O PIN informado já está em uso por outro operador. Escolha outro PIN."
             return False
 
         sh = conectar_sheets()
@@ -2947,10 +2965,17 @@ def build_monthly_rt_pdf_bytes(
         return Paragraph(_esc(v).replace("\n", "<br/>"), style)
 
     def _to_float(v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
         s = str(v if v is not None else "").strip()
         if not s or s in {"—", "-", "None"}:
             return None
-        s = s.replace(" ", "").replace(".", "").replace(",", ".")
+        s = s.replace(" ", "")
+        # "1.234,5" (milhar + decimal pt-BR) -> 1234.5; "7.4" ou "7,4" -> 7.4.
+        if s.count(",") == 1 and "." in s:
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", ".")
         try:
             return float(s)
         except Exception:
@@ -2995,7 +3020,7 @@ def build_monthly_rt_pdf_bytes(
         return out
 
     recs = _limpar_records(records)
-    from utils.normas_piscinas import avaliar_leitura, cloro_combinado
+    from utils.normas_piscinas import avaliar_leitura, cloro_combinado, fora_limite, texto_resumo_limites
 
     def _desvios_record(r):
         desv = []
@@ -3007,16 +3032,18 @@ def build_monthly_rt_pdf_bytes(
         cya = _to_float(r.get("cianurico") or r.get("cya"))
         turb = _to_float(r.get("turbidez") or r.get("ntu"))
         orp = _to_float(r.get("orp"))
-        if ph is not None and not (7.2 <= ph <= 7.8): desv.append("pH")
-        if crl is not None and not (0.5 <= crl <= 3.0): desv.append("CRL")
+        # Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3); faixas ideais
+        # não são tratadas como desvio.
+        if fora_limite("ph", ph): desv.append("pH")
+        if fora_limite("crl", crl): desv.append("CRL")
         cc, erro_cc = cloro_combinado(crl, ct)
         if erro_cc: desv.append("CT < CRL (medição inconsistente)")
         elif avaliar_leitura("cc", cc) == "fora_limite": desv.append("cloro combinado")
-        if alc is not None and not (80 <= alc <= 120): desv.append("alcalinidade")
-        if dur is not None and not (150 <= dur <= 300): desv.append("dureza")
-        if cya is not None and not (30 <= cya <= 50): desv.append("CYA")
+        if fora_limite("alcalinidade", alc): desv.append("alcalinidade")
+        if fora_limite("dureza", dur): desv.append("dureza")
+        if fora_limite("cya", cya): desv.append("CYA")
         if avaliar_leitura("turbidez", turb) == "fora_limite": desv.append("turbidez")
-        if orp is not None and orp < 650: desv.append("ORP")
+        if fora_limite("orp", orp): desv.append("ORP")
         return desv
 
     desvios_linhas = []
@@ -3025,7 +3052,7 @@ def build_monthly_rt_pdf_bytes(
         ds = _desvios_record(r)
         if ds:
             tem_desvios = True
-            desvios_linhas.append(f"{_fmt_data_br(r.get('data'))} — {', '.join(ds)} fora das faixas operacionais.")
+            desvios_linhas.append(f"{_fmt_data_br(r.get('data'))} — verificar: {', '.join(ds)} (limites da NBR 10818:2026).")
 
     if tem_desvios:
         situacao_geral = "ATENÇÃO — HÁ DESVIOS NO PERÍODO"
@@ -3139,15 +3166,17 @@ def build_monthly_rt_pdf_bytes(
     for r in recs_validos:
         crl = _to_float(r.get("cloro_livre") or r.get("crl"))
         ct = _to_float(r.get("cloro_total") or r.get("ct"))
-        cc = ""
-        if crl is not None and ct is not None:
-            cc = max(0, ct - crl)
+        cc, _erro_cc_tab = cloro_combinado(crl, ct)
+        if _erro_cc_tab:
+            cc = "Rever"
+        elif cc is None:
+            cc = ""
         rows.append([
             _p(_fmt_data_br(r.get("data"), curta=True), st_tab),
             _p(_fmt(r.get("ph")), st_tab),
             _p(_fmt(r.get("cloro_livre") or r.get("crl")), st_tab),
             _p(_fmt(r.get("cloro_total") or r.get("ct")), st_tab),
-            _p(_fmt(cc), st_tab),
+            _p(cc if cc == "Rever" else _fmt(cc), st_tab),
             _p(_fmt(r.get("alcalinidade") or r.get("alc")), st_tab),
             _p(_fmt(r.get("dureza") or r.get("dc")), st_tab),
             _p(_fmt(r.get("cianurico") or r.get("cya")), st_tab),
@@ -3176,7 +3205,8 @@ def build_monthly_rt_pdf_bytes(
     t_mon.setStyle(TableStyle(style_cmds))
     story.append(t_mon)
     story.append(Spacer(1, 2.5 * mm))
-    story.append(_p("CC: cloro combinado = CT − CRL, somente quando CT ≥ CRL. Leituras inconsistentes exigem conferência.", st_small))
+    story.append(_p("CC: cloro combinado = CT - CRL, somente quando CT é maior ou igual ao CRL. \"Rever\": CT menor que CRL, medição inconsistente que exige conferência.", st_small))
+    story.append(_p(texto_resumo_limites(), st_small))
     story.append(_p(f"Síntese dos resultados: {sintese}", st_body))
     if desvios_linhas:
         story.append(_p("Desvios relevantes: " + " ; ".join(desvios_linhas), st_body))
@@ -3233,7 +3263,7 @@ def build_monthly_rt_pdf_bytes(
         "3. Recomendações técnicas: " + " ".join(recomendacoes),
         "4. Prazos sugeridos: Imediato para desvios críticos e até a próxima rotina para ajustes preventivos.",
         "5. Responsável pela ação: Operação local com acompanhamento do Responsável Técnico.",
-        "6. Conclusão técnica: " + ("No período avaliado, foram identificadas não conformidades pontuais e recomenda-se executar plano corretivo com reavaliação técnica sequencial." if tem_desvios else "No período avaliado, os registros indicam controle técnico satisfatório, mantendo-se a rotina de monitoramento e rastreabilidade."),
+        "6. Conclusão técnica: " + ("No período avaliado, foram identificadas não conformidades pontuais e recomenda-se executar plano corretivo com reavaliação técnica sequencial." if tem_desvios else "No período avaliado, não foram identificados desvios nos registros avaliados. A avaliação é parcial, limitada às leituras registradas, e não substitui o monitoramento operacional diário."),
     ]
     if complemento:
         parecer_linhas.append("7. Complemento do RT: " + complemento)
@@ -3242,13 +3272,13 @@ def build_monthly_rt_pdf_bytes(
         story.append(Spacer(1, 1.2 * mm))
 
     story.append(Spacer(1, 2 * mm))
-    refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
+    refs = "Referências: Lei Federal nº 2.800/1956; Decreto nº 85.877/1981; Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10818:2026 (qualidade da água); ABNT NBR 10339:2018 (versão corrigida de 2019). A Portaria GM/MS nº 888/2021 é referência sanitária complementar para água de consumo humano."
     story.append(_p(refs, st_small))
 
     assinatura = [
         [_p("Responsável Técnico", st_tab_left), _p("Representante do estabelecimento", st_tab_left)],
-        [_p(f"{RESPONSAVEL_TÉCNICO}<br/>Técnico em Química<br/>CRQ-MG 2ª Região nº 024025748<br/>Responsável Técnico<br/><br/>Data de emissão: {issue_date or '—'}", st_tab_left),
-         _p(f"<br/><br/><br/>Assinatura: ___________________________<br/>Nome: {representative_name or '____________________________'}", st_tab_left)],
+        [_p(f"{RESPONSAVEL_TÉCNICO}\nTécnico em Química\nCRQ-MG 2ª Região nº 024025748\nResponsável Técnico\n\nData de emissão: {issue_date or '—'}", st_tab_left),
+         _p(f"\n\n\nAssinatura: ___________________________\nNome: {representative_name or '____________________________'}", st_tab_left)],
     ]
     t_ass = Table(assinatura, colWidths=[8.9 * cm, 8.9 * cm])
     t_ass.setStyle(TableStyle([
@@ -5746,6 +5776,8 @@ def gerar_documento(template_path: Path, output_docx: Path, placeholders: dict, 
     doc = Document(str(template_path))
     
     substituir_placeholders_doc(doc, placeholders)
+    # Correção de referência normativa: não existe edição 2025 da NBR 10818.
+    substituir_placeholders_doc(doc, {"ABNT NBR 10818:2025": "ABNT NBR 10818:2026"})
 
     doc.save(str(output_docx))
 
@@ -6106,7 +6138,8 @@ def _coletar_analises_preview_formulario() -> list[dict]:
                 _ct = valor_float(item["cloro_total"])
                 _cl = valor_float(item["cloro_livre"])
                 if _ct is not None and _cl is not None:
-                    item["cloraminas"] = str(round(max(_ct - _cl, 0), 2)).replace(".", ",")
+                    # CT < CRL é medição inconsistente: não converter em zero.
+                    item["cloraminas"] = str(round(_ct - _cl, 2)).replace(".", ",") if _ct >= _cl else "Inconsistente"
             except Exception:
                 item["cloraminas"] = ""
             linhas.append(item)
@@ -7201,7 +7234,8 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
             try:
                 _crl_num = float(str(crl).replace(",", "."))
                 _ct_num = float(str(ct).replace(",", "."))
-                cc = f"{max(0.0, _ct_num - _crl_num):.2f}".replace(".", ",")
+                # CT < CRL é medição inconsistente: não converter em zero.
+                cc = f"{_ct_num - _crl_num:.2f}".replace(".", ",") if _ct_num >= _crl_num else "Inconsistente"
             except Exception:
                 cc = ""
         alc = _pegar_alias(item, "alcalinidade", "alc", "AT")
@@ -7470,17 +7504,20 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         ], widths=[58*mm, 122*mm]))
 
         story.append(P("2. NORMAS TÉCNICAS ABNT APLICÁVEIS", "AqH1"))
-        story.append(P("2.1 Controle da água — referências operacionais", "AqH2"))
-        story.append(P("As faixas abaixo são referências operacionais configuradas no sistema, sujeitas à revisão do RT; não certificam atendimento à edição vigente da norma de qualidade da água. A ABNT NBR 10339:2018, versão corrigida 2019, trata de projeto, execução e manutenção. O catálogo registra a NBR 10818:2016 como cancelada com revisão em 21/09/2026; os limites da revisão devem ser conferidos no texto integral antes de atualizar os critérios. O método e o equipamento efetivamente usados devem constar dos registros de campo.", "AqBody"))
+        story.append(P("2.1 Controle da água — ABNT NBR 10818:2026", "AqH2"))
+        story.append(P("Limites aceitáveis e faixas ideais da ABNT NBR 10818:2026, Tabela 3, para piscina coletiva com tratamento clorado simples. Uma leitura fora da faixa ideal, mas dentro do limite, é ponto de atenção e não não conformidade. Cloro total não tem limite próprio: avalia-se o cloro combinado (CT - CRL). TDS não é classificado por leitura isolada. A ABNT NBR 10339:2018, versão corrigida 2019, trata de projeto, execução e manutenção. Este relatório avalia apenas as leituras registradas e não certifica conformidade integral; o método e o equipamento usados devem constar dos registros de campo.", "AqBody"))
+        from utils.normas_piscinas import texto_limite as _tl, texto_ideal as _ti
         story.append(table([
-            ["Parâmetro", "Mínimo", "Máximo", "Unidade", "Método"],
-            ["pH", "7,2", "7,8", "—", "Photometer"],
-            ["Cloro Residual Livre (CRL)", "0,5", "3,0", "mg/L", "Photometer"],
-            ["Cloro Total", "0,5", "3,0", "mg/L", "Photometer"],
-            ["Alcalinidade Total", "80", "120", "mg/L CaCO3", "Photometer"],
-            ["Dureza Cálcica", "150", "300", "mg/L CaCO3", "Photometer"],
-            ["Ácido Cianúrico", "30", "50", "mg/L", "Photometer"],
-        ], widths=[58*mm, 30*mm, 30*mm, 35*mm, 27*mm]))
+            ["Parâmetro", "Limite aceitável", "Faixa ideal", "Unidade"],
+            ["pH", _tl("ph"), _ti("ph"), "—"],
+            ["Cloro Residual Livre (CRL)", _tl("crl"), _ti("crl"), "mg/L"],
+            ["Cloro Combinado (CT - CRL)", _tl("cc"), "—", "mg/L"],
+            ["Alcalinidade Total", _tl("alcalinidade"), _ti("alcalinidade"), "mg/L CaCO3"],
+            ["Dureza Cálcica", _tl("dureza"), _ti("dureza"), "mg/L CaCO3"],
+            ["Ácido Cianúrico", _tl("cya"), _ti("cya"), "mg/L"],
+            ["Turbidez", _tl("turbidez"), "—", "NTU"],
+            ["ORP (quando aplicável)", _tl("orp"), "—", "mV"],
+        ], widths=[62*mm, 40*mm, 40*mm, 38*mm]))
         story.append(P("NOTA TÉCNICA: análises microbiológicas não são realizadas no local. Tais determinações requerem coleta e envio a laboratório competente para os ensaios requeridos, sob responsabilidade de contratação do cliente.", "AqWarn"))
 
         story.append(P("2.2 Segurança e higiene operacional — ABNT NBR 10339", "AqH2"))
@@ -7525,7 +7562,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         ], widths=[82*mm, 42*mm, 28*mm, 28*mm]))
 
         story.append(P("4. CONTROLE OPERACIONAL – MONITORAMENTO IN LOCO", "AqH1"))
-        story.append(P("Análises realizadas com Photometer Color Q e, nas visitas semanais de RT, turbidímetro, medidor de ORP, TDS e temperatura. Todos os resultados são confrontados com os limites operacionais aplicáveis.", "AqBody"))
+        story.append(P("Análises realizadas com Photometer Color Q e, nas visitas semanais de RT, turbidímetro, medidor de ORP, TDS e temperatura. Os resultados são confrontados com os limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3).", "AqBody"))
         story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
         _cab_a = [["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]]
@@ -7639,46 +7676,61 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         return False, str(e)
 
 
+# Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
+# tratamento clorado simples), centralizados em utils.normas_piscinas.
 LIMITES_RELATORIO = {
-    "ph": (7.2, 7.8, "pH"),
-    "cloro_livre": (0.5, 3.0, "cloro residual livre"),
-    "alcalinidade": (80.0, 120.0, "alcalinidade total"),
-    "dureza": (150.0, 300.0, "dureza cálcica"),
-    "cianurico": (30.0, 50.0, "ácido cianúrico"),
+    "ph": "pH",
+    "cloro_livre": "cloro residual livre",
+    "alcalinidade": "alcalinidade total",
+    "dureza": "dureza cálcica",
+    "cianurico": "ácido cianúrico",
 }
 
 
 def avaliar_conformidade_analises(analises: list[dict]) -> dict:
+    """Avalia somente as leituras registradas.
+
+    "CONFORME" aqui significa ausência de leituras fora dos limites nos campos
+    preenchidos; não comprova conformidade integral nem a frequência de medição.
+    """
+    from utils.normas_piscinas import fora_limite, texto_limite, cloro_combinado, avaliar_leitura
+
+    def _fmt_br(v):
+        return f"{v:g}".replace(".", ",")
+
     nao_conformes = []
     houve_leitura = False
     cloraminas_altas = []
+    inconsistencias = []
     for idx, item in enumerate(analises, start=1):
         linha_tem = any((item.get(k) or "").strip() for k in ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico"])
         if not linha_tem:
             continue
         houve_leitura = True
-        for campo, (mn, mx, rotulo) in LIMITES_RELATORIO.items():
+        for campo, rotulo in LIMITES_RELATORIO.items():
             v = valor_float(item.get(campo, ""))
             if v is None:
                 continue
-            if v < mn or v > mx:
-                nao_conformes.append(f"Linha {idx}: {rotulo}={v} fora da faixa {mn}–{mx}")
+            if fora_limite(campo, v):
+                nao_conformes.append(f"Linha {idx}: {rotulo}={_fmt_br(v)} fora do limite {texto_limite(campo)} (NBR 10818:2026)")
         cl = valor_float(item.get("cloro_livre", ""))
         ct = valor_float(item.get("cloro_total", ""))
-        if cl is not None and ct is not None:
-            combinado = round(max(ct - cl, 0), 2)
-            item["cloro_combinado"] = combinado
-            if combinado > 0.2:
-                cloraminas_altas.append((idx, combinado))
-        else:
-            item["cloro_combinado"] = None
+        combinado, erro_cc = cloro_combinado(cl, ct)
+        item["cloro_combinado"] = round(combinado, 2) if combinado is not None else None
+        if erro_cc:
+            inconsistencias.append(f"Linha {idx}: cloro total inferior ao livre — conferir medição")
+        elif combinado is not None and avaliar_leitura("cc", combinado) == "fora_limite":
+            cloraminas_altas.append((idx, round(combinado, 2)))
+            nao_conformes.append(f"Linha {idx}: cloro combinado={_fmt_br(round(combinado, 2))} acima do limite {texto_limite('cc')} (NBR 10818:2026)")
 
+    nao_conformes.extend(inconsistencias)
     status = "NÃO CONFORME" if nao_conformes else ("CONFORME" if houve_leitura else "EM CORREÇÃO")
     return {
         "status": status,
         "detalhes": nao_conformes,
         "houve_leitura": houve_leitura,
         "cloraminas_altas": cloraminas_altas,
+        "inconsistencias": inconsistencias,
     }
 
 
@@ -8092,10 +8144,12 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
             observacoes.append(detalhe.replace("Linha", "Leitura"))
     if avaliacao.get("cloraminas_altas"):
         idx, valor = avaliacao["cloraminas_altas"][0]
-        observacoes.append(f"Leitura {idx}: cloro combinado estimado em {valor} mg/L, sugerindo formação de cloraminas e maior carga orgânica.")
+        observacoes.append(f"Leitura {idx}: cloro combinado estimado em {str(valor).replace('.', ',')} mg/L, acima do limite de 0,6 mg/L da NBR 10818:2026, sugerindo formação de cloraminas e maior carga orgânica.")
         recomendacoes.append("Executar oxidação complementar / supercloração controlada e reavaliar CT, CL e cloro combinado.")
-    if any("ph=" in d for d in detalhes):
-        recomendacoes.append("Ajustar pH para a faixa operacional de 7,2 a 7,8 e repetir a leitura após estabilização.")
+    if any("cloro total inferior" in d for d in detalhes):
+        recomendacoes.append("Repetir as medições de cloro livre e total: cloro total inferior ao livre é inconsistente.")
+    if any(d.split(": ", 1)[-1].lower().startswith("ph=") for d in detalhes):
+        recomendacoes.append("Ajustar pH para o limite da NBR 10818:2026 (7,0–7,8; faixa ideal 7,4–7,6) e repetir a leitura após estabilização.")
     if any("cloro residual livre" in d for d in detalhes):
         recomendacoes.append("Revisar a dosagem de desinfetante e a demanda oxidante da água.")
     if any("ácido cianúrico" in d for d in detalhes):
@@ -8112,13 +8166,13 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
 
     diagnostico = []
     if avaliacao["status"] == "CONFORME":
-        diagnostico.append("No período avaliado, os parâmetros registrados indicam condição satisfatória de controle físico-químico da água, sem desvios relevantes frente às faixas operacionais adotadas pelo sistema.")
+        diagnostico.append("No período avaliado, as leituras registradas não apresentaram valores fora dos limites da ABNT NBR 10818:2026. A avaliação é parcial, limitada aos parâmetros e datas registrados, e não substitui o monitoramento operacional diário.")
     elif avaliacao["status"] == "EM CORREÇÃO":
         diagnostico.append("O sistema registra fase operacional de correção, recomendando continuidade das medidas técnicas, reforço de monitoramento e nova conferência analítica após estabilização.")
     else:
         diagnostico.append("Foram observadas não conformidades físico-químicas que exigem ação corretiva e reavaliação técnica sequencial.")
     if avaliacao.get("cloraminas_altas"):
-        diagnostico.append("A presença de cloro combinado acima do desejável sugere formação de cloraminas, condição compatível com carga orgânica elevada, consumo do desinfetante e possível redução da eficiência sanitizante.")
+        diagnostico.append("A presença de cloro combinado acima do limite sugere formação de cloraminas, condição compatível com carga orgânica elevada, consumo do desinfetante e possível redução da eficiência sanitizante.")
     if detalhes:
         diagnostico.append("Resumo automático dos desvios: " + "; ".join(detalhes[:5]) + ".")
 
@@ -8277,6 +8331,52 @@ def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
             doc.add_paragraph(f"• {item['recomendacao']} | Prazo: {item.get('prazo','')} | Responsável: {item.get('responsavel','')}")
 
 
+def _atualizar_tabela_limites_docx(doc: Document):
+    """Substitui a tabela legada de faixas do modelo DOCX pelos limites da NBR 10818:2026."""
+    from utils.normas_piscinas import texto_limite, texto_ideal
+    linhas = {
+        "ph": ["pH", texto_limite("ph"), texto_ideal("ph"), "—"],
+        "cloro residual livre": ["Cloro Residual Livre (CRL)", texto_limite("crl"), texto_ideal("crl"), "mg/L"],
+        "cloro total": ["Cloro Total", "Sem limite próprio", "Avaliar CC = CT - CRL (até 0,6)", "mg/L"],
+        "alcalinidade": ["Alcalinidade Total", texto_limite("alcalinidade"), texto_ideal("alcalinidade"), "mg/L CaCO₃"],
+        "dureza": ["Dureza Cálcica", texto_limite("dureza"), texto_ideal("dureza"), "mg/L CaCO₃"],
+        "acido cianurico": ["Ácido Cianúrico (estabilizador)", texto_limite("cya"), texto_ideal("cya"), "mg/L"],
+    }
+
+    def _definir(cell, texto):
+        pars = cell.paragraphs
+        if not pars:
+            cell.text = texto
+            return
+        runs = pars[0].runs
+        if runs:
+            runs[0].text = texto
+            for r in runs[1:]:
+                r.text = ""
+        else:
+            pars[0].add_run(texto)
+        for extra in pars[1:]:
+            for r in extra.runs:
+                r.text = ""
+
+    for tabela in doc.tables:
+        if not tabela.rows or len(tabela.rows[0].cells) < 4:
+            continue
+        cab = normalizar_texto(tabela.rows[0].cells[0].text)
+        if not cab.startswith("parametro (") or "nbr 10818" not in cab and "referencia operacional" not in cab:
+            continue
+        cab_cells = tabela.rows[0].cells
+        for cell, texto in zip(cab_cells, ["Parâmetro (NBR 10818:2026)", "Limite aceitável", "Faixa ideal", "Unidade"]):
+            _definir(cell, texto)
+        for row in tabela.rows[1:]:
+            nome = normalizar_texto(row.cells[0].text)
+            for chave, valores in linhas.items():
+                if nome.startswith(chave):
+                    for cell, texto in zip(row.cells, valores):
+                        _definir(cell, texto)
+                    break
+
+
 def atualizar_textos_normativos(doc: Document):
     # Mapeia TODAS as variações conhecidas de CRQ errado e normas defasadas
     trocas_ordenadas = [
@@ -8288,24 +8388,25 @@ def atualizar_textos_normativos(doc: Document):
         ("CRQ-IV", "CRQ-MG 2ª Região"),
         # Normas
         ("Resolução CFQ nº 332/2025", "Resolução CFQ nº 332/2025, alterada pela nº 345/2026"),
-        ("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados in loco com o aparelho Photometer Color Q (análise quantitativa em campo):", "As faixas abaixo são referências operacionais configuradas no sistema, sujeitas à revisão do RT segundo a edição aplicável da norma de qualidade da água. Método e equipamento devem ser confirmados nos registros de campo."),
+        ("Estabelece os limites físico-químicos aceitáveis para água de piscinas coletivas e individuais. Os parâmetros abaixo são monitorados in loco com o aparelho Photometer Color Q (análise quantitativa em campo):", "Limites aceitáveis e faixas ideais da ABNT NBR 10818:2026, Tabela 3, para piscina coletiva com tratamento clorado simples. Cloro total não tem limite próprio: avalia-se o cloro combinado (CT - CRL). Método e equipamento devem ser confirmados nos registros de campo."),
         ("laboratório acreditado pela ANVISA/Inmetro", "laboratório competente para os ensaios requeridos"),
-        ("2.1  NBR 10818 – Qualidade da Água de Piscina", "2.1 Referências operacionais de controle da água"),
+        ("2.1  NBR 10818 – Qualidade da Água de Piscina", "2.1 Controle da água — ABNT NBR 10818:2026"),
         ("2.2  NBR 11238 – Segurança e Higiene em Piscinas", "2.2 Segurança e higiene operacional — ABNT NBR 10339"),
-        ("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da NBR 10818.", "Faixas operacionais configuradas no sistema, sujeitas à revisão do RT; não constituem certificação de conformidade à edição vigente da norma de qualidade da água."),
-        ("CONFORME – Todos os parâmetros dentro dos limites da NBR 10818", "CONFORME – Avaliação operacional declarada pelo RT"),
-        ("Parâmetro (NBR 10818)", "Parâmetro (referência operacional)"),
+        ("Análises realizadas com Photometer Color Q. Todos os resultados confrontados com os limites da NBR 10818.", "Leituras confrontadas com os limites aceitáveis da ABNT NBR 10818:2026. A avaliação limita-se às leituras registradas e não certifica conformidade integral."),
+        ("CONFORME – Todos os parâmetros dentro dos limites da NBR 10818", "CONFORME – Leituras registradas dentro dos limites da NBR 10818:2026 (avaliação parcial)"),
+        ("Parâmetro (NBR 10818)", "Parâmetro (NBR 10818:2026)"),
         ("Resolução CFQ nº 491/2020", "Resolução CFQ nº 332/2025, alterada pela nº 345/2026"),
         ("Res. Normativa CFQ nº 01/1982", "Decreto nº 85.877/1981 e normas profissionais aplicáveis do Sistema CFQ/CRQs"),
         ("Portaria MS nº 888/2021", "Portaria GM/MS nº 888/2021 (referência sanitária complementar para água de consumo humano)"),
-        ("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "2.1 Controle da água — referências operacionais"),
+        ("2.1 ABNT NBR 10339 – Qualidade da Água de Piscina", "2.1 Controle da água — ABNT NBR 10818:2026"),
         ("2.2 NBR 11238 – Segurança e Higiene em Piscinas", "2.2 Segurança e higiene operacional — ABNT NBR 10339"),
         ("Requisito NBR 11238", "Requisito operacional"),
     ]
     # Aplica na ordem para evitar substituições aninhadas incorretas
     for de, para in trocas_ordenadas:
         substituir_placeholders_doc(doc, {de: para})
-    nota = "Referências de qualidade da água: o catálogo ABNT registra a NBR 10818:2016 como cancelada com revisão em 21/09/2026. As faixas operacionais do sistema dependem de revisão do RT segundo a edição aplicável; este relatório não certifica conformidade normativa integral. A NBR 11238:1990 foi cancelada em 2018; o checklist registra condições operacionais verificadas."
+    _atualizar_tabela_limites_docx(doc)
+    nota = "Referências de qualidade da água: ABNT NBR 10818:2026 (substitui a edição de 2016), Tabela 3, piscina coletiva com tratamento clorado simples. Faixa ideal fora, mas dentro do limite, é ponto de atenção e não não conformidade. Este relatório avalia somente as leituras registradas e não certifica conformidade normativa integral. A NBR 11238:1990 foi cancelada em 2018; o checklist registra condições operacionais verificadas conforme a ABNT NBR 10339:2018."
     if not any(nota in p.text for p in doc.paragraphs):
         doc.add_paragraph(nota)
 
@@ -8774,9 +8875,9 @@ def gerar_grafico_tendencia_ph_crl(analises: list[dict], nome_condominio: str = 
                 draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=cor_linha, outline=(255, 255, 255), width=2)
                 draw.text((x - 16, y - 28), str(round(v, 2)).replace('.', ','), fill=cor_linha, font=f_small)
 
-        _plotar(150, 'ph', 'pH', azul, 7.2, 7.8, '')
-        _plotar(485, 'crl', 'Cloro livre residual (CRL)', azul_claro, 0.5, 3.0, 'mg/L')
-        draw.text((60, altura - 54), 'Áreas em verde representam a faixa operacional ideal. O gráfico é gerado a partir das análises lançadas no mês.', fill=cinza, font=f_sub)
+        _plotar(150, 'ph', 'pH', azul, *NBR_LIM["ph"], '')
+        _plotar(485, 'crl', 'Cloro livre residual (CRL)', azul_claro, *NBR_LIM["crl"], 'mg/L')
+        draw.text((60, altura - 54), 'Áreas em verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). O gráfico é gerado a partir das análises lançadas no mês.', fill=cinza, font=f_sub)
 
         img.save(output_path, format='PNG', optimize=True)
         return output_path
@@ -8936,6 +9037,10 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
             status_cls = "nd"
             status_txt = "Quinzenal" if quinzenal else "Não medido"
             val_txt = "—"
+        elif mn is None or mx is None:
+            status_cls = "nd"
+            status_txt = "Registrado"
+            val_txt = str(val).replace(".", ",")
         elif v < mn or v > mx:
             status_cls = "warn"
             status_txt = "Fora da faixa"
@@ -8955,26 +9060,28 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     # Alertas automáticos
     alertas = []
     checks = [
-        (lancamento.get("ph",""), 7.2, 7.8, "pH", "Fora da faixa ideal (7,2–7,8). Corrigir imediatamente."),
-        (lancamento.get("cloro_livre",""), 0.5, 3.0, "CRL", "Cloro livre fora da faixa (0,5–3,0 mg/L)."),
-        (lancamento.get("alcalinidade",""), 80, 120, "Alcalinidade", "Abaixo do ideal (80–120 mg/L). Aplicar bicarbonato de sódio."),
-        (lancamento.get("dureza",""), 150, 300, "Dureza DC", "Fora da faixa (150–300 mg/L)."),
-        (lancamento.get("cianurico",""), 30, 50, "CYA", "Ácido cianúrico fora da faixa (30–50 mg/L)."),
+        (lancamento.get("ph",""), *NBR_LIM["ph"], "pH", f"Fora do limite da NBR 10818:2026 ({NBR_TXT['ph']}). Corrigir e repetir a leitura."),
+        (lancamento.get("cloro_livre",""), *NBR_LIM["crl"], "CRL", f"Cloro livre fora do limite da NBR 10818:2026 ({NBR_TXT['crl']} mg/L)."),
+        (lancamento.get("alcalinidade",""), *NBR_LIM["alc"], "Alcalinidade", f"Fora do limite da NBR 10818:2026 ({NBR_TXT['alc']} mg/L)."),
+        (lancamento.get("dureza",""), *NBR_LIM["dc"], "Dureza DC", f"Fora do limite da NBR 10818:2026 ({NBR_TXT['dc']} mg/L)."),
+        (lancamento.get("cianurico",""), *NBR_LIM["cya"], "CYA", f"Ácido cianúrico acima do limite da NBR 10818:2026 ({NBR_TXT['cya']} mg/L)."),
     ]
     for val, mn, mx, rot, msg in checks:
         v = valor_float(val)
         if v is not None and (v < mn or v > mx):
             alertas.append(f"{rot}: {str(val).replace('.', ',')} mg/L — {msg}")
     cloraminas = lancamento.get("cloraminas", "")
-    if cloraminas and valor_float(cloraminas) is not None and valor_float(cloraminas) > 0.2:
-        alertas.append(f"Cloraminas {str(cloraminas).replace('.', ',')} mg/L — acima do limite (0,2 mg/L). Chocar piscina.")
+    if str(cloraminas).strip() == "Inconsistente":
+        alertas.append("Cloro total inferior ao livre — medição inconsistente. Repetir CRL e CT.")
+    elif cloraminas and valor_float(cloraminas) is not None and valor_float(cloraminas) > NBR_CC_MAX:
+        alertas.append(f"Cloro combinado {str(cloraminas).replace('.', ',')} mg/L — acima do limite da NBR 10818:2026 (até 0,6 mg/L).")
 
     alertas_html = ""
     if alertas:
         for a in alertas:
             alertas_html += f'<div class="alerta"><div class="alerta-icon">!</div><div class="alerta-txt">{a}</div></div>'
     else:
-        alertas_html = '<div class="alerta ok-all"><div class="alerta-txt">Todos os parâmetros medidos dentro da faixa ideal.</div></div>'
+        alertas_html = '<div class="alerta ok-all"><div class="alerta-txt">Parâmetros medidos dentro dos limites da NBR 10818:2026 (avaliação limitada às leituras registradas).</div></div>'
 
     # Dosagens
     dosagens = lancamento.get("dosagens", [])
@@ -8991,8 +9098,8 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
     clor_box = ""
     if cloraminas and valor_float(cloraminas) is not None:
         v_cl = valor_float(cloraminas)
-        cls_cl = "ok" if v_cl <= 0.2 else "warn"
-        st_cl = "Conforme" if v_cl <= 0.2 else "Fora da faixa"
+        cls_cl = "ok" if v_cl <= NBR_CC_MAX else "warn"
+        st_cl = "Conforme" if v_cl <= NBR_CC_MAX else "Fora da faixa"
         clor_box = f"""
         <div class="param-box {cls_cl}">
           <div class="pnm">Cloraminas</div>
@@ -9027,19 +9134,19 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
         p_clor_val = pisc.get("cloraminas","")
         if p_clor_val and valor_float(p_clor_val) is not None:
             v_cl = valor_float(p_clor_val)
-            cls_cl = "ok" if v_cl <= 0.2 else "warn"
-            st_cl = "Conforme" if v_cl <= 0.2 else "Fora da faixa"
+            cls_cl = "ok" if v_cl <= NBR_CC_MAX else "warn"
+            st_cl = "Conforme" if v_cl <= NBR_CC_MAX else "Fora da faixa"
             p_clor_box = f'''<div class="param-box {cls_cl}"><div class="pnm">Cloraminas</div><div class="pval">{str(p_clor_val).replace(".", ",")}</div><div class="pst">{st_cl}</div></div>'''
         piscinas_html_section += f'''
   <div class="card">
     <div class="sec-title">🏊 {pisc.get("nome","Piscina")} — Parâmetros</div>
     <div class="param-grid">
-      {param_box("pH", pisc.get("ph",""), 7.2, 7.8)}
-      {param_box("CRL mg/L", pisc.get("cloro_livre",""), 0.5, 3.0)}
-      {param_box("CT mg/L", pisc.get("cloro_total",""), 0.5, 5.0)}
-      {param_box("Alc. mg/L", pisc.get("alcalinidade",""), 80, 120, quinzenal=True)}
-      {param_box("Dureza mg/L", pisc.get("dureza",""), 150, 300, quinzenal=True)}
-      {param_box("CYA mg/L", pisc.get("cianurico",""), 30, 50, quinzenal=True)}
+      {param_box("pH", pisc.get("ph",""), *NBR_LIM["ph"])}
+      {param_box("CRL mg/L", pisc.get("cloro_livre",""), *NBR_LIM["crl"])}
+      {param_box("CT mg/L", pisc.get("cloro_total",""), None, None)}
+      {param_box("Alc. mg/L", pisc.get("alcalinidade",""), *NBR_LIM["alc"], quinzenal=True)}
+      {param_box("Dureza mg/L", pisc.get("dureza",""), *NBR_LIM["dc"], quinzenal=True)}
+      {param_box("CYA mg/L", pisc.get("cianurico",""), *NBR_LIM["cya"], quinzenal=True)}
       {p_clor_box}
     </div>
   </div>'''
@@ -9245,21 +9352,16 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    try:
-        pdfmetrics.registerFont(TTFont("BSans",      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"))
-        pdfmetrics.registerFont(TTFont("BSans-Bold", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"))
-        _font_reg  = "BSans"
-        _font_bold = "BSans-Bold"
-    except Exception:
-        # Fontes TrueType distribuídas com o próprio ReportLab. Evita depender
-        # de fontes do sistema no Streamlit Cloud e de Helvetica não incorporada.
-        from pathlib import Path as _Path
-        import reportlab as _reportlab
-        _font_dir = _Path(_reportlab.__file__).parent / "fonts"
-        pdfmetrics.registerFont(TTFont("BSansVera", str(_font_dir / "Vera.ttf")))
-        pdfmetrics.registerFont(TTFont("BSansVera-Bold", str(_font_dir / "VeraBd.ttf")))
-        _font_reg = "BSansVera"
-        _font_bold = "BSansVera-Bold"
+    # Fontes TrueType distribuídas com o próprio ReportLab: o PDF fica igual em
+    # qualquer máquina (local, Codespaces ou Streamlit Cloud), sem depender de
+    # fontes do sistema nem de Helvetica não incorporada.
+    from pathlib import Path as _Path
+    import reportlab as _reportlab
+    _font_dir = _Path(_reportlab.__file__).parent / "fonts"
+    pdfmetrics.registerFont(TTFont("BSansVera", str(_font_dir / "Vera.ttf")))
+    pdfmetrics.registerFont(TTFont("BSansVera-Bold", str(_font_dir / "VeraBd.ttf")))
+    _font_reg = "BSansVera"
+    _font_bold = "BSansVera-Bold"
     pdfmetrics.registerFontFamily(_font_reg, normal=_font_reg, bold=_font_bold)
 
     W, H = A4
@@ -9322,9 +9424,10 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         canvas.rect(0, H-3*mm, W, 3*mm, fill=1, stroke=0)
         canvas.rect(0, 0, W, 3*mm, fill=1, stroke=0)
         canvas.setFillColor(colors.HexColor("#0A2540"))
-        canvas.roundRect(M, H*0.28, W-2*M, H*0.46, 8, fill=1, stroke=0)
+        # Cartão abaixo do subtítulo: a faixa superior não deve cruzar o texto.
+        canvas.roundRect(M, H*0.28, W-2*M, H*0.43, 8, fill=1, stroke=0)
         canvas.setFillColor(TEAL)
-        canvas.rect(M, H*0.28 + H*0.46 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
+        canvas.rect(M, H*0.28 + H*0.43 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
         canvas.restoreState()
 
     def hf_fn(canvas, doc):
@@ -9445,12 +9548,12 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
             story.append(P(f"{pnome}",
                 E("PN", fontSize=8, textColor=TEAL, fontName=_font_bold, spaceAfter=2, spaceBefore=4, leading=11)))
             params = [
-                [P("Parametro",E_TH),P("Valor",E_TH),P("Faixa ideal",E_TH),P("Status",E_TH)],
-                [P("pH",E_CELL_L),P(str(pisc.get("ph","") or "-"),E_CELL),P("7,2-7,8",E_CELL),status_param(pisc.get("ph"),7.2,7.8)],
-                [P("CRL (mg/L)",E_CELL_L),P(str(pisc.get("cloro_livre","") or "-"),E_CELL),P("0,5-3,0",E_CELL),status_param(pisc.get("cloro_livre"),0.5,3.0)],
-                [P("CT (mg/L)",E_CELL_L),P(str(pisc.get("cloro_total","") or "-"),E_CELL),P("0,5-5,0",E_CELL),status_param(pisc.get("cloro_total"),0.5,5.0)],
-                [P("Alcalinidade",E_CELL_L),P(str(pisc.get("alcalinidade","") or "-"),E_CELL),P("80-120",E_CELL),status_param(pisc.get("alcalinidade"),80,120)],
-                [P("CYA (mg/L)",E_CELL_L),P(str(pisc.get("cianurico","") or "-"),E_CELL),P("30-50",E_CELL),status_param(pisc.get("cianurico"),30,50)],
+                [P("Parametro",E_TH),P("Valor",E_TH),P("Limite NBR 10818:2026",E_TH),P("Status",E_TH)],
+                [P("pH",E_CELL_L),P(str(pisc.get("ph","") or "-"),E_CELL),P(NBR_TXT["ph"],E_CELL),status_param(pisc.get("ph"),*NBR_LIM["ph"])],
+                [P("CRL (mg/L)",E_CELL_L),P(str(pisc.get("cloro_livre","") or "-"),E_CELL),P(NBR_TXT["crl"],E_CELL),status_param(pisc.get("cloro_livre"),*NBR_LIM["crl"])],
+                [P("CT (mg/L)",E_CELL_L),P(str(pisc.get("cloro_total","") or "-"),E_CELL),P("Avaliar CC",E_CELL),P("Registrado", E_CELL)],
+                [P("Alcalinidade",E_CELL_L),P(str(pisc.get("alcalinidade","") or "-"),E_CELL),P(NBR_TXT["alc"],E_CELL),status_param(pisc.get("alcalinidade"),*NBR_LIM["alc"])],
+                [P("CYA (mg/L)",E_CELL_L),P(str(pisc.get("cianurico","") or "-"),E_CELL),P(NBR_TXT["cya"],E_CELL),status_param(pisc.get("cianurico"),*NBR_LIM["cya"])],
             ]
             story.append(tabela(params,[CW*0.30,CW*0.18,CW*0.22,CW*0.30]))
             story.append(Sp(2))
@@ -9460,12 +9563,12 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         ct  = lancamento.get("cloro_total",""); alc = lancamento.get("alcalinidade","")
         cya = lancamento.get("cianurico","")
         params = [
-            [P("Parametro",E_TH),P("Valor",E_TH),P("Faixa ideal",E_TH),P("Status",E_TH)],
-            [P("pH",E_CELL_L),P(str(ph or "-"),E_CELL),P("7,2-7,8",E_CELL),status_param(ph,7.2,7.8)],
-            [P("CRL (mg/L)",E_CELL_L),P(str(crl or "-"),E_CELL),P("0,5-3,0",E_CELL),status_param(crl,0.5,3.0)],
-            [P("CT (mg/L)",E_CELL_L),P(str(ct or "-"),E_CELL),P("0,5-5,0",E_CELL),status_param(ct,0.5,5.0)],
-            [P("Alcalinidade",E_CELL_L),P(str(alc or "-"),E_CELL),P("80-120",E_CELL),status_param(alc,80,120)],
-            [P("CYA (mg/L)",E_CELL_L),P(str(cya or "-"),E_CELL),P("30-50",E_CELL),status_param(cya,30,50)],
+            [P("Parametro",E_TH),P("Valor",E_TH),P("Limite NBR 10818:2026",E_TH),P("Status",E_TH)],
+            [P("pH",E_CELL_L),P(str(ph or "-"),E_CELL),P(NBR_TXT["ph"],E_CELL),status_param(ph,*NBR_LIM["ph"])],
+            [P("CRL (mg/L)",E_CELL_L),P(str(crl or "-"),E_CELL),P(NBR_TXT["crl"],E_CELL),status_param(crl,*NBR_LIM["crl"])],
+            [P("CT (mg/L)",E_CELL_L),P(str(ct or "-"),E_CELL),P("Avaliar CC",E_CELL),P("Registrado", E_CELL)],
+            [P("Alcalinidade",E_CELL_L),P(str(alc or "-"),E_CELL),P(NBR_TXT["alc"],E_CELL),status_param(alc,*NBR_LIM["alc"])],
+            [P("CYA (mg/L)",E_CELL_L),P(str(cya or "-"),E_CELL),P(NBR_TXT["cya"],E_CELL),status_param(cya,*NBR_LIM["cya"])],
         ]
         story.append(tabela(params,[CW*0.30,CW*0.18,CW*0.22,CW*0.30]))
         story.append(Sp(2))
@@ -9745,16 +9848,16 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         }]
 
     PARAMS = [
-        ("pH",          "ph",          7.2, 7.8,  False),
-        ("CRL mg/L",    "cloro_livre", 0.5, 3.0,  False),
-        ("CT mg/L",     "cloro_total", 0.5, 5.0,  False),
-        ("Alc. mg/L",   "alcalinidade",80, 120,   True),
-        ("Dureza mg/L", "dureza",      150, 300,   True),
-        ("CYA mg/L",    "cianurico",   30,  50,    True),
+        ("pH",          "ph",          *NBR_LIM["ph"],  False),
+        ("CRL mg/L",    "cloro_livre", *NBR_LIM["crl"],  False),
+        ("CT mg/L",     "cloro_total", None, None,  False),
+        ("Alc. mg/L",   "alcalinidade",*NBR_LIM["alc"],   True),
+        ("Dureza mg/L", "dureza",      *NBR_LIM["dc"],   True),
+        ("CYA mg/L",    "cianurico",   *NBR_LIM["cya"],    True),
     ]
 
     for pisc in piscinas_lista:
-        elems.append(Paragraph(f"🏊 {pisc.get('nome','Piscina')} — Parâmetros analisados", s_sec))
+        elems.append(Paragraph(f"{pisc.get('nome','Piscina')} — Parâmetros analisados", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
 
         def _valor_apos_pdf(_key: str) -> str:
@@ -9781,11 +9884,12 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         header_row = [Paragraph("<b>Parâmetro</b>", s_body_sm),
                       Paragraph("<b>Antes</b>", s_body_sm),
                       Paragraph("<b>Após</b>", s_body_sm),
-                      Paragraph("<b>Faixa ideal</b>", s_body_sm),
+                      Paragraph("<b>Limite NBR 10818:2026</b>", s_body_sm),
                       Paragraph("<b>Status</b>", s_body_sm)]
         param_rows.append(header_row)
 
-        faixas_txt = {"pH":"7,2–7,8","CRL mg/L":"0,5–3,0","CT mg/L":"0,5–5,0","Alc. mg/L":"80–120","Dureza mg/L":"150–300","CYA mg/L":"30–50"}
+        faixas_txt = {"pH": NBR_TXT["ph"], "CRL mg/L": NBR_TXT["crl"], "CT mg/L": "Avaliar CC",
+                      "Alc. mg/L": NBR_TXT["alc"], "Dureza mg/L": NBR_TXT["dc"], "CYA mg/L": NBR_TXT["cya"]}
         row_colors = []
 
         for label, key, mn, mx, quinzenal in PARAMS:
@@ -9797,11 +9901,14 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             if v is None:
                 status_txt = "Não medido"
                 bg = colors.white
+            elif mn is None or mx is None:
+                status_txt = "Registrado"
+                bg = colors.white
             elif v < mn or v > mx:
-                status_txt = "⚠ Fora da faixa"
+                status_txt = "Fora da faixa"
                 bg = LARANJA_BG
             else:
-                status_txt = "✓ Conforme"
+                status_txt = "Conforme"
                 bg = VERDE_BG
             row_colors.append(bg)
             param_rows.append([
@@ -9816,14 +9923,14 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         clor_raw = str(pisc.get("cloraminas","") or "").strip()
         v_cl = valor_float(clor_raw)
         if v_cl is not None:
-            bg_cl = VERDE_BG if v_cl <= 0.2 else LARANJA_BG
-            st_cl = "✓ Conforme" if v_cl <= 0.2 else "⚠ Fora da faixa"
+            bg_cl = VERDE_BG if v_cl <= NBR_CC_MAX else LARANJA_BG
+            st_cl = "Conforme" if v_cl <= NBR_CC_MAX else "Fora da faixa"
             row_colors.append(bg_cl)
             param_rows.append([
-                Paragraph("Cloraminas", s_body_sm),
+                Paragraph("Cloro combinado", s_body_sm),
                 Paragraph(f"<b>{clor_raw.replace('.', ',')}</b>", s_body),
                 Paragraph("—", s_body),
-                Paragraph("≤ 0,2", s_body_sm),
+                Paragraph(NBR_TXT["cc"], s_body_sm),
                 Paragraph(st_cl, s_ok if "Conforme" in st_cl else s_alerta),
             ])
 
@@ -9857,11 +9964,11 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         _parametros_apos_alerta = {}
     for pisc in piscinas_lista:
         for key, mn, mx, rot in [
-            ("ph", 7.2, 7.8, "pH"),
-            ("cloro_livre", 0.5, 3.0, "CRL"),
-            ("alcalinidade", 80, 120, "Alcalinidade"),
-            ("dureza", 150, 300, "Dureza DC"),
-            ("cianurico", 30, 50, "CYA"),
+            ("ph", *NBR_LIM["ph"], "pH"),
+            ("cloro_livre", *NBR_LIM["crl"], "CRL"),
+            ("alcalinidade", *NBR_LIM["alc"], "Alcalinidade"),
+            ("dureza", *NBR_LIM["dc"], "Dureza DC"),
+            ("cianurico", *NBR_LIM["cya"], "CYA"),
         ]:
             _campo_apos_alerta = _map_apos_alerta.get(key, f"{key}_apos")
             val_r = (
@@ -9871,7 +9978,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
             )
             v = valor_float(val_r)
             if v is not None and (v < mn or v > mx):
-                alertas_gerais.append(f"⚠ {pisc.get('nome','Piscina')} — {rot}: {str(val_r).replace('.', ',')} — fora da faixa ideal.")
+                alertas_gerais.append(f"{pisc.get('nome','Piscina')} — {rot}: {str(val_r).replace('.', ',')} — fora do limite da NBR 10818:2026.")
 
     if alertas_gerais:
         elems.append(Paragraph("Alertas técnicos", s_sec))
@@ -9916,7 +10023,7 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
         elems.append(Paragraph("Problemas / Ocorrências", s_sec))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=AZUL_MEDIO, spaceAfter=4))
         problemas_formatados = problemas.replace("\n", "<br/>")
-        t_prob = Table([[Paragraph(f"⚠ {problemas_formatados}", s_alerta)]], colWidths=["100%"])
+        t_prob = Table([[Paragraph(f"{problemas_formatados}", s_alerta)]], colWidths=["100%"])
         t_prob.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,-1), LARANJA_BG),
             ("BOX", (0,0), (-1,-1), 0.5, LARANJA),
@@ -10250,45 +10357,63 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
             "cloro_livre":lancamento.get("cloro_livre",""),"cloro_total":lancamento.get("cloro_total",""),
             "cloraminas":lancamento.get("cloraminas",""),"alcalinidade":lancamento.get("alcalinidade",""),
             "dureza":lancamento.get("dureza",""),"cianurico":lancamento.get("cianurico","")}]
-    PARAMS = [("pH","ph",7.2,7.8,False),("Cloro Livre mg/L","cloro_livre",0.5,3.0,False),
-              ("Cloro Total mg/L","cloro_total",0.5,5.0,False),("Alcalinidade mg/L","alcalinidade",80,120,True),
-              ("Dureza mg/L","dureza",150,300,True),("CYA mg/L","cianurico",30,50,True)]
-    FAIXAS = {"pH":"7,2-7,8","Cloro Livre mg/L":"0,5-3,0","Cloro Total mg/L":"0,5-5,0",
-              "Alcalinidade mg/L":"80-120","Dureza mg/L":"150-300","CYA mg/L":"30-50"}
+    # Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
+    # tratamento clorado simples). Cloro total não tem limite próprio: avalia-se
+    # o cloro combinado (CT - CRL), somente quando CT >= CRL.
+    from utils.normas_piscinas import fora_limite as _nbr_fora, texto_limite as _nbr_txt, cloro_combinado as _nbr_cc
+    PARAMS = [("pH","ph",True,False),("Cloro Livre mg/L","cloro_livre",True,False),
+              ("Cloro Total mg/L","cloro_total",False,False),("Alcalinidade mg/L","alcalinidade",True,True),
+              ("Dureza mg/L","dureza",True,True),("CYA mg/L","cianurico",True,True)]
+    FAIXAS = {"pH":_nbr_txt("ph"),"Cloro Livre mg/L":_nbr_txt("crl"),"Cloro Total mg/L":"Avaliar CC",
+              "Alcalinidade mg/L":_nbr_txt("alcalinidade"),"Dureza mg/L":_nbr_txt("dureza"),"CYA mg/L":_nbr_txt("cya")}
     PRESC = {"pH":("Corrigir pH com pH+ ou pH-","7 dias"),
              "Cloro Livre mg/L":("Ajustar dosagem de hipoclorito","3 dias"),
              "Cloro Total mg/L":("Verificar produtos clorados","3 dias"),
              "Alcalinidade mg/L":("Corrigir com bicarbonato ou acido","10 dias"),
              "Dureza mg/L":("Corrigir com cloreto de calcio","15 dias"),
              "CYA mg/L":("Renovacao parcial da agua (min 30%)","15 dias"),
-             "Cloraminas":("Superclora para eliminar cloraminas","3 dias")}
+             "Cloraminas":("Superclora para eliminar cloraminas","3 dias"),
+             "Medicao CT/CRL":("Repetir medicao de cloro livre e total; CT inferior ao CRL e inconsistente","Imediato")}
     nao_conf = []
     for pisc in piscinas:
         elems.append(Paragraph(f"Piscina: <b>{pisc.get('nome','Piscina')}</b>",s_bold))
         elems.append(Spacer(1,3))
-        rows = [[Paragraph(c,s_sm) for c in ["Parametro","Valor","Faixa operacional","Status","Freq."]]]
-        for label,key,mn,mx,quinz in PARAMS:
+        rows = [[Paragraph(c,s_sm) for c in ["Parametro","Valor","Limite NBR 10818:2026","Status","Freq."]]]
+        for label,key,avalia,quinz in PARAMS:
             raw = pisc.get(key,"")
             try: v = float(str(raw).replace(",","."))
             except: v = None
             freq = "15d" if quinz else "Visita"
             if v is None: st,vf = "Nao medido","--"
-            elif v < mn or v > mx:
+            elif not avalia: st,vf = "Registrado",str(raw).replace(".",",")
+            elif _nbr_fora(key, v):
                 st,vf = "NAO CONFORME",str(raw).replace(".",",")
                 nao_conf.append((pisc.get("nome","Piscina"),label,vf,FAIXAS.get(label,"--")))
             else: st,vf = "Conforme",str(raw).replace(".",",")
             s_st = s_err if "NAO" in st else (s_ok if "Conforme" in st else s_sm)
             rows.append([Paragraph(label,s_sm),Paragraph(f"<b>{vf}</b>",s_bold),
                          Paragraph(FAIXAS.get(label,"--"),s_sm),Paragraph(st,s_st),Paragraph(freq,s_sm)])
+        def _num_pdf(x):
+            try: return float(str(x).replace(",","."))
+            except Exception: return None
         cl = pisc.get("cloraminas","")
-        try: vcl = float(str(cl).replace(",","."))
-        except: vcl = None
-        if vcl is not None:
-            stcl = "Conforme" if vcl <= 0.2 else "NAO CONFORME"
+        vcl = _num_pdf(cl)
+        erro_cc = None
+        if vcl is None:
+            vcl, erro_cc = _nbr_cc(_num_pdf(pisc.get("cloro_livre")), _num_pdf(pisc.get("cloro_total")))
+            if vcl is not None:
+                vcl = round(vcl, 2)
+                cl = f"{vcl:.2f}"
+        if erro_cc:
+            nao_conf.append((pisc.get("nome","Piscina"),"Medicao CT/CRL","CT < CRL","CT >= CRL"))
+            rows.append([Paragraph("Cloro combinado",s_sm),Paragraph("<b>CT &lt; CRL</b>",s_bold),
+                         Paragraph(_nbr_txt("cc"),s_sm),Paragraph("CONFERIR MEDICAO",s_err),Paragraph("Visita",s_sm)])
+        elif vcl is not None:
+            stcl = "NAO CONFORME" if _nbr_fora("cc", vcl) else "Conforme"
             if "NAO" in stcl:
-                nao_conf.append((pisc.get("nome","Piscina"),"Cloraminas",str(cl).replace(".",","),"<= 0,2"))
-            rows.append([Paragraph("Cloraminas",s_sm),Paragraph(f"<b>{str(cl).replace('.', ',')}</b>",s_bold),
-                         Paragraph("<= 0,2",s_sm),Paragraph(stcl,s_err if "NAO" in stcl else s_ok),Paragraph("Visita",s_sm)])
+                nao_conf.append((pisc.get("nome","Piscina"),"Cloraminas",str(cl).replace(".",","),_nbr_txt("cc")))
+            rows.append([Paragraph("Cloro combinado",s_sm),Paragraph(f"<b>{str(cl).replace('.', ',')}</b>",s_bold),
+                         Paragraph(_nbr_txt("cc"),s_sm),Paragraph(stcl,s_err if "NAO" in stcl else s_ok),Paragraph("Visita",s_sm)])
         tp = Table(rows, colWidths=["28%","15%","22%","22%","13%"])
         tp.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.25,BORDA),
             ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),colors.white),
@@ -11686,7 +11811,7 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
             st.write(f"- {item}")
     if dados_relatorio["avaliacao_automatica"].get("cloraminas_altas"):
         for idx, valor in dados_relatorio["avaliacao_automatica"]["cloraminas_altas"]:
-            st.write(f"- Linha {idx}: cloro combinado estimado em {valor} mg/L.")
+            st.write(f"- Linha {idx}: cloro combinado estimado em {str(valor).replace('.', ',')} mg/L (limite NBR 10818:2026: até 0,6 mg/L).")
     c1, c2, c3 = st.columns(3)
     with c1:
         if relatorio_docx.exists():
@@ -14291,15 +14416,21 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
             return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
 
-        with st.expander("📋 Faixas ideais", expanded=False):
-            st.markdown("""
-| Parâmetro | Faixa ideal |
-|---|---|
-| pH | 7,2 – 7,8 |
-| CRL mg/L | 0,5 – 3,0 |
-| Alcalinidade mg/L | 80 – 120 |
-| Dureza DC mg/L | 150 – 300 |
-| CYA mg/L | 30 – 50 |
+        with st.expander("📋 Limites NBR 10818:2026", expanded=False):
+            from utils.normas_piscinas import texto_ideal as _nbr_ideal
+            st.markdown(f"""
+| Parâmetro | Limite aceitável | Faixa ideal |
+|---|---|---|
+| pH | {NBR_TXT['ph']} | {_nbr_ideal('ph')} |
+| CRL mg/L | {NBR_TXT['crl']} | {_nbr_ideal('crl')} |
+| Cloro combinado mg/L | {NBR_TXT['cc']} | — |
+| Alcalinidade mg/L | {NBR_TXT['alc']} | {_nbr_ideal('alcalinidade')} |
+| Dureza DC mg/L | {NBR_TXT['dc']} | {_nbr_ideal('dureza')} |
+| CYA mg/L | {NBR_TXT['cya']} | {_nbr_ideal('cya')} |
+
+Piscina coletiva com tratamento clorado simples (Tabela 3). pH e cloro livre:
+registrar no mínimo três medições por dia. Leituras fora do limite: corrigir e
+avisar o RT.
             """)
 
         # ── Parâmetros por piscina ────────────────────────────────────────────
@@ -14336,19 +14467,23 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
             # Alertas em tempo real
             for val, mn, mx, rot in [
-                (p_ph, 7.2, 7.8, "pH"), (p_crl, 0.5, 3.0, "CRL"),
-                (p_alc, 80, 120, "Alcalinidade"), (p_dc, 150, 300, "Dureza DC"),
-                (p_cya, 30, 50, "CYA"),
+                (p_ph, *NBR_LIM["ph"], "pH"), (p_crl, *NBR_LIM["crl"], "CRL"),
+                (p_alc, *NBR_LIM["alc"], "Alcalinidade"), (p_dc, *NBR_LIM["dc"], "Dureza DC"),
+                (p_cya, *NBR_LIM["cya"], "CYA"),
             ]:
                 v = valor_float(val)
                 if v is not None:
-                    st.markdown(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora da faixa' if v < mn or v > mx else '— conforme'}")
+                    st.markdown(f"{'⚠️' if v < mn or v > mx else '✅'} **{rot}: {v}** {'— fora do limite NBR 10818:2026' if v < mn or v > mx else '— dentro do limite'}")
 
             p_cloraminas = None
             v_crl2 = valor_float(p_crl); v_ct2 = valor_float(p_ct)
             if v_crl2 is not None and v_ct2 is not None:
-                p_cloraminas = round(max(v_ct2 - v_crl2, 0), 2)
-                st.markdown(f"{'⚠️' if p_cloraminas > 0.2 else '✅'} **Cloraminas: {p_cloraminas} mg/L**")
+                if v_ct2 < v_crl2:
+                    # CT < CRL é medição inconsistente: não registrar CC = 0.
+                    st.markdown("⚠️ **Cloro total inferior ao livre — repetir as medições de CRL e CT.**")
+                else:
+                    p_cloraminas = round(v_ct2 - v_crl2, 2)
+                    st.markdown(f"{'⚠️' if p_cloraminas > NBR_CC_MAX else '✅'} **Cloro combinado: {p_cloraminas} mg/L** (limite NBR 10818:2026: {NBR_TXT['cc']} mg/L)")
 
             _dados_piscina_op = {
                 "nome": pisc_nome,
@@ -14551,17 +14686,17 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 st.text_input("Cloro Total após mg/L", key="op_ct_apos",  placeholder="ex: 2,8", on_change=_autosave_rascunho)
                 st.text_input("CYA após mg/L",         key="op_cya_apos", placeholder="ex: 40",  on_change=_autosave_rascunho)
             _apos_vals = [
-                (st.session_state.get("op_ph_apos",""),  7.2, 7.8, "pH após"),
-                (st.session_state.get("op_crl_apos",""), 0.5, 3.0, "CRL após"),
-                (st.session_state.get("op_alc_apos",""), 80,  120, "Alcalinidade após"),
-                (st.session_state.get("op_dc_apos",""),  150, 300, "Dureza DC após"),
-                (st.session_state.get("op_cya_apos",""), 30,  50,  "CYA após"),
+                (st.session_state.get("op_ph_apos",""),  *NBR_LIM["ph"], "pH após"),
+                (st.session_state.get("op_crl_apos",""), *NBR_LIM["crl"], "CRL após"),
+                (st.session_state.get("op_alc_apos",""), *NBR_LIM["alc"], "Alcalinidade após"),
+                (st.session_state.get("op_dc_apos",""),  *NBR_LIM["dc"], "Dureza DC após"),
+                (st.session_state.get("op_cya_apos",""), *NBR_LIM["cya"],  "CYA após"),
             ]
             for _av, _mn, _mx, _rot in _apos_vals:
                 _vf = valor_float(re.sub(r"[^0-9.,]","",str(_av)).replace(",","."))
                 if _vf is not None:
                     _ok = _mn <= _vf <= _mx
-                    st.markdown(f"{'✅' if _ok else '⚠️'} **{_rot}: {_vf}** {'— conforme' if _ok else '— fora da faixa'}")
+                    st.markdown(f"{'✅' if _ok else '⚠️'} **{_rot}: {_vf}** {'— dentro do limite' if _ok else '— fora do limite NBR 10818:2026'}")
         st.markdown('</div>', unsafe_allow_html=True)
 
         # ── Fotos categorizadas — com salvamento imediato ───────────────────
@@ -16100,9 +16235,8 @@ def _mascarar_pin_admin(pin: str) -> str:
     _pin = str(pin or "").strip()
     if not _pin:
         return "—"
-    if len(_pin) <= 2:
-        return "*" * len(_pin)
-    return f"{_pin[:2]}{'*' * (len(_pin) - 2)}"
+    # Nunca revelar dígitos nem o tamanho do PIN na tela ou na exportação CSV.
+    return "••••"
 
 
 def _op_tem_acesso_total(op: dict) -> bool:
@@ -16520,7 +16654,7 @@ with _tab_ops1:
                 elif _pin_reservado(_pin_final_edit):
                     st.error("Este PIN é reservado para acesso administrativo. Escolha outro para este operador.")
                 elif _pin_operador_em_uso(_pin_final_edit, nome_ignorar=_op_nome_sel):
-                    st.error(f"O PIN {_pin_final_edit} já está em uso por outro operador.")
+                    st.error("O PIN informado já está em uso por outro operador. Escolha outro PIN.")
                 elif not _acesso_total_edit and not _conds_final_edit:
                     st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
                 else:
@@ -16653,7 +16787,7 @@ with _tab_ops2:
         elif _pin_reservado(_pin_op_limpo):
             st.error("Este PIN é reservado para acesso administrativo. Escolha outro.")
         elif _pin_operador_em_uso(_pin_op_limpo, nome_ignorar=_nome_op_limpo):
-            st.error(f"O PIN {_pin_op_limpo} já está em uso por outro operador.")
+            st.error("O PIN informado já está em uso por outro operador. Escolha outro PIN.")
         elif not op_acesso_total_novo and not _conds_op_final:
             st.error("Selecione ao menos um condomínio para este operador ou marque acesso total.")
         else:

@@ -247,3 +247,23 @@ class TestSemCredencialFixaNoCodigo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinNaoExposto(unittest.TestCase):
+    """O painel administrativo não revela dígitos nem ecoa PINs em mensagens."""
+
+    def _mascarar(self):
+        ns = {}
+        exec(compile(ast.Module(body=[_funcao("_mascarar_pin_admin")], type_ignores=[]), str(APP), "exec"), ns)
+        return ns["_mascarar_pin_admin"]
+
+    def test_mascara_nao_revela_digitos_nem_tamanho(self):
+        mascarar = self._mascarar()
+        for pin in ("1234", "987654", "12"):
+            mascara = mascarar(pin)
+            self.assertFalse(any(ch.isdigit() for ch in mascara), mascara)
+            self.assertEqual(mascara, mascarar("0000000000"))
+        self.assertEqual(mascarar(""), "—")
+
+    def test_mensagens_de_pin_em_uso_nao_ecoam_o_pin(self):
+        self.assertNotRegex(SRC, r'f"O PIN \{[^}]+\} já está em uso')

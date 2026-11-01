@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from utils.capa_acqua import desenhar_capa
-from utils.rt_relatorio import MARCA_COMPLETA, PARAMETROS, fmt_num, formatar_volume, texto_art
+from utils.rt_relatorio import MARCA_COMPLETA, PARAMETROS, fmt_num, formatar_volume, tem_limite, texto_art, texto_faixa
 
 
 def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bool, str | None]:
@@ -111,20 +111,26 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
         cons = ctx.get("consolidado") or {}
         story.append(P("3. SÍNTESE DOS PARÂMETROS POR PISCINA", H1))
         story.append(P("Leitura inicial de cada visita (quando registrada como antes/após, considera-se o primeiro valor). "
-                       "Percentual na faixa operacional de referência: não representa comprovação de conformidade normativa integral."))
+                       "Faixa: limite aceitável da ABNT NBR 10818:2026, Tabela 3 (piscina coletiva, tratamento clorado simples). "
+                       "Cloro total não tem limite próprio; avalia-se o cloro combinado. O percentual dentro do limite "
+                       "considera apenas as leituras registradas e não representa comprovação de conformidade normativa integral."))
         if not cons.get("piscinas"):
             story.append(P("Nenhuma leitura encontrada para o período selecionado."))
         for nome, grupo in (cons.get("piscinas") or {}).items():
             story.append(P(f"{nome} — {len(grupo['linhas'])} registro(s)", H2))
-            linhas = [["Parâmetro", "Faixa", "Leituras", "Mínimo", "Média", "Máximo", "% na faixa"]]
+            linhas = [["Parâmetro", "Faixa", "Leituras", "Mínimo", "Média", "Máximo", "% no limite"]]
             for chave, *_ in PARAMETROS:
                 p = grupo["parametros"].get(chave)
                 if not p:
                     continue
                 casas = 2 if p["max"] < 20 else 0
-                linhas.append([p["rotulo"], f"{fmt_num(p['faixa'][0], 1)}–{fmt_num(p['faixa'][1], 1)} {p['unidade']}".strip(),
+                faixa_txt = texto_faixa(chave)
+                if tem_limite(chave) and p["unidade"]:
+                    faixa_txt = f"{faixa_txt} {p['unidade']}"
+                pct = "—" if p.get("conformidade") is None else f"{fmt_num(p['conformidade'], 0)}%"
+                linhas.append([p["rotulo"], faixa_txt,
                                str(p["n"]), fmt_num(p["min"], casas), fmt_num(p["media"], casas), fmt_num(p["max"], casas),
-                               f"{fmt_num(p['conformidade'], 0)}%"])
+                               pct])
             story.append(tabela(linhas, [44 * mm, 34 * mm, 18 * mm, 20 * mm, 20 * mm, 20 * mm, 26 * mm]))
             if grupo["mensal"]:
                 cab = ["Mês"] + [r for k, r, *_ in PARAMETROS if k in grupo["parametros"]]
@@ -153,7 +159,7 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
 
         story.append(P("5. CONSIDERAÇÕES DO RESPONSÁVEL TÉCNICO", H1))
         story.append(P(ctx.get("parecer") or "Síntese elaborada a partir dos registros do período. Recomenda-se a manutenção "
-                       "da rotina de monitoramento e a correção imediata de leituras fora da faixa de referência."))
+                       "da rotina de monitoramento e a correção imediata de leituras fora dos limites da ABNT NBR 10818:2026."))
         story.append(Spacer(1, 14 * mm))
         story.append(P("_______________________________________________", CELL))
         story.append(P(f"{ctx.get('responsavel', '')} — {ctx.get('crq', '')}", CELL))

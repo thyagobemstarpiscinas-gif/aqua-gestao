@@ -63,3 +63,113 @@ def cloro_combinado(crl: float | None, ct: float | None) -> tuple[float | None, 
     if crl < 0 or ct < 0 or ct < crl:
         return None, "Cloro total inferior ao livre: conferir medição ou lançamento."
     return round(ct - crl, 6), None
+
+
+NORMA_QUALIDADE = "ABNT NBR 10818:2026"
+REFERENCIA_FAIXAS = (
+    "ABNT NBR 10818:2026, Tabela 3, piscina coletiva com tratamento clorado simples"
+)
+
+# Rótulos e unidades usados nos documentos. Mantidos aqui para que todos os
+# geradores (PDF/DOCX/HTML) mostrem os mesmos limites.
+UNIDADES = {
+    "ph": "",
+    "crl": "mg/L",
+    "alcalinidade": "mg/L CaCO3",
+    "dureza": "mg/L CaCO3",
+    "cya": "mg/L",
+    "cc": "mg/L",
+    "turbidez": "NTU",
+    "orp": "mV",
+    "lsi": "",
+}
+
+# Aliases de campos encontrados nos formulários, planilhas e lançamentos.
+ALIASES = {
+    "ph": "ph",
+    "crl": "crl", "cloro_livre": "crl", "cl": "crl",
+    "alcalinidade": "alcalinidade", "alc": "alcalinidade",
+    "dureza": "dureza", "dc": "dureza",
+    "cya": "cya", "cianurico": "cya",
+    "cc": "cc", "cloro_combinado": "cc",
+    "turbidez": "turbidez", "ntu": "turbidez",
+    "orp": "orp",
+    "lsi": "lsi",
+}
+
+
+def _num_br(v: float) -> str:
+    if abs(v) >= 10 and float(v).is_integer():
+        return str(int(v))
+    return f"{v:.1f}".replace(".", ",")
+
+
+def campo_normativo(campo: str) -> str | None:
+    return ALIASES.get(str(campo or "").strip().lower())
+
+
+def limites(campo: str, *, tratamento_complementar: bool = False) -> tuple[float | None, float | None]:
+    """Limites aceitáveis (não as metas ideais) do parâmetro."""
+    chave = campo_normativo(campo)
+    faixa = FAIXAS_COLETIVA_SIMPLES.get(chave) if chave else None
+    if faixa is None:
+        return None, None
+    minimo = 0.5 if chave == "crl" and tratamento_complementar else faixa.minimo
+    return minimo, faixa.maximo
+
+
+def texto_limite(campo: str, *, tratamento_complementar: bool = False) -> str:
+    """Faixa aceitável em texto pt-BR, p.ex. "7,0–7,8", "até 100", "< 0,5".
+
+    Usa apenas caracteres WinAnsi para renderizar com as fontes padrão do PDF.
+    """
+    chave = campo_normativo(campo)
+    faixa = FAIXAS_COLETIVA_SIMPLES.get(chave) if chave else None
+    if faixa is None:
+        return "—"
+    mn, mx = limites(chave, tratamento_complementar=tratamento_complementar)
+    if chave in ("cc",):
+        return f"até {_num_br(mx)}"
+    if faixa.maximo_exclusivo and mx is not None:
+        return f"< {_num_br(mx)}"
+    if mn is None and mx is not None:
+        return f"até {_num_br(mx)}"
+    if mx is None and mn is not None:
+        return f"mín. {_num_br(mn)}"
+    if mn < 0:
+        return f"-{_num_br(abs(mn))} a +{_num_br(mx)}"
+    return f"{_num_br(mn)}–{_num_br(mx)}"
+
+
+def texto_ideal(campo: str) -> str:
+    chave = campo_normativo(campo)
+    faixa = FAIXAS_COLETIVA_SIMPLES.get(chave) if chave else None
+    if faixa is None or faixa.ideal_min is None or faixa.ideal_max is None:
+        return "—"
+    return f"{_num_br(faixa.ideal_min)}–{_num_br(faixa.ideal_max)}"
+
+
+def fora_limite(campo: str, valor: float | None, *, tratamento_complementar: bool = False) -> bool:
+    chave = campo_normativo(campo)
+    if chave is None or valor is None:
+        return False
+    return avaliar_leitura(chave, valor, tratamento_complementar=tratamento_complementar) == "fora_limite"
+
+
+def texto_resumo_limites() -> str:
+    """Linha única com os limites usados nos relatórios (sem alegar conformidade)."""
+    partes = [
+        f"pH {texto_limite('ph')} (ideal {texto_ideal('ph')})",
+        f"CRL {texto_limite('crl')} mg/L (ideal {texto_ideal('crl')})",
+        f"CC {texto_limite('cc')} mg/L",
+        f"alcalinidade {texto_limite('alcalinidade')} mg/L",
+        f"dureza cálcica {texto_limite('dureza')} mg/L",
+        f"CYA {texto_limite('cya')} mg/L",
+        f"turbidez {texto_limite('turbidez')} NTU",
+        f"ORP {texto_limite('orp')} mV, quando aplicável",
+    ]
+    return (
+        f"Limites de referência - {REFERENCIA_FAIXAS}: " + "; ".join(partes) +
+        ". Tratamento complementar admite CRL mínimo de 0,5 mg/L somente quando cadastrado. "
+        "TDS e temperatura não são classificados por leitura isolada."
+    )

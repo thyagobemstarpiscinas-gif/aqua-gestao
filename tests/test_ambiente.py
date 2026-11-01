@@ -64,3 +64,22 @@ class TestAmbiente(unittest.TestCase):
         st.error.assert_called_once();st.stop.assert_called_once()
 
 if __name__ == "__main__": unittest.main(verbosity=2)
+
+
+class HealthcheckHomologacao(unittest.TestCase):
+    """O healthcheck segue a mesma regra do app e nunca abre produção em homologação."""
+
+    def setUp(self):
+        import importlib.util
+        raiz = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("healthcheck_teste", raiz / "scripts" / "healthcheck.py")
+        self.hc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.hc)
+
+    def test_homologacao_usa_planilha_propria_e_recusa_producao(self):
+        cfg = {"aqua_app": {"ambiente": "homologacao", "sheets_id": "PLANILHA_TESTE_123",
+                            "drive_fotos_folder_id": "PASTA_TESTE_123"}}
+        self.assertEqual(self.hc.resolver_planilha(cfg), "PLANILHA_TESTE_123")
+        cfg["aqua_app"]["sheets_id"] = self.hc.SHEETS_ID_PRODUCAO
+        self.assertIsNone(self.hc.resolver_planilha(cfg))
+        self.assertIsNone(self.hc.resolver_planilha({"aqua_app": {"ambiente": "homologacao"}}))
