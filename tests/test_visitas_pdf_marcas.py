@@ -42,6 +42,11 @@ class VisitasPDF(unittest.TestCase):
         pdf = self.ns[func](self.fixture, 'CONDOMINIO FICTICIO QA')
         with fitz.open(stream=pdf, filetype='pdf') as doc:
             self.assertIn(marca, '\n'.join(p.get_text() for p in doc))
+            # Fontes padrão não incorporadas podem produzir letras sobrepostas
+            # em leitores PDF diferentes, apesar da extração textual correta.
+            fontes = [item[3] for page in doc for item in page.get_fonts()]
+            self.assertTrue(any('BitstreamVeraSans' in fonte for fonte in fontes),
+                            'O PDF deve incorporar uma fonte TrueType previsível.')
             # Compara os pixels da imagem incorporada, não só a existência de um logo.
             with Image.open(ROOT / logo) as im:
                 esperado = im.convert('RGB').tobytes()

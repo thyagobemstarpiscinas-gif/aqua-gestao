@@ -7560,7 +7560,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             story.append(P("GRÁFICOS TÉCNICOS POR PISCINA", "AqH2"))
             story.append(P("Evolução dos parâmetros no período. Quando a célula registra antes/após, o gráfico usa a leitura inicial.", "AqSmall"))
             for _nome_g, _g in _graficos:
-                _gw, _gh = PILImage.open(_g).size
+                with PILImage.open(_g) as _grafico_imagem:
+                    _gw, _gh = _grafico_imagem.size
                 story.append(RLImage(str(_g), width=180*mm, height=180*mm * _gh / _gw, hAlign="CENTER"))
                 story.append(Spacer(1, 3*mm))
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
@@ -9250,8 +9251,16 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         _font_reg  = "BSans"
         _font_bold = "BSans-Bold"
     except Exception:
-        _font_reg  = "Helvetica"
-        _font_bold = "Helvetica-Bold"
+        # Fontes TrueType distribuídas com o próprio ReportLab. Evita depender
+        # de fontes do sistema no Streamlit Cloud e de Helvetica não incorporada.
+        from pathlib import Path as _Path
+        import reportlab as _reportlab
+        _font_dir = _Path(_reportlab.__file__).parent / "fonts"
+        pdfmetrics.registerFont(TTFont("BSansVera", str(_font_dir / "Vera.ttf")))
+        pdfmetrics.registerFont(TTFont("BSansVera-Bold", str(_font_dir / "VeraBd.ttf")))
+        _font_reg = "BSansVera"
+        _font_bold = "BSansVera-Bold"
+    pdfmetrics.registerFontFamily(_font_reg, normal=_font_reg, bold=_font_bold)
 
     W, H = A4
     M  = 18*mm
@@ -9600,6 +9609,16 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage, PageBreak
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     import base64 as _b64
+    from pathlib import Path as _Path
+    import reportlab as _reportlab
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    _font_dir = _Path(_reportlab.__file__).parent / "fonts"
+    if "AcquaVisitaPDF" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("AcquaVisitaPDF", str(_font_dir / "Vera.ttf")))
+        pdfmetrics.registerFont(TTFont("AcquaVisitaPDF-Bold", str(_font_dir / "VeraBd.ttf")))
+    pdfmetrics.registerFontFamily("AcquaVisitaPDF", normal="AcquaVisitaPDF", bold="AcquaVisitaPDF-Bold")
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -9622,6 +9641,10 @@ def gerar_pdf_relatorio_visita(lancamento: dict, nome_condominio: str) -> bytes:
     styles = getSampleStyleSheet()
 
     def estilo(nome, **kw):
+        if kw.get("fontName") in (None, "Helvetica"):
+            kw["fontName"] = "AcquaVisitaPDF"
+        elif kw.get("fontName") == "Helvetica-Bold":
+            kw["fontName"] = "AcquaVisitaPDF-Bold"
         return ParagraphStyle(nome, **kw)
 
     s_titulo    = estilo("titulo",    fontSize=16, textColor=AZUL_ESCURO, fontName="Helvetica-Bold", spaceAfter=2)
@@ -10066,12 +10089,21 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from datetime import date
+    from pathlib import Path as _Path
+    import reportlab as _reportlab
+
+    _font_dir = _Path(_reportlab.__file__).parent / "fonts"
+    if "AcquaPDF" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("AcquaPDF", str(_font_dir / "Vera.ttf")))
+        pdfmetrics.registerFont(TTFont("AcquaPDF-Bold", str(_font_dir / "VeraBd.ttf")))
+    pdfmetrics.registerFontFamily("AcquaPDF", normal="AcquaPDF", bold="AcquaPDF-Bold")
 
     try:
         if "DancingScriptRT" not in pdfmetrics.getRegisteredFontNames():
             _fb = _b64.b64decode(DANCING_SCRIPT_FONT_B64)
             _fp = _os.path.join(tempfile.gettempdir(), "DancingScriptRT.ttf")
-            open(_fp, "wb").write(_fb)
+            with open(_fp, "wb") as _font_file:
+                _font_file.write(_fb)
             pdfmetrics.registerFont(TTFont("DancingScriptRT", _fp))
         _cursiva = True
     except Exception:
@@ -10095,7 +10127,14 @@ def gerar_pdf_relatorio_visita_rt(lancamento: dict, nome_condominio: str) -> byt
     CINZAC= colors.HexColor("#f5f7fa")
     GOLDB = colors.HexColor("#fffbf0")
 
-    def S(n, **k): return ParagraphStyle(n, **k)
+    def S(n, **k):
+        # Usar fontes incorporadas para evitar substituição e espaçamento
+        # inconsistente nos leitores PDF e na renderização do Streamlit Cloud.
+        if k.get("fontName") in (None, "Helvetica", "Times-Roman"):
+            k["fontName"] = "AcquaPDF"
+        elif k.get("fontName") in ("Helvetica-Bold", "Times-Bold"):
+            k["fontName"] = "AcquaPDF-Bold"
+        return ParagraphStyle(n, **k)
     s_sec  = S("s1", fontSize=9.5, textColor=NAVY,  fontName="Helvetica-Bold", spaceAfter=5, leading=12)
     s_body = S("s2", fontSize=8.5, textColor=AZUL,  fontName="Helvetica",      leading=12)
     s_bold = S("s3", fontSize=8.8, textColor=NAVY,  fontName="Helvetica-Bold", leading=12)

@@ -190,6 +190,10 @@ class PDFConsolidado(unittest.TestCase):
                 self.assertIn(esperado, texto)
             self.assertNotIn("ART nº", texto)
             self.assertTrue(any(pg.images for pg in pdf.pages))
+            import fitz
+            with fitz.open(Path(tmp) / "c.pdf") as rendered:
+                fontes = [f[3] for pg in rendered for f in pg.get_fonts()]
+                self.assertTrue(any("BitstreamVeraSans" in fonte for fonte in fontes))
 
 
 if __name__ == "__main__":

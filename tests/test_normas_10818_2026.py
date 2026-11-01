@@ -1,5 +1,8 @@
 from utils.normas_piscinas import avaliar_leitura, cloro_combinado
-from rt_monthly_report import _collect_summary, prepare_monitoring_table_rows
+from rt_monthly_report import (
+    _collect_summary, _recommendations_from_deviations,
+    prepare_monitoring_table_rows,
+)
 
 
 def test_limites_e_metas_sao_distintos():
@@ -25,3 +28,13 @@ def test_ausencia_de_medicao_nao_e_condicao_estavel():
     resumo = _collect_summary([{"data": "01/11/2026"}])
     assert resumo["status_flag"] == "info"
     assert "Sem medições" in resumo["status"]
+
+
+def test_ct_nao_tem_limite_independente_e_cc_gera_recomendacao():
+    row = {"data": "01/11/2026", "crl": 3.0, "ct": 3.7, "turbidez": 0.5}
+    tabela = prepare_monitoring_table_rows([row])[0]
+    assert tabela[3]["status"] == "ok"  # CT isolado não é não conformidade
+    assert tabela[4]["status"] == "out"  # CC = 0,7 ppm
+    recs = " ".join(_recommendations_from_deviations([row]))
+    assert "cloro combinado" in recs
+    assert "turbidez" in recs

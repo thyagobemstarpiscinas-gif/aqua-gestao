@@ -36,7 +36,7 @@ MONTH_NAMES_PT = {
 RANGES = {
     "ph": (7.2, 7.8),
     "crl": (0.5, 3.0),
-    "ct": (0.5, 3.0),
+    # CT não possui faixa de conformidade independente: avaliar CC = CT - CRL.
     "alcalinidade": (80.0, 120.0),
     "dureza": (150.0, 300.0),
     "cya": (30.0, 50.0),
@@ -313,7 +313,6 @@ def _collect_deviation_data(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
     labels = {
         "ph": "pH",
         "crl": "CRL",
-        "ct": "CT",
         "alcalinidade": "alcalinidade",
         "dureza": "dureza",
         "cya": "CYA",
@@ -350,21 +349,34 @@ def _deviation_sentences(rows: list[dict[str, Any]]) -> list[str]:
 def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
     found = set()
     for row in rows:
-        for field in ["ph", "crl", "ct", "alcalinidade", "dureza", "cya"]:
+        for field in ["ph", "crl", "alcalinidade", "dureza", "cya"]:
             if _status_for_value(field, row.get(field)) == "out":
                 found.add(field)
+        cc, erro = cloro_combinado(_to_float(row.get("crl")), _to_float(row.get("ct")))
+        if erro:
+            found.add("medicao_cc_inconsistente")
+        elif avaliar_leitura("cc", cc) == "fora_limite":
+            found.add("cc")
+        if avaliar_leitura("turbidez", _to_float(row.get("turbidez"))) == "fora_limite":
+            found.add("turbidez")
 
     recs: list[str] = []
     if "ph" in found:
         recs.append("Ajustar pH para a faixa operacional de 7,2 a 7,8 e repetir leitura após estabilização.")
-    if "crl" in found or "ct" in found:
-        recs.append("Reavaliar desinfecção (CRL/CT), revisar demanda oxidante e confirmar residual após recirculação.")
+    if "crl" in found:
+        recs.append("Reavaliar cloro livre, revisar demanda oxidante e confirmar residual após recirculação.")
     if "alcalinidade" in found:
         recs.append("Corrigir alcalinidade total para melhorar estabilidade do pH e reduzir oscilações operacionais.")
     if "dureza" in found:
         recs.append("Ajustar dureza cálcica para mitigar risco de corrosão ou incrustação.")
     if "cya" in found:
         recs.append("Revisar estabilizante (CYA) e considerar renovação parcial de água quando tecnicamente indicado.")
+    if "medicao_cc_inconsistente" in found:
+        recs.append("Repetir as medições de cloro livre e total: CT inferior ao CRL é inconsistente.")
+    if "cc" in found:
+        recs.append("Investigar demanda oxidante e cloraminas; corrigir cloro combinado e confirmar o resultado por nova análise.")
+    if "turbidez" in found:
+        recs.append("Investigar turbidez, filtração e retenção de partículas, com nova medição após as providências.")
 
     if not recs:
         recs.append("Manter rotina de monitoramento técnico com registro das leituras e rastreabilidade operacional.")
