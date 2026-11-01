@@ -169,3 +169,6 @@ Pendências de marca:
 - `logo_url` das assinaturas de e-mail vem dos Secrets e não foi verificado.
 - No DOCX mensal, a página 2 mostra a logo no cabeçalho e no corpo (leiaute
   herdado do modelo; agora ambas com a arte aprovada).
+
+Suíte integral após a correção de marca (`python tests/rodar_isolado.py`,
+rede bloqueada, dados fictícios): 342 testes, 342 aprovados, 0 falhas.
