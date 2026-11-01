@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.datas_visitas import normalizar_data_visita
+from utils.normas_piscinas import avaliar_leitura, cloro_combinado
 
 
 RT_NAME = "Thyago Fernando da Silveira"
@@ -245,9 +246,7 @@ def prepare_monitoring_table_rows(records: list[dict[str, Any]]) -> list[list[di
     for row in records:
         ct = _to_float(row.get("ct"))
         crl = _to_float(row.get("crl"))
-        combinado = None
-        if ct is not None and crl is not None:
-            combinado = max(ct - crl, 0.0)
+        combinado, erro_cc = cloro_combinado(crl, ct)
 
         entries: list[tuple[str, Any, str]] = [
             ("date", row.get("data"), "date"),
@@ -269,6 +268,11 @@ def prepare_monitoring_table_rows(records: list[dict[str, Any]]) -> list[list[di
             if key == "date":
                 text = str(value or "—")
                 status = "ok"
+            elif key == "combined" and erro_cc:
+                text, status = "Inconsistente", "out"
+            elif key == "combined" and combinado is not None:
+                text = _format_number(combinado)
+                status = "out" if avaliar_leitura("cc", combinado) == "fora_limite" else "ok"
             else:
                 text = _format_number(value)
                 status = _status_for_value(range_key, value)
@@ -396,8 +400,11 @@ def _collect_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     elif deviations:
         status = "Atenção: há desvios no período"
         status_flag = "attention"
+    elif not leituras:
+        status = "Sem medições suficientes para avaliação"
+        status_flag = "info"
     else:
-        status = "Condição estável nas leituras disponíveis"
+        status = "Sem desvios operacionais identificados nas leituras avaliadas"
         status_flag = "ok"
 
     return {
@@ -681,7 +688,7 @@ def build_monthly_rt_pdf_bytes(
     monitor_tbl.setStyle(TableStyle(style_cmds))
     story.append(monitor_tbl)
     story.append(Spacer(1, 1.8 * mm))
-    story.append(P("CC: cloro combinado calculado como CT − CRL.", "Small"))
+    story.append(P("CC: cloro combinado = CT − CRL, somente quando CT ≥ CRL. Leituras inconsistentes exigem conferência.", "Small"))
     story.append(Spacer(1, 2.4 * mm))
 
     synthesis = "Leituras sem não conformidades críticas no período." if not deviation_lines else "Foram identificados desvios que exigem ação corretiva com rastreabilidade."

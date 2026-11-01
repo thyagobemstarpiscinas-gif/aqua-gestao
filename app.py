@@ -3173,7 +3173,7 @@ def build_monthly_rt_pdf_bytes(
     t_mon.setStyle(TableStyle(style_cmds))
     story.append(t_mon)
     story.append(Spacer(1, 2.5 * mm))
-    story.append(_p("CC: cloro combinado calculado como CT − CRL.", st_small))
+    story.append(_p("CC: cloro combinado = CT − CRL, somente quando CT ≥ CRL. Leituras inconsistentes exigem conferência.", st_small))
     story.append(_p(f"Síntese dos resultados: {sintese}", st_body))
     if desvios_linhas:
         story.append(_p("Desvios relevantes: " + " ; ".join(desvios_linhas), st_body))
@@ -23507,7 +23507,7 @@ def gerar_contrato_rt_pdf_reportlab(dados: dict) -> bytes:
         "2. DO OBJETO",
         [
             "O presente contrato tem por objeto a prestação, pela CONTRATADA, de serviços técnicos especializados de Responsabilidade Técnica voltados ao controle técnico da qualidade da água das piscinas de uso coletivo mantidas pela CONTRATANTE, mediante atuação técnica, consultiva, orientativa e fiscalizatória, nos limites deste instrumento.",
-            f"Integram o objeto contratual: realização de {freq_frase}; análise técnica das condições gerais das piscinas, casa de máquinas, rotinas operacionais e aspectos relacionados ao tratamento químico; emissão de relatórios técnicos, notificações de não conformidade, orientações técnicas e pareceres; avaliação dos procedimentos adotados pela equipe operacional; elaboração ou revisão de POPs; recomendação de medidas corretivas, preventivas ou emergenciais; e acompanhamento documental para conformidade com normas aplicáveis, incluindo ABNT NBR 10818:2025 e ABNT NBR 10339.",
+            f"Integram o objeto contratual: realização de {freq_frase}; análise técnica das condições gerais das piscinas, casa de máquinas, rotinas operacionais e aspectos relacionados ao tratamento químico; emissão de relatórios técnicos, notificações de não conformidade, orientações técnicas e pareceres; avaliação dos procedimentos adotados pela equipe operacional; elaboração ou revisão de POPs; recomendação de medidas corretivas, preventivas ou emergenciais; e acompanhamento documental para conformidade com normas aplicáveis, incluindo ABNT NBR 10818:2026 e ABNT NBR 10339:2018 (versão corrigida de 2019).",
             "Fica expressamente ajustado que o contrato não inclui execução operacional diária ou extraordinária do tratamento da água; limpeza física; aspiração; escovação; peneiração; retrolavagem; operação rotineira de equipamentos; fornecimento de mão de obra operacional; fornecimento de produtos, insumos, reagentes, materiais, peças ou EPIs; manutenção corretiva ou preventiva de equipamentos; ou garantia de resultado contínuo dos parâmetros entre as visitas técnicas.",
             f"Piscina(s) objeto deste contrato: {volumes_piscinas}.",
         ],
