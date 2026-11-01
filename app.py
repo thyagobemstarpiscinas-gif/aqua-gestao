@@ -132,6 +132,8 @@ from utils.ambiente import destinos_google
 try:
     AMBIENTE_APP, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID = destinos_google(
         st.secrets, SHEETS_ID, DRIVE_FOTOS_FOLDER_ID)
+    from utils.google_auth import tipo_credencial
+    TIPO_CREDENCIAL_GOOGLE = tipo_credencial(st.secrets, AMBIENTE_APP)
 except ValueError as erro_configuracao:
     st.error(str(erro_configuracao))
     st.stop()
@@ -141,23 +143,15 @@ def conectar_drive():
     """Conecta ao Google Drive usando as mesmas credenciais do Sheets."""
     try:
         from googleapiclient.discovery import build
-        from google.oauth2.service_account import Credentials
+        from utils.google_auth import credenciais_google
 
-        SCOPES = [
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/spreadsheets",
-        ]
+        # Produção: conta de serviço (inalterado). Homologação: pode usar OAuth
+        # de usuário limitado a drive.file (ver utils/google_auth.py).
+        creds = credenciais_google(st.secrets, AMBIENTE_APP, Path(__file__).parent)
+        if creds is None:
+            return None
 
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        else:
-            creds_path = Path(__file__).parent / "aqua-gestao-rt-87316ebf5331.json"
-            if not creds_path.exists():
-                return None
-            creds = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
-
-        service = build("drive", "v3", credentials=creds)
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return service
     except Exception as e:
         _log_sheets_erro("conectar_drive", e)
@@ -172,7 +166,10 @@ def drive_criar_pasta(nome_pasta: str, pasta_pai_id: str) -> str | None:
             return None
 
         # Verifica se já existe
-        query = f"name='{nome_pasta}' and '{pasta_pai_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        # Aspas e barras no nome (ex.: "D'Ávila") quebravam a consulta do Drive.
+        _nome_q = str(nome_pasta).replace("\\", "\\\\").replace("'", "\\'")
+        _pai_q = str(pasta_pai_id).replace("\\", "\\\\").replace("'", "\\'")
+        query = f"name='{_nome_q}' and '{_pai_q}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         resultado = service.files().list(q=query, fields="files(id,name)").execute()
         arquivos = resultado.get("files", [])
         if arquivos:
@@ -474,7 +471,7 @@ def conectar_sheets():
     """Conecta ao Google Sheets usando as credenciais do st.secrets ou arquivo local."""
     try:
         import gspread
-        from google.oauth2.service_account import Credentials
+        from utils.google_auth import credenciais_google
     except ImportError as e:
         _log_sheets_erro("conectar_sheets/import", e)
         st.session_state["_sheets_ultimo_erro"] = (
@@ -484,26 +481,18 @@ def conectar_sheets():
         return None
 
     try:
-        SCOPES = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-
-        # Tenta carregar do st.secrets (Streamlit Cloud)
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        else:
-            # Fallback: arquivo local (uso no computador)
-            creds_path = Path(__file__).parent / "aqua-gestao-rt-87316ebf5331.json"
-            if not creds_path.exists():
-                st.session_state["_sheets_ultimo_erro"] = (
-                    "ERRO: Nenhuma credencial encontrada.\n"
-                    "No Streamlit Cloud: verifique st.secrets['gcp_service_account'].\n"
-                    "Localmente: arquivo aqua-gestao-rt-87316ebf5331.json não encontrado."
-                )
-                return None
-            creds = Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
+        # Produção: conta de serviço em st.secrets ou arquivo local (inalterado).
+        # Homologação: [google_oauth] limitado a drive.file, ou conta de serviço
+        # própria de teste; nunca o arquivo local de produção.
+        creds = credenciais_google(st.secrets, AMBIENTE_APP, Path(__file__).parent)
+        if creds is None:
+            st.session_state["_sheets_ultimo_erro"] = (
+                "ERRO: Nenhuma credencial encontrada.\n"
+                "No Streamlit Cloud: verifique st.secrets['gcp_service_account'] "
+                "(ou [google_oauth] em homologação).\n"
+                "Localmente: arquivo aqua-gestao-rt-87316ebf5331.json não encontrado."
+            )
+            return None
 
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(SHEETS_ID)
@@ -3702,9 +3691,14 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
         try:
             sh = conectar_sheets()
             if sh:
+                # obter_aba_sheets devolve None (não exceção) quando a aba não existe
+                # e guarda esse None em cache; numa planilha nova o rascunho nunca era
+                # gravado. Consulta direta e cria a aba quando necessário.
                 try:
-                    aba_rasc = obter_aba_sheets("_Rascunhos")
+                    aba_rasc = sh.worksheet("_Rascunhos")
                 except Exception:
+                    aba_rasc = None
+                if aba_rasc is None:
                     aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
                     aba_rasc.update(range_name="A1:D1", values=[["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
                 dados_sh = {k: v for k, v in dados.items()
@@ -3763,7 +3757,7 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
         sh = conectar_sheets()
         if sh:
             try:
-                aba_rasc = obter_aba_sheets("_Rascunhos")
+                aba_rasc = sh.worksheet("_Rascunhos")  # sem o cache de "aba ausente"
             except Exception:
                 return {}
             todos = aba_rasc.get_all_values()

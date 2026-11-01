@@ -161,6 +161,28 @@ def validar_sheets(gcp: dict, sheets_id: str) -> bool:
         return False
 
 
+def validar_oauth_homologacao(data: dict, sheets_id: str) -> bool:
+    """Homologação com [google_oauth]: valida o token (somente drive.file) e abre a planilha de teste."""
+    sys.path.insert(0, str(ROOT))
+    from utils.google_auth import ConfiguracaoGoogleInvalida, credenciais_google
+    ambiente = str((data.get("aqua_app") or {}).get("ambiente", "producao"))
+    try:
+        creds = credenciais_google(data, ambiente, ROOT)  # recusa OAuth fora de homologação
+        import gspread
+        sh = gspread.authorize(creds).open_by_key(sheets_id)
+        ok(f"OAuth de homologação válido (drive.file); planilha de teste aberta: {sh.title}")
+        abas = {ws.title for ws in sh.worksheets()}
+        faltantes = sorted((ABAS_OBRIGATORIAS | {"🔬 Visitas"}) - abas)
+        if faltantes:
+            aviso("abas ainda não criadas (o app cria sob demanda): " + ", ".join(faltantes))
+        return True
+    except ConfiguracaoGoogleInvalida as exc:
+        erro(str(exc))
+    except Exception as exc:
+        erro(f"falha ao abrir a planilha de teste via OAuth: {type(exc).__name__}")
+    return False
+
+
 def main() -> int:
     checks = []
 
@@ -170,11 +192,14 @@ def main() -> int:
     sheets_id = resolver_planilha(data) if data is not None else None
     checks.append(sheets_id is not None)
 
-    gcp = carregar_credencial(data) if data is not None else None
-    checks.append(gcp is not None)
+    if data is not None and sheets_id and "google_oauth" in data:
+        checks.append(validar_oauth_homologacao(data, sheets_id))
+    else:
+        gcp = carregar_credencial(data) if data is not None else None
+        checks.append(gcp is not None)
 
-    if gcp and sheets_id:
-        checks.append(validar_sheets(gcp, sheets_id))
+        if gcp and sheets_id:
+            checks.append(validar_sheets(gcp, sheets_id))
 
     if all(checks):
         ok("healthcheck concluído com sucesso.")
