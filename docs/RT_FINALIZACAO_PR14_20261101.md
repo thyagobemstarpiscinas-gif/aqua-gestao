@@ -127,3 +127,45 @@ foto fictícia, fontes incorporadas, ausência de quadrados/`<br/>`.
   pelo responsável (roteiro em `HOMOLOGACAO_RT.md`).
 - `pypdf` é usado por um teste e não consta em `requirements.txt` (dependência
   só de teste).
+
+## 7. Identidade visual ACQUA GESTÃO (correção posterior)
+
+Causa: `build_monthly_rt_pdf_bytes` (app.py) tinha lista própria de logos
+iniciando por `aqua_gestao_logo.png` (arte antiga "AQUA GESTÃO") e nunca
+consultava `acqua_gestao_logo_rt.png`. Havia ainda artes antigas embutidas em
+base64 (`LOGO_AQUA_OFICIAL_B64`, `LOGO_AQUA_APROVADA_B64`,
+`LOGO_DOSSIE_JPG_B64`, logo do dossiê FDS/GHS) usadas como alternativa, e todos
+os modelos DOCX ACQUA (`relatorio_mensal.docx`, `aditivo.docx`,
+`template_rt_aqua*.docx`) traziam a arte antiga embutida.
+
+Correção:
+- `utils/marca.py`: arte aprovada única (`acqua_gestao_logo_rt.png`), sem
+  alternativa antiga; sem a arte aprovada o documento sai com marca textual.
+- `encontrar_logo()` e `garantir_logo_aqua_oficial()` retornam só a arte
+  aprovada; varredura genérica de arquivos "logo" removida.
+- Base64 antigos removidos do app.py; dossiê FDS/GHS usa o arquivo aprovado.
+- DOCX: na geração, a arte antiga (identificada por SHA-256) é substituída
+  pela aprovada, sem distorção, em corpo e cabeçalhos; relações órfãs
+  removidas. Modelos Bem Star não são alterados. Os arquivos-modelo e as
+  artes antigas permanecem no repositório (histórico), sem uso.
+- Nome-marca em cabeçalhos/títulos: "ACQUA GESTÃO" (PDFs, prévias HTML,
+  propostas/contratos CRM, DOCX). A razão social registrada "AQUA GESTÃO
+  CONTROLE TÉCNICO LTDA", ao lado do CNPJ, não foi alterada.
+- Prévias HTML ACQUA passam a exibir a logo aprovada.
+- Alerta da prévia HTML de visita passa a avaliar cada piscina (antes dizia
+  "dentro dos limites" com CRL fora do limite em uma piscina).
+
+Verificação: `tests/test_marca_acqua.py` gera 28 documentos (23 ACQUA e
+5 Bem Star) e classifica as imagens incorporadas por impressão digital
+(`utils/verificar_marca.py`): ACQUA só com a arte aprovada, Bem Star só com a
+própria marca, nenhum com a arte antiga ou com o nome-marca antigo.
+
+Pendências de marca:
+- Razão social "AQUA GESTÃO CONTROLE TÉCNICO LTDA" e "nome fantasia RT AQUA
+  GESTÃO" no texto do contrato: decisão jurídica/cadastral do responsável.
+- Textos em caixa normal "Aqua Gestão" (rodapés, e-mails, telas) não foram
+  alterados nesta etapa.
+- Não existe gerador de "relatório de vistoria inicial" no código atual.
+- `logo_url` das assinaturas de e-mail vem dos Secrets e não foi verificado.
+- No DOCX mensal, a página 2 mostra a logo no cabeçalho e no corpo (leiaute
+  herdado do modelo; agora ambas com a arte aprovada).

@@ -436,9 +436,10 @@ def _collect_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _logo_path() -> Path:
-    path = Path("assets/branding/aqua_gestao_logo.png")
+    # Identidade aprovada ACQUA GESTÃO (grafia com dois C).
+    path = Path(__file__).resolve().parent / "acqua_gestao_logo_rt.png"
     if not path.exists() or not path.is_file():
-        raise ValueError("Logo oficial não encontrada em assets/branding/aqua_gestao_logo.png. Interrompendo geração do relatório.")
+        raise ValueError("Logo oficial não encontrada (acqua_gestao_logo_rt.png). Interrompendo geração do relatório.")
     return path
 
 

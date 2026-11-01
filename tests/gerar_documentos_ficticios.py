@@ -26,6 +26,13 @@ for node in TREE.body:
     elif isinstance(node, ast.ImportFrom) and node.module and (node.module.startswith("utils") or node.module == "rt_monthly_report"):
         for a in node.names: DEFS.setdefault(a.asname or a.name, node)
 
+# Geradores definidos dentro de blocos "if" do app (ex.: contrato de limpeza ACQUA).
+for node in TREE.body:
+    if isinstance(node, ast.If):
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.FunctionDef) and sub.name == "gerar_contrato_limpeza_aqua_pdf":
+                DEFS.setdefault(sub.name, sub)
+
 class FakeSt:
     session_state = {}
     secrets = {}
@@ -112,7 +119,9 @@ def bs_mensal():
 registrar("07_mensal_bem_star.pdf", bs_mensal)
 
 def docx_legado():
-    doc = Document(ROOT / "relatorio_mensal.docx"); ns["atualizar_textos_normativos"](doc); doc.save(OUT / "08_relatorio_mensal_textos.docx")
+    from utils.marca import substituir_logo_antigo_docx
+    doc = Document(ROOT / "relatorio_mensal.docx"); substituir_logo_antigo_docx(doc, ROOT / "acqua_gestao_logo_rt.png")
+    ns["atualizar_textos_normativos"](doc); doc.save(OUT / "08_relatorio_mensal_textos.docx")
 registrar("08_relatorio_mensal_textos.docx", docx_legado)
 
 pass
@@ -143,5 +152,64 @@ def premium_e_docx():
     if not ok: raise RuntimeError(err)
     ns["preencher_relatorio_mensal_docx"](ROOT / "relatorio_mensal.docx", OUT / "10_mensal_rt.docx", dados, fotos=[foto])
 registrar("09_mensal_rt_premium.pdf + 10_mensal_rt.docx", premium_e_docx)
+
+# ── Consolidados semestral e anual (trimestral acima) ────────────────────────
+def consolidado_periodo(tipo, indice, rotulo, arq):
+    meses = rr.meses_do_periodo(tipo, indice, 2026)
+    linhas = [{"data": f"05/{m:02d}/2026", "piscina": "Adulto", "ph": "7,4", "cloro_livre": "2,5", "cloro_total": "2,8",
+               "alcalinidade": "90", "dureza": "200", "cianurico": "40"} for m, _a in meses]
+    cons = rr.consolidar(linhas, meses)
+    graficos = rr.graficos_consolidados(cons, OUT / f"_graficos_{tipo}", COND, rotulo)
+    ctx = {"tipo": tipo, "periodo_rotulo": rotulo, "meses": cons["meses"], "nome_condominio": COND,
+           "consolidado": cons, "graficos": graficos, "piscinas_cadastro": rr.piscinas_do_cliente({"vol_adulto": 120}),
+           "art": {"status": "Em processo de formalização"}, "responsavel": "RT FICTÍCIO", "crq": "CRQ 000",
+           "data_emissao": "31/12/2026"}
+    ok, erro = gerar_pdf_consolidado(ctx, OUT / arq, ns["garantir_logo_aqua_oficial"]())
+    if not ok: raise RuntimeError(erro)
+registrar("11_consolidado_semestral.pdf", lambda: consolidado_periodo("Semestral", 2, "2º semestre de 2026", "11_consolidado_semestral.pdf"))
+registrar("12_consolidado_anual.pdf", lambda: consolidado_periodo("Anual", 1, "Ano de 2026", "12_consolidado_anual.pdf"))
+
+# ── Contratos, aditivos, termos, propostas e dossiê ─────────────────────────
+DADOS = {"nome": COND, "nome_condominio": COND, "cnpj": "00.000.000/0000-00", "documento": "00.000.000/0000-00",
+         "endereco": "Rua Fictícia, 100 — Uberlândia/MG", "representante": "SÍNDICO FICTÍCIO", "sindico": "SÍNDICO FICTÍCIO",
+         "cpf_sindico": "000.000.000-00", "representante_doc": "000.000.000-00", "telefone": "(00) 00000-0000",
+         "email": "teste@example.invalid", "valor_mensal": "1.000,00", "data_inicio": "01/11/2026", "data_fim": "31/10/2027",
+         "data_assinatura": "01/11/2026", "empresa_codigo": "aqua_gestao", "cliente": COND, "piscinas": "Adulto e Infantil",
+         "volume": "135", "observacoes": "DOCUMENTO FICTÍCIO PARA INSPEÇÃO VISUAL"}
+for func, arq in [("gerar_contrato_rt_pdf_reportlab", "13_contrato_rt.pdf"),
+                  ("gerar_proposta_crm_pdf", "14_proposta_crm_acqua.pdf"),
+                  ("gerar_contrato_crm_pdf", "15_contrato_crm_acqua.pdf"),
+                  ("gerar_dossie_fds_ghs_aqua_pdf", "16_dossie_fds_ghs.pdf"),
+                  ("_gerar_pdf_caderno_pops", "17_caderno_pops.pdf")]:
+    registrar(arq, lambda func=func, arq=arq: (OUT / arq).write_bytes(ns[func](dict(DADOS))))
+registrar("28_contrato_limpeza_acqua.pdf", lambda: (OUT / "28_contrato_limpeza_acqua.pdf").write_bytes(
+    ns["gerar_contrato_limpeza_aqua_pdf"](dict(DADOS))))
+registrar("29_termo_ciencia_operador.pdf", lambda: (OUT / "29_termo_ciencia_operador.pdf").write_bytes(
+    ns["_gerar_pdf_termo_ciencia_base"](dict(DADOS), "operador")))
+registrar("30_contrato_crm_bem_star.pdf", lambda: (OUT / "30_contrato_crm_bem_star.pdf").write_bytes(
+    ns["gerar_contrato_crm_pdf"](dict(DADOS, empresa_codigo="bem_star"))))
+registrar("18_termo_ciencia_sindico.pdf", lambda: (OUT / "18_termo_ciencia_sindico.pdf").write_bytes(
+    ns["_gerar_pdf_termo_ciencia_base"](dict(DADOS), "sindico")))
+registrar("19_proposta_crm_bem_star.pdf", lambda: (OUT / "19_proposta_crm_bem_star.pdf").write_bytes(
+    ns["gerar_proposta_crm_pdf"](dict(DADOS, empresa_codigo="bem_star"))))
+PH = {"{{NOME_CONDOMINIO}}": COND, "{{CNPJ_CONDOMINIO}}": "00.000.000/0000-00", "{{DATA_ASSINATURA}}": "01/11/2026"}
+registrar("20_contrato_rt.docx", lambda: ns["gerar_documento"](ROOT / "template_rt_aqua_v2_relatorio.docx", OUT / "20_contrato_rt.docx", PH))
+registrar("21_aditivo_rt.docx", lambda: ns["gerar_documento"](ROOT / "aditivo.docx", OUT / "21_aditivo_rt.docx", PH))
+registrar("22_contrato_bem_star.docx", lambda: ns["gerar_documento"](ROOT / "template_bem_star.docx", OUT / "22_contrato_bem_star.docx", PH))
+def aditivo_pdf():
+    ok, err = ns["salvar_aditivo_rt_pdf_premium_reportlab"](PH, OUT / "23_aditivo_rt_premium.pdf")
+    if not ok: raise RuntimeError(err)
+registrar("23_aditivo_rt_premium.pdf", aditivo_pdf)
+
+# ── Prévias HTML (renderizadas no Chromium em PNG pelo verificador) ─────────
+registrar("24_previa_relatorio_acqua.html", lambda: (OUT / "24_previa_relatorio_acqua.html").write_text(
+    ns["gerar_mockup_relatorio_preview_html"]("Aqua Gestão", "web"), encoding="utf-8"))
+registrar("25_previa_impressao_acqua.html", lambda: (OUT / "25_previa_impressao_acqua.html").write_text(
+    ns["gerar_mockup_relatorio_preview_html"]("Aqua Gestão", "print"), encoding="utf-8"))
+registrar("26_previa_bem_star.html", lambda: (OUT / "26_previa_bem_star.html").write_text(
+    ns["gerar_mockup_relatorio_preview_html"]("Bem Star Piscinas", "web"), encoding="utf-8"))
+registrar("27_visita_html_acqua.html", lambda: (OUT / "27_visita_html_acqua.html").write_text(
+    ns["gerar_html_relatorio_visita"](visita, COND), encoding="utf-8"))
+
 for n, r in resultados: print(f"{r:6} {n}")
 sys.exit(0 if all(r == "OK" for _, r in resultados) else 1)
