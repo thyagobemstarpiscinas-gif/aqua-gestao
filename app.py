@@ -7139,6 +7139,9 @@ LOGO_AQUA_APROVADA_B64 = """iVBORw0KGgoAAAANSUhEUgAAAggAAAIICAYAAAAL/BZjAACAAElE
 def garantir_logo_aqua_oficial() -> Path | None:
     """Garante um arquivo de logo oficial local para uso nos PDFs premium."""
     try:
+        corrigida = BASE_DIR / "acqua_gestao_logo_rt.png"
+        if corrigida.is_file():
+            return corrigida
         # A identidade RT aprovada fica incorporada ao código. O arquivo é
         # reconstruído em todas as execuções para impedir que imagens antigas
         # existentes no repositório (como "Logo Aqua.jpeg") tenham prioridade.
@@ -8305,6 +8308,15 @@ def _docx_inserir_capa_rt(doc, dados_relatorio: dict):
         return p
 
     logo = garantir_logo_aqua_oficial()
+    if logo:
+        # O modelo DOCX também contém a marca no cabeçalho das páginas internas.
+        from docx.opc.constants import RELATIONSHIP_TYPE as RT
+        from docx.oxml.ns import qn
+        image_part = doc.part.package.get_or_add_image_part(str(logo))
+        for section in doc.sections:
+            for header in (section.header, section.even_page_header):
+                for blip in header._element.xpath(".//a:blip"):
+                    blip.set(qn("r:embed"), header.part.relate_to(image_part, RT.IMAGE))
     p_logo = _par()
     if logo:
         p_logo.add_run().add_picture(str(logo), width=Inches(3.3))

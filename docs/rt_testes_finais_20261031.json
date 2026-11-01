@@ -1,0 +1,89 @@
+{
+  "run": 17,
+  "failures": 0,
+  "errors": 0,
+  "skipped": [],
+  "success": true,
+  "logo_sha256": "075747c974fd7b27b75c4731d763569b89978cd4e9c66583f6a75a105177e51f",
+  "consolidados": [
+    {
+      "tipo": "Trimestral",
+      "visitas": 4,
+      "piscinas": 3,
+      "paginas": 6,
+      "graficos_com_nome": [
+        {
+          "pagina": 4,
+          "piscinas": [
+            "Piscina Adulto"
+          ]
+        },
+        {
+          "pagina": 5,
+          "piscinas": [
+            "Piscina Infantil"
+          ]
+        },
+        {
+          "pagina": 6,
+          "piscinas": [
+            "SPA Cobertura"
+          ]
+        }
+      ]
+    },
+    {
+      "tipo": "Semestral",
+      "visitas": 4,
+      "piscinas": 3,
+      "paginas": 6,
+      "graficos_com_nome": [
+        {
+          "pagina": 4,
+          "piscinas": [
+            "Piscina Adulto"
+          ]
+        },
+        {
+          "pagina": 5,
+          "piscinas": [
+            "Piscina Infantil"
+          ]
+        },
+        {
+          "pagina": 6,
+          "piscinas": [
+            "SPA Cobertura"
+          ]
+        }
+      ]
+    },
+    {
+      "tipo": "Anual",
+      "visitas": 4,
+      "piscinas": 3,
+      "paginas": 6,
+      "graficos_com_nome": [
+        {
+          "pagina": 4,
+          "piscinas": [
+            "Piscina Adulto"
+          ]
+        },
+        {
+          "pagina": 5,
+          "piscinas": [
+            "Piscina Infantil"
+          ]
+        },
+        {
+          "pagina": 6,
+          "piscinas": [
+            "SPA Cobertura"
+          ]
+        }
+      ]
+    }
+  ],
+  "cloud_autenticado_validado": false
+}

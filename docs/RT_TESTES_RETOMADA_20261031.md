@@ -30,3 +30,18 @@ Verificações concluídas:
 - Baixar e inspecionar visualmente os documentos gerados nesta execução Cloud; os botões e mensagens foram verificados, não o conteúdo binário dos arquivos.
 - A imagem da logo ainda contém AQUA; a grafia ACQUA no título não corrige a arte.
 - Sem merge e sem publicação em produção nesta retomada. Não foram apagados rascunhos, inicializadas abas de CRM/operadores, enviados e-mails ou alterados cadastros reais.
+
+
+## Correções finais validadas — 31/10/2026
+
+Código desta atualização: arte ACQUA versionada, cabeçalho DOCX com a mesma arte e títulos do consolidado unidos ao próximo elemento na paginação.
+
+- Nova execução dos mesmos módulos isolados na versão final: **17 testes aprovados, zero falhas, zero erros, zero skips**, 216,975 segundos, saída 0.
+- `python -m py_compile app.py utils/pdf_rt_consolidado.py` e `git diff --check`: aprovados.
+- Trimestral, semestral e anual regenerados localmente com quatro datas de visitas fictícias e três piscinas: seis páginas cada; nome da piscina junto ao gráfico nas páginas 4, 5 e 6. Capa e página de gráfico anual renderizadas e conferidas.
+- Imagem dos cabeçalhos internos DOCX conferida por SHA-256 contra a nova arte; imagens existentes no corpo preservadas.
+- A suíte completa de 306 testes é evidência anterior e não foi repetida nesta alteração visual.
+- Painel Streamlit confirmou homologação vinculada a `fix/rt-f123-persistencia-cloud-20261029` e produção a `main`. A branch de homologação será avançada sem force para a versão validada.
+- A validação autenticada desta implantação na nuvem ainda está pendente; a nova sessão está na tela de PIN administrativo. Nenhuma alteração em produção nesta etapa.
+
+Resultado estruturado: `rt_testes_finais_20261031.json`. Os dados usados nos testes e documentos locais são sintéticos; não há migração ou exclusão de dados reais.

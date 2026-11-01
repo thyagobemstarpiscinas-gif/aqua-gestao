@@ -84,10 +84,7 @@ PDF consolidado (3 páginas) gerados pelo teste AppTest foram renderizados e ins
 
 ## Limitações
 
-* A arte da logo (`LOGO_AQUA_APROVADA_B64` e `aqua_gestao_logo_oficial.png`) contém a grafia
-  "AQUA GESTÃO". A capa mostra **ACQUA GESTÃO** no título, mas a imagem só muda com um
-  novo arquivo de logo aprovado. O cabeçalho interno do modelo DOCX (`relatorio_mensal.docx`)
-  também é do modelo e não foi alterado.
+* A arte corrigida `acqua_gestao_logo_rt.png` tem prioridade nos geradores RT PDF/DOCX e consolidado. A imagem foi corrigida para **ACQUA GESTÃO**, preservando o desenho existente; a imagem incorporada anterior permanece apenas como fallback em instalações incompletas.
 * `EMPRESA_RT` (contratos, aditivos, e-mails) não foi alterado; a nova grafia vale para os
   documentos do relatório RT.
 * O consolidado usa as visitas registradas (aba de visitas), não as edições manuais feitas
@@ -95,5 +92,12 @@ PDF consolidado (3 páginas) gerados pelo teste AppTest foram renderizados e ins
 * O gerador RT da área do operador (`build_monthly_rt_pdf_bytes`) recebeu somente a nova
   situação da ART; capa, piscinas, legendas e gráficos estão no gerador do escritório.
 * Fotos continuam limitadas ao tamanho do rascunho (40 partes × 40.000 caracteres).
-* Sem teste em navegador real, Streamlit Cloud ou homologação externa nesta etapa;
-  sem merge e sem publicação.
+* O estado inicial descrito acima é histórico. A retomada e os limites atuais de homologação estão em `RT_TESTES_RETOMADA_20261031.md`.
+
+## Correções finais da retomada (31/10/2026)
+
+* A arte versionada `acqua_gestao_logo_rt.png` tem prioridade na capa mensal PDF/DOCX e nos consolidados. Os cabeçalhos internos do modelo DOCX também recebem a arte corrigida; imagens no corpo são preservadas.
+* Títulos do consolidado usam `keepWithNext`, mantendo o nome da piscina junto ao gráfico na quebra de página.
+* Consolidados regenerados localmente com dados sintéticos: trimestral (4º), semestral (2º) e anual de 2026; quatro datas de visita e três piscinas, seis páginas por PDF. Os gráficos das três piscinas ficaram nas páginas 4, 5 e 6, cada qual com seu nome.
+* Verificação independente do cabeçalho DOCX: bytes da imagem relacionados ao cabeçalho correspondem ao SHA-256 da arte corrigida; quantidade de imagens preexistentes no corpo preservada.
+* Validação isolada de regras, geração e restauração: ver resultado final da retomada. A suíte completa anterior de 306 testes não foi repetida para esta correção visual.
