@@ -1,3 +1,5 @@
+from utils.rt_relatorio import ART_OPCOES, ART_PADRAO as ART_STATUS_PADRAO, ART_EMITIDA, normalizar_status_art, texto_art, validar_art
+from utils.cadastro_piscinas import TIPOS as TIPOS_PISCINA, SLOTS as SLOTS_PISCINA, volume as volume_cadastro, ler_metadados as ler_piscinas_cadastro, serializar as serializar_piscinas_cadastro
 
 
 import os
@@ -1602,7 +1604,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
 def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "Aqua Gestão", cep: str = ""):
+                           empresa: str = "Aqua Gestão", cep: str = "", piscinas_cadastro: str | None = None):
     """Salva novo cliente na aba Clientes do Google Sheets.
     
     Insere sempre logo após o último cliente real (C001, C002...),
@@ -1637,13 +1639,21 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
 
         # Verifica duplicata
         if nome.lower().strip() in nomes_existentes:
-            return True  # Já existe, considera sucesso
+            # Não sobrescrever cadastro local de cliente já existente.
+            try:
+                st.session_state["_cc_erro_salvar"] = "Já existe um cliente com esse nome. Use Editar cliente existente."
+            except Exception:
+                pass
+            return False
 
         # Próximo ID baseado no maior existente
         proximo_num = (max(nums) + 1) if nums else 1
         id_cliente = f"C{proximo_num:03d}"
 
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        _meta_piscinas = ler_piscinas_cadastro(piscinas_cadastro)
+        if _meta_piscinas is not None:
+            vol_total += sum(volume_cadastro(p.get("vol")) for p in _meta_piscinas["extras"])
         nova_linha = [
             "",                                    # A - vazia
             id_cliente,                            # B - ID
@@ -1662,6 +1672,9 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
             cep,                                   # O - CEP
         ]
 
+        if piscinas_cadastro is not None:
+            nova_linha.append(piscinas_cadastro)
+
         # Determina posicao alfabetica dentro do bloco de clientes
         nome_novo_lower = nome.lower().strip()
         linha_insercao = ultima_linha_cliente + 2  # fallback: final do bloco
@@ -1673,6 +1686,9 @@ def sheets_salvar_cliente(nome: str, cnpj: str, endereco: str, contato: str, tel
                     if nome_val2.lower().strip() > nome_novo_lower:
                         linha_insercao = i + 1
                         break
+        if piscinas_cadastro is not None and getattr(aba, "col_count", 16) < 16:
+            aba.add_cols(16 - aba.col_count)
+        # USER_ENTERED como antes do PR: mantém a tipagem legada de volumes e data (H).
         aba.insert_row(nova_linha, linha_insercao, value_input_option="USER_ENTERED")
         st.cache_data.clear()
         return True
@@ -1769,6 +1785,15 @@ def sheets_listar_clientes_completo() -> list[dict]:
                 "empresa":      _empresa_cl,
                 "piscinas_extras": [],  # carregado do JSON local se disponível
             }
+            try:
+                _meta_piscinas = ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+            except ValueError as _erro_piscinas_remotas:
+                _meta_piscinas = None
+                cliente_base["erro_cadastro_piscinas"] = str(_erro_piscinas_remotas)
+            if _meta_piscinas is not None:
+                cliente_base["cadastro_piscinas"] = _meta_piscinas
+                cliente_base["tipos_piscinas"] = _meta_piscinas["tipos"]
+                cliente_base["piscinas_extras"] = _meta_piscinas["extras"]
             clientes.append(_enriquecer_cliente_com_dados_locais(cliente_base))
         return clientes
     except Exception as e:
@@ -1779,7 +1804,7 @@ def sheets_listar_clientes_completo() -> list[dict]:
 def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                            contato: str, telefone: str,
                            vol_adulto: float = 0, vol_infantil: float = 0, vol_family: float = 0,
-                           empresa: str = "", cep: str = "") -> bool:
+                           empresa: str = "", cep: str = "", piscinas_cadastro: str | None = None) -> bool:
     """Edita cliente existente na aba Clientes pelo ID."""
     import re as _re
     try:
@@ -1789,12 +1814,21 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
         aba = obter_aba_sheets("👥 Clientes")
         todos = aba.get_all_values()
         vol_total = (vol_adulto or 0) + (vol_infantil or 0) + (vol_family or 0)
+        _meta_piscinas = ler_piscinas_cadastro(piscinas_cadastro)
+        if _meta_piscinas is not None:
+            vol_total += sum(volume_cadastro(p.get("vol")) for p in _meta_piscinas["extras"])
         for i, row in enumerate(todos):
             if len(row) > 1 and str(row[1]).strip() == id_cliente.strip():
                 linha_sheets = i + 1
                 # Preserva empresa existente se não informada
                 _empresa_atual = str(row[12]).strip() if len(row) > 12 else ""
                 _empresa_final = empresa if empresa else (_empresa_atual or "Aqua Gestão")
+                # Um volume total legado sem distribuição não é atribuído a uma
+                # piscina por inferência nem apagado ao informar apenas os tipos.
+                if vol_total == 0 and not any(volume_cadastro(row[j]) for j in (9, 10, 11) if len(row) > j):
+                    _antigo_meta = ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+                    if not _antigo_meta or not _antigo_meta["extras"]:
+                        vol_total = volume_cadastro(row[3] if len(row) > 3 else "")
                 nova = [
                     "",
                     id_cliente,
@@ -1812,7 +1846,14 @@ def sheets_editar_cliente(id_cliente: str, nome: str, cnpj: str, endereco: str,
                     cnpj,                          # N - CNPJ
                     cep,                           # O - CEP
                 ]
-                aba.update(range_name=f"A{linha_sheets}:O{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
+                _fim_coluna = "O"
+                if piscinas_cadastro is not None:
+                    ler_piscinas_cadastro(row[15] if len(row) > 15 else "")
+                    nova.append(piscinas_cadastro)
+                    _fim_coluna = "P"
+                    if getattr(aba, "col_count", 16) < 16:
+                        aba.add_cols(16 - aba.col_count)
+                aba.update(range_name=f"A{linha_sheets}:{_fim_coluna}{linha_sheets}", values=[nova], value_input_option="USER_ENTERED")
                 return True
         return False
     except Exception as e:
@@ -3046,7 +3087,7 @@ def build_monthly_rt_pdf_bytes(
         ["Responsável Técnico", RESPONSAVEL_TÉCNICO],
         ["Qualificação", QUALIFICACAO_RT],
         ["Registro", "CRQ-MG 2ª Região nº 024025748"],
-        ["ART", art_number or "Em tramitação administrativa"],
+        ["ART", art_number or "ART em processo de emissão — número e vigência ainda não disponíveis"],
     ]
     t_ident = Table([[ _p(a, st_tab_left), _p(b, st_tab_left)] for a, b in ident], colWidths=[4.7 * cm, 13.1 * cm])
     t_ident.setStyle(TableStyle([
@@ -4647,6 +4688,8 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
 
     for chave in ["cnpj", "cep", "telefone", "contato", "endereco", "vol_adulto", "vol_infantil", "vol_family", "verificacoes_semanais", "analises_mensais_padrao"]:
         valor_local = dados_locais.get(chave)
+        if chave.startswith("vol_") and cliente_final.get("cadastro_piscinas") is not None:
+            continue
         if valor_local not in (None, ""):
             cliente_final[chave] = valor_local
 
@@ -4673,8 +4716,10 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
         cliente_final["cnpj"] = dados_locais.get("cnpj_condominio", cliente_final.get("cnpj", ""))
     if dados_locais.get("nome_sindico") and not cliente_final.get("contato"):
         cliente_final["contato"] = dados_locais.get("nome_sindico", "")
-    if "piscinas_extras" in dados_locais:
-        cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+    if cliente_final.get("cadastro_piscinas") is None:
+        if "piscinas_extras" in dados_locais:
+            cliente_final["piscinas_extras"] = dados_locais.get("piscinas_extras", [])
+        cliente_final["tipos_piscinas"] = dados_locais.get("tipos_piscinas", {})
 
     return cliente_final
 
@@ -4902,7 +4947,7 @@ def salvar_snapshot_formulario() -> dict:
         "whatsapp_cliente": (st.session_state.get("whatsapp_cliente") or "").strip(),
         "email_cliente": (st.session_state.get("email_cliente") or "").strip(),
         "observacoes_internas": (st.session_state.get("observacoes_internas") or "").strip(),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
+        "rel_art_status": (st.session_state.get("rel_art_status") or ART_STATUS_PADRAO).strip(),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
@@ -4931,6 +4976,7 @@ def obter_parametros_ultimos_relatorio() -> list[dict]:
             "tds": (st.session_state.get(f"rel_analise_tds_{i}") or "").strip(),
             "temperatura": (st.session_state.get(f"rel_analise_temperatura_{i}") or "").strip(),
             "operador": (st.session_state.get(f"rel_analise_operador_{i}") or "").strip(),
+            "piscina": (st.session_state.get(f"rel_analise_piscina_{i}") or "").strip(),
         })
     return itens
 
@@ -4963,6 +5009,7 @@ def aplicar_parametros_ultimos_no_relatorio(dados_salvos: dict | None):
         st.session_state[f"rel_analise_dc_{i}"] = str(item.get("dc") or item.get("dureza") or "").strip()
         st.session_state[f"rel_analise_cya_{i}"] = str(item.get("cya") or item.get("cianurico") or "").strip()
         st.session_state[f"rel_analise_operador_{i}"] = str(item.get("operador") or "").strip()
+        st.session_state[f"rel_analise_piscina_{i}"] = str(item.get("piscina") or "").strip()
 
 
 def obter_dosagens_ultimas_relatorio() -> list[dict]:
@@ -5044,7 +5091,7 @@ def obter_snapshot_relatorio_independente() -> dict:
         "endereco_condominio": (st.session_state.get("rel_endereco_condominio") or "").strip(),
         "nome_sindico": (st.session_state.get("rel_representante") or "").strip(),
         "cpf_sindico": (st.session_state.get("rel_cpf_cnpj_representante") or "").strip(),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
+        "rel_art_status": (st.session_state.get("rel_art_status") or ART_STATUS_PADRAO).strip(),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or "").strip(),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or "").strip(),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or "").strip(),
@@ -5205,7 +5252,7 @@ def aplicar_dados_no_formulario(dados_salvos: dict):
     st.session_state.dia_pagamento = dados_salvos.get("dia_pagamento", "")
     st.session_state.forma_pagamento = dados_salvos.get("forma_pagamento", "Pix")
     st.session_state.valor_mensal_extenso = dados_salvos.get("valor_mensal_extenso", "")
-    st.session_state.rel_art_status = dados_salvos.get("rel_art_status", "Em processo de formalização")
+    st.session_state.rel_art_status = dados_salvos.get("rel_art_status", ART_STATUS_PADRAO)
     st.session_state.rel_art_status_widget = st.session_state.rel_art_status
     st.session_state.rel_art_numero = dados_salvos.get("rel_art_numero", "")
     st.session_state.rel_art_inicio = dados_salvos.get("rel_art_inicio", "")
@@ -7065,26 +7112,17 @@ def on_change_rel_art_numero():
 
 
 def on_change_rel_art_status():
-    status = (st.session_state.get("rel_art_status") or "Em processo de formalização").strip()
-    if status != "Emitida":
+    status = normalizar_status_art(st.session_state.get("rel_art_status"))
+    if status != ART_EMITIDA:
         st.session_state.rel_art_numero = ""
         st.session_state.rel_art_inicio = ""
         st.session_state.rel_art_fim = ""
 
 
 def obter_status_art_texto(dados_relatorio: dict) -> str:
-    status = (dados_relatorio.get("art_status") or "Em processo de formalização").strip()
-    numero = (dados_relatorio.get("art_numero") or "").strip()
-    inicio = (dados_relatorio.get("art_inicio") or "").strip()
-    fim = (dados_relatorio.get("art_fim") or "").strip()
-    if status == "Emitida":
-        numero_final = numero or "N/A"
-        if inicio and fim:
-            return f"ART nº {numero_final} | Vigência: {inicio} a {fim}"
-        return f"ART nº {numero_final}"
-    if status in ("Em tramitação", "Em processo de formalização"):
-        return "ART não emitida — em processo de formalização"
-    return "ART não emitida até a data de emissão deste relatório"
+    """Número e vigência somente quando informados; emissão nunca é presumida."""
+    return texto_art(dados_relatorio.get("art_status"), dados_relatorio.get("art_numero"),
+                     dados_relatorio.get("art_inicio"), dados_relatorio.get("art_fim"))
 
 
 # =========================================
@@ -7101,6 +7139,9 @@ LOGO_AQUA_APROVADA_B64 = """iVBORw0KGgoAAAANSUhEUgAAAggAAAIICAYAAAAL/BZjAACAAElE
 def garantir_logo_aqua_oficial() -> Path | None:
     """Garante um arquivo de logo oficial local para uso nos PDFs premium."""
     try:
+        corrigida = BASE_DIR / "acqua_gestao_logo_rt.png"
+        if corrigida.is_file():
+            return corrigida
         # A identidade RT aprovada fica incorporada ao código. O arquivo é
         # reconstruído em todas as execuções para impedir que imagens antigas
         # existentes no repositório (como "Logo Aqua.jpeg") tenham prioridade.
@@ -7255,9 +7296,11 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         from reportlab.lib.units import mm
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-            Image as RLImage, PageBreak, HRFlowable
+            Image as RLImage, PageBreak, HRFlowable, KeepTogether
         )
         from PIL import Image as PILImage
+        from utils.capa_acqua import desenhar_capa
+        from utils.rt_relatorio import MARCA_COMPLETA, formatar_volume, graficos_por_piscina, legenda_foto
 
         pdf_path = Path(pdf_path)
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7283,6 +7326,9 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
         styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=9.2, textColor=preto))
         styles.add(ParagraphStyle("AqCellBold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.5, leading=9.2, textColor=azul))
+        # Cabeçalho sobre fundo azul: o TEXTCOLOR da tabela não alcança Paragraph,
+        # por isso o texto ficava azul sobre azul (invisível).
+        styles.add(ParagraphStyle("AqCellHead", parent=styles["AqCellBold"], textColor=branco))
         styles.add(ParagraphStyle("AqWarn", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.2, leading=10.2, textColor=azul, leftIndent=4, borderColor=azul2, borderWidth=0.6, borderPadding=5, spaceBefore=4, spaceAfter=6))
 
         def P(texto, style="AqBody"):
@@ -7298,7 +7344,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                     if isinstance(c, Paragraph):
                         out.append(c)
                     else:
-                        out.append(P(c, "AqCellBold" if (header and r == 0) else "AqCell"))
+                        out.append(P(c, "AqCellHead" if (header and r == 0) else "AqCell"))
                 conv.append(out)
             t = Table(conv, colWidths=widths, repeatRows=1 if header else 0, hAlign="LEFT")
             cmds = [
@@ -7352,24 +7398,29 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             canvas.line(14*mm, 13*mm, w-14*mm, 13*mm)
             canvas.setFont("Helvetica", 7)
             canvas.setFillColor(cinza)
-            canvas.drawString(14*mm, 8.5*mm, "Aqua Gestão – Controle Técnico de Piscinas")
+            canvas.drawString(14*mm, 8.5*mm, MARCA_COMPLETA)
             canvas.drawRightString(w-14*mm, 8.5*mm, f"Página {doc_obj.page}")
             canvas.restoreState()
 
-        story = []
-        story.append(Spacer(1, 4*mm))
-        if logo_path and Path(logo_path).exists():
-            try:
-                story.append(RLImage(str(logo_path), width=58*mm, height=40*mm, kind="proportional", hAlign="CENTER"))
-                story.append(Spacer(1, 4*mm))
-            except Exception:
-                pass
+        def capa(canvas, doc_obj):
+            desenhar_capa(canvas, w, h, logo_path, "Relatório mensal de responsabilidade técnica",
+                          "Controle técnico-operacional de piscinas", [
+                              ("Cliente / estabelecimento", dados_relatorio.get("nome_condominio", "")),
+                              ("Período de referência", f"{dados_relatorio.get('mes_referencia', '')}/{dados_relatorio.get('ano_referencia', '')}"),
+                              ("Piscinas", ", ".join(p["nome"] for p in _pisc_cad.get("piscinas", [])) or "Conforme registros do período"),
+                              ("Responsável técnico", f"{dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)} | CRQ 024025748"),
+                              ("Situação da ART", obter_status_art_texto(dados_relatorio)),
+                              ("Data de emissão", dados_relatorio.get("data_emissao", hoje_br())),
+                          ], rodape=MARCA_COMPLETA)
+
+        _pisc_cad = dados_relatorio.get("piscinas_cadastro") or {}
+        story = [PageBreak()]
         story.append(P("RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA", "AqTitle"))
         story.append(P("Controle Técnico-Operacional de Piscinas", "AqSubtitle"))
         story.append(HRFlowable(width="100%", thickness=1.2, color=azul2, spaceBefore=2, spaceAfter=8))
 
         ident = [
-            ["IDENTIFICAÇÃO DO DOCUMENTO", ""],
+            [P("IDENTIFICAÇÃO DO DOCUMENTO", "AqCellHead"), ""],
             ["Responsável Técnico", dados_relatorio.get("responsavel_tecnico", RESPONSAVEL_TÉCNICO)],
             ["Registro CRQ", "CRQ-MG 2ª Região | CRQ 024025748"],
             ["Qualificação", dados_relatorio.get("qualificacao", QUALIFICACAO_RT)],
@@ -7377,7 +7428,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["Cliente / Estabelecimento", dados_relatorio.get("nome_condominio", "")],
             ["Endereço do Local", dados_relatorio.get("endereco_condominio", "")],
             ["Período de Referência", f"Mês: {dados_relatorio.get('mes_referencia','')} / Ano: {dados_relatorio.get('ano_referencia','')}"],
-            ["Nº ART – CRQ", obter_status_art_texto(dados_relatorio)],
+            ["Situação da ART – CRQ", obter_status_art_texto(dados_relatorio)],
             ["Data de Emissão", dados_relatorio.get("data_emissao", hoje_br())],
         ]
         t_ident = table(ident, widths=[55*mm, 125*mm], header=False)
@@ -7393,6 +7444,16 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ("TOPPADDING", (0,0), (-1,-1), 6), ("BOTTOMPADDING", (0,0), (-1,-1), 6),
         ]))
         story.append(t_ident)
+
+        story.append(P("PISCINAS ATENDIDAS", "AqH2"))
+        if _pisc_cad.get("piscinas"):
+            story.append(table([["Identificação", "Tipo", "Volume"]] +
+                               [[p["nome"], p["tipo"], formatar_volume(p["volume"])] for p in _pisc_cad["piscinas"]],
+                               widths=[80*mm, 50*mm, 50*mm]))
+        else:
+            story.append(P("Piscinas individuais não cadastradas para este cliente; as análises seguem a identificação registrada em cada linha.", "AqSmall"))
+        if _pisc_cad.get("sem_distribuicao"):
+            story.append(P(f"Volume total informado no cadastro, sem distribuição por piscina: {formatar_volume(_pisc_cad.get('volume_total'))}.", "AqSmall"))
 
         story.append(P("1. CONFORMIDADE LEGAL – CFQ / CRQ", "AqH1"))
         story.append(P("Este Relatório de Responsabilidade Técnica é emitido em atendimento às obrigações legais do RT habilitado perante o Conselho Regional de Química de Minas Gerais — CRQ-MG 2ª Região, nos termos:", "AqBody"))
@@ -7463,13 +7524,41 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         story.append(P("Análises realizadas com Photometer Color Q e, nas visitas semanais de RT, turbidímetro, medidor de ORP, TDS e temperatura. Todos os resultados são confrontados com os limites operacionais aplicáveis.", "AqBody"))
         story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
         linhas_a = _rl_linhas_analises(dados_relatorio)
-        if linhas_a:
-            story.append(table([["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]] + linhas_a,
-                widths=[18*mm, 10*mm, 11*mm, 11*mm, 11*mm, 13*mm, 14*mm, 12*mm, 13*mm, 13*mm, 13*mm, 13*mm, 28*mm]))
+        _cab_a = [["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]]
+        _larg_a = [18*mm, 10*mm, 11*mm, 11*mm, 11*mm, 13*mm, 14*mm, 12*mm, 13*mm, 13*mm, 13*mm, 13*mm, 28*mm]
+        _grupos_a = {}
+        for _it in dados_relatorio.get("analises", []) or []:
+            if isinstance(_it, dict):
+                _grupos_a.setdefault(str(_it.get("piscina") or "").strip(), []).append(_it)
+        _com_piscina = any(k for k in _grupos_a)
+        if linhas_a and _com_piscina:
+            # Uma tabela por piscina, na ordem de aparição.
+            for _nome_p, _itens_p in _grupos_a.items():
+                _linhas_p = _rl_linhas_analises({"analises": _itens_p})
+                if _linhas_p:
+                    story.append(KeepTogether([P(f"Piscina: {_nome_p or 'não identificada'}", "AqCellBold"),
+                                               table(_cab_a + _linhas_p, widths=_larg_a)]))
+                    story.append(Spacer(1, 2*mm))
+        elif linhas_a:
+            story.append(table(_cab_a + linhas_a, widths=_larg_a))
         else:
             story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
         story.append(P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"))
         story.append(P("A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações que podem reduzir a transparência da água e prejudicar a ação do desinfetante. Este controle técnico complementar está alinhado aos requisitos de qualidade e limpidez da ABNT NBR 10818:2016 e às boas práticas de operação, recirculação e filtração previstas na ABNT NBR 10339:2018.", "AqBody"))
+        try:
+            _graficos = graficos_por_piscina(dados_relatorio.get("analises", []) or [], pdf_path.parent / f"{pdf_path.stem}_graficos",
+                                             dados_relatorio.get("nome_condominio", ""),
+                                             f"{dados_relatorio.get('mes_referencia', '')}/{dados_relatorio.get('ano_referencia', '')}")
+        except Exception as _e_graf:
+            _graficos = []
+            _log_sheets_erro("graficos_por_piscina", _e_graf)
+        if _graficos:
+            story.append(P("GRÁFICOS TÉCNICOS POR PISCINA", "AqH2"))
+            story.append(P("Evolução dos parâmetros no período. Quando a célula registra antes/após, o gráfico usa a leitura inicial.", "AqSmall"))
+            for _nome_g, _g in _graficos:
+                _gw, _gh = PILImage.open(_g).size
+                story.append(RLImage(str(_g), width=180*mm, height=180*mm * _gh / _gw, hAlign="CENTER"))
+                story.append(Spacer(1, 3*mm))
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
         if linhas_d:
@@ -7526,8 +7615,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             story.append(P("Registros visuais do período de referência, inseridos para rastreabilidade técnica e comprovação documental.", "AqBody"))
             for idx, fp in enumerate(fotos[:12], start=1):
                 try:
-                    legenda = "Vista geral da piscina no período de referência" if idx == 1 else "Registro complementar da área da piscina"
-                    story.append(P(f"Foto {idx} — {legenda}", "AqH2"))
+                    _meta_f = (dados_relatorio.get("fotos_meta") or {}).get(Path(fp).stem)
+                    story.append(P(legenda_foto(idx, _meta_f), "AqH2"))
                     img = PILImage.open(fp)
                     iw, ih = img.size
                     max_w = 170*mm
@@ -7538,7 +7627,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 except Exception:
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
 
-        doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+        doc.build(story, onFirstPage=capa, onLaterPages=header_footer)
         return (pdf_path.exists(), None if pdf_path.exists() else "PDF premium não foi criado.")
     except Exception as e:
         _log_sheets_erro("gerar_pdf_relatorio_rt_premium_reportlab", e)
@@ -7878,7 +7967,7 @@ def garantir_campos_analises(qtd: int, minimo: int = ANALISES_PADRAO):
     qtd = min(qtd, ANALISES_MAX_SUGERIDO)
     st.session_state.rel_analises_total = qtd
     for i in range(qtd):
-        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador"]:
+        for sufixo in ["data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador", "piscina"]:
             chave = f"rel_analise_{sufixo}_{i}"
             if chave not in st.session_state:
                 st.session_state[chave] = ""
@@ -7887,6 +7976,23 @@ def garantir_campos_analises(qtd: int, minimo: int = ANALISES_PADRAO):
 def adicionar_analise_extra():
     atual = int(st.session_state.get("rel_analises_total", 1) or 1)
     garantir_campos_analises(atual + 1, minimo=1)
+    # Linha extra pedida explicitamente: a regra semanal não a esconde no rerun.
+    st.session_state["_rt_linhas_manuais"] = (st.session_state.get("rel_origem_dados"), atual + 1)
+
+
+def linhas_analise_visiveis_rt(minimo: int) -> int:
+    """Nunca esconde linhas com dados (várias piscinas por visita, importações) nem
+    linhas extras pedidas neste contexto. Antes a regra semanal truncava a tabela."""
+    ss = st.session_state
+    total = int(minimo or 1)
+    for i in range(ANALISES_MAX_SUGERIDO):
+        if any(str(ss.get(f"rel_analise_{suf}_{i}") or "").strip() for suf in
+               ("data", "ph", "cl", "ct", "alc", "dc", "cya", "turbidez", "orp", "tds", "temperatura", "operador")):
+            total = max(total, i + 1)
+    manuais = ss.get("_rt_linhas_manuais")
+    if manuais and manuais[0] == ss.get("rel_origem_dados"):
+        total = max(total, int(manuais[1]))
+    return min(total, ANALISES_MAX_SUGERIDO)
 
 
 def coletar_analises_relatorio() -> list[dict]:
@@ -7907,6 +8013,7 @@ def coletar_analises_relatorio() -> list[dict]:
             "tds": str(st.session_state.get(f"rel_analise_tds_{i}", "")).strip(),
             "temperatura": str(st.session_state.get(f"rel_analise_temperatura_{i}", "")).strip(),
             "operador": str(st.session_state.get(f"rel_analise_operador_{i}", "")).strip(),
+            "piscina": str(st.session_state.get(f"rel_analise_piscina_{i}", "") or "").strip(),
         })
     return itens
 
@@ -8063,11 +8170,16 @@ def montar_dados_relatorio() -> dict:
     empresa_atual = _empresa_ativa_nome()
     is_bem_star = "Bem Star" in empresa_atual
 
-    empresa_rt_dinamica = EMPRESA_BEM_STAR if is_bem_star else EMPRESA_RT
+    from utils.rt_relatorio import MARCA_COMPLETA
+    # Relatório RT usa a grafia ACQUA GESTÃO; EMPRESA_RT (contratos/aditivos) não muda.
+    empresa_rt_dinamica = EMPRESA_BEM_STAR if is_bem_star else MARCA_COMPLETA
+    _piscinas_rel = {"piscinas": [], "volume_total": None, "sem_distribuicao": False, "fonte": "bem_star"} if is_bem_star else _piscinas_relatorio_rt()
+    _fotos_meta_rel = {} if is_bem_star else _metadados_fotos_contexto_rt()
     responsavel_dinamico = "Equipe Operacional" if is_bem_star else RESPONSAVEL_TÉCNICO
     assinatura_dinamica = "Bem Star Piscinas" if is_bem_star else RESPONSAVEL_TECNICO_ASSINATURA
     crq_dinamico = "N/A" if is_bem_star else CRQ
     qualificacao_dinamica = "Operação e Manutenção" if is_bem_star else QUALIFICACAO_RT
+    _art_status_rel = normalizar_status_art(st.session_state.get("rel_art_status"))
 
     return {
         "empresa_rt": empresa_rt_dinamica,
@@ -8084,10 +8196,10 @@ def montar_dados_relatorio() -> dict:
         "tipo_atendimento": (st.session_state.get("rel_tipo_atendimento") or "Contrato ativo").strip(),
         "mes_referencia": (st.session_state.get("rel_mes_referencia") or "").strip(),
         "ano_referencia": (st.session_state.get("rel_ano_referencia") or "").strip(),
-        "art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização").strip(),
-        "art_numero": (st.session_state.get("rel_art_numero") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
-        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
-        "art_fim": (st.session_state.get("rel_art_fim") or "").strip() if (st.session_state.get("rel_art_status") or "Em processo de formalização").strip() == "Emitida" else "N/A",
+        "art_status": _art_status_rel,
+        "art_numero": (st.session_state.get("rel_art_numero") or "").strip() if _art_status_rel == ART_EMITIDA else "N/A",
+        "art_inicio": (st.session_state.get("rel_art_inicio") or "").strip() if _art_status_rel == ART_EMITIDA else "N/A",
+        "art_fim": (st.session_state.get("rel_art_fim") or "").strip() if _art_status_rel == ART_EMITIDA else "N/A",
         "art_texto": "",
         "data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()).strip(),
         "status_agua": status_final,
@@ -8099,7 +8211,19 @@ def montar_dados_relatorio() -> dict:
         "conformidades": coletar_conformidades_relatorio(),
         "epis": coletar_epis_relatorio(),
         "avaliacao_automatica": avaliacao,
+        "piscinas_cadastro": _piscinas_rel,
+        "fotos_meta": _fotos_meta_rel,
     }
+
+
+def _metadados_fotos_contexto_rt() -> dict:
+    """Legenda/piscina por SHA-256 das fotos do contexto atual (sem os bytes)."""
+    from utils.rt_contexto import ler_fotos
+    try:
+        fotos = ler_fotos(st.session_state, str(st.session_state.get("rel_origem_dados") or ""))
+    except (ValueError, KeyError, TypeError):
+        return {}
+    return {f["sha256"]: {k: v for k, v in f.items() if k != "bytes"} for f in fotos}
 
 
 def validar_relatorio_mensal(dados_relatorio: dict) -> list[str]:
@@ -8114,13 +8238,8 @@ def validar_relatorio_mensal(dados_relatorio: dict) -> list[str]:
         erros.append("O arquivo relatorio_mensal.docx não foi localizado na pasta do projeto.")
     if not validar_data_br(dados_relatorio.get("data_emissao", "")):
         erros.append("Data de emissão do relatório inválida.")
-    if dados_relatorio.get("art_status") == "Emitida":
-        if not dados_relatorio.get("art_numero"):
-            erros.append("Informe o número da ART ou altere o status para Não emitida / Em tramitação.")
-        if not validar_data_br(dados_relatorio.get("art_inicio", "")):
-            erros.append("Vigência ART - início inválida.")
-        if not validar_data_br(dados_relatorio.get("art_fim", "")):
-            erros.append("Vigência ART - fim inválida.")
+    erros += validar_art(dados_relatorio.get("art_status"), dados_relatorio.get("art_numero"),
+                         dados_relatorio.get("art_inicio"), dados_relatorio.get("art_fim"))
     return erros
 
 
@@ -8169,6 +8288,65 @@ def atualizar_textos_normativos(doc: Document):
         substituir_placeholders_doc(doc, {de: para})
 
 
+def _docx_inserir_capa_rt(doc, dados_relatorio: dict):
+    """Capa ACQUA GESTÃO no início do DOCX: logo em destaque, título e identificação."""
+    from docx.shared import Pt, RGBColor, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _AL, WD_BREAK
+    corpo = doc.element.body
+    primeiro = corpo[0] if len(corpo) else None
+    novos = []
+
+    def _par(texto="", tam=11, negrito=False, cor=(23, 58, 94)):
+        p = doc.add_paragraph()
+        p.alignment = _AL.CENTER
+        if texto:
+            r = p.add_run(texto)
+            r.bold = negrito
+            r.font.size = Pt(tam)
+            r.font.color.rgb = RGBColor(*cor)
+        novos.append(p._p)
+        return p
+
+    logo = garantir_logo_aqua_oficial()
+    if logo:
+        # O modelo DOCX também contém a marca no cabeçalho das páginas internas.
+        from docx.opc.constants import RELATIONSHIP_TYPE as RT
+        from docx.oxml.ns import qn
+        image_part = doc.part.package.get_or_add_image_part(str(logo))
+        for section in doc.sections:
+            for header in (section.header, section.even_page_header):
+                for blip in header._element.xpath(".//a:blip"):
+                    blip.set(qn("r:embed"), header.part.relate_to(image_part, RT.IMAGE))
+    p_logo = _par()
+    if logo:
+        p_logo.add_run().add_picture(str(logo), width=Inches(3.3))
+    _par("ACQUA GESTÃO", 30, True, (176, 135, 40))
+    _par("CONTROLE TÉCNICO DE PISCINAS  •  RESPONSABILIDADE TÉCNICA", 10, False, (120, 100, 40))
+    _par("")
+    _par("RELATÓRIO MENSAL DE RESPONSABILIDADE TÉCNICA", 17, True)
+    _par("")
+    for rotulo, valor in (
+        ("Cliente / estabelecimento", dados_relatorio.get("nome_condominio", "")),
+        ("Período de referência", f"{dados_relatorio.get('mes_referencia', '')}/{dados_relatorio.get('ano_referencia', '')}"),
+        ("Responsável técnico", f"{dados_relatorio.get('responsavel_tecnico', '')} | CRQ 024025748"),
+        ("Situação da ART", obter_status_art_texto(dados_relatorio)),
+        ("Data de emissão", dados_relatorio.get("data_emissao", "")),
+    ):
+        p = _par(f"{rotulo}: ", 10.5, True)
+        r = p.add_run(str(valor or "—"))
+        r.font.size = Pt(10.5)
+    p_fim = _par()
+    p_fim.add_run().add_break(WD_BREAK.PAGE)
+    if primeiro is not None:
+        for el in novos:
+            primeiro.addprevious(el)
+    # Capa sem o cabeçalho/rodapé do modelo (primeira página com cabeçalho próprio vazio).
+    try:
+        doc.sections[0].different_first_page_header_footer = True
+    except Exception:
+        pass
+
+
 def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dados_relatorio: dict, fotos: list[Path] | None = None):
     doc = Document(str(template_path))
     dados_relatorio["art_texto"] = obter_status_art_texto(dados_relatorio)
@@ -8206,7 +8384,8 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
     linhas_analises = []
     for item in dados_relatorio["analises"]:
         if any((item.get(k) or "").strip() for k in ["data", "ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico", "operador"]):
-            linhas_analises.append([item["data"], item["ph"], item["cloro_livre"], item["cloro_total"], item["alcalinidade"], item["dureza"], item["cianurico"], item["operador"]])
+            _data_cel = f"{item['data']}\n{item['piscina']}" if item.get("piscina") else item["data"]
+            linhas_analises.append([_data_cel, item["ph"], item["cloro_livre"], item["cloro_total"], item["alcalinidade"], item["dureza"], item["cianurico"], item["operador"]])
     if linhas_analises:
         preencher_tabela_generica(tabela_analises, linhas_analises, start_row=1)
 
@@ -8282,56 +8461,88 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
     # O bloco oficial de assinatura existe no template relatorio_mensal.docx
     # e não deve ser duplicado ou complementado aqui.
 
-    # ---- Fotos ----
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN
+    from utils.rt_relatorio import formatar_volume, graficos_por_piscina, legenda_foto
+
+    def _titulo_docx(texto, tamanho=12):
+        _p = doc.add_paragraph()
+        _p.alignment = _WD_ALIGN.CENTER
+        _r = _p.add_run(texto)
+        _r.bold = True
+        _r.font.size = Pt(tamanho)
+        return _p
+
+    # ---- Piscinas atendidas (cadastro: identificação, tipo e volume) ----
+    # Parágrafos vazios no fim do modelo empurravam o anexo para uma página em branco.
+    _corpo_docx = doc.element.body
+    while (len(_corpo_docx) > 1 and _corpo_docx[-2].tag.endswith("}p")
+           and not "".join(t.text or "" for t in _corpo_docx[-2].iter() if t.tag.endswith("}t")).strip()
+           and not any(x.tag.endswith(("}drawing", "}br", "}sectPr", "}pict")) for x in _corpo_docx[-2].iter())):
+        _corpo_docx.remove(_corpo_docx[-2])
+
+    _pisc_cad = dados_relatorio.get("piscinas_cadastro") or {}
+    if _pisc_cad.get("piscinas") or _pisc_cad.get("sem_distribuicao"):
+        _tab_ident = encontrar_tabela_por_keywords(doc, ["Responsável Técnico", "Registro CRQ", "Cliente", "Período de Referência", "Data de Emissão"])
+        _blocos_pisc = [_titulo_docx("PISCINAS ATENDIDAS", 11)._p]
+        if _pisc_cad.get("piscinas"):
+            _tb = doc.add_table(rows=1, cols=3)
+            try:
+                _tb.style = _tab_ident.style if _tab_ident is not None else "Table Grid"
+            except Exception:
+                pass
+            for _c, _t in zip(_tb.rows[0].cells, ("Identificação", "Tipo", "Volume")):
+                set_cell_text(_c, _t)
+            for _pc in _pisc_cad["piscinas"]:
+                _cells = _tb.add_row().cells
+                for _c, _t in zip(_cells, (_pc["nome"], _pc["tipo"], formatar_volume(_pc["volume"]))):
+                    set_cell_text(_c, _t)
+            _blocos_pisc.append(_tb._tbl)
+        if _pisc_cad.get("sem_distribuicao"):
+            _blocos_pisc.append(doc.add_paragraph(
+                f"Volume total informado no cadastro, sem distribuição por piscina: {formatar_volume(_pisc_cad.get('volume_total'))}.")._p)
+        # Logo após a tabela de identificação; sem ela, permanece no fim do documento.
+        if _tab_ident is not None:
+            _ancora = _tab_ident._tbl
+            for _el in _blocos_pisc:
+                _ancora.addnext(_el)
+                _ancora = _el
+
+    # ---- Fotos (legenda e piscina gravadas no contexto) ----
     if fotos:
         doc.add_page_break()
-        doc.add_paragraph("REGISTRO FOTOGRÁFICO")
-        for foto in fotos:
+        _titulo_docx("REGISTRO FOTOGRÁFICO")
+        for _idx_foto, foto in enumerate(fotos, start=1):
             try:
-                doc.add_paragraph(foto.name if hasattr(foto, "name") else str(foto))
+                _meta_f = (dados_relatorio.get("fotos_meta") or {}).get(Path(foto).stem)
+                doc.add_paragraph(legenda_foto(_idx_foto, _meta_f))
                 _p_foto_m = doc.add_paragraph()
                 _p_foto_m.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 _ok_m = inserir_foto_docx_exif(_p_foto_m, foto, width_inches=5.8)
                 if not _ok_m:
-                    doc.add_paragraph(f"Não foi possível inserir a foto: {foto.name if hasattr(foto, 'name') else foto}")
+                    doc.add_paragraph(f"Não foi possível inserir a foto {_idx_foto}.")
             except Exception:
-                doc.add_paragraph(f"Não foi possível inserir a foto.")
+                doc.add_paragraph("Não foi possível inserir a foto.")
 
-    # ---- Gráfico de tendência mensal (pH e CRL) ----
+    # ---- Gráficos técnicos por piscina ----
     try:
-        _grafico_tendencia = gerar_grafico_tendencia_ph_crl(
-            dados_relatorio.get("analises", []),
-            nome_condominio=dados_relatorio.get("nome_condominio", ""),
-            mes=dados_relatorio.get("mes_referencia", ""),
-            ano=dados_relatorio.get("ano_referencia", ""),
-            output_path=output_docx.with_name(output_docx.stem + "_grafico_tendencia.png"),
-        )
-        if _grafico_tendencia and Path(_grafico_tendencia).exists():
-            from docx.shared import Pt
-            from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN
-
+        _graficos = graficos_por_piscina(
+            dados_relatorio.get("analises", []), output_docx.parent / f"{output_docx.stem}_graficos",
+            dados_relatorio.get("nome_condominio", ""),
+            f"{dados_relatorio.get('mes_referencia', '')}/{dados_relatorio.get('ano_referencia', '')}")
+        if _graficos:
             doc.add_page_break()
-            _pt = doc.add_paragraph()
-            _pt.alignment = _WD_ALIGN.CENTER
-            _rt = _pt.add_run("GRÁFICOS DE TENDÊNCIA — pH e CRL")
-            _rt.bold = True
-            _rt.font.size = Pt(12)
-
-            _ps = doc.add_paragraph()
+            _titulo_docx("GRÁFICOS TÉCNICOS POR PISCINA")
+            _ps = doc.add_paragraph("Evolução dos parâmetros no período. Quando a célula registra antes/após, o gráfico usa a leitura inicial.")
             _ps.alignment = _WD_ALIGN.CENTER
-            _rs = _ps.add_run("Visualização automática da estabilidade da água ao longo do mês de referência.")
-            _rs.font.size = Pt(9)
+            for _nome_g, _g in _graficos:
+                _pg = doc.add_paragraph()
+                _pg.alignment = _WD_ALIGN.CENTER
+                inserir_foto_docx_exif(_pg, Path(_g), width_inches=6.3)
+    except Exception as _e_graf:
+        _log_sheets_erro("graficos_por_piscina_docx", _e_graf)
 
-            _pg = doc.add_paragraph()
-            _pg.alignment = _WD_ALIGN.CENTER
-            inserir_foto_docx_exif(_pg, Path(_grafico_tendencia), width_inches=6.3)
-
-            _pc = doc.add_paragraph()
-            _pc.alignment = _WD_ALIGN.CENTER
-            _rc = _pc.add_run("As áreas verdes representam a faixa ideal de operação para cada parâmetro.")
-            _rc.font.size = Pt(8)
-    except Exception:
-        pass
+    _docx_inserir_capa_rt(doc, dados_relatorio)
 
     # ---- Fallback CONDICIONAL: só adiciona se as tabelas principais não foram encontradas ----
     # O fallback NÃO deve ser gerado se o template já tem os quadros de análise, dosagem e recomendação.
@@ -11053,6 +11264,87 @@ def preparar_contexto_rt():
         st.rerun()  # a transação já recolocou nome/período da origem
 
 
+def _piscinas_relatorio_rt() -> dict:
+    """Piscinas do cliente identificado por ID estável (Aqua Gestão), lidas do cadastro.
+
+    Relatório avulso (sem ID) ou cadastro indisponível: lista vazia, sem inferência
+    por nome. A consulta usa o cache existente de sheets_listar_clientes_completo."""
+    from utils.rt_relatorio import piscinas_do_cliente
+    vazio = {"piscinas": [], "volume_total": None, "sem_distribuicao": False, "fonte": "avulso"}
+    partes = str(st.session_state.get("rel_origem_dados") or "").split("|")
+    if len(partes) != 3 or partes[0] != "aqua_gestao" or not partes[1].startswith("id:"):
+        return vazio
+    return _piscinas_cliente_por_id(partes[1][3:])
+
+
+def _piscinas_cliente_por_id(id_cli: str) -> dict:
+    from utils.rt_relatorio import piscinas_do_cliente
+    vazio = {"piscinas": [], "volume_total": None, "sem_distribuicao": False}
+    try:
+        clientes = sheets_listar_clientes_completo() or []
+    except Exception:
+        return {**vazio, "fonte": "indisponivel"}
+    cliente = next((c for c in clientes if str(c.get("id") or "").strip() == str(id_cli).strip()), None)
+    if not cliente:
+        return {**vazio, "fonte": "nao_encontrado"}
+    return {**piscinas_do_cliente(cliente), "fonte": "cadastro",
+            "aviso": cliente.get("erro_cadastro_piscinas", "")}
+
+
+def gerar_relatorio_consolidado_rt(tipo: str, indice: int, ano: int, art: dict, parecer: str = "") -> dict:
+    """Consolidado trimestral/semestral/anual a partir das visitas identificadas.
+
+    Somente leitura: consulta as visitas já validadas por cliente (ID estável) e
+    grava o PDF em pasta própria da identidade + período. Não altera rascunhos,
+    análises mensais, ART mensal nem cadastros."""
+    import hashlib
+    from utils.rt_relatorio import (consolidar, data_leitura, graficos_consolidados, linhas_de_lancamentos,
+                                    meses_do_periodo, rotulo_periodo)
+    from utils.pdf_rt_consolidado import gerar_pdf_consolidado
+    ss = st.session_state
+    if ss.get("empresa_ativa", "aqua_gestao") != "aqua_gestao":
+        return {"ok": False, "erros": ["Relatório consolidado RT é exclusivo da ACQUA GESTÃO."]}
+    nome = str(ss.get("rel_nome_condominio") or "").strip()
+    if not nome:
+        return {"ok": False, "erros": ["Carregue o cliente cadastrado antes de gerar o consolidado."]}
+    try:
+        meses = meses_do_periodo(tipo, indice, ano)
+    except (ValueError, TypeError) as e:
+        return {"ok": False, "erros": [str(e)]}
+    erros = validar_art(art.get("status"), art.get("numero"), art.get("inicio"), art.get("fim"))
+    situacao = situacao_visitas_condominio(nome)
+    if situacao.get("status") != "ok":
+        erros.append("Consulta das visitas indisponível ou cliente sem identificação segura; consolidado suspenso.")
+    id_cli = str(situacao.get("id_cliente") or "").strip()
+    if not id_cli:
+        erros.append("O consolidado exige cliente cadastrado com ID estável (relatório avulso não é aceito).")
+    if erros:
+        return {"ok": False, "erros": erros}
+    permitidos = set(meses)
+    visitas = [v for v in situacao.get("visitas", []) if (lambda d: d and (d.month, d.year) in permitidos)(data_leitura(v.get("data")))]
+    linhas = []
+    for item in linhas_de_lancamentos(visitas):
+        dados = item["dados"]
+        linhas.append({"data": item["lancamento"].get("data", ""), "piscina": item["piscina"],
+                       **{k: str(dados.get(k, item["lancamento"].get(k, "")) or "") for k in
+                          ("ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico")}})
+    cons = consolidar(linhas, meses)
+    rotulo = rotulo_periodo(tipo, indice, ano)
+    chave = f"aqua_gestao|id:{id_cli}|{tipo}|{indice}|{ano}"
+    pasta = GENERATED_DIR / "_rt_consolidados" / hashlib.sha256(chave.encode()).hexdigest()
+    pasta.mkdir(parents=True, exist_ok=True)
+    graficos = graficos_consolidados(cons, pasta, nome, rotulo)
+    ctx = {"tipo": tipo, "periodo_rotulo": rotulo, "meses": cons["meses"], "nome_condominio": nome,
+           "endereco": ss.get("rel_endereco_condominio", ""), "consolidado": cons,
+           "piscinas_cadastro": _piscinas_cliente_por_id(id_cli), "art": art, "graficos": graficos,
+           "responsavel": RESPONSAVEL_TÉCNICO, "crq": "CRQ 024025748", "data_emissao": hoje_br(),
+           "parecer": str(parecer or "").strip()}
+    pdf = pasta / limpar_nome_arquivo(f"{datetime.now():%Y%m%d}_{nome}_RT_CONSOLIDADO_{tipo}_{indice}_{ano}.pdf")
+    ok, erro = gerar_pdf_consolidado(ctx, pdf, garantir_logo_aqua_oficial())
+    return {"ok": ok, "pdf": pdf, "erros": [erro] if erro else [], "visitas": len(visitas),
+            "piscinas": list(cons["piscinas"]), "rotulo": rotulo}
+
+
 def validar_contexto_rt(relatorio: str = "rt") -> list[str]:
     """Porta única para DOCX/PDF de prévia e final, antes de qualquer escrita."""
     from utils.rt_contexto import ler_fotos
@@ -11448,8 +11740,8 @@ def inicializar_campos():
         "rel_cpf_cnpj_representante": "",
         "rel_salvar_alteracoes_cadastro": False,
         "rel_ano_referencia": str(datetime.now().year),
-        "rel_art_status": "Em processo de formalização",
-        "rel_art_status_widget": "Em processo de formalização",
+        "rel_art_status": ART_STATUS_PADRAO,
+        "rel_art_status_widget": ART_STATUS_PADRAO,
         "rel_art_numero": "",
         "rel_art_inicio": "",
         "rel_art_fim": "",
@@ -11516,8 +11808,8 @@ def limpar_formulario():
     st.session_state.rel_salvar_alteracoes_cadastro = False
     st.session_state.rel_mes_referencia = datetime.now().strftime("%m")
     st.session_state.rel_ano_referencia = str(datetime.now().year)
-    st.session_state.rel_art_status = "Em processo de formalização"
-    st.session_state.rel_art_status_widget = "Em processo de formalização"
+    st.session_state.rel_art_status = ART_STATUS_PADRAO
+    st.session_state.rel_art_status_widget = ART_STATUS_PADRAO
     st.session_state.rel_art_numero = ""
     st.session_state.rel_art_inicio = ""
     st.session_state.rel_art_fim = ""
@@ -11580,7 +11872,7 @@ def salvar_rascunho_relatorio(pasta_condominio: Path):
         "rel_mes_referencia": (st.session_state.get("rel_mes_referencia") or ""),
         "rel_ano_referencia": (st.session_state.get("rel_ano_referencia") or ""),
         "rel_data_emissao": (st.session_state.get("rel_data_emissao") or hoje_br()),
-        "rel_art_status": (st.session_state.get("rel_art_status") or "Em processo de formalização"),
+        "rel_art_status": (st.session_state.get("rel_art_status") or ART_STATUS_PADRAO),
         "rel_art_numero": (st.session_state.get("rel_art_numero") or ""),
         "rel_art_inicio": (st.session_state.get("rel_art_inicio") or ""),
         "rel_art_fim": (st.session_state.get("rel_art_fim") or ""),
@@ -13030,42 +13322,37 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             st.text_area("Endereço do Local", key="rel_endereco_condominio", height=80)
         with rid2:
             _art_opcoes_rt = [
-                "Em tramitação administrativa",
+                "Em processo de emissão",
                 "Não emitida",
-                "Informar número da ART",
+                "Emitida — informar número",
             ]
             _art_num_atual = str(st.session_state.get("rel_art_numero") or "").strip()
-            _art_status_atual = str(st.session_state.get("rel_art_status") or "").strip()
-            if _art_num_atual in _art_opcoes_rt[:2]:
-                _art_padrao_rt = _art_num_atual
-            elif _art_num_atual:
-                _art_padrao_rt = "Informar número da ART"
-            elif _art_status_atual == "Em tramitação":
-                _art_padrao_rt = "Em tramitação administrativa"
-            elif _art_status_atual == "Não emitida":
-                _art_padrao_rt = "Não emitida"
+            _art_status_atual = normalizar_status_art(st.session_state.get("rel_art_status"))
+            if _art_status_atual == ART_EMITIDA:
+                _art_padrao_rt = "Emitida — informar número"
             else:
-                _art_padrao_rt = "Em tramitação administrativa"
+                _art_padrao_rt = _art_status_atual
 
             _art_sel_rt = st.selectbox(
-                "Nº ART – CRQ",
+                "Situação da ART – CRQ",
                 options=_art_opcoes_rt,
                 index=_art_opcoes_rt.index(_art_padrao_rt),
                 key="rel_art_modo_rt2025",
             )
-            if _art_sel_rt == "Informar número da ART":
-                _art_num_pre = _art_num_atual if _art_num_atual not in _art_opcoes_rt[:2] else ""
-                _art_num_rt = st.text_input("Informar número da ART", value=_art_num_pre, key="rel_art_numero_rt2025")
+            if _art_sel_rt == "Emitida — informar número":
+                _art_num_rt = st.text_input("Número da ART", value=_art_num_atual, key="rel_art_numero_rt2025")
                 st.session_state["rel_art_numero"] = formatar_art_numero(_art_num_rt)
-                st.session_state["rel_art_status"] = "Emitida"
+                st.session_state["rel_art_status"] = ART_EMITIDA
             else:
                 st.session_state["rel_art_numero"] = ""
-                st.session_state["rel_art_status"] = "Em tramitação" if _art_sel_rt == "Em tramitação administrativa" else "Não emitida"
+                st.session_state["rel_art_inicio"] = ""
+                st.session_state["rel_art_fim"] = ""
+                st.session_state["rel_art_status"] = _art_sel_rt
             st.text_input("Data de Emissão", key="rel_data_emissao", placeholder="dd/mm/aaaa", on_change=lambda: st.session_state.__setitem__("rel_data_emissao", normalizar_data_visita(st.session_state.get("rel_data_emissao", ""))))
 
         st.markdown("**Registro de análises físico-químicas**")
         _qtd_regs_auto = int(st.session_state.get("_rt2025_qtd_registros_auto", 0) or 0)
-        _qtd_linhas_rt = max(_linhas_esperadas_rt, _qtd_regs_auto)
+        _qtd_linhas_rt = linhas_analise_visiveis_rt(max(_linhas_esperadas_rt, _qtd_regs_auto))
         st.session_state["rel_analises_total"] = _qtd_linhas_rt
         garantir_campos_analises(_qtd_linhas_rt, minimo=1)
         cab_cols_rt = st.columns([0.95, 0.55, 0.65, 0.65, 0.85, 0.75, 0.75, 0.75, 0.65, 0.65, 0.75, 1.0])
@@ -13408,7 +13695,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 _dados_cli = _mapa_cli_rt.get(_sel_cond_rt, {})
                 _endereco_cond = str(st.session_state.get("rel_endereco_condominio") or _dados_cli.get("endereco") or "").strip()
                 _representante_cond = str(st.session_state.get("rel_representante") or "").strip()
-                _art_num = str(st.session_state.get("rel_art_numero") or "").strip()
+                _art_erros = validar_art(st.session_state.get("rel_art_status"), st.session_state.get("rel_art_numero"),
+                                         st.session_state.get("rel_art_inicio"), st.session_state.get("rel_art_fim"))
+                if _art_erros:
+                    st.error(" | ".join(_art_erros))
+                    st.stop()
+                # Situação completa da ART (número/vigência só quando informados).
+                _art_num = texto_art(st.session_state.get("rel_art_status"), st.session_state.get("rel_art_numero"),
+                                     st.session_state.get("rel_art_inicio"), st.session_state.get("rel_art_fim"))
                 _obs_rt = _montar_notas_rt_fluxo_padrao()
 
                 _records_pdf_manual = _montar_registros_rt_do_fluxo_padrao(_sel_cond_rt, _sel_mes, _sel_ano)
@@ -16368,6 +16662,9 @@ if st.session_state.pop("_cc_limpar", False):
               "cc_pisc_extra1_nome","cc_pisc_extra1_vol",
               "cc_pisc_extra2_nome","cc_pisc_extra2_vol"]:
         st.session_state[k] = ""
+    st.session_state.pop("_cc_cliente_carregado", None)
+    for _slot in SLOTS_PISCINA:
+        st.session_state[f"cc_tipo_piscina_{_slot}"] = "Não informado"
     # Campo numérico: nunca limpar com string vazia, pois isso pode quebrar o widget do Streamlit.
     st.session_state["cc_verificacoes_semanais"] = 3
     st.session_state["cc_srv_rt"] = False
@@ -16389,6 +16686,7 @@ if _cc_modo == "✏️ Editar cliente existente":
         _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
         _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
         if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
+            st.session_state["_cc_cliente_carregado"] = (_cc_cliente_editar.get("id"), _empresa_cadastro_nome)
             st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
             st.session_state["cc_cnpj"]         = _cc_cliente_editar.get("cnpj","")
             st.session_state["cc_cep"]          = _cc_cliente_editar.get("cep","")
@@ -16407,6 +16705,9 @@ if _cc_modo == "✏️ Editar cliente existente":
                 st.session_state["cc_verificacoes_semanais"] = int(_cc_cliente_editar.get("verificacoes_semanais", 3) or 3)
             except Exception:
                 st.session_state["cc_verificacoes_semanais"] = 3
+            for _slot in SLOTS_PISCINA:
+                _tipo = (_cc_cliente_editar.get("tipos_piscinas") or {}).get(_slot, "Não informado")
+                st.session_state[f"cc_tipo_piscina_{_slot}"] = _tipo if _tipo in TIPOS_PISCINA else "Não informado"
             _piscs_extras = _cc_cliente_editar.get("piscinas_extras", [])
             st.session_state["cc_pisc_extra1_nome"] = _piscs_extras[0]["nome"] if len(_piscs_extras) > 0 else ""
             st.session_state["cc_pisc_extra1_vol"]  = str(_piscs_extras[0].get("vol","") or "") if len(_piscs_extras) > 0 else ""
@@ -16644,6 +16945,14 @@ with _cv_extra4:
         placeholder="ex: 120")
 
 
+st.markdown("**Tipo de cada piscina**")
+st.caption("O tipo é informado separadamente do nome e do volume. Cadastros antigos permanecem como Não informado até sua revisão.")
+for _slot, _rotulo in zip(SLOTS_PISCINA, ("Adulto", "Infantil", "Family", "Extra 1", "Extra 2")):
+    _chave_tipo = f"cc_tipo_piscina_{_slot}"
+    if st.session_state.get(_chave_tipo) not in TIPOS_PISCINA:
+        st.session_state[_chave_tipo] = "Não informado"
+    st.selectbox(f"Tipo — {_rotulo}", TIPOS_PISCINA, key=_chave_tipo)
+
 st.markdown("**🧪 Rotina de verificação técnica**")
 # Sanitiza a frequência antes de criar o widget. Isso evita erro visual do Streamlit
 # ao alternar entre Novo cliente / Editar cliente existente com estados antigos.
@@ -16672,9 +16981,28 @@ def _parse_vol(v):
     try: return float(str(v).replace(",",".").strip() or 0)
     except: return 0.0
 
+_cc_erro_piscinas = ""
+if _cc_modo == "✏️ Editar cliente existente":
+    if st.session_state.get("_cc_cliente_carregado") != (_cc_cliente_editar.get("id"), _empresa_cadastro_nome) or not _cc_cliente_editar.get("id"):
+        _cc_erro_piscinas = "Clique em Carregar dados para editar o cliente selecionado."
+    elif _cc_cliente_editar.get("erro_cadastro_piscinas"):
+        _cc_erro_piscinas = _cc_cliente_editar["erro_cadastro_piscinas"]
+    if _cc_erro_piscinas:
+        st.warning(_cc_erro_piscinas)
+try:
+    for _valor_vol in (cc_vol_adulto, cc_vol_infantil, cc_vol_family,
+                       st.session_state.get("cc_pisc_extra1_vol"), st.session_state.get("cc_pisc_extra2_vol")):
+        volume_cadastro(_valor_vol)
+    for _idx_extra in (1, 2):
+        if volume_cadastro(st.session_state.get(f"cc_pisc_extra{_idx_extra}_vol")) and not st.session_state.get(f"cc_pisc_extra{_idx_extra}_nome", "").strip():
+            raise ValueError("Informe o nome de cada piscina extra que possui volume.")
+except ValueError as _erro_vol:
+    _cc_erro_piscinas = str(_erro_vol)
+    st.error(_cc_erro_piscinas)
+
 # ── Botão salvar ─────────────────────────────────────────────────────────────
 _btn_label = "💾 Salvar cliente no Google Sheets" if _cc_modo == "➕ Novo cliente" else "💾 Salvar alterações"
-if st.button(_btn_label, type="primary", use_container_width=True):
+if st.button(_btn_label, type="primary", use_container_width=True, disabled=bool(_cc_erro_piscinas)):
     if not cc_nome.strip():
         st.error("Informe o nome do cliente.")
     else:
@@ -16692,19 +17020,25 @@ if st.button(_btn_label, type="primary", use_container_width=True):
             _cc_servicos_norm = _normalizar_servicos_cliente({"servicos": _cc_servicos, "empresa": _cc_empresa_val})
             _cc_operadores_sel = _normalizar_lista_textos_unicos(cc_operadores_vinculados)
             _piscs_extras_form = []
-            for _en, _ev in [
+            for _slot_extra, (_en, _ev) in zip(("extra1", "extra2"), [
                 (st.session_state.get("cc_pisc_extra1_nome","").strip(),
                  st.session_state.get("cc_pisc_extra1_vol","").strip()),
                 (st.session_state.get("cc_pisc_extra2_nome","").strip(),
                  st.session_state.get("cc_pisc_extra2_vol","").strip()),
-            ]:
+            ]):
                 if _en:
                     try:
                         _ev_f = float(_ev.replace(",",".")) if _ev else 0
                     except:
                         _ev_f = 0
-                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f})
+                    _piscs_extras_form.append({"nome": _en, "vol": _ev_f, "tipo": st.session_state.get(f"cc_tipo_piscina_{_slot_extra}", "Não informado")})
 
+            if _cc_modo == "✏️ Editar cliente existente":
+                _piscs_extras_form.extend(_cc_cliente_editar.get("piscinas_extras", [])[2:])
+            _tipos_piscinas_form = {_slot: st.session_state.get(f"cc_tipo_piscina_{_slot}", "Não informado") for _slot in SLOTS_PISCINA}
+            for _idx, _slot in enumerate(("extra1", "extra2")):
+                _tipos_piscinas_form[_slot] = _piscs_extras_form[_idx].get("tipo", "Não informado") if len(_piscs_extras_form) > _idx else "Não informado"
+            _piscinas_json_form = serializar_piscinas_cadastro(_tipos_piscinas_form, _piscs_extras_form)
             if _cc_modo == "✏️ Editar cliente existente" and _cc_cliente_editar.get("id"):
                 ok = sheets_editar_cliente(
                     id_cliente=_cc_cliente_editar["id"],
@@ -16713,7 +17047,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
-                    cep=cc_cep.strip(),
+                    cep=cc_cep.strip(), piscinas_cadastro=_piscinas_json_form,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' atualizado!"
             else:
@@ -16723,9 +17057,13 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                     telefone=cc_telefone.strip(),
                     vol_adulto=_vol_a, vol_infantil=_vol_i, vol_family=_vol_f,
                     empresa=_cc_empresa_val,
-                    cep=cc_cep.strip(),
+                    cep=cc_cep.strip(), piscinas_cadastro=_piscinas_json_form,
                 )
                 msg_ok = f"✅ Cliente '{cc_nome}' salvo! O operador já pode selecioná-lo no celular."
+
+            if not ok:
+                st.error(st.session_state.pop("_cc_erro_salvar", "") or "Não foi possível salvar o cadastro remoto. Os dados anteriores foram preservados; revise a conexão e a coluna P de Clientes.")
+                st.stop()
 
             _pasta_cliente = GENERATED_DIR / slugify_nome(cc_nome.strip())
             _pasta_cliente.mkdir(parents=True, exist_ok=True)
@@ -16752,6 +17090,7 @@ if st.button(_btn_label, type="primary", use_container_width=True):
                 "servicos": _cc_servicos_norm,
                 "operadores_vinculados": _cc_operadores_sel,
                 "piscinas_extras": _piscs_extras_form,
+                "tipos_piscinas": _tipos_piscinas_form,
             })
             # Monta lista de piscinas ativas para o operador (sem precisar configurar)
             _piscinas_adm = []
@@ -21629,13 +21968,15 @@ def _importar_lancamentos(lancamentos):
             "rel_analise_operador_",
         ):
             st.session_state[pref + str(idx)] = ""
-    for i, lc in enumerate(lancamentos[:ANALISES_MAX_SUGERIDO]):
-        # Suporte a múltiplas piscinas — usa dados da primeira piscina ou direto
-        piscinas = lc.get("piscinas", [])
-        if piscinas:
-            lc_dados = piscinas[0]  # primeira piscina para o relatório principal
-        else:
-            lc_dados = lc
+    from utils.rt_relatorio import linhas_de_lancamentos
+    _linhas_import = linhas_de_lancamentos(lancamentos)
+    garantir_campos_analises(max(len(_linhas_import), _linhas_base), minimo=1)
+    for idx in range(ANALISES_MAX_SUGERIDO):
+        st.session_state[f"rel_analise_piscina_{idx}"] = ""
+    # Uma linha por piscina de cada visita, identificada pelo nome da piscina.
+    for i, _linha_imp in enumerate(_linhas_import[:ANALISES_MAX_SUGERIDO]):
+        lc = _linha_imp["lancamento"]
+        lc_dados = _linha_imp["dados"]
         def _fmt_antes_apos(_antes, _apos):
             _antes = str(_antes if _antes is not None else "").strip()
             _apos = str(_apos if _apos is not None else "").strip()
@@ -21643,6 +21984,7 @@ def _importar_lancamentos(lancamentos):
                 return f"{_antes.replace('.', ',')} / {_apos.replace('.', ',')}"
             return (_antes or _apos).replace(".", ",")
 
+        st.session_state[f"rel_analise_piscina_{i}"]   = _linha_imp["piscina"]
         st.session_state[f"rel_analise_data_{i}"]     = lc.get("data", "")
         st.session_state[f"rel_analise_ph_{i}"]        = _fmt_antes_apos(lc_dados.get("ph", lc.get("ph","")), lc_dados.get("ph_apos", lc.get("ph_apos", "")))
         st.session_state[f"rel_analise_cl_{i}"]        = _fmt_antes_apos(lc_dados.get("cloro_livre", lc.get("cloro_livre","")), lc_dados.get("cloro_livre_apos", lc.get("cloro_livre_apos", "")))
@@ -21902,22 +22244,93 @@ with rd2:
         st.warning(f"Fotografias do rascunho: {_foto_erro}")
     st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
 
+# Piscinas do cadastro (identificação, tipo e volume individual) — somente leitura aqui.
+from utils.rt_relatorio import formatar_volume as _fmt_vol_rt
+_rt_piscinas_ui = _piscinas_relatorio_rt()
+with st.expander(f"🏊 Piscinas do cadastro ({len(_rt_piscinas_ui['piscinas'])})", expanded=False):
+    if _rt_piscinas_ui["piscinas"]:
+        st.table([{"Identificação": p["nome"], "Tipo": p["tipo"], "Volume": _fmt_vol_rt(p["volume"])}
+                  for p in _rt_piscinas_ui["piscinas"]])
+    elif _rt_piscinas_ui["fonte"] == "avulso":
+        st.caption("Relatório sem cliente cadastrado identificado: as piscinas podem ser digitadas na coluna Piscina das análises.")
+    else:
+        st.caption("Nenhuma piscina individual cadastrada. Revise o cadastro do cliente para informar tipo e volume de cada piscina.")
+    if _rt_piscinas_ui.get("sem_distribuicao"):
+        st.caption(f"Cadastro antigo: volume total {_fmt_vol_rt(_rt_piscinas_ui.get('volume_total'))} sem distribuição por piscina (preservado, não atribuído).")
+    if _rt_piscinas_ui.get("aviso"):
+        st.warning(_rt_piscinas_ui["aviso"])
+
+# Legenda e piscina de cada fotografia, gravadas no JSON de fotos do próprio contexto.
+if st.session_state.get("rel_origem_dados"):
+    from utils.rt_contexto import sincronizar_fotos as _sinc_fotos_rt, atualizar_metadados_fotos, remover_foto
+    import hashlib as _hl_fotos
+    _chave_ctx_fotos = st.session_state["rel_origem_dados"]
+    try:
+        _fotos_meta_rt = _sinc_fotos_rt(st.session_state, _chave_ctx_fotos, st.session_state.get(chave_fotos_rt()) or [])
+    except (ValueError, KeyError, TypeError) as _erro_sinc:
+        _fotos_meta_rt = []
+        st.warning(f"Fotografias do rascunho: {_erro_sinc}")
+    if _fotos_meta_rt:
+        _ctx_hash = _hl_fotos.sha256(_chave_ctx_fotos.encode()).hexdigest()[:10]
+        _opcoes_pisc_foto = [""] + [p["nome"] for p in _rt_piscinas_ui["piscinas"]]
+        with st.expander(f"📷 Legendas e piscinas das fotografias ({len(_fotos_meta_rt)})", expanded=False):
+            _metas_novas = {}
+            for _n_foto, _foto in enumerate(_fotos_meta_rt, start=1):
+                _k = f"_rt_fmeta_{_ctx_hash}_{_foto['sha256'][:16]}"
+                c_img, c_txt = st.columns([1, 3])
+                with c_img:
+                    try:
+                        import base64 as _b64_foto
+                        st.image(_b64_foto.b64decode(_foto["bytes"]), width=140)
+                    except Exception:
+                        st.caption(_foto.get("nome", ""))
+                with c_txt:
+                    # O JSON do contexto é a fonte: se mudou fora do widget (restauração de
+                    # rascunho), o widget é reposicionado antes de ser criado.
+                    _src_foto = (_foto.get("legenda", "") or "", _foto.get("piscina", "") or "")
+                    # Widgets não desenhados numa execução (outro contexto) são descartados
+                    # pelo Streamlit; nesse caso também se recarrega a partir do JSON.
+                    if (st.session_state.get(f"{_k}_src") != _src_foto or f"{_k}_leg" not in st.session_state
+                            or f"{_k}_pis" not in st.session_state):
+                        st.session_state[f"{_k}_leg"], st.session_state[f"{_k}_pis"] = _src_foto
+                        st.session_state[f"{_k}_src"] = _src_foto
+                    _pisc_foto = _src_foto[1]
+                    _ops = _opcoes_pisc_foto + ([_pisc_foto] if _pisc_foto and _pisc_foto not in _opcoes_pisc_foto else [])
+                    if len(_ops) > 1 and st.session_state.get(f"{_k}_pis") not in _ops:
+                        st.session_state[f"{_k}_pis"] = _pisc_foto
+                    st.text_input(f"Legenda — foto {_n_foto}", key=f"{_k}_leg", max_chars=200,
+                                  placeholder="Ex.: Casa de máquinas após retrolavagem")
+                    if len(_ops) > 1:
+                        st.selectbox(f"Piscina — foto {_n_foto}", _ops, key=f"{_k}_pis", format_func=lambda v: v or "Não identificada")
+                    else:
+                        st.text_input(f"Piscina — foto {_n_foto}", key=f"{_k}_pis", placeholder="Identificação da piscina")
+                    _metas_novas[_foto["sha256"]] = (st.session_state.get(f"{_k}_leg", "") or "", st.session_state.get(f"{_k}_pis", "") or "")
+                    st.session_state[f"{_k}_src"] = (_metas_novas[_foto["sha256"]][0].strip()[:200], _metas_novas[_foto["sha256"]][1].strip()[:120])
+                    if st.button(f"Remover foto {_n_foto}", key=f"{_k}_rm"):
+                        remover_foto(st.session_state, _chave_ctx_fotos, _foto["sha256"])
+                        st.rerun()
+            try:
+                atualizar_metadados_fotos(st.session_state, _chave_ctx_fotos, _metas_novas)
+            except (ValueError, KeyError, TypeError) as _erro_meta:
+                st.warning(f"Legendas das fotografias: {_erro_meta}")
+
 r1, r2, r3, r4 = st.columns(4)
 with r1:
     st.text_input("Mês de referência", key="rel_mes_referencia", placeholder="04")
 with r2:
     st.text_input("Ano de referência", key="rel_ano_referencia", placeholder="2026")
 with r3:
-    opcoes_art = ["Em processo de formalização", "Não emitida", "Em tramitação", "Emitida"]
-    status_atual_art = (st.session_state.get("rel_art_status") or "Em processo de formalização").strip()
-    if status_atual_art not in opcoes_art:
-        status_atual_art = "Em processo de formalização"
+    opcoes_art = list(ART_OPCOES)
+    # Rascunhos antigos ("Em processo de formalização", "Em tramitação") são lidos
+    # como "Em processo de emissão"; nenhum valor antigo vira "Emitida".
+    status_atual_art = normalizar_status_art(st.session_state.get("rel_art_status"))
+    if st.session_state.get("rel_art_status") != status_atual_art:
         st.session_state["rel_art_status"] = status_atual_art
     if st.session_state.get("rel_art_status_widget") not in opcoes_art:
         st.session_state["rel_art_status_widget"] = status_atual_art
 
     status_selecionado_art = st.selectbox(
-        "Status da ART",
+        "Situação da ART",
         opcoes_art,
         key="rel_art_status_widget",
     )
@@ -21953,7 +22366,9 @@ with r8:
     st.session_state["rel_status_agua"] = opcao_status
 
 if st.session_state.get("rel_art_status") != "Emitida":
-    st.caption("Como a ART não está emitida, os campos ART nº e vigência ficam desabilitados e o relatório preencherá automaticamente como N/A, com observação institucional conforme o status selecionado.")
+    st.caption("Sem ART emitida, número e vigência ficam desabilitados e o relatório informa apenas a situação selecionada (Não emitida / Em processo de emissão).")
+else:
+    st.caption("ART emitida: o número é obrigatório. A vigência é opcional; se informada, preencha início e fim (dd/mm/aaaa).")
 
 st.markdown("**Frequência do relatório RT**")
 st.session_state["rel_verificacoes_semanais"] = 1
@@ -21966,6 +22381,7 @@ st.info(f"Regra fixa: 1 lançamento por semana → {_linhas_freq} linha(s) no m�
 _linhas_recuperadas = st.session_state.get("_rt_ultimos_linhas")
 if _linhas_recuperadas and _linhas_recuperadas[0] == st.session_state.get("rel_origem_dados"):
     _linhas_freq = max(_linhas_freq, _linhas_recuperadas[1])
+_linhas_freq = linhas_analise_visiveis_rt(_linhas_freq)
 if int(st.session_state.get("rel_analises_total", 0) or 0) != _linhas_freq:
     st.session_state["rel_analises_total"] = _linhas_freq
     garantir_campos_analises(_linhas_freq, minimo=1)
@@ -22004,15 +22420,24 @@ with ctrl_a2:
 with ctrl_a3:
     st.caption(f"{st.session_state.get('rel_analises_total', ANALISES_PADRAO)} linha(s) disponíveis neste relatório. Ao gerar o relatório, os parâmetros deste condomínio passam a ficar salvos como usados pela última vez.")
 # Cabeçalho fixo para evitar que o navegador traduza siglas técnicas como CT, ALC ou CYA.
-cab_cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
+_rt_nomes_piscinas = [p["nome"] for p in (_rt_piscinas_ui.get("piscinas") or [])]
+cab_cols = st.columns([1.05,0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
 for _col, _label in zip(
     cab_cols,
-    ["Data", "pH", "CRL", "CT", "Alcalin.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"],
+    ["Piscina", "Data", "pH", "CRL", "CT", "Alcalin.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Operador"],
 ):
     _col.caption(f"**{_label}**")
 
 for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) or ANALISES_PADRAO)):
-    cols = st.columns([0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
+    cols = st.columns([1.05,0.95,0.55,0.65,0.65,0.85,0.75,0.75,0.75,0.65,0.65,0.75,1.0])
+    _pisc_atual = str(st.session_state.get(f"rel_analise_piscina_{i}") or "")
+    if _rt_nomes_piscinas:
+        _pisc_opcoes = [""] + _rt_nomes_piscinas + ([_pisc_atual] if _pisc_atual and _pisc_atual not in _rt_nomes_piscinas else [])
+        cols[0].selectbox(f"Piscina {i+1}", _pisc_opcoes, key=f"rel_analise_piscina_{i}", label_visibility="collapsed",
+                          format_func=lambda v: v or "—")
+    else:
+        cols[0].text_input(f"Piscina {i+1}", key=f"rel_analise_piscina_{i}", label_visibility="collapsed", placeholder="Piscina")
+    cols = cols[1:]
     cols[0].text_input(f"Data {i+1}", key=f"rel_analise_data_{i}", label_visibility="collapsed", placeholder="dd/mm/aaaa", on_change=lambda chave=f"rel_analise_data_{i}": formatar_data_relatorio_chave(chave))
     cols[1].text_input(f"pH {i+1}", key=f"rel_analise_ph_{i}", label_visibility="collapsed", placeholder="pH")
     cols[2].text_input(f"Cloro livre {i+1}", key=f"rel_analise_cl_{i}", label_visibility="collapsed", placeholder="CRL")
@@ -22135,6 +22560,56 @@ with btn_col1:
         st.caption("⏸️ Geração suspensa até você confirmar a origem dos dados (caixa acima). Nada foi apagado.")
 with btn_col2:
     st.caption("Restauração e descarte ficam no painel de versões, identificados por condomínio e período.")
+
+# Relatório consolidado RT (ACQUA GESTÃO) — trimestral, semestral ou anual.
+if st.session_state.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
+    with st.expander("📊 Relatório consolidado RT — trimestral, semestral ou anual", expanded=False):
+        st.caption("Síntese por piscina das visitas registradas do cliente carregado, com gráficos históricos. "
+                   "Não altera o relatório mensal, os rascunhos nem o cadastro.")
+        from utils.rt_relatorio import ART_OPCOES as _ART_OPS_C, PERIODOS as _PER_C
+        _cc1, _cc2, _cc3 = st.columns(3)
+        with _cc1:
+            _tipo_c = st.selectbox("Periodicidade", list(_PER_C), key="rtc_tipo")
+        with _cc2:
+            if _tipo_c == "Trimestral":
+                _idx_c = st.selectbox("Trimestre", [1, 2, 3, 4], key="rtc_trimestre", format_func=lambda v: f"{v}º trimestre")
+            elif _tipo_c == "Semestral":
+                _idx_c = st.selectbox("Semestre", [1, 2], key="rtc_semestre", format_func=lambda v: f"{v}º semestre")
+            else:
+                _idx_c = 1
+                st.caption("Janeiro a dezembro")
+        with _cc3:
+            if not isinstance(st.session_state.get("rtc_ano"), int):
+                st.session_state["rtc_ano"] = datetime.now().year
+            _ano_c = st.number_input("Ano", min_value=2000, max_value=2100, step=1, key="rtc_ano")
+        _ca1, _ca2, _ca3, _ca4 = st.columns(4)
+        with _ca1:
+            _art_c = st.selectbox("Situação da ART", list(_ART_OPS_C), index=list(_ART_OPS_C).index("Em processo de emissão"), key="rtc_art_status")
+        _emit_c = _art_c == "Emitida"
+        with _ca2:
+            st.text_input("ART nº", key="rtc_art_numero", disabled=not _emit_c)
+        with _ca3:
+            st.text_input("Vigência — início", key="rtc_art_inicio", placeholder="dd/mm/aaaa", disabled=not _emit_c)
+        with _ca4:
+            st.text_input("Vigência — fim", key="rtc_art_fim", placeholder="dd/mm/aaaa", disabled=not _emit_c)
+        st.text_area("Considerações do RT para o período (opcional)", key="rtc_parecer", height=80)
+        if st.button("📊 Gerar relatório consolidado", key="btn_rtc_gerar", use_container_width=True):
+            _art_dados_c = {"status": _art_c,
+                            "numero": st.session_state.get("rtc_art_numero", "") if _emit_c else "",
+                            "inicio": st.session_state.get("rtc_art_inicio", "") if _emit_c else "",
+                            "fim": st.session_state.get("rtc_art_fim", "") if _emit_c else ""}
+            with st.spinner("Consolidando visitas do período..."):
+                _res_c = gerar_relatorio_consolidado_rt(_tipo_c, int(_idx_c), int(_ano_c), _art_dados_c,
+                                                        st.session_state.get("rtc_parecer", ""))
+            if _res_c.get("ok"):
+                st.success(f"Consolidado {_res_c['rotulo']}: {_res_c['visitas']} visita(s), "
+                           f"{len(_res_c['piscinas'])} piscina(s) identificada(s).")
+                with open(_res_c["pdf"], "rb") as _f_c:
+                    st.download_button("⬇️ Baixar PDF consolidado", data=_f_c.read(), file_name=Path(_res_c["pdf"]).name,
+                                       mime="application/pdf", use_container_width=True, key="btn_rtc_download")
+            else:
+                for _e_c in _res_c.get("erros") or ["Não foi possível gerar o consolidado."]:
+                    st.error(_e_c)
 
 st.markdown('</div>', unsafe_allow_html=True)
 

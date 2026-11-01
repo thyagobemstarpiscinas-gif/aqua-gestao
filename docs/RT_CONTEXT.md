@@ -39,8 +39,8 @@ Cadastro futuro explícito de ART emitida continua suportado.
 * A execução da prévia acontece após importação, conciliação e widgets RT.
 * Campos de cadastro só podem iniciar outro período do mesmo ID/empresa; ART,
   textos técnicos, medições e fotografias são próprios de cada período.
-* Fotos são bytes + nome + SHA-256 no campo JSON `rel_fotos_preservadas` do próprio
-  rascunho. A galeria/relatório pode recuperar essas fotos com o uploader vazio.
+* Fotos são bytes + nome + SHA-256 (+ legenda e piscina, desde 31/10/2026) no campo
+  JSON `rel_fotos_preservadas` do próprio rascunho. A galeria/relatório pode recuperar essas fotos com o uploader vazio.
 * Arquivos RT ficam em `generated/_rt_contextos/<hash da identidade>/`, evitando
   sobreposição por nome entre empresas, clientes e períodos.
 * O rascunho RT não coleta/restaura campos do relatório operacional `csr_` nem
