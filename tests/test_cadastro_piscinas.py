@@ -33,6 +33,7 @@ class CadastroPiscinas(unittest.TestCase):
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "app.py", "exec"), self.ns)
         self.ns.update(_carregar_dados_cliente_local=lambda _: {},
                        _normalizar_servicos_cliente=lambda x: {},
+                       _servicos_cliente_resolvidos=lambda cliente, locais: {},
                        _servicos_para_empresa=lambda _: "Aqua Gestão",
                        _normalizar_lista_textos_unicos=lambda x: x)
 

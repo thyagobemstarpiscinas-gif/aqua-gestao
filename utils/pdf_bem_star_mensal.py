@@ -9,7 +9,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer,
                                PageBreak, KeepTogether, Image, Flowable)
-from utils.bem_star_mensal import (PARAMETROS, AVISO, REFERENCIA, expandir, numero, data_ordem)
+from utils.bem_star_mensal import (PARAMETROS, AVISO, REFERENCIA, expandir, numero, data_ordem,
+                                  chave_piscina)
 from utils.capa_bem_star import desenhar_capa_bem_star
 
 AZUL = colors.HexColor('#104888')
@@ -88,7 +89,8 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
         cliente = str((ctx.get('dados_cliente') or {}).get('nome') or ctx['cliente'])
         emissao = hoje_brasilia()
         ini, fim = f'01/{mes:02d}/{ano}', f'{monthrange(ano, mes)[1]:02d}/{mes:02d}/{ano}'
-        linhas = expandir(ctx.get('lancamentos') or [])
+        preferidas = list(ctx.get('piscinas_cadastradas') or [])
+        linhas = expandir(ctx.get('lancamentos') or [], preferidas)
         grupos = OrderedDict()
         for l in linhas:
             for campo, label, _ in PARAMETROS:
@@ -97,8 +99,14 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             if data_ordem(l['data']).month != mes or data_ordem(l['data']).year != ano:
                 raise ValueError('Leitura fora do período selecionado.')
             grupos.setdefault(l['piscina'], []).append(l)
+        # Piscina selecionada sem leituras ganha seção própria só se não for
+        # outra grafia de uma piscina já presente ("Piscina adulta" ×
+        # "Piscina Adulto"): antes surgia uma seção duplicada e vazia.
+        chaves = {chave_piscina(n) for n in grupos}
         for nome in ctx.get('piscinas') or []:
-            grupos.setdefault(nome, [])
+            if chave_piscina(nome) not in chaves:
+                chaves.add(chave_piscina(nome))
+                grupos.setdefault(nome, [])
         styles = {
             'body': ParagraphStyle('body', fontName='Helvetica', fontSize=9, leading=13, textColor=colors.HexColor('#263B4E'), spaceAfter=5),
             'small': ParagraphStyle('small', fontName='Helvetica', fontSize=7.5, leading=10.2, textColor=CINZA),

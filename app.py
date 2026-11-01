@@ -1611,6 +1611,9 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
             [nova_linha],
             value_input_option="RAW"
         )
+        # O chamador grava a cópia local com este ID: sem ele, a mesma visita
+        # aparecia duas vezes no relatório mensal (local sem ID + Sheets com ID).
+        lancamento["id_visita"] = id_visita
         st.cache_data.clear()
         return True
 
@@ -4667,10 +4670,47 @@ def _carregar_dados_cliente_local(nome_condominio: str) -> dict:
     dados = carregar_dados_condominio(pasta) or {}
     if not isinstance(dados, dict):
         return {}
+    # O JSON local também é criado por fluxos que não definem empresa (visita do
+    # operador, rascunhos, relatórios). Só marca o vínculo como definido quando
+    # o próprio arquivo traz empresa ou serviços; caso contrário o padrão
+    # "Aqua Gestão" de _normalizar_servicos_cliente passava a valer sobre a
+    # coluna M do Sheets e movia clientes Bem Star para a Aqua Gestão.
+    dados["_empresa_definida_localmente"] = _vinculo_empresa_definido(dados)
     dados["servicos"] = _normalizar_servicos_cliente(dados)
     dados["operadores_vinculados"] = _normalizar_lista_textos_unicos(dados.get("operadores_vinculados", []))
     dados["empresa"] = _servicos_para_empresa(dados.get("servicos"))
     return dados
+
+
+def _vinculo_empresa_definido(dados: dict | None) -> bool:
+    """True quando o registro informa empresa (texto) ou algum serviço marcado."""
+    dados = dados or {}
+    servicos = dados.get("servicos") if isinstance(dados.get("servicos"), dict) else {}
+    if servicos.get("rt") or servicos.get("limpeza"):
+        return True
+    return bool(str(dados.get("empresa", "") or "").strip())
+
+
+def _servicos_cliente_resolvidos(cliente_sheets: dict | None, dados_locais: dict | None) -> dict:
+    """Resolve o vínculo de empresa com a planilha como fonte principal.
+
+    Ordem: coluna M (Empresa) do Sheets → empresa/serviços gravados no JSON
+    local → padrão legado. O JSON local é efêmero no Streamlit Cloud e todos
+    os fluxos de cadastro/transferência gravam a coluna M antes dele.
+    """
+    cliente_sheets = cliente_sheets or {}
+    dados_locais = dados_locais or {}
+    if _vinculo_empresa_definido(cliente_sheets):
+        return _normalizar_servicos_cliente({
+            "servicos": cliente_sheets.get("servicos"),
+            "empresa": cliente_sheets.get("empresa"),
+        })
+    if dados_locais.get("_empresa_definida_localmente"):
+        return _normalizar_servicos_cliente({
+            "servicos": dados_locais.get("servicos"),
+            "empresa": dados_locais.get("empresa"),
+        })
+    return _normalizar_servicos_cliente({"empresa": "Aqua Gestão"})
 
 
 def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
@@ -4678,10 +4718,7 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
     nome = str(cliente_final.get("nome", "") or "").strip()
     dados_locais = _carregar_dados_cliente_local(nome)
 
-    servicos = _normalizar_servicos_cliente({
-        "servicos": dados_locais.get("servicos") if dados_locais else cliente_final.get("servicos"),
-        "empresa": dados_locais.get("empresa") if dados_locais else cliente_final.get("empresa", "Aqua Gestão"),
-    })
+    servicos = _servicos_cliente_resolvidos(cliente_final, dados_locais)
     cliente_final["servicos"] = servicos
     cliente_final["empresa"] = _servicos_para_empresa(servicos)
     cliente_final["operadores_vinculados"] = _normalizar_lista_textos_unicos(
@@ -5360,11 +5397,50 @@ def localizar_ultimo_documento(arquivos: list, tipo_doc: str, extensao_preferida
     return alternativos[0] if alternativos else None
 
 
+def _servicos_pasta_condominio(pasta: Path, clientes: list | None = None) -> dict | None:
+    """Vínculo de empresa de uma pasta local; None quando não há definição.
+
+    A planilha decide quando o condomínio está cadastrado nela; senão vale o
+    que o próprio JSON local declara. Pastas sem definição (legado) ficam
+    visíveis para as duas empresas, para não esconder registros existentes.
+    """
+    dados = carregar_dados_condominio(pasta) or {}
+    nome_local = normalizar_texto_busca(dados.get("nome_condominio", "") or humanizar_nome_pasta(pasta.name))
+    for cliente in clientes or []:
+        nome_cli = str((cliente or {}).get("nome", "") or "")
+        if not nome_cli.strip():
+            continue
+        if slugify_nome(nome_cli) == pasta.name or normalizar_texto_busca(nome_cli) == nome_local:
+            return _normalizar_servicos_cliente(cliente)
+    if _vinculo_empresa_definido(dados):
+        return _normalizar_servicos_cliente(dados)
+    return None
+
+
+def filtrar_pastas_por_empresa(pastas: list, empresa_codigo: str, clientes: list | None = None) -> list:
+    """Mantém só as pastas da empresa ativa (Aqua = RT; Bem Star = limpeza)."""
+    if empresa_codigo not in ("aqua_gestao", "bem_star"):
+        return list(pastas or [])
+    if clientes is None:
+        try:
+            clientes = sheets_listar_clientes_completo()
+        except Exception:
+            clientes = []
+    chave = "rt" if empresa_codigo == "aqua_gestao" else "limpeza"
+    resultado = []
+    for pasta in pastas or []:
+        servicos = _servicos_pasta_condominio(pasta, clientes)
+        if servicos is None or servicos.get(chave):
+            resultado.append(pasta)
+    return resultado
+
+
 def listar_historico():
     if not GENERATED_DIR.exists():
         return []
 
     pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    pastas = filtrar_pastas_por_empresa(pastas, st.session_state.get("empresa_ativa", "aqua_gestao"))
     pastas = sorted(pastas, key=lambda p: p.stat().st_mtime, reverse=True)
 
     historico = []
@@ -5393,6 +5469,8 @@ def listar_painel_vencimentos(alerta_dias: int):
         return []
 
     pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    # Painel exclusivo da Aqua Gestão: pastas de clientes só Bem Star ficam fora.
+    pastas = filtrar_pastas_por_empresa(pastas, "aqua_gestao")
     itens = []
 
     for pasta in pastas:
@@ -8152,6 +8230,28 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
     }
 
 
+def sincronizar_status_agua_widget(opcoes: list[str]) -> str:
+    """Mantém o seletor "Status geral da água" igual a rel_status_agua.
+
+    rel_status_agua é a fonte única (parecer automático, rascunho restaurado,
+    limpeza). O seletor tem chave própria e o Streamlit ignora index= quando a
+    chave já existe: o seletor mostrava o status antigo e, no fim da execução,
+    sobrescrevia o status calculado. Uma escolha manual no seletor continua
+    valendo, porque só se sincroniza quando rel_status_agua mudou por outra via
+    desde a última execução. Chamar antes de criar o widget.
+    """
+    ss = st.session_state
+    status = ss.get("rel_status_agua", "CONFORME")
+    if status not in opcoes:
+        status = opcoes[0]
+    alterado_fora = ss.get("_rel_status_agua_sinc") != ss.get("rel_status_agua")
+    if alterado_fora or ss.get("rel_status_agua_select") not in opcoes:
+        ss["rel_status_agua_select"] = status
+    ss["rel_status_agua"] = ss["rel_status_agua_select"]
+    ss["_rel_status_agua_sinc"] = ss["rel_status_agua"]
+    return ss["rel_status_agua"]
+
+
 def aplicar_textos_automaticos_relatorio():
     analises = coletar_analises_relatorio()
     avaliacao = avaliar_conformidade_analises(analises)
@@ -9319,6 +9419,34 @@ def gerar_html_relatorio_visita(lancamento: dict, nome_condominio: str) -> str:
 
 
 
+def _imagem_foto_pdf_em_memoria(foto, image_cls, largura_max, altura_max):
+    """Cria o flowable de foto a partir de base64/bytes mantendo os dados em memória.
+
+    Corrige a orientação EXIF e preserva a proporção. Retorna None quando a
+    foto é inválida. Os bytes ficam no BytesIO do flowable até o fim do build.
+    """
+    import base64 as _b64m
+    import io as _iom
+    from PIL import Image as _PILm, ImageOps as _IOm
+    try:
+        dados = _b64m.b64decode(foto) if isinstance(foto, str) else bytes(foto or b"")
+        if not dados:
+            return None
+        pil = _IOm.exif_transpose(_PILm.open(_iom.BytesIO(dados)))
+        largura, altura = pil.size
+        if not largura or not altura:
+            return None
+        buf = _iom.BytesIO()
+        pil.convert("RGB").save(buf, format="JPEG", quality=85)
+        buf.seek(0)
+        escala = min(largura_max / largura, altura_max / altura)
+        img = image_cls(buf, width=largura * escala, height=altura * escala)
+        img.hAlign = "CENTER"
+        return img
+    except Exception:
+        return None
+
+
 def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF premium do relatorio de visita operacional da Bem Star Piscinas."""
     import io
@@ -9327,7 +9455,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     from reportlab.lib.units import mm
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-        TableStyle, HRFlowable, Image, PageBreak)
+        TableStyle, HRFlowable, Image, PageBreak, KeepTogether)
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -9587,7 +9715,6 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     story.append(Sp(3))
 
     # PARECER OPERACIONAL
-    story += [sec_hdr("PARECER OPERACIONAL"), Sp(2)]
     t_parecer = Table([[
         P("Condicoes operacionais gerais:",
           E("PT", fontSize=9, textColor=NAVY, fontName=_font_bold, leading=12)),
@@ -9600,7 +9727,8 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
         ("LEFTPADDING",(0,0),(-1,-1),10),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
     ]))
-    story.append(t_parecer)
+    # Título e quadro juntos: o título ficava sozinho no fim da página.
+    story.append(KeepTogether([sec_hdr("PARECER OPERACIONAL"), Sp(2), t_parecer]))
     story.append(Sp(3))
 
     if observacao:
@@ -9618,14 +9746,15 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         story.append(prob)
     story.append(Sp(3))
 
-    # ASSINATURAS
+    # ASSINATURAS — Paragraph ignora "\n": as quebras precisam ser <br/>.
     story += [sec_hdr("VALIDACAO E ASSINATURAS"), Sp(3)]
+    _op_ass = str(operador or "Operador").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     ass = Table([[
-        P(f"{operador or 'Operador'}\nBem Star Piscinas Ltda\n\n\n___________________________\nAssinatura\nData: {data_visita}",
+        P(f"{_op_ass}<br/>Bem Star Piscinas Ltda<br/><br/><br/>___________________________<br/>Assinatura<br/>Data: {data_visita}",
           E("A1", fontSize=8, textColor=CINZA, alignment=TA_CENTER, leading=14)),
         P("", E("SP", fontSize=8)),
-        P("Nome: ___________________________\nCargo: ___________________________\n\n\n"
-          "___________________________\nRecebido por\nData: ____/____/________",
+        P("Nome: ___________________________<br/>Cargo: ___________________________<br/><br/><br/>"
+          "___________________________<br/>Recebido por<br/>Data: ____/____/________",
           E("A2", fontSize=8, textColor=CINZA, alignment=TA_CENTER, leading=14)),
     ]], colWidths=[CW*0.46, CW*0.08, CW*0.46])
     ass.setStyle(TableStyle([
@@ -9642,10 +9771,22 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
           E_AVISO)]
 
     # FOTOS
-    fotos_b64_antes  = lancamento.get("fotos_antes_b64",  [])
-    fotos_b64_depois = lancamento.get("fotos_depois_b64", [])
-    fotos_b64_cmaq   = lancamento.get("fotos_cmaq_b64",   [])
-    fotos_b64_extras = lancamento.get("fotos_extras_b64", [])
+    # Mesma resolução do PDF ACQUA: base64 do lançamento → Drive → pastas
+    # locais. Um PDF regerado a partir do Sheets (sem base64) mantém as fotos.
+    # Só resolve quando o lançamento declara fotos, para não puxar por padrão
+    # de nome fotos de outras visitas da mesma pasta.
+    _declara_fotos_bs = any(lancamento.get(k) for k in (
+        "fotos", "fotos_drive_ids",
+        *(f"fotos_{c}{suf}" for c in ("antes", "depois", "cmaq", "extras") for suf in ("", "_ids", "_b64")),
+    ))
+    try:
+        _fotos_res_bs = _resolver_fotos_visita_para_relatorio(lancamento) if _declara_fotos_bs else {}
+    except Exception:
+        _fotos_res_bs = {}
+    fotos_b64_antes  = _fotos_res_bs.get("antes")  or lancamento.get("fotos_antes_b64",  [])
+    fotos_b64_depois = _fotos_res_bs.get("depois") or lancamento.get("fotos_depois_b64", [])
+    fotos_b64_cmaq   = _fotos_res_bs.get("cmaq")   or lancamento.get("fotos_cmaq_b64",   [])
+    fotos_b64_extras = _fotos_res_bs.get("extras") or lancamento.get("fotos_extras_b64", [])
     todas_fotos = (
         [("Antes do tratamento", f) for f in (fotos_b64_antes  or [])] +
         [("Apos o tratamento",   f) for f in (fotos_b64_depois or [])] +
@@ -9656,21 +9797,18 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         story.append(PageBreak())
         story += [sec_hdr("REGISTRO FOTOGRAFICO"), HR_GOLD(), Sp(2),
             P("Registros visuais realizados durante a visita operacional.", E_BODY), Sp(3)]
+        # A imagem do ReportLab só é lida em doc.build(). Antes, cada foto ia
+        # para um arquivo temporário apagado logo após criar o flowable; no
+        # build o arquivo já não existia e a foto sumia do PDF. Agora a foto
+        # fica em memória (BytesIO) referenciada pelo próprio flowable.
         for legenda, foto_b64 in todas_fotos:
-            try:
-                import base64
-                _img_bytes = base64.b64decode(foto_b64) if isinstance(foto_b64, str) else foto_b64
-                import tempfile as _tmp
-                _tmp_f = _tmp.NamedTemporaryFile(delete=False, suffix=".jpg")
-                _tmp_f.write(_img_bytes); _tmp_f.close()
-                story.append(P(legenda, E_FOTO))
-                img = Image(_tmp_f.name, width=140*mm, height=90*mm)
-                img.hAlign = "CENTER"
-                story.append(img)
-                story.append(Sp(4))
-                import os; os.unlink(_tmp_f.name)
-            except Exception:
-                pass
+            img = _imagem_foto_pdf_em_memoria(foto_b64, Image, 140*mm, 90*mm)
+            if img is None:
+                story.append(P(f"{legenda}: foto não pôde ser inserida.", E_FOTO))
+                continue
+            story.append(P(legenda, E_FOTO))
+            story.append(img)
+            story.append(Sp(4))
 
     story += [HR(),
         P("Bem Star Piscinas Ltda  |  CNPJ 26.799.958/0001-88  |  Uberlandia/MG", E_RODAPE),
@@ -11343,6 +11481,15 @@ def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", m
     return "\n\n".join(linhas)
 
 
+def _piscinas_cadastradas_cliente(cliente: dict | None) -> list[str]:
+    """Nomes das piscinas do cadastro do cliente (vazio quando não configurado)."""
+    try:
+        from utils.rt_relatorio import piscinas_do_cliente
+        return [p["nome"] for p in piscinas_do_cliente(cliente).get("piscinas", []) if p.get("nome")]
+    except Exception:
+        return []
+
+
 def _coletar_contexto_relatorio_bem_star() -> dict:
     csr_sel = str(st.session_state.get("csr_sel_relatorio", "") or "").strip()
     csr_mes = str(st.session_state.get("csr_mes_rel", "") or "").strip()
@@ -11381,19 +11528,18 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
             "Confirme a origem dos dados na tela do relatório Bem Star para gerar com as visitas identificadas."))
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
-    vistos = set()
-    lancamentos_todos = []
-    for lc in (lancamentos_local or []) + (lancamentos_sheets or []):
-        chave = json.dumps(lc, ensure_ascii=False, sort_keys=True, default=str)
-        if chave not in vistos:
-            vistos.add(chave)
-            lancamentos_todos.append(lc)
+    from utils.bem_star_mensal import (unir_agenda, token_pool, materializar_fotos,
+                                       deduplicar_lancamentos, canonizar_nomes_piscinas)
+    # A mesma visita existe no JSON local e no Sheets com campos diferentes
+    # (fotos em base64, horário de gravação): comparar o JSON inteiro deixava
+    # as duas cópias e duplicava as leituras. A chave é o ID da visita.
+    lancamentos_todos = deduplicar_lancamentos((lancamentos_local or []) + (lancamentos_sheets or []))
 
     lancamentos_csr = _filtrar_lancamentos_preview_por_mes(lancamentos_todos, csr_mes, csr_ano)
 
-    from utils.bem_star_mensal import unir_agenda, token_pool, materializar_fotos
+    piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
     lancamentos_agenda = _bs_coletar_lancamentos_agenda_manual()
-    lanc_para_relatorio = unir_agenda(lancamentos_csr, lancamentos_agenda)
+    lanc_para_relatorio = unir_agenda(lancamentos_csr, lancamentos_agenda, piscinas_cadastradas)
     if not lanc_para_relatorio:
         msg = "Nenhum lançamento encontrado. Preencha a agenda mensal ou registre visitas no modo campo."
         if _situacao_csr["aviso"]:
@@ -11405,8 +11551,12 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         tipo = st.session_state.get(f"bs_mensal_tipo_{token_pool(nome)}", linha["tipo_piscina"])
         linha["tipo_piscina"] = tipo
         tipos[nome] = tipo
-    for nome in st.session_state.get("bs_mensal_piscinas", []) or []:
-        tipos[nome] = st.session_state.get(f"bs_mensal_tipo_{token_pool(nome)}", "Não informado")
+    piscinas_sel = canonizar_nomes_piscinas(
+        st.session_state.get("bs_mensal_piscinas", []) or [],
+        piscinas_cadastradas + [l["piscina"] for l in lanc_para_relatorio],
+    )
+    for nome in piscinas_sel:
+        tipos.setdefault(nome, st.session_state.get(f"bs_mensal_tipo_{token_pool(nome)}", "Não informado"))
     fotos_paths = _coletar_fotos_bem_star_preview(csr_sel, lancamentos_csr)
     # Anexos mensais só entram por manifesto do contexto exato; nenhuma varredura de pasta/Drive.
     fotos_mensais, metadados = materializar_fotos(
@@ -11421,7 +11571,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "dados_cliente": csr_dados_sel, "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio, "fotos": fotos_paths,
         "fotos_metadados": metadados, "tipos_piscinas": tipos,
-        "piscinas": st.session_state.get("bs_mensal_piscinas", []),
+        "piscinas": piscinas_sel,
+        "piscinas_cadastradas": piscinas_cadastradas,
         "origem_fotos": "visitas do período e anexos mensais isolados" if fotos_paths else "sem fotos",
     }
 
@@ -12614,6 +12765,11 @@ def _relatorio_rt_aplicar_rascunho(dados: dict) -> bool:
             st.session_state.pop("rel_origem_rotulo", None)
             st.session_state.pop("rel_origem_nome_periodo", None)
         st.session_state["_rt_contexto_identificacao"] = {k: st.session_state.get(k) for k in ("rel_nome_condominio", "rel_mes_referencia", "rel_ano_referencia")}
+        # O seletor "Carregar dados de cliente cadastrado" passa a mostrar o
+        # condomínio restaurado: antes continuava no cliente anterior e um
+        # "Carregar" seguinte misturava a tabela restaurada com outro cliente.
+        st.session_state["sel_cliente_rel"] = (str(st.session_state.get("rel_nome_condominio") or "").strip()
+                                               or "— Selecionar cliente cadastrado —")
         if st.session_state.get("rt_op_sel_cond") is not None:
             st.session_state["_rt_cond_reverter"] = st.session_state.get("rel_nome_condominio")
             if periodo_relatorio_valido(st.session_state.get("rel_mes_referencia"), st.session_state.get("rel_ano_referencia")):
@@ -14097,9 +14253,16 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         nome_ex = dados_c.get("nome_condominio", humanizar_nome_pasta(p.name)) if dados_c else humanizar_nome_pasta(p.name)
         if not nome_ex:
             continue
+        # Cliente que existe na planilha (de qualquer empresa) é decidido só
+        # pela planilha: uma pasta local do mesmo condomínio não pode
+        # reintroduzi-lo na empresa errada depois do filtro acima.
+        if any(normalizar_texto_busca(_c.get("nome", "")) == normalizar_texto_busca(nome_ex)
+               or slugify_nome(_c.get("nome", "")) == p.name
+               for _c in (_clientes_todos_op_raw or [])):
+            continue
         cliente_local = _enriquecer_cliente_com_dados_locais({
             "nome": nome_ex,
-            "empresa": dados_c.get("empresa", "Aqua Gestão"),
+            "empresa": dados_c.get("empresa", ""),
             "operadores_vinculados": dados_c.get("operadores_vinculados", []),
             "servicos": dados_c.get("servicos", {}),
         })
@@ -15146,6 +15309,9 @@ avisar o RT.
                             _ch2 = f"{lancamento.get('data','')}-{lancamento.get('operador','')}-{lancamento.get('ph','')}"
                             if _ch == _ch2:
                                 _ls["sheets_sync"] = "ok"
+                                if (lancamento.get("id_visita") and not _ls.get("id_visita")
+                                        and _ls.get("salvo_em", "") == lancamento.get("salvo_em", "")):
+                                    _ls["id_visita"] = lancamento["id_visita"]
                         _dados_sync["lancamentos_campo"] = _lancs_sync
                         salvar_dados_condominio(pasta_op, _dados_sync)
                     except Exception:
@@ -17664,6 +17830,7 @@ if _empresa_ativa_codigo() != "bem_star":
     st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
 
     _pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
+    _pastas_envio = filtrar_pastas_por_empresa(_pastas_envio, "aqua_gestao")
     _nomes_pastas_envio = [humanizar_nome_pasta(p.name) for p in _pastas_envio]
     _mapa_pastas_envio = dict(zip(_nomes_pastas_envio, _pastas_envio))
 
@@ -18317,14 +18484,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             except Exception:
                 _lanc_sheets_csr = []
     
-        # Deduplica local + Sheets
-        _vistos_csr = set()
-        _lanc_todos_csr = []
-        for _lc in _lanc_local_csr + _lanc_sheets_csr:
-            _ch = json.dumps(_lc, ensure_ascii=False, sort_keys=True, default=str)
-            if _ch not in _vistos_csr:
-                _vistos_csr.add(_ch)
-                _lanc_todos_csr.append(_lc)
+        # Deduplica local + Sheets pelo ID da visita (ver deduplicar_lancamentos)
+        from utils.bem_star_mensal import deduplicar_lancamentos as _dedup_lanc_bs
+        _lanc_todos_csr = _dedup_lanc_bs(list(_lanc_local_csr or []) + list(_lanc_sheets_csr or []))
     
         # Filtra por mês/ano
         def _filtrar_mes_csr(lancamentos, mes, ano):
@@ -18509,7 +18671,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                     st.error(f"Não foi possível carregar os complementos: {_erro_bs}")
         if st.session_state.pop("_bs_mensal_recuperado", False):
             st.success("Complementos recuperados para o cliente e mês selecionados. Confira antes de gerar.")
-        renderizar_piscinas(st, lancamentos_csr)
+        _bs_piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
+        renderizar_piscinas(st, lancamentos_csr, _bs_piscinas_cadastradas)
 
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
@@ -18568,7 +18731,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         st.markdown("### Resumo e recomendações operacionais")
         st.caption("Clique para gerar um texto automático com base nas visitas, parâmetros e dosagens lançados. Depois revise e edite antes de gerar o PDF.")
 
-        _bs_lancs_para_parecer = unir_agenda(lancamentos_csr, _bs_coletar_lancamentos_agenda_manual())
+        _bs_lancs_para_parecer = unir_agenda(lancamentos_csr, _bs_coletar_lancamentos_agenda_manual(), _bs_piscinas_cadastradas)
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
             _blocos_bs = []
             for _nome_bs in dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer):
@@ -18603,7 +18766,10 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             except Exception as _erro_bs:
                 st.error(f"Não foi possível concluir o salvamento: {_erro_bs}. Os dados continuam nesta sessão.")
 
-    if st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
+    # O botão ficava fora do bloco que define csr_sel/csr_mes/csr_ano: sem
+    # cliente listado nesta execução, o clique gerava NameError ('csr_sel').
+    # Agora só aparece com cliente na lista e usa os valores do contexto gerado.
+    if opcoes_csr and st.button("📄 Gerar relatório Bem Star (PDF)", type="primary", use_container_width=True):
         try:
             with st.spinner("Gerando relatório Bem Star..."):
                 _resultado_bs = renderizar_relatorio_oficial("Bem Star Piscinas", preview=False)
@@ -18616,6 +18782,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 ok_pdf_csr = bool(_resultado_bs.get("pdf_ok"))
                 err_pdf_csr = _resultado_bs.get("erro_pdf")
                 _ctx_bs = _resultado_bs.get("dados", {})
+                _cliente_ctx_bs = (_ctx_bs.get("dados_cliente", {}) or {}).get("nome") or _ctx_bs.get("cliente", "")
                 st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
                 dl1, dl2 = st.columns(2)
                 with dl1:
@@ -18632,14 +18799,14 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                         st.warning(f"PDF não gerado: {err_pdf_csr}")
     
                 _msg_rel = montar_mensagem_bem_star(
-                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    nome_local=_cliente_ctx_bs,
                     responsavel=_ctx_bs.get("dados_cliente", {}).get("contato", ""),
                     tipo="relatorio",
-                    mes=_ctx_bs.get("mes", csr_mes),
-                    ano=_ctx_bs.get("ano", csr_ano),
+                    mes=_ctx_bs.get("mes", ""),
+                    ano=_ctx_bs.get("ano", ""),
                 )
                 exibir_bloco_envio_bem_star(
-                    nome_local=_ctx_bs.get("dados_cliente", {}).get("nome", _ctx_bs.get("cliente", csr_sel)),
+                    nome_local=_cliente_ctx_bs,
                     pasta=Path(_resultado_bs["pasta"]),
                     telefone=_ctx_bs.get("dados_cliente", {}).get("telefone", ""),
                     email=_ctx_bs.get("dados_cliente", {}).get("email", ""),
@@ -22552,16 +22719,14 @@ with r7:
     st.text_input("Vigência da ART - fim", key="rel_art_fim", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_fim"), disabled=st.session_state.get("rel_art_status") != "Emitida")
 with r8:
     opcoes_status_agua = ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO"]
-    status_atual = st.session_state.get("rel_status_agua", "CONFORME")
-    if status_atual not in opcoes_status_agua:
-        status_atual = "CONFORME"
+    sincronizar_status_agua_widget(opcoes_status_agua)
     opcao_status = st.selectbox(
         "Status geral da água",
         opcoes_status_agua,
-        index=opcoes_status_agua.index(status_atual),
         key="rel_status_agua_select",
     )
     st.session_state["rel_status_agua"] = opcao_status
+    st.session_state["_rel_status_agua_sinc"] = opcao_status
 
 if st.session_state.get("rel_art_status") != "Emitida":
     st.caption("Sem ART emitida, número e vigência ficam desabilitados e o relatório informa apenas a situação selecionada (Não emitida / Em processo de emissão).")
@@ -22586,8 +22751,10 @@ if int(st.session_state.get("rel_analises_total", 0) or 0) != _linhas_freq:
 
 c_auto1, c_auto2 = st.columns([1,2])
 with c_auto1:
-    if st.button("Preencher parecer automático", use_container_width=True):
-        aplicar_textos_automaticos_relatorio()
+    # Callback: roda antes do script, então o status calculado chega ao seletor
+    # "Status geral da água" na mesma execução (antes ficava o valor antigo).
+    st.button("Preencher parecer automático", use_container_width=True,
+              on_click=aplicar_textos_automaticos_relatorio)
 with c_auto2:
     st.caption("O sistema calcula não conformidades e cloro combinado (cloraminas = CT - CL), preenche diagnóstico, observações e recomendações, e você ainda pode editar antes de gerar o relatório.")
 
