@@ -104,7 +104,8 @@ class Periodos(unittest.TestCase):
     def test_consolidacao_por_piscina_e_periodo(self):
         meses = rr.meses_do_periodo("Trimestral", 3, 2026)
         linhas = [
-            {"data": "01/07/2026", "piscina": "Adulto", "ph": "7,0", "cloro_livre": "1,0"},
+            # Limites NBR 10818:2026: pH 7,0–7,8 e CRL 1,0–5,0 (6,9 e 0,8 ficam fora).
+            {"data": "01/07/2026", "piscina": "Adulto", "ph": "6,9", "cloro_livre": "0,8"},
             {"data": "15/08/2026", "piscina": "Adulto", "ph": "7,6", "cloro_livre": "4,0"},
             {"data": "15/08/2026", "piscina": "Infantil", "ph": "7,4"},
             {"data": "01/10/2026", "piscina": "Adulto", "ph": "9,9"},   # fora do período
@@ -113,7 +114,7 @@ class Periodos(unittest.TestCase):
         c = rr.consolidar(linhas, meses)
         self.assertEqual(set(c["piscinas"]), {"Adulto", "Infantil"})
         ph = c["piscinas"]["Adulto"]["parametros"]["ph"]
-        self.assertEqual((ph["n"], ph["min"], ph["max"]), (2, 7.0, 7.6))
+        self.assertEqual((ph["n"], ph["min"], ph["max"]), (2, 6.9, 7.6))
         self.assertAlmostEqual(ph["conformidade"], 50.0)
         self.assertAlmostEqual(c["piscinas"]["Adulto"]["parametros"]["cloro_livre"]["conformidade"], 50.0)
         self.assertEqual(set(c["piscinas"]["Adulto"]["mensal"]), {"07/2026", "08/2026"})

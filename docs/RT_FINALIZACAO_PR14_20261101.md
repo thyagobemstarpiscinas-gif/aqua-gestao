@@ -69,6 +69,17 @@ a avaliação é parcial.
 - `tests/test_normas_10818_2026.py` estava em estilo pytest e não era executado
   por `tests/rodar_isolado.py` (unittest); agora roda.
 
+## Testes executados
+
+`python tests/rodar_isolado.py` (rede bloqueada, planilhas falsas, dados fictícios):
+
+- Base `e0d2887`: 318 testes, 317 aprovados, 1 falha (fonte do PDF de visita
+  Bem Star dependente do sistema — corrigida nesta etapa).
+- Branch (`4d1a6bf` + ajuste de teste): 334 testes, 333 aprovados e 1 falha
+  esperada (`test_consolidacao_por_piscina_e_periodo` assumia a faixa antiga
+  pH 7,2–7,8). O teste foi atualizado para os limites 2026 e passa
+  (`test_rt_relatorio`: 15/15). A suíte integral não foi repetida após esse ajuste.
+
 ## 3. Acessos (RT, administrador, operadores)
 
 Revisado sem alteração de regra: PINs especiais só via Secrets (`[rt] pin`,
