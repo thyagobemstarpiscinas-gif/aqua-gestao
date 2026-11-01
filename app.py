@@ -2995,6 +2995,7 @@ def build_monthly_rt_pdf_bytes(
         return out
 
     recs = _limpar_records(records)
+    from utils.normas_piscinas import avaliar_leitura, cloro_combinado
 
     def _desvios_record(r):
         desv = []
@@ -3008,11 +3009,13 @@ def build_monthly_rt_pdf_bytes(
         orp = _to_float(r.get("orp"))
         if ph is not None and not (7.2 <= ph <= 7.8): desv.append("pH")
         if crl is not None and not (0.5 <= crl <= 3.0): desv.append("CRL")
-        if ct is not None and not (0.5 <= ct <= 3.0): desv.append("CT")
+        cc, erro_cc = cloro_combinado(crl, ct)
+        if erro_cc: desv.append("CT < CRL (medição inconsistente)")
+        elif avaliar_leitura("cc", cc) == "fora_limite": desv.append("cloro combinado")
         if alc is not None and not (80 <= alc <= 120): desv.append("alcalinidade")
         if dur is not None and not (150 <= dur <= 300): desv.append("dureza")
         if cya is not None and not (30 <= cya <= 50): desv.append("CYA")
-        if turb is not None and turb > 0.5: desv.append("turbidez")
+        if avaliar_leitura("turbidez", turb) == "fora_limite": desv.append("turbidez")
         if orp is not None and orp < 650: desv.append("ORP")
         return desv
 
@@ -3028,8 +3031,8 @@ def build_monthly_rt_pdf_bytes(
         situacao_geral = "ATENÇÃO — HÁ DESVIOS NO PERÍODO"
         sintese = "Foram identificados desvios que exigem ação corretiva com rastreabilidade."
     else:
-        situacao_geral = "CONFORME"
-        sintese = "As leituras registradas indicam condição satisfatória no período avaliado."
+        situacao_geral = "AVALIAÇÃO PARCIAL — SEM DESVIOS OPERACIONAIS IDENTIFICADOS"
+        sintese = "Não foram identificados desvios nos registros avaliados. Isto não comprova conformidade integral nem substitui o monitoramento operacional obrigatório."
 
     recs_validos = [r for r in recs if any(str(r.get(k) or "").strip() for k in ["data", "ph", "cloro_livre", "crl", "cloro_total", "ct", "alcalinidade", "dureza", "cianurico", "cya", "turbidez", "orp", "tds", "temperatura"])]
 

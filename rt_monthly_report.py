@@ -324,6 +324,15 @@ def _collect_deviation_data(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
         for field, label in labels.items():
             if _status_for_value(field, row.get(field)) == "out":
                 outside.append(label)
+        crl = _to_float(row.get("crl"))
+        ct = _to_float(row.get("ct"))
+        cc, erro = cloro_combinado(crl, ct)
+        if erro:
+            outside.append("CT < CRL (medição inconsistente)")
+        elif avaliar_leitura("cc", cc) == "fora_limite":
+            outside.append("CC acima do limite da NBR 10818:2026")
+        if avaliar_leitura("turbidez", _to_float(row.get("turbidez"))) == "fora_limite":
+            outside.append("turbidez fora do limite da NBR 10818:2026")
         if outside:
             by_date[data] = outside
     return by_date
@@ -334,7 +343,7 @@ def _deviation_sentences(rows: list[dict[str, Any]]) -> list[str]:
     out: list[str] = []
     for data in sorted(by_date.keys(), key=_date_key):
         fields = by_date[data]
-        out.append(f"{data} — {_join_pt(fields)} fora das faixas operacionais.")
+        out.append(f"{data} — verificar: {_join_pt(fields)}.")
     return out
 
 
