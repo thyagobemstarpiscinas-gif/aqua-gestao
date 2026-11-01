@@ -32,6 +32,8 @@ from utils.formatacao import slugify_nome  # noqa: E402
 DRIVE_FILE = ga.ESCOPO_OAUTH_HOMOLOGACAO
 PROD_SHEET, PROD_PASTA = "PRODUCAO_PLANILHA_0001", "PRODUCAO_PASTA_0001"
 SEGREDO = "SEGREDO-FICTICIO-NAO-PODE-VAZAR"
+# Montada em tempo de execução: o repositório não contém o marcador literal de chave.
+CHAVE_FICTICIA = "-----BEGIN " + "PRIVATE KEY-----\nFICTICIA\n-----END " + "PRIVATE KEY-----\n"
 OAUTH = {"client_id": "cliente-teste.apps.googleusercontent.com", "client_secret": SEGREDO,
          "refresh_token": SEGREDO + "-refresh", "scopes": [DRIVE_FILE]}
 
@@ -129,11 +131,29 @@ class AbaFalsa:
     def get_all_values(self):
         return [list(l) for l in self.linhas]
 
-    def update(self, range_name=None, values=None, value_input_option=None, **_):
+    def update(self, *args, range_name=None, values=None, value_input_option=None, **_):
+        if args:
+            range_name, values = args[0], args[1]
         lin = int(re.search(r"\d+", range_name.split(":")[0]).group(0))
-        while len(self.linhas) < lin:
+        while len(self.linhas) < lin + len(values) - 1:
             self.linhas.append([])
-        self.linhas[lin - 1] = list(values[0])
+        for k, linha in enumerate(values):
+            self.linhas[lin - 1 + k] = [str(v) for v in linha]
+
+    def insert_row(self, valores, indice, value_input_option=None):
+        self.linhas.insert(indice - 1, [str(v) for v in valores])
+
+    def update_title(self, titulo):
+        dono = getattr(self, "dono", None)
+        if dono is not None:
+            dono.abas = {(titulo if a is self else a.title): a for a in dono.abas.values()}
+        self.title = titulo
+
+    def format(self, *_a, **_k):
+        pass
+
+    def resize(self, rows=None, cols=None):
+        self.col_count = cols
 
 
 class PlanilhaFalsa:
@@ -141,13 +161,24 @@ class PlanilhaFalsa:
         self.title, self.dono, self.abas = titulo, dono, {}
 
     def worksheet(self, nome):
+        self.abas = {a.title: a for a in self.abas.values()}  # reflete update_title
         if nome not in self.abas:
             raise WorksheetNotFound(nome)
         return self.abas[nome]
 
     def add_worksheet(self, title, rows, cols):
+        if title in self.abas:
+            raise ValueError("aba já existe")
         self.abas[title] = AbaFalsa(title)
+        self.abas[title].dono = self
         return self.abas[title]
+
+    @property
+    def sheet1(self):
+        if not self.abas:
+            self.abas["Página1"] = AbaFalsa("Página1")
+            self.abas["Página1"].dono = self
+        return next(iter(self.abas.values()))
 
 
 def gspread_falso(google):
@@ -181,6 +212,12 @@ def _renovar_sem_rede(escopos_concedidos):
 def _carregar_app(secrets, gerados: Path, sheets_id, pasta_id):
     tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
     defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for n in tree.body:
+        if isinstance(n, ast.ClassDef):
+            defs.setdefault(n.name, n)
+        elif isinstance(n, ast.ImportFrom) and (n.module or "").startswith("utils"):
+            for a in n.names:
+                defs.setdefault(a.asname or a.name, n)
 
     class _Cache:
         def __call__(self, *a, **k):
@@ -207,7 +244,8 @@ def _carregar_app(secrets, gerados: Path, sheets_id, pasta_id):
             if nome in defs:
                 exec(compile(ast.Module(body=[defs[nome]], type_ignores=[]), str(ROOT / "app.py"), "exec",
                              flags=__future__.annotations.compiler_flag), self)
-                return self[nome]
+                if nome in self:
+                    return self[nome]
             if hasattr(builtins, nome):
                 return getattr(builtins, nome)
             raise KeyError(nome)
@@ -295,12 +333,43 @@ class SegurancaOAuth(unittest.TestCase):
         self.assertNotIn(SEGREDO, str(ctx.exception))
         self.assertIsNone(ctx.exception.__cause__)
 
-    def test_homologacao_nunca_usa_arquivo_local_de_producao(self):
+    def test_homologacao_recusa_credencial_ausente_ou_incompleta_sem_recorrer_a_producao(self):
+        sa = {"client_email": "sa@teste.invalid", "private_key": CHAVE_FICTICIA}
+        casos = {
+            "sem credencial": {},
+            "so conta de servico (sem opcao explicita)": {"gcp_service_account": sa},
+            "oauth sem refresh_token": {"google_oauth": {k: v for k, v in OAUTH.items() if k != "refresh_token"},
+                                        "gcp_service_account": sa},
+            "oauth vazio": {"google_oauth": {}, "gcp_service_account": sa},
+            "oauth nao-tabela": {"google_oauth": "texto", "gcp_service_account": sa},
+            "opcao conta de teste sem chave": {"aqua_app": {"credencial": "conta_servico_teste"},
+                                               "gcp_service_account": {"client_email": "sa@teste.invalid"}},
+        }
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "aqua-gestao-rt-87316ebf5331.json").write_text("{}")
             with mock.patch("google.oauth2.service_account.Credentials.from_service_account_file",
-                            side_effect=AssertionError("arquivo de produção usado")):
-                self.assertIsNone(ga.credenciais_google({}, "homologacao", Path(d)))
+                            side_effect=AssertionError("arquivo local de produção usado")), \
+                 mock.patch("google.oauth2.service_account.Credentials.from_service_account_info",
+                            side_effect=AssertionError("conta de serviço usada")):
+                for nome, secrets in casos.items():
+                    with self.subTest(caso=nome):
+                        with self.assertRaises(ga.ConfiguracaoGoogleInvalida):
+                            ga.credenciais_google(secrets, "homologacao", Path(d))
+
+    def test_conta_de_servico_de_teste_so_com_opcao_explicita(self):
+        sa = {"client_email": "sa-teste@teste.invalid", "private_key": CHAVE_FICTICIA}
+        secrets = {"aqua_app": {"ambiente": "homologacao", "credencial": "conta_servico_teste"}, "gcp_service_account": sa}
+        self.assertEqual(ga.tipo_credencial(secrets, "homologacao"), "conta_servico_teste")
+        with mock.patch("google.oauth2.service_account.Credentials.from_service_account_info", return_value="sa-teste"):
+            self.assertEqual(ga.credenciais_google(secrets, "homologacao"), "sa-teste")
+
+    def test_app_interrompe_inicializacao_com_credencial_invalida(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        bloco = src[src.index("from utils.ambiente import destinos_google"):src.index("def conectar_drive")]
+        self.assertIn("TIPO_CREDENCIAL_GOOGLE = tipo_credencial(st.secrets, AMBIENTE_APP)", bloco)
+        self.assertIn("except ValueError as erro_configuracao:", bloco)
+        self.assertIn("st.stop()", bloco)
+        self.assertTrue(issubclass(ga.ConfiguracaoGoogleInvalida, ValueError))
 
     def test_ids_de_producao_continuam_bloqueados_em_homologacao(self):
         with self.assertRaises(ValueError):
@@ -418,7 +487,8 @@ class ScriptConfiguracao(unittest.TestCase):
         drive.files.return_value.create.return_value.execute.return_value = {"id": "PASTA_TESTE_0001"}
         planilha = mock.Mock(id="PLANILHA_TESTE_0001")
         gs = types.ModuleType("gspread")
-        gs.authorize = lambda c: mock.Mock(create=mock.Mock(return_value=planilha))
+        self.cliente_gs = mock.Mock(create=mock.Mock(return_value=planilha))
+        gs.authorize = lambda c: self.cliente_gs
         oauthlib_flow = types.ModuleType("google_auth_oauthlib.flow")
         oauthlib_flow.InstalledAppFlow = mock.Mock(from_client_secrets_file=mock.Mock(return_value=fluxo))
         with mock.patch.dict(sys.modules, {"gspread": gs, "google_auth_oauthlib.flow": oauthlib_flow}), \
@@ -436,6 +506,13 @@ class ScriptConfiguracao(unittest.TestCase):
         self.assertEqual(flow.call_args.kwargs["scopes"], [DRIVE_FILE])
         self.assertIn('ambiente = "homologacao"', saida)
         self.assertIn('sheets_id = "PLANILHA_TESTE_0001"', saida)
+        # Só cria; nunca abre planilhas existentes (a planilha fictícia anterior fica intocada).
+        self.cliente_gs.create.assert_called_once()
+        for metodo in ("open", "open_by_key", "open_by_url", "openall", "list_spreadsheet_files", "copy", "del_spreadsheet"):
+            getattr(self.cliente_gs, metodo).assert_not_called()
+        fonte = (ROOT / "scripts" / "oauth_homologacao_setup.py").read_text(encoding="utf-8")
+        self.assertNotRegex(fonte, r"\.(open_by_key|open_by_url|openall|open)\(")
+        self.assertIn("3 condomínios, 4 visitas, 1 operador inativo sem PIN", fonte)
 
     def test_recusa_escopo_amplo_e_client_secret_dentro_do_projeto(self):
         with tempfile.TemporaryDirectory() as d:
@@ -445,3 +522,79 @@ class ScriptConfiguracao(unittest.TestCase):
         codigo, saida, flow = self._rodar(ROOT / "client_secret.json", [DRIVE_FILE])
         self.assertEqual(codigo, 1)
         flow.assert_not_called()
+
+
+# ── 6. Planilha preparada pelo script: dados fictícios e esquema compatível ──
+class PlanilhaPreparada(_Base):
+    """Preenche a planilha de teste pelo script e a lê com as funções reais do app."""
+
+    def setUp(self):
+        super().setUp()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("oauth_setup", ROOT / "scripts" / "oauth_homologacao_setup.py")
+        self.setup_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.setup_mod)
+        self.planilha = self.google.planilhas[self.sheet_teste]
+        self.contagem = self.setup_mod.preencher_planilha(self.planilha)
+
+    def test_conjunto_ficticio_gravado(self):
+        from utils import dados_ficticios_homologacao as dados
+        self.assertEqual(self.contagem, {dados.ABA_CLIENTES: 3, dados.ABA_VISITAS: 4, dados.ABA_OPERADORES: 1})
+        self.assertEqual(set(self.planilha.abas), {dados.ABA_CLIENTES, dados.ABA_VISITAS, dados.ABA_OPERADORES})
+        texto = json.dumps({k: a.linhas for k, a in self.planilha.abas.items()}, ensure_ascii=False)
+        self.assertNotIn("PRODUCAO", texto)
+        self.assertEqual(self.google.planilhas[PROD_SHEET].abas, {})
+
+    def test_clientes_lidos_pelo_app_e_separados_por_empresa(self):
+        clientes = self.app["sheets_listar_clientes_completo"]()
+        self.assertEqual([c["nome"] for c in clientes],
+                         ["Condomínio Alfa Fictício", "Residencial Beta Fictício", "Condomínio Gama Fictício"])
+        self.assertEqual(clientes[0]["vol_adulto"], 50.0)
+        filtrar = self.app["filtrar_clientes_por_empresa"]
+        self.assertEqual([c["nome"] for c in filtrar(clientes, "aqua_gestao")],
+                         ["Condomínio Alfa Fictício", "Residencial Beta Fictício"])
+        self.assertEqual([c["nome"] for c in filtrar(clientes, "bem_star")], ["Condomínio Gama Fictício"])
+
+    def test_visitas_lidas_por_condominio_com_piscinas_e_tercas(self):
+        todas = self.app["sheets_listar_todas_visitas"]()
+        self.assertEqual([v["id_visita"] for v in todas], ["V00001", "V00002", "V00003", "V00004"])
+        alfa = self.app["sheets_listar_lancamentos"]("Condomínio Alfa Fictício")
+        self.assertEqual([v["data"] for v in alfa], ["29/09/2026", "06/10/2026"])
+        self.assertEqual([p["nome"] for p in alfa[0]["piscinas"]], ["Piscina Adulto", "Piscina Infantil"])
+        from utils.datas_visitas import filtrar_lancamentos_rt_tercas
+        self.assertEqual(len(filtrar_lancamentos_rt_tercas(alfa)), 2)
+        self.assertEqual(len(self.app["sheets_listar_lancamentos"]("Condomínio Gama Fictício")), 1)
+
+    def test_operador_inativo_sem_pin_listado_e_sem_acesso(self):
+        ops = self.app["sheets_listar_operadores"]()
+        self.assertEqual(len(ops), 1)
+        self.assertEqual((ops[0]["nome"], ops[0]["pin"], ops[0]["ativo"]), ("OPERADOR INATIVO FICTÍCIO", "", False))
+        self.assertIsNone(self.app["validar_pin_operador"](""))
+        self.assertTrue(self.app["sheets_criar_aba_operadores"]())  # aba existente: não recria
+        self.assertEqual(len(self.planilha.abas["👷 Operadores"].linhas), 2)
+
+    def test_formularios_gravam_no_mesmo_esquema(self):
+        # Formulário de campo: nova visita entra como V00005, ligada ao ID do cliente.
+        lanc = {"data": "27/10/2026", "operador": "OPERADOR FICTÍCIO", "observacao": "teste",
+                "piscinas": [{"nome": "Piscina Adulto", "ph": "7,5", "cloro_livre": "2,0", "cloro_total": "2,2"}]}
+        self.assertTrue(self.app["sheets_salvar_lancamento_campo"](lanc, "Residencial Beta Fictício"))
+        nova = self.planilha.abas["🔬 Visitas"].linhas[-1]
+        self.assertEqual((nova[1], nova[3], nova[4], nova[5], len(nova)), ("V00005", "C002", "Residencial Beta Fictício", "7,5", 26))
+        beta = self.app["sheets_listar_lancamentos"]("Residencial Beta Fictício")
+        self.assertEqual([v["id_visita"] for v in beta], ["V00003", "V00005"])
+        # Cadastro de cliente: próximo ID C004, mesmas colunas lidas pelo app.
+        self.assertTrue(self.app["sheets_salvar_cliente"]("Condomínio Delta Fictício", "", "Rua D, 4", "Síndico D", "",
+                                                          vol_adulto=30, empresa="Aqua Gestão"))
+        nomes = {c["id"]: c["nome"] for c in self.app["sheets_listar_clientes_completo"]()}
+        self.assertEqual(nomes.get("C004"), "Condomínio Delta Fictício")
+
+
+class PlanilhaNova(_Base):
+    """Planilha vazia: o formulário de campo cria a aba de visitas e lê em seguida."""
+
+    def test_visita_em_planilha_sem_aba_de_visitas(self):
+        lanc = {"data": "27/10/2026", "operador": "OP", "ph": "7,4"}
+        self.assertTrue(self.app["sheets_salvar_lancamento_campo"](lanc, "Cond Fictício"))
+        self.assertEqual([v["id_visita"] for v in self.app["sheets_listar_todas_visitas"]()], ["V00001"])
+        self.assertTrue(self.app["sheets_criar_aba_operadores"]())
+        self.assertIn("👷 Operadores", self.google.planilhas[self.sheet_teste].abas)

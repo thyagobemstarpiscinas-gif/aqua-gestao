@@ -2,9 +2,12 @@
 
 O que faz, com o escopo mínimo drive.file:
 1. Abre o navegador para você consentir com a conta Gmail de TESTE.
-2. Cria, com o próprio app, uma planilha e uma pasta exclusivas para dados
-   fictícios. Com drive.file, o app só enxerga o que ele mesmo criou: nenhuma
-   outra planilha ou arquivo da conta fica acessível.
+2. Cria, com o próprio cliente OAuth, uma planilha NOVA e uma pasta exclusivas
+   para dados fictícios e preenche a planilha com o conjunto de
+   utils/dados_ficticios_homologacao.py (3 condomínios, 4 visitas, 1 operador
+   inativo sem PIN). Com drive.file, o app só enxerga o que ele mesmo criou.
+   O script NUNCA abre planilhas existentes: a planilha fictícia anterior
+   (da conta de serviço de teste) é preservada sem acesso.
 3. Mostra no terminal o trecho para colar em Streamlit Cloud → app de
    homologação → Settings → Secrets.
 
@@ -27,7 +30,25 @@ from pathlib import Path
 ESCOPO = "https://www.googleapis.com/auth/drive.file"
 TITULO_PLANILHA = "ACQUA HOMOLOGACAO - DADOS FICTICIOS"
 TITULO_PASTA = "ACQUA HOMOLOGACAO - FOTOS FICTICIAS"
-ABAS = ("👥 Clientes",)
+
+
+def preencher_planilha(planilha) -> dict[str, int]:
+    """Cria as abas do app e grava os dados fictícios (RAW: valores exatamente como no app)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from utils import dados_ficticios_homologacao as dados
+
+    contagem = {}
+    for indice, (titulo, linhas) in enumerate(dados.abas().items()):
+        largura = max(len(l) for l in linhas)
+        if indice == 0:
+            aba = planilha.sheet1
+            aba.update_title(titulo)
+            aba.resize(rows=max(100, len(linhas)), cols=largura)
+        else:
+            aba = planilha.add_worksheet(title=titulo, rows=max(1000, len(linhas)), cols=largura)
+        aba.update(range_name=dados.faixa(linhas), values=linhas, value_input_option="RAW")
+        contagem[titulo] = len(linhas) - 1
+    return contagem
 
 
 def main() -> int:
@@ -63,13 +84,11 @@ def main() -> int:
         body={"name": TITULO_PASTA, "mimeType": "application/vnd.google-apps.folder"}, fields="id").execute()
 
     gc = gspread.authorize(creds)
-    planilha = gc.create(TITULO_PLANILHA)
-    primeira = planilha.sheet1
-    primeira.update_title(ABAS[0])
-    for aba in ABAS[1:]:
-        planilha.add_worksheet(title=aba, rows=100, cols=12)
+    planilha = gc.create(TITULO_PLANILHA)  # somente criação; nenhuma abertura por ID/título
+    preencher_planilha(planilha)
 
     print("\nRecursos de TESTE criados pelo app (somente eles ficam acessíveis com drive.file):")
+    print("  Dados fictícios: 3 condomínios, 4 visitas, 1 operador inativo sem PIN")
     print(f"  Planilha: {TITULO_PLANILHA}")
     print(f"  Pasta:    {TITULO_PASTA}")
     print("\nCole no Secrets do app de HOMOLOGAÇÃO (nunca no repositório, nunca no app de produção):\n")

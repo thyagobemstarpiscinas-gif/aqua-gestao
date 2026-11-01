@@ -47,13 +47,27 @@ def _secao(secrets, nome):
     return valor
 
 
+OPCAO_CONTA_SERVICO_TESTE = "conta_servico_teste"
+
+
 def tipo_credencial(secrets, ambiente: str) -> str:
-    """'oauth_usuario' ou 'conta_servico', validando a combinação com o ambiente."""
+    """Tipo de credencial permitido para o ambiente; recusa combinações inseguras.
+
+    - produção: "conta_servico" (inalterado). [google_oauth] é recusado.
+    - homologação: exige [google_oauth] completo e limitado a drive.file
+      ("oauth_usuario"). A conta de serviço só é aceita com opção explícita
+      ``[aqua_app] credencial = "conta_servico_teste"`` (legado da homologação
+      anterior); sem isso, credencial ausente ou incompleta interrompe o app —
+      nunca há recurso à conta de serviço nem ao arquivo local de produção.
+    """
     oauth = _secao(secrets, "google_oauth")
-    if oauth is not None:
-        if ambiente != "homologacao":
+    if ambiente != "homologacao":
+        if oauth is not None:
             raise ConfiguracaoGoogleInvalida(
                 "[google_oauth] só é aceito em homologação; produção usa a conta de serviço.")
+        return "conta_servico"
+
+    if oauth is not None:
         if not isinstance(oauth, Mapping):
             raise ConfiguracaoGoogleInvalida("[google_oauth] inválido.")
         faltando = [c for c in CAMPOS_OAUTH if not str(oauth.get(c) or "").strip()]
@@ -66,7 +80,19 @@ def tipo_credencial(secrets, ambiente: str) -> str:
                 raise ConfiguracaoGoogleInvalida(
                     "[google_oauth] pede escopo amplo; em homologação só drive.file é permitido.")
         return "oauth_usuario"
-    return "conta_servico"
+
+    app_cfg = _secao(secrets, "aqua_app")
+    opcao = str(app_cfg.get("credencial", "") if isinstance(app_cfg, Mapping) else "").strip()
+    if opcao == OPCAO_CONTA_SERVICO_TESTE:
+        conta = _secao(secrets, "gcp_service_account")
+        if not isinstance(conta, Mapping) or not str(conta.get("client_email") or "").strip() \
+                or "PRIVATE KEY" not in str(conta.get("private_key") or ""):
+            raise ConfiguracaoGoogleInvalida(
+                "Homologação com conta de serviço de teste exige [gcp_service_account] completo.")
+        return OPCAO_CONTA_SERVICO_TESTE
+    raise ConfiguracaoGoogleInvalida(
+        "Homologação exige [google_oauth] (client_id, client_secret, refresh_token; escopo drive.file). "
+        "Sem isso o app não inicia, para não recorrer a credenciais de produção.")
 
 
 def validar_escopos_concedidos(escopos) -> None:
@@ -114,10 +140,11 @@ def credenciais_google(secrets, ambiente: str, base_dir: Path | None = None):
     from google.oauth2.service_account import Credentials
 
     conta = _secao(secrets, "gcp_service_account")
+    if tipo == OPCAO_CONTA_SERVICO_TESTE:
+        # Homologação legada: conta de serviço de TESTE declarada explicitamente.
+        return Credentials.from_service_account_info(dict(conta), scopes=list(ESCOPOS_PRODUCAO))
     if conta is not None:
         return Credentials.from_service_account_info(dict(conta), scopes=list(ESCOPOS_PRODUCAO))
-    if ambiente == "homologacao":
-        return None  # homologação nunca usa o arquivo local de produção
     caminho = Path(base_dir or Path(__file__).resolve().parents[1]) / "aqua-gestao-rt-87316ebf5331.json"
     if not caminho.exists():
         return None

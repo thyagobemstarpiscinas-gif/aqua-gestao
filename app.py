@@ -376,8 +376,8 @@ def sheets_criar_aba_operadores():
         if sh is None:
             return False
         try:
-            obter_aba_sheets("👷 Operadores")
-            return True  # já existe
+            if sh.worksheet("👷 Operadores") is not None:
+                return True  # já existe
         except Exception:
             pass
         aba = sh.add_worksheet(title="👷 Operadores", rows=100, cols=6)
@@ -1495,10 +1495,18 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         if sh is None:
             return False
 
+        # obter_aba_sheets devolve None (não exceção) quando a aba não existe:
+        # numa planilha nova a visita nunca era gravada. Cria a aba nesse caso.
         try:
             aba = obter_aba_sheets("🔬 Visitas")
         except Exception:
+            aba = None
+        if aba is None:
             aba = sh.add_worksheet(title="🔬 Visitas", rows=1000, cols=26)
+            try:
+                obter_aba_sheets.clear()  # descarta o "aba ausente" guardado em cache
+            except Exception:
+                pass
             aba.update(
                 "A1:Z1",
                 [[

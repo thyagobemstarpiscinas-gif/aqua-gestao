@@ -97,9 +97,43 @@ refresh_token = "<impresso pelo script>"
 scopes = ["https://www.googleapis.com/auth/drive.file"]
 ```
 
+Credencial obrigatória em homologação: sem `[google_oauth]` completo o app
+não inicia. A conta de serviço de TESTE da homologação anterior só é aceita
+com a linha explícita `credencial = "conta_servico_teste"` em `[aqua_app]`;
+sem ela, a presença de `[gcp_service_account]` é ignorada e o app para. O
+arquivo local de credencial de produção nunca é usado em homologação.
+
 Também configurar no app de homologação: PINs de teste em `[rt]`, `[admin]` e
 `[operador]` (nunca os de produção) e acesso restrito ao app (privado).
 Não definir `CODESPACES=true`. O app de produção não recebe nada disso.
+
+## 3.1 Planilha fictícia criada pelo script
+
+O script cria uma planilha **nova** pelo cliente OAuth (o único jeito de ela
+ficar acessível com `drive.file`) e grava `utils/dados_ficticios_homologacao.py`:
+
+| Aba | Conteúdo | Esquema (igual ao app) |
+|---|---|---|
+| 👥 Clientes | C001 Condomínio Alfa Fictício e C002 Residencial Beta Fictício (Aqua Gestão); C003 Condomínio Gama Fictício (Bem Star Piscinas) | colunas A–P de `sheets_salvar_cliente` |
+| 🔬 Visitas | V00001 e V00002 (Alfa), V00003 (Beta), V00004 (Gama), todas em terças-feiras, com Payload JSON e piscinas | colunas A–Z de `sheets_salvar_lancamento_campo` |
+| 👷 Operadores | OPERADOR INATIVO FICTÍCIO, sem PIN, Ativo = Não | cabeçalho de `sheets_criar_aba_operadores` |
+
+O campo Empresa usa "Aqua Gestão"/"Bem Star Piscinas", valores gravados e
+filtrados pelo app (o filtro procura "aqua"). A planilha fictícia anterior,
+da conta de serviço de teste, **não é aberta nem alterada**: o script só cria
+arquivos e o token `drive.file` nem consegue enxergá-la. Ela continua
+disponível ao app de homologação anterior.
+
+Compatibilidade verificada com as funções reais do app (testes):
+clientes listados e separados por empresa; visitas importadas por
+condomínio, com piscinas e filtro de terças; operador inativo sem PIN listado
+e sem acesso; novo lançamento de campo gravado como V00005 ligado a C002;
+novo cliente gravado como C004.
+
+Correções encontradas nessa verificação (valem também para produção quando a
+aba não existe): o lançamento de campo não criava a aba 🔬 Visitas numa
+planilha nova, e a criação da aba 👷 Operadores informava "já existe" sem
+criá-la (`obter_aba_sheets` devolve `None`, não exceção).
 
 ## 4. Riscos e mitigação
 
@@ -128,7 +162,7 @@ buscas): expiração de 7 dias em "Testing", exigências para publicar com
 
 ## 6. Testes locais (sem rede)
 
-`tests/test_google_oauth_homologacao.py` — 17 testes com Google falso que aplica
+`tests/test_google_oauth_homologacao.py` — 25 testes com Google falso que aplica
 a regra do `drive.file`:
 - segurança: produção inalterada (conta de serviço e mesmos escopos); OAuth
   recusado em produção; escopos amplos recusados na configuração e no token;
@@ -140,4 +174,11 @@ a regra do `drive.file`:
 - rascunhos: gravação na planilha de teste, recuperação sem cópia local,
   regravação sem duplicar linha;
 - script de configuração: pede só `drive.file`, recusa escopo amplo e
-  `client_secret.json` dentro do projeto.
+  `client_secret.json` dentro do projeto; só cria arquivos (nunca abre
+  planilhas existentes);
+- credenciais em homologação: ausentes, incompletas ou só conta de serviço sem
+  opção explícita são recusadas, sem recorrer à conta de serviço nem ao
+  arquivo local de produção;
+- planilha preparada: dados fictícios gravados e lidos pelas funções reais do
+  app (clientes, visitas, operadores) e formulários gravando no mesmo esquema;
+  planilha vazia: visita e aba de operadores criadas sob demanda.
