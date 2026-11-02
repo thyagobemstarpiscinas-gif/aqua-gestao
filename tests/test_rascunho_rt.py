@@ -37,6 +37,7 @@ FUNCOES_RT = [
     "_relatorio_rt_coluna", "_relatorio_rt_salvar_rascunho", "_relatorio_rt_carregar_rascunho",
     "_relatorio_rt_descartar", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
     "_relatorio_rt_resumo", "_relatorio_rt_gestor_sync", "_guardar_rascunho_rt_antes_da_troca",
+    "_relatorio_rt_preservar_localmente", "relatorio_rt_resultado_salvamento_manual",
 ]
 FUNCOES_OPERADOR = ["salvar_rascunho_operador", "carregar_rascunho_operador", "deletar_rascunho_operador"]
 PREFIXO_CONSTANTES = ("RASCUNHO_RT_", "_RASCUNHO_RT_")
@@ -742,20 +743,95 @@ class TestSincronizacaoPendente(unittest.TestCase):
         self.assertEqual(amb.campos(s)["rel_diagnostico"], "versão válida")  # planilha com a versão válida anterior
         self.assertIn("falha simulada", s["ss"]["_rt_rasc_aviso"])
         self.assertEqual(s["ss"]["_rt_rasc_sync_pendente"], [chave])
+        variantes = [v for v in s["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave]
+        self.assertEqual({v["dados"]["campos"]["rel_diagnostico"] for v in variantes}, {"versão válida", "edição durante a falha"})
         amb.aba().falhar = False  # 5. planilha volta
         s["ss"]["_rt_rasc_proxima_tentativa"] = 0  # intervalo entre tentativas já passou
         antes = self._ops(amb)
         s["_relatorio_rt_salvar_rascunho"]()  # 6. rerun sem modificar nada
-        self.assertEqual(amb.campos(s)["rel_diagnostico"], "versão válida")
-        self.assertEqual(self._ops(amb) - antes, 0)  # retentativa não sobrescreve conteúdo diferente
-        self.assertIn(chave, s["ss"]["_rt_rasc_sync_pendente"])
+        # A linha remota ainda era a base desta cópia (versão válida): não há
+        # conflito real, a edição pendente é enviada e confirmada por releitura.
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "edição durante a falha")
+        self.assertEqual(self._ops(amb) - antes, 1)
+        self.assertNotIn("_rt_rasc_sync_pendente", s["ss"])
+        self.assertNotIn("_rt_rasc_aviso", s["ss"])
         variantes = [v for v in s["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave]
-        self.assertEqual({v["dados"]["campos"]["rel_diagnostico"] for v in variantes}, {"versão válida", "edição durante a falha"})
+        self.assertEqual([v["dados"]["campos"]["rel_diagnostico"] for v in variantes], ["edição durante a falha"])
         antes = self._ops(amb)
         for _ in range(3):
             s["_relatorio_rt_salvar_rascunho"]()
         self.assertEqual(self._ops(amb), antes)  # sem gravações duplicadas
         self.assertEqual(len(amb.linhas()), 1)
+
+    def _divergir_remoto(self, amb, s, chave, texto):
+        """Outro gravador altera a linha remota desta chave depois da base local."""
+        aba = amb.aba()
+        aba.falhar = False
+        outra = copy.deepcopy(s["_relatorio_rt_desserializar"](amb.linhas(chave)[0]))
+        outra["campos"]["rel_diagnostico"] = texto
+        s["_relatorio_rt_gravar_linha"](aba, chave, outra)
+
+    def test_conflito_real_nunca_e_sobrescrito_e_aviso_permanece(self):
+        amb, s, chave = self._com_falha()
+        self._divergir_remoto(amb, s, chave, "alteração de outro acesso")
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        for _ in range(2):
+            s["_relatorio_rt_salvar_rascunho"]()
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "alteração de outro acesso")
+        self.assertEqual(self._local(amb, chave)["campos"]["rel_diagnostico"], "edição durante a falha")
+        self.assertIn(chave, s["ss"]["_rt_rasc_sync_pendente"])
+        self.assertIn("divergente", s["ss"]["_rt_rasc_aviso"])
+
+    def test_conflito_real_resolvido_quando_conteudo_chega_em_outra_chave(self):
+        amb, s, chave = self._com_falha()
+        self._divergir_remoto(amb, s, chave, "alteração de outro acesso")
+        local = next(v["dados"] for v in s["_relatorio_rt_listar_rascunhos"]()["versoes"]
+                     if v["chave"] == chave and v["origem"] == "local")
+        _restaurar(s, local)  # restauração explícita da cópia local
+        s["ss"]["_rt_rasc_ref"] = {}
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]("manual"))  # salvo e lido de volta em nova chave
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertNotIn("_rt_rasc_sync_pendente", s["ss"])
+        self.assertNotIn("_rt_rasc_aviso", s["ss"])
+        # Nada foi sobrescrito: a linha divergente continua como estava.
+        self.assertEqual(s["_relatorio_rt_desserializar"](amb.linhas(chave)[0])["campos"]["rel_diagnostico"],
+                         "alteração de outro acesso")
+        textos = sorted(s["_relatorio_rt_desserializar"](r)["campos"]["rel_diagnostico"] for r in amb.linhas())
+        self.assertEqual(textos, ["alteração de outro acesso", "edição durante a falha"])
+
+    def test_conteudo_igual_de_outro_mes_nao_resolve_pendencia(self):
+        amb, s, chave = self._com_falha()
+        s["ss"]["rel_origem_dados"] = "aqua_gestao|id:C1|10/2026"  # ainda não está no pendente
+        self._divergir_remoto(amb, s, chave, "alteração de outro acesso")
+        outra = amb.sessao()
+        outra["ss"].update(rel_diagnostico="edição durante a falha", rel_origem_dados="aqua_gestao|id:C1|11/2026")
+        outra["_relatorio_rt_salvar_rascunho"]()
+        outra2 = amb.sessao()
+        outra2["ss"].update(rel_diagnostico="edição durante a falha", rel_origem_dados="aqua_gestao|id:C2|09/2026")
+        outra2["_relatorio_rt_salvar_rascunho"]()
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_sincronizar_pendentes"]()
+        self.assertIn(chave, s["ss"]["_rt_rasc_sync_pendente"])
+        self.assertEqual(s["_relatorio_rt_gestor_sync"]().ler(chave)["estado"], "conflito")
+
+    def test_salvamento_manual_sem_conexao_e_pendente_e_fica_no_disco(self):
+        amb, s, chave = self._com_falha()
+        s["ss"]["rel_diagnostico"] = "edição manual sem conexão"
+        s["ss"]["_rt_rasc_ref"] = {}
+        self.assertFalse(s["_relatorio_rt_salvar_rascunho"]("manual"))
+        self.assertEqual(s["relatorio_rt_resultado_salvamento_manual"](), "pendente")
+        gestor = s["_relatorio_rt_gestor_sync"]()
+        textos = {gestor.ler(json.loads(p.read_text(encoding="utf-8"))["chave"])["dados"]["campos"]["rel_diagnostico"]
+                  for p in gestor.pasta.glob("*.json")}
+        self.assertIn("edição manual sem conexão", textos)
+        self.assertIn("edição durante a falha", textos)
+        amb.aba().falhar = False
+        s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        s["_relatorio_rt_salvar_rascunho"]()
+        self.assertNotIn("_rt_rasc_aviso", s["ss"])
+        remotos = {s["_relatorio_rt_desserializar"](r)["campos"]["rel_diagnostico"] for r in amb.linhas()}
+        self.assertIn("edição manual sem conexão", remotos)
 
     def test_respeita_intervalo_entre_tentativas(self):
         amb, s, chave = self._com_falha()
@@ -766,9 +842,9 @@ class TestSincronizacaoPendente(unittest.TestCase):
         self.assertEqual(s["ss"]["_rt_rasc_sync_pendente"], [chave])
         s["ss"]["_rt_rasc_proxima_tentativa"] = 0
         s["_relatorio_rt_salvar_rascunho"]()
-        self.assertEqual(self._ops(amb), antes)
-        self.assertIn(chave, s["ss"]["_rt_rasc_sync_pendente"])
-        self.assertIn("divergente", s["ss"]["_rt_rasc_aviso"])
+        self.assertEqual(self._ops(amb) - antes, 1)  # um envio, após o intervalo
+        self.assertNotIn("_rt_rasc_sync_pendente", s["ss"])
+        self.assertNotIn("_rt_rasc_aviso", s["ss"])
 
     def test_planilha_ainda_fora_mantem_pendencia_e_aviso(self):
         amb, s, chave = self._com_falha()
@@ -798,13 +874,14 @@ class TestSincronizacaoPendente(unittest.TestCase):
         amb, s, chave = self._com_falha()
         amb.aba().falhar = False
         s["ss"]["rel_diagnostico"] = "edição depois que a planilha voltou"
-        antes = self._ops(amb)
-        self.assertFalse(s["_relatorio_rt_salvar_rascunho"]())
-        self.assertEqual(self._ops(amb), antes)
-        self.assertEqual(amb.campos(s)["rel_diagnostico"], "versão válida")
-        self.assertEqual(self._local(amb, chave)["campos"]["rel_diagnostico"], "edição durante a falha")
+        # A pendência (descendente da linha remota) é concluída antes; a edição
+        # nova segue na mesma chave e é confirmada. Nenhum aviso permanece.
+        self.assertTrue(s["_relatorio_rt_salvar_rascunho"]())
+        self.assertEqual(amb.campos(s)["rel_diagnostico"], "edição depois que a planilha voltou")
+        self.assertEqual(self._local(amb, chave)["campos"]["rel_diagnostico"], "edição depois que a planilha voltou")
         self.assertEqual(s["ss"]["rel_diagnostico"], "edição depois que a planilha voltou")
-        self.assertIn("nova chave", s["ss"]["_rt_rasc_aviso"])
+        self.assertNotIn("_rt_rasc_aviso", s["ss"])
+        self.assertEqual(len(amb.linhas()), 1)
 
     def test_restaurar_outra_versao_com_pendencia_nao_perde_edicao(self):
         amb, s, chave = self._com_falha()
@@ -820,11 +897,13 @@ class TestSincronizacaoPendente(unittest.TestCase):
         for _ in range(2):
             s["_relatorio_rt_salvar_rascunho"]()  # reruns sem edição
         linha_x = amb.linhas(chave)[0]
-        self.assertEqual(s["_relatorio_rt_desserializar"](linha_x)["campos"]["rel_diagnostico"], "versão válida")
+        # A pendência de X (descendente da linha remota de X) chega à planilha;
+        # a versão Y restaurada continua intacta e não é regravada sem edição.
+        self.assertEqual(s["_relatorio_rt_desserializar"](linha_x)["campos"]["rel_diagnostico"], "edição durante a falha")
         self.assertEqual(self._local(amb, chave)["campos"]["rel_diagnostico"], "edição durante a falha")
         self.assertEqual(amb.linhas(chave_y), linha_y)
-        self.assertEqual(len(amb.linhas()), 2)  # a versão restaurada não é regravada sem edição
-        self.assertIn(chave, s["ss"]["_rt_rasc_sync_pendente"])
+        self.assertEqual(len(amb.linhas()), 2)
+        self.assertNotIn("_rt_rasc_sync_pendente", s["ss"])
 
     def test_abrir_escritorio_continua_sem_gravar(self):
         amb = Ambiente()

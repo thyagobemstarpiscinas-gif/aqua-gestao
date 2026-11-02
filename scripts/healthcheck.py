@@ -17,6 +17,7 @@ Checa:
 from __future__ import annotations
 
 import py_compile
+import sys
 import tomllib
 from pathlib import Path
 
@@ -25,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = ROOT / "app.py"
 SECRETS_PATH = ROOT / ".streamlit" / "secrets.toml"
 
-SHEETS_ID = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
+SHEETS_ID_PRODUCAO = "1uvZ6qfYCYFl_feGGgvIIXMQlUWvx0MTzTuC8TwfPBlM"
+DRIVE_FOTOS_PRODUCAO = "1KNtPKvLl_NJw-Vm_26ABxc4LG3CiZqDR"
 
 ABAS_OBRIGATORIAS = {
     "👥 Clientes",
@@ -60,15 +62,34 @@ def validar_compile() -> bool:
         return False
 
 
-def carregar_credencial() -> dict | None:
+def carregar_secrets() -> dict | None:
     if not SECRETS_PATH.exists():
         erro(".streamlit/secrets.toml não encontrado. Rode scripts/codespaces_bootstrap.py.")
         return None
-
     try:
-        data = tomllib.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+        return tomllib.loads(SECRETS_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
         erro(f"secrets.toml inválido: {exc}")
+        return None
+
+
+def resolver_planilha(data: dict) -> str | None:
+    """Usa a mesma regra do app: homologação nunca abre a planilha de produção."""
+    sys.path.insert(0, str(ROOT))
+    from utils.ambiente import destinos_google
+    try:
+        ambiente, sheets_id, _drive = destinos_google(data, SHEETS_ID_PRODUCAO, DRIVE_FOTOS_PRODUCAO)
+    except ValueError as exc:
+        erro(f"configuração [aqua_app] inválida: {exc}")
+        return None
+    ok(f"ambiente: {ambiente}.")
+    return sheets_id
+
+
+def carregar_credencial(data: dict | None = None) -> dict | None:
+    if data is None:
+        data = carregar_secrets()
+    if data is None:
         return None
 
     gcp = data.get("gcp_service_account")
@@ -91,7 +112,7 @@ def carregar_credencial() -> dict | None:
     return gcp
 
 
-def validar_sheets(gcp: dict) -> bool:
+def validar_sheets(gcp: dict, sheets_id: str) -> bool:
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -107,7 +128,7 @@ def validar_sheets(gcp: dict) -> bool:
     try:
         creds = Credentials.from_service_account_info(gcp, scopes=scopes)
         gc = gspread.authorize(creds)
-        sh = gc.open_by_key(SHEETS_ID)
+        sh = gc.open_by_key(sheets_id)
         ok(f"planilha aberta: {sh.title}")
 
         abas = {ws.title for ws in sh.worksheets()}
@@ -140,16 +161,45 @@ def validar_sheets(gcp: dict) -> bool:
         return False
 
 
+def validar_oauth_homologacao(data: dict, sheets_id: str) -> bool:
+    """Homologação com [google_oauth]: valida o token (somente drive.file) e abre a planilha de teste."""
+    sys.path.insert(0, str(ROOT))
+    from utils.google_auth import ConfiguracaoGoogleInvalida, credenciais_google
+    ambiente = str((data.get("aqua_app") or {}).get("ambiente", "producao"))
+    try:
+        creds = credenciais_google(data, ambiente, ROOT)  # recusa OAuth fora de homologação
+        import gspread
+        sh = gspread.authorize(creds).open_by_key(sheets_id)
+        ok(f"OAuth de homologação válido (drive.file); planilha de teste aberta: {sh.title}")
+        abas = {ws.title for ws in sh.worksheets()}
+        faltantes = sorted((ABAS_OBRIGATORIAS | {"🔬 Visitas"}) - abas)
+        if faltantes:
+            aviso("abas ainda não criadas (o app cria sob demanda): " + ", ".join(faltantes))
+        return True
+    except ConfiguracaoGoogleInvalida as exc:
+        erro(str(exc))
+    except Exception as exc:
+        erro(f"falha ao abrir a planilha de teste via OAuth: {type(exc).__name__}")
+    return False
+
+
 def main() -> int:
     checks = []
 
     checks.append(validar_compile())
 
-    gcp = carregar_credencial()
-    checks.append(gcp is not None)
+    data = carregar_secrets()
+    sheets_id = resolver_planilha(data) if data is not None else None
+    checks.append(sheets_id is not None)
 
-    if gcp:
-        checks.append(validar_sheets(gcp))
+    if data is not None and sheets_id and "google_oauth" in data:
+        checks.append(validar_oauth_homologacao(data, sheets_id))
+    else:
+        gcp = carregar_credencial(data) if data is not None else None
+        checks.append(gcp is not None)
+
+        if gcp and sheets_id:
+            checks.append(validar_sheets(gcp, sheets_id))
 
     if all(checks):
         ok("healthcheck concluído com sucesso.")

@@ -24,8 +24,9 @@ from utils.rt_contexto import limpar
 PADROES_ESCOLHA = {
     "rel_tipo_atendimento": "Contrato ativo",
     "rel_status_agua": "CONFORME",
-    **{f"rel_epi_{e}_status": "Conforme" for e in ("luvas", "oculos", "respirador", "botas")},
-    **{f"rel_nbr11238_{c}": "Sim" for c in ("profundidade", "retrolavagem", "skimmers", "circulacao", "chuveiro")},
+    # Um rascunho antigo não comprova conformidade: não presumir inspeção realizada.
+    **{f"rel_epi_{e}_status": "Não informado" for e in ("luvas", "oculos", "respirador", "botas")},
+    **{f"rel_nbr11238_{c}": "Não verificado" for c in ("profundidade", "retrolavagem", "skimmers", "circulacao", "chuveiro")},
 }
 
 LEGADO = {"salvo_em": "24/10/2026 18:00:00", "motivo": "autosave", "rel_analises_total": 12,

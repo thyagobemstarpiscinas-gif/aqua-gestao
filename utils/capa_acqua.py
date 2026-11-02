@@ -18,6 +18,15 @@ def desenhar_capa(canvas, largura, altura, logo_path, titulo: str, subtitulo: st
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.lib.utils import simpleSplit
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import reportlab
+
+    fonte_dir = Path(reportlab.__file__).parent / "fonts"
+    if "AcquaCapa" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("AcquaCapa", str(fonte_dir / "Vera.ttf")))
+        pdfmetrics.registerFont(TTFont("AcquaCapa-Bold", str(fonte_dir / "VeraBd.ttf")))
+    pdfmetrics.registerFontFamily("AcquaCapa", normal="AcquaCapa", bold="AcquaCapa-Bold")
 
     azul, azul2 = colors.HexColor(AZUL_NOITE), colors.HexColor(AZUL_MEDIO)
     ouro, ouro2 = colors.HexColor(DOURADO), colors.HexColor(DOURADO_CLARO)
@@ -40,11 +49,11 @@ def desenhar_capa(canvas, largura, altura, logo_path, titulo: str, subtitulo: st
             pass
     y = topo_logo - lado - 14 * mm
     canvas.setFillColor(ouro)
-    canvas.setFont("Helvetica-Bold", 34)
+    canvas.setFont("AcquaCapa-Bold", 34)
     canvas.drawCentredString(largura / 2, y, MARCA)
     y -= 8 * mm
     canvas.setFillColor(ouro2)
-    canvas.setFont("Helvetica", 11.5)
+    canvas.setFont("AcquaCapa", 11.5)
     canvas.drawCentredString(largura / 2, y, "CONTROLE TÉCNICO DE PISCINAS  •  RESPONSABILIDADE TÉCNICA")
     y -= 7 * mm
     canvas.setStrokeColor(ouro)
@@ -53,12 +62,12 @@ def desenhar_capa(canvas, largura, altura, logo_path, titulo: str, subtitulo: st
 
     y -= 14 * mm
     canvas.setFillColor(colors.white)
-    canvas.setFont("Helvetica-Bold", 19)
-    for parte in simpleSplit(titulo.upper(), "Helvetica-Bold", 19, largura - 40 * mm):
+    canvas.setFont("AcquaCapa-Bold", 19)
+    for parte in simpleSplit(titulo.upper(), "AcquaCapa-Bold", 19, largura - 40 * mm):
         canvas.drawCentredString(largura / 2, y, parte)
         y -= 8 * mm
     if subtitulo:
-        canvas.setFont("Helvetica", 11)
+        canvas.setFont("AcquaCapa", 11)
         canvas.setFillColor(ouro2)
         canvas.drawCentredString(largura / 2, y, subtitulo)
         y -= 6 * mm
@@ -67,7 +76,7 @@ def desenhar_capa(canvas, largura, altura, logo_path, titulo: str, subtitulo: st
     margem = 24 * mm
     alt_linha = 9.5 * mm
     linhas = [(r, str(v or "—")) for r, v in linhas]
-    quebras = [simpleSplit(v, "Helvetica-Bold", 10.5, largura - 2 * margem - 58 * mm)[:2] or ["—"] for _, v in linhas]
+    quebras = [simpleSplit(v, "AcquaCapa-Bold", 10.5, largura - 2 * margem - 58 * mm)[:2] or ["—"] for _, v in linhas]
     alt_total = sum(alt_linha + (len(q) - 1) * 4.5 * mm for q in quebras) + 8 * mm
     base = max(24 * mm, y - 8 * mm - alt_total)
     canvas.setFillColor(azul2)
@@ -77,17 +86,17 @@ def desenhar_capa(canvas, largura, altura, logo_path, titulo: str, subtitulo: st
     yy = base + alt_total - 4 * mm
     for (rotulo, _), partes in zip(linhas, quebras):
         yy -= 6.5 * mm
-        canvas.setFont("Helvetica", 8.5)
+        canvas.setFont("AcquaCapa", 8.5)
         canvas.setFillColor(ouro2)
         canvas.drawString(margem + 7 * mm, yy, rotulo.upper())
-        canvas.setFont("Helvetica-Bold", 10.5)
+        canvas.setFont("AcquaCapa-Bold", 10.5)
         canvas.setFillColor(colors.white)
         for k, parte in enumerate(partes):
             canvas.drawString(margem + 58 * mm, yy - k * 4.5 * mm, parte)
         yy -= 3 * mm + (len(partes) - 1) * 4.5 * mm
 
     if rodape:
-        canvas.setFont("Helvetica", 8)
+        canvas.setFont("AcquaCapa", 8)
         canvas.setFillColor(ouro2)
         canvas.drawCentredString(largura / 2, 14 * mm, rodape)
     canvas.restoreState()

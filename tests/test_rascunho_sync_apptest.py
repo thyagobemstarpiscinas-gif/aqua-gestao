@@ -22,10 +22,18 @@ class TestVariantesNoPainel(_AppReal):
         self.assertFalse(at.exception, at.exception)
         chave = at.session_state["_rt_rasc_chave"]
         aba = sys.modules["gspread"].PLANILHA.worksheet("_Rascunhos_RT")
-        remota = copy.deepcopy([row for row in aba.linhas if row and row[0] == chave])
-        self.assertEqual(len(remota), 1)
         with patch.object(aba, "batch_update", side_effect=ConnectionError("FALHA_FICTICIA")):
             at.text_area(key="rel_diagnostico").input("LOCAL_PENDENTE_FICTICIA").run()
+        # Outro acesso altera a linha remota desta chave depois da base local:
+        # conflito real (uma linha igual à base seria só pendência de envio).
+        import json as _json
+        indice = next(i for i, row in enumerate(aba.linhas) if row and row[0] == chave)
+        divergente = _json.loads(aba.linhas[indice][2])
+        divergente["campos"]["rel_diagnostico"] = "VERSAO_REMOTA_FICTICIA"
+        divergente["campos"]["rel_observacoes_gerais"] = "ALTERADA_POR_OUTRO_ACESSO"
+        aba.linhas[indice][2] = _json.dumps(divergente, ensure_ascii=False)
+        remota = copy.deepcopy([row for row in aba.linhas if row and row[0] == chave])
+        self.assertEqual(len(remota), 1)
         self.assertFalse(at.exception, at.exception)
         self.assertIn(chave, at.session_state["_rt_rasc_sync_pendente"])
         at.session_state["_rt_rasc_proxima_tentativa"] = 0

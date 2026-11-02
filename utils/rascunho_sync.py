@@ -30,6 +30,36 @@ def hash_conteudo(dados):
                                     allow_nan=False).encode("utf-8")).hexdigest()
 
 
+def assinatura_substancial(dados):
+    """Hash só do conteúdo preenchido de um rascunho RT.
+
+    Ignora o que a tela gera sozinha: campos vazios, valores padrão dos
+    seletores (rt_contexto.PADROES_ESCOLHA, situação da ART), campos
+    transitórios e o número de linhas da tabela. Mantém empresa e todos os
+    campos preenchidos, inclusive rel_origem_dados (condomínio + período), de
+    modo que conteúdos de condomínios ou meses diferentes nunca coincidem.
+    Usada apenas para reconhecer que uma pendência já chegou à planilha em
+    outra chave (ex.: restaurada e salva); nunca para decidir sobrescrita.
+    """
+    from utils.rt_contexto import ART_PADRAO, PADROES_ESCOLHA, TRANSITORIOS
+    campos = dados.get("campos")
+    if not isinstance(campos, dict):
+        raise ValueError("Conteúdo de rascunho ilegível")
+    padroes = dict(PADROES_ESCOLHA, rel_art_status=ART_PADRAO, rel_art_status_widget=ART_PADRAO)
+    substancial = {}
+    for k, v in campos.items():
+        if k in TRANSITORIOS or k == "rel_analises_total":
+            continue
+        if v is None or v is False or (isinstance(v, str) and not v.strip()):
+            continue
+        if k in padroes and v == padroes[k]:
+            continue
+        substancial[k] = v
+    conteudo = {"empresa": empresa_dados(dados), "campos": substancial}
+    return hashlib.sha256(json.dumps(conteudo, sort_keys=True, ensure_ascii=False,
+                                     allow_nan=False).encode("utf-8")).hexdigest()
+
+
 def escrever_atomico(destino, dados):
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +99,7 @@ class GestorRascunhos:
                 or estado.get("empresa") != self.empresa
                 or empresa_dados(estado["dados"]) != self.empresa
                 or estado.get("hash") != hash_conteudo(estado["dados"])
-                or estado.get("estado") not in ("pendente", "conflito", "confirmado", "descartado")):
+                or estado.get("estado") not in ("pendente", "conflito", "confirmado", "descartado", "sincronizado")):
             raise ValueError("Registro local de sincronização inválido")
         return estado
 
@@ -101,18 +131,27 @@ class GestorRascunhos:
         escrever_atomico(self.caminho(chave), registro)
 
     def reconstruir(self):
-        pendentes, problemas = [], []
+        pendentes, problemas, conflitos = [], [], 0
         for p in sorted(self.pasta.glob("*.json")):
             try:
                 cabecalho = json.loads(p.read_text(encoding="utf-8"))
                 r = self.ler(cabecalho["chave"])
                 if r["estado"] in ("pendente", "conflito"):
                     pendentes.append(r["chave"])
+                    conflitos += r["estado"] == "conflito"
             except Exception as e:
                 problemas.append(f"Pendência local ilegível: {type(e).__name__}: {e}")
         self.ss["_rt_rasc_sync_pendente"] = pendentes
         if pendentes or problemas:
-            self.ss["_rt_rasc_aviso"] = "; ".join(problemas) or "Há cópias locais pendentes; versões divergentes exigem restauração explícita."
+            if problemas:
+                motivo = "; ".join(problemas)
+            elif conflitos:
+                motivo = ("Há versão divergente na planilha para um rascunho deste servidor; as duas cópias foram "
+                          "preservadas e nenhuma foi sobrescrita. Restaure a versão desejada.")
+            else:
+                motivo = ("Cópia local aguardando envio à planilha (falha de conexão); o reenvio é automático e o "
+                          "aviso some quando a planilha confirmar o recebimento.")
+            self.ss["_rt_rasc_aviso"] = motivo
         else:
             self.ss.pop("_rt_rasc_sync_pendente", None)
             self.ss.pop("_rt_rasc_aviso", None)
@@ -138,6 +177,28 @@ class GestorRascunhos:
             hash_conteudo(d)
         return ("presente" if iguais else "ausente"), iguais
 
+    def conteudo_ja_na_planilha(self, aba, dados, exceto=None):
+        """True se alguma linha legível desta empresa (outra chave) tem o mesmo conteúdo preenchido.
+
+        Compara assinatura_substancial, que cobre empresa e todos os campos
+        preenchidos, inclusive rel_origem_dados (condomínio + período): conteúdo
+        de outro condomínio ou mês nunca coincide.
+        """
+        digest = assinatura_substancial(dados)
+        for row in aba.get_all_values()[1:]:
+            chave_row = str(row[0]).strip() if row else ""
+            if not chave_row or chave_row == exceto or not self.eh_chave(chave_row):
+                continue
+            if len(row) > 3 and str(row[3]).lower().startswith("descartado"):
+                continue
+            d = self.desserializar(row)
+            try:
+                if d is not None and empresa_dados(d) == self.empresa and assinatura_substancial(d) == digest:
+                    return True
+            except ValueError:
+                continue
+        return False
+
     def enviar(self, aba, chave, dados, retentativa=True):
         r = self.ler(chave)
         if r is None or r["hash"] != hash_conteudo(dados):
@@ -159,9 +220,21 @@ class GestorRascunhos:
         if hashes and all(h == r["hash"] for h in hashes):
             self.estado(chave, "confirmado")
             return True
-        # Só o autosave normal pode atualizar sua base confirmada. Todas as
-        # retentativas, inclusive em nova sessão, recusam conteúdo diferente.
-        if hashes and (retentativa or not r.get("base_hash") or any(h != r["base_hash"] for h in hashes)):
+        # Conflito real: a linha remota desta chave não é mais a versão de que a
+        # cópia local descende (base_hash), ou há linhas concorrentes. Uma linha
+        # igual à base é só a versão anterior desta mesma chave: a cópia local é
+        # a continuação dela e pode substituí-la, também em retentativa (antes a
+        # retentativa recusava sempre e uma falha transitória virava conflito
+        # permanente, com o aviso de pendência nunca removido).
+        conflito_real = bool(hashes) and (not r.get("base_hash") or len(hashes) > 1
+                                          or any(h != r["base_hash"] for h in hashes))
+        if conflito_real:
+            if self.conteudo_ja_na_planilha(aba, r["dados"], exceto=chave):
+                # O mesmo conteúdo já foi gravado e lido de volta em outra chave
+                # (ex.: restaurado explicitamente e salvo): pendência resolvida,
+                # sem sobrescrever a linha divergente desta chave.
+                self.estado(chave, "sincronizado")
+                return True
             self.estado(chave, "conflito", "Conteúdo remoto divergente")
             raise ConflitoRascunho("Conteúdo remoto divergente; ambas as cópias foram preservadas. Restaure a versão desejada.")
         if situacao == "ausente":
@@ -228,6 +301,8 @@ class GestorRascunhos:
                 envelopes[chave] = r
                 if r["estado"] == "descartado":
                     descartados.add(chave)
+                if r["estado"] == "sincronizado":
+                    continue  # conteúdo já está na planilha em outra chave
                 adicionar(chave, r["dados"], "local", pendente=r["estado"] in ("pendente", "conflito"))
             except Exception as e:
                 ignorados += 1
@@ -251,9 +326,21 @@ class GestorRascunhos:
             except Exception as e:
                 mensagens.append(f"Não foi possível persistir o descarte local: {e}")
         lista = list(versoes.values())
+
+        def _so_pendencia_de_envio(chave):
+            # Cópia local pendente cuja base é exatamente a linha da planilha:
+            # falha de conexão, não versão divergente (o reenvio a substituirá).
+            env = envelopes.get(chave)
+            if not env or env["estado"] not in ("pendente", "conflito") or not env.get("base_hash"):
+                return False
+            remotas = {k[1] for k, item in versoes.items() if k[0] == chave and item["origem"] == "planilha"}
+            locais = {k[1] for k, item in versoes.items() if k[0] == chave and item["origem"] != "planilha"}
+            return remotas == {env["base_hash"]} and locais == {env["hash"]}
+
         for v in lista:
             v["descartado"] = v["chave"] in descartados
-            v["conflito"] = sum(k[0] == v["chave"] for k in versoes) > 1
+            v["conflito"] = (sum(k[0] == v["chave"] for k in versoes) > 1
+                             and not _so_pendencia_de_envio(v["chave"]))
             if v["conflito"] and v["pendente"] and not v["descartado"]:
                 try:
                     if self.ler(v["chave"])["estado"] != "conflito":

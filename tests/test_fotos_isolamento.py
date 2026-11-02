@@ -207,7 +207,7 @@ def _png(cor):
 
 class TestFotosRelatorioBemStar(unittest.TestCase):
     def setUp(self):
-        self.ns = _carregar(["deduplicar_fotos", "_coletar_fotos_bem_star_preview"])
+        self.ns = _carregar(["deduplicar_fotos", "_coletar_fotos_bem_star_preview", "_materializar_fotos_remotas_bem_star"])
         self.arq = _pasta_condominio_mista(self.ns["pasta"], "Condomínio Alfa")
         self.lanc_out = [{"data": "06/10/2026", "fotos": ["antes_20261006_101010_1_a.jpg",
                                                           "extras_20261006_101010_1_ralo.jpg"]}]
@@ -225,7 +225,7 @@ class TestFotosRelatorioBemStar(unittest.TestCase):
     def test_pdf_bem_star_tem_cada_foto_uma_unica_vez(self):
         from reportlab import rl_config
         nomes = ["CNPJ_BEM_STAR", "RESPONSAVEL_TÉCNICO", "_bs_eh_segunda",
-                 "gerar_pdf_relatorio_mensal_bem_star_modelo", "deduplicar_fotos", "_coletar_fotos_bem_star_preview"]
+                 "gerar_pdf_relatorio_mensal_bem_star_modelo", "deduplicar_fotos", "_coletar_fotos_bem_star_preview", "_materializar_fotos_remotas_bem_star"]
         ns = _carregar(nomes)
         arq = _pasta_condominio_mista(ns["pasta"], "Condomínio Alfa")
         fotos = ns["_coletar_fotos_bem_star_preview"]("Condomínio Alfa", self.lanc_out)
@@ -567,7 +567,7 @@ class TestAvisosDeIdentificacaoNasTelas(unittest.TestCase):
 
 class TestIsolamentoDeCondominiosComNomesSemelhantes(unittest.TestCase):
     def test_rascunhos_e_fotos_ficam_em_pastas_separadas(self):
-        ns = _carregar(OPERADOR + ["carregar_rascunho_operador", "deduplicar_fotos", "_coletar_fotos_bem_star_preview"],
+        ns = _carregar(OPERADOR + ["carregar_rascunho_operador", "deduplicar_fotos", "_coletar_fotos_bem_star_preview", "_materializar_fotos_remotas_bem_star"],
                        {"_agora_brasilia": lambda: "26/10/2026 10:00:00", "_rascunho_usa_sheets": lambda: False})
         a, b = "Residencial Aurora", "Residencial Aurora II"
         self.assertNotEqual(slugify_nome(a), slugify_nome(b))
