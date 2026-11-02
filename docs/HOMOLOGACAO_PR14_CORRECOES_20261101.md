@@ -89,3 +89,52 @@ disponível até o fim da montagem, com deduplicação por conteúdo e legenda
 "Visita V00005 — Antes do tratamento". Foto irrecuperável gera aviso na tela
 ("Registro fotográfico incompleto — V00005: …"), em vez de silêncio. Nenhuma
 visita, linha do Sheets ou arquivo do Drive é alterado ou duplicado.
+
+---
+
+# Sincronização do rascunho RT (após `1b4af3a`)
+
+A homologação no Streamlit Cloud aprovou a separação entre condomínios, períodos,
+empresas, fotos e relatórios. Falha restante: o aviso de sincronização pendente
+não saía nem depois de salvar e restaurar a cópia local.
+
+**Reprodução** (`tests/test_rascunho_rt.py`, `tests/test_homologacao_pr14_sync_apptest.py`):
+1. A versão 1 é salva e confirmada na planilha.
+2. A versão 2 é editada durante uma falha transitória e fica pendente no disco
+   (base = versão 1).
+3. A planilha volta.
+4. Em `1b4af3a`, o reenvio comparava a linha remota (versão 1) com a cópia local
+   (versão 2) e recusava qualquer diferença. A pendência virava "conflito"
+   permanente e a planilha nunca recebia a versão 2. O salvamento manual
+   respondia "Não foi possível confirmar o salvamento" e, mesmo restaurada e
+   salva em nova chave, a pendência antiga mantinha o aviso.
+
+**Causa**: a regra "nenhuma retentativa atualiza a linha remota" não distinguia
+dois casos: a linha remota ser a própria base da cópia local (só a versão
+anterior da mesma chave) ou a linha ter sido alterada por outro acesso
+(conflito real). A listagem também marcava como "Cópias divergentes" qualquer
+pendência com versão na planilha.
+
+**Correção** (`utils/rascunho_sync.py`, `app.py`):
+- **Pendência de envio** (linha remota igual à `base_hash`, linha única): o
+  reenvio grava a versão local e só a confirma depois de reler e conferir o
+  hash na planilha. Só então o aviso é removido.
+- **Conflito real** (linha remota diferente da base ou linhas concorrentes):
+  nada é sobrescrito e o aviso permanece. A pendência só é dada como resolvida
+  ("sincronizado") se o mesmo conteúdo preenchido já estiver lido na planilha
+  em outra chave (por exemplo, restaurado explicitamente e salvo). A comparação
+  usa todos os campos preenchidos, inclusive `rel_origem_dados`, então conteúdo
+  de outro condomínio ou mês nunca coincide.
+- **Cópia local:** é mantida até a confirmação. Antes de gravar uma edição nova,
+  o salvamento tenta concluir a pendência da própria chave.
+- **Mensagens separadas:**
+  - Falha de conexão: "Cópia local aguardando envio à planilha… o reenvio é automático".
+  - Conflito real: "Há versão divergente na planilha… restaure a versão desejada".
+  - O salvamento manual sem conexão informa "envio à planilha ficou pendente"
+    (o conteúdo fica no disco) em vez de "Não foi possível confirmar o salvamento".
+- **Painel de versões:** a pendência de envio não aparece mais como "Cópias
+  divergentes"; chaves com duas versões têm botões distintos.
+
+Testes antigos que exigiam "a retentativa nunca atualiza a linha remota", mesmo
+sem divergência, foram reescritos para o critério acima. Os testes de conflito
+real (outro acesso alterou a linha) continuam exigindo que nada seja sobrescrito.

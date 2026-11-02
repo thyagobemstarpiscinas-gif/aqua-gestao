@@ -4302,6 +4302,25 @@ def _relatorio_rt_preservar_localmente() -> bool:
     return True
 
 
+def relatorio_rt_resultado_salvamento_manual() -> str:
+    """Classifica um salvamento manual não confirmado na planilha.
+
+    "pendente": falha de conexão; o conteúdo da tela está gravado no disco
+    local e será reenviado. "conflito": a planilha tem versão divergente desta
+    chave (as duas foram preservadas). "erro": nem a cópia local foi garantida.
+    """
+    ss = st.session_state
+    motivo = f"{ss.get('_rt_rasc_aviso', '')} {ss.get('_relatorio_rt_autosave_erro', '')}"
+    try:
+        preservado = _relatorio_rt_preservar_localmente()
+    except Exception as e:
+        ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
+        return "erro"
+    if not preservado:
+        return "erro"
+    return "conflito" if "divergente" in motivo else "pendente"
+
+
 def _guardar_rascunho_rt_antes_da_troca(restauracao_explicita: bool = False) -> bool:
     """Preserva o contexto RT atual antes de trocar condomínio/período ou restaurar.
 
@@ -12763,7 +12782,20 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
         from utils.rascunho_sync import escrever_atomico
         gestor = _relatorio_rt_gestor_sync()
         registro_anterior = gestor.ler(chave)
-        if registro_anterior and registro_anterior["estado"] == "descartado":
+        if (registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")
+                and _rascunho_usa_sheets()):
+            # Pendência desta chave com conteúdo anterior: tenta concluir o envio
+            # antes de gravar a edição nova. Com a planilha de volta, a versão
+            # anterior é confirmada (ou reconhecida em outra chave) e a nova segue
+            # normalmente; sem conexão ou com conflito real, nada é sobrescrito.
+            from utils.rascunho_sync import hash_conteudo as _hash_rt
+            if registro_anterior["hash"] != _hash_rt(dados):
+                try:
+                    gestor.enviar(_relatorio_rt_aba(criar=True), chave, registro_anterior["dados"], retentativa=True)
+                except Exception:
+                    pass
+                registro_anterior = gestor.ler(chave)
+        if registro_anterior and registro_anterior["estado"] in ("descartado", "sincronizado"):
             chave = _relatorio_rt_chave_sessao(nova=True)
             dados["_chave"] = chave
             registro_anterior = None
@@ -12986,13 +13018,20 @@ def _relatorio_rt_renderizar_painel_rascunho():
         if versoes:
             st.warning("🛡️ Rascunhos de Relatório RT disponíveis (do mais recente para o mais antigo):")
         descartes_exibidos = set()
+        por_chave = {}
+        for v in versoes:
+            por_chave[v["chave"]] = por_chave.get(v["chave"], 0) + 1
         for v in versoes:
             chave, rasc = v["chave"], v["dados"]
-            selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
+            if v.get("pendente") and not v.get("conflito"):
+                selo = " — cópia deste servidor com envio à planilha pendente (reenvio automático)"
+            else:
+                selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
             st.markdown(f"- **{_relatorio_rt_resumo(rasc)}**{selo}")
             id_btn = re.sub(r"\W", "_", chave)
-            if v.get("conflito"):
+            if v.get("conflito") or por_chave.get(chave, 0) > 1:
                 id_btn += "_" + v["origem"] + "_" + v["hash"][:12]
+            if v.get("conflito"):
                 st.warning("Cópias divergentes: " + ("local pendente" if v.get("pendente") else v["origem"]) + ". Restaure explicitamente para continuar em nova chave.")
             c_r1, c_r2, _ = st.columns([1, 1, 2])
             with c_r1:
@@ -23030,9 +23069,17 @@ st.caption("O relatório mensal pode ser gerado independentemente de contrato. B
 if st.button("💾 Salvar rascunho", use_container_width=True):
     st.session_state["_rt_rasc_ref"] = {}
     if _relatorio_rt_salvar_rascunho("manual"):
-        st.success("Rascunho completo preservado. Use o painel de versões para restaurar.")
+        st.success("Rascunho completo preservado na planilha. Use o painel de versões para restaurar.")
     else:
-        st.error("Não foi possível confirmar o salvamento. Os dados continuam na tela.")
+        _resultado_manual_rt = relatorio_rt_resultado_salvamento_manual()
+        if _resultado_manual_rt == "pendente":
+            st.warning("Rascunho gravado neste servidor; o envio à planilha ficou pendente (falha de conexão) "
+                       "e será refeito automaticamente. O aviso some quando a planilha confirmar o recebimento.")
+        elif _resultado_manual_rt == "conflito":
+            st.warning("A planilha tem outra versão deste rascunho. Nada foi sobrescrito: as duas cópias estão "
+                       "preservadas no painel de versões; restaure a desejada.")
+        else:
+            st.error("Não foi possível confirmar o salvamento. Os dados continuam na tela.")
 
 st.markdown("---")
 btn_col1, btn_col2 = st.columns([2, 1])
