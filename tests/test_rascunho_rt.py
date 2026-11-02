@@ -37,6 +37,7 @@ FUNCOES_RT = [
     "_relatorio_rt_coluna", "_relatorio_rt_salvar_rascunho", "_relatorio_rt_carregar_rascunho",
     "_relatorio_rt_descartar", "_relatorio_rt_aplicar_rascunho", "_relatorio_rt_aplicar_pendente",
     "_relatorio_rt_resumo", "_relatorio_rt_gestor_sync", "_guardar_rascunho_rt_antes_da_troca",
+    "_relatorio_rt_preservar_localmente",
 ]
 FUNCOES_OPERADOR = ["salvar_rascunho_operador", "carregar_rascunho_operador", "deletar_rascunho_operador"]
 PREFIXO_CONSTANTES = ("RASCUNHO_RT_", "_RASCUNHO_RT_")

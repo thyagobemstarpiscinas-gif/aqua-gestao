@@ -4262,7 +4262,56 @@ def _tabela_rt_tem_dados() -> bool:
     return bool(_preenchidos(conteudo))
 
 
+def _relatorio_rt_preservar_localmente() -> bool:
+    """Garante que o conteúdo RT da tela está gravado no disco local antes da troca.
+
+    O registro local (utils.rascunho_sync) é a cópia autoritativa, gravado de forma
+    atômica antes de qualquer envio; a sincronização com a planilha é reenviada
+    depois. Retorna True quando o conteúdo atual já está num registro local não
+    descartado (mesmo hash) ou foi gravado agora numa chave nova e conferido por
+    releitura. Nenhuma cópia existente é alterada. Retorna False só se a
+    gravação local falhar — aí a troca continua bloqueada.
+    """
+    from utils.rascunho_sync import escrever_atomico, hash_conteudo
+    ss = st.session_state
+    atual = _relatorio_rt_coletar_rascunho()
+    if not _relatorio_rt_tem_conteudo(atual.get("campos")):
+        return True  # nada digitado: nada a preservar
+    gestor = _relatorio_rt_gestor_sync()
+    digest = hash_conteudo(atual)
+    for arquivo in sorted(gestor.pasta.glob("*.json")):
+        try:
+            registro = gestor.ler(json.loads(arquivo.read_text(encoding="utf-8"))["chave"])
+        except Exception:
+            continue
+        if registro and registro["estado"] != "descartado" and registro["hash"] == digest:
+            return True
+    backup = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
+    atual["_chave"] = backup
+    gestor.preparar(backup, atual, local_apenas=not _rascunho_usa_sheets())
+    escrever_atomico(_relatorio_rt_arquivo_local(backup), atual)
+    conferido = gestor.ler(backup)
+    if not conferido or conferido["hash"] != digest:
+        return False
+    if _rascunho_usa_sheets():
+        pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
+        if backup not in pendentes:
+            pendentes.append(backup)
+        ss["_rt_rasc_sync_pendente"] = pendentes
+        ss.setdefault("_rt_rasc_aviso", "Cópia local pendente de envio à planilha.")
+    return True
+
+
 def _guardar_rascunho_rt_antes_da_troca(restauracao_explicita: bool = False) -> bool:
+    """Preserva o contexto RT atual antes de trocar condomínio/período ou restaurar.
+
+    Antes, a troca só prosseguia se o envio à planilha fosse confirmado na hora:
+    uma falha transitória do Sheets (cota, rede, consulta de confirmação) bloqueava
+    a troca de período ("Troca bloqueada…", o mês voltava ao anterior) e a
+    restauração de outro rascunho, mesmo com o conteúdo já gravado no disco.
+    Agora basta a cópia local íntegra (conferida); o envio segue pendente e é
+    reenviado automaticamente. Falha da gravação local continua bloqueando.
+    """
     ss = st.session_state
     try:
         ss["_rt_rasc_ref"] = {}
@@ -4271,23 +4320,11 @@ def _guardar_rascunho_rt_antes_da_troca(restauracao_explicita: bool = False) -> 
         ss["_relatorio_rt_autosave_erro"] = str(e)
         gravado = False
     if not gravado:
-        if restauracao_explicita:
-            try:
-                from utils.rascunho_sync import hash_conteudo
-                registro = _relatorio_rt_gestor_sync().ler(ss.get("_rt_rasc_chave", ""))
-                if registro and registro["estado"] in ("pendente", "conflito"):
-                    atual = _relatorio_rt_coletar_rascunho()
-                    if registro["hash"] != hash_conteudo(atual):
-                        # Só uma escolha explícita de restauração pode separar a
-                        # edição ativa da cópia pendente, sem perder nenhuma delas.
-                        from utils.rascunho_sync import escrever_atomico
-                        backup = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
-                        atual["_chave"] = backup
-                        _relatorio_rt_gestor_sync().preparar(backup, atual)
-                        escrever_atomico(_relatorio_rt_arquivo_local(backup), atual)
-                    gravado = True
-            except Exception:
-                gravado = False
+        try:
+            gravado = _relatorio_rt_preservar_localmente()
+        except Exception as e:
+            ss["_relatorio_rt_autosave_erro"] = f"{type(e).__name__}: {e}"
+            gravado = False
     if not gravado:
         ss["_rt_contexto_erro"] = "Troca bloqueada: não foi possível preservar o rascunho. Tente novamente após recuperar o armazenamento."
         return False
@@ -11293,6 +11330,89 @@ def _bs_coletar_lancamentos_agenda_manual() -> list[dict]:
 
 
 
+def _materializar_fotos_remotas_bem_star(cliente: str, lancamentos: list[dict]) -> list:
+    """Fotos das visitas sem arquivo local: Drive (original) e, na falta, base64.
+
+    Grava cada imagem (JPEG, orientação EXIF corrigida) numa pasta persistente do
+    cliente, nomeada pelo SHA-256 do conteúdo, para continuar disponível até o fim
+    da montagem do PDF. Não altera visitas, Sheets ou Drive. Falhas ficam em
+    st.session_state["_bs_fotos_avisos"] para a tela informar o usuário.
+    """
+    import base64 as _b64m
+    import hashlib as _hl
+    import io as _iom
+    from PIL import Image as _PILm, ImageOps as _IOm
+
+    categorias = ("antes", "depois", "cmaq", "extras")
+    avisos = []
+    caminhos = []
+    if not lancamentos:
+        st.session_state["_bs_fotos_avisos"] = avisos
+        st.session_state["_bs_fotos_metadados_visitas"] = {}
+        return caminhos
+    pasta = GENERATED_DIR / slugify_nome(cliente) / "_fotos_relatorio_mensal_bs"
+
+    def _gravar(dados: bytes) -> Path | None:
+        try:
+            pil = _IOm.exif_transpose(_PILm.open(_iom.BytesIO(dados)))
+            buf = _iom.BytesIO()
+            pil.convert("RGB").save(buf, format="JPEG", quality=88)
+            conteudo = buf.getvalue()
+        except Exception:
+            return None
+        pasta.mkdir(parents=True, exist_ok=True)
+        destino = pasta / (_hl.sha256(conteudo).hexdigest() + ".jpg")
+        if not destino.exists():
+            destino.write_bytes(conteudo)
+        return destino
+
+    rotulos = {"antes": "Antes do tratamento", "depois": "Após o tratamento",
+               "cmaq": "Casa de máquinas", "extras": "Outras fotos"}
+    metadados = {}
+    for lc in lancamentos:
+        ident = str(lc.get("id_visita") or lc.get("data") or "visita").strip()
+        data_lc = normalizar_data_visita(lc.get("data", ""))
+        ids = []  # (id, categoria)
+        for cat in categorias:
+            ids.extend((i, cat) for i in (lc.get(f"fotos_{cat}_ids") or []))
+        ids.extend((i, "antes") for i in (lc.get("fotos_drive_ids") or []))
+        ids = list({str(i).strip(): (str(i).strip(), c) for i, c in ids if str(i or "").strip()}.values())
+        obtidas = []
+        falhas = 0
+
+        def _registrar(caminho, cat):
+            obtidas.append(caminho)
+            legenda = f"Visita {ident} — {rotulos.get(cat, 'Foto')}" if lc.get("id_visita") else rotulos.get(cat, "Foto")
+            metadados.setdefault(str(caminho), {"nome": caminho.name, "piscina": "", "data": data_lc, "legenda": legenda})
+
+        for fid, cat in ids:
+            try:
+                dados = drive_baixar_foto(fid)
+            except Exception:
+                dados = None
+            caminho = _gravar(dados) if dados else None
+            if caminho:
+                _registrar(caminho, cat)
+            else:
+                falhas += 1
+        if not obtidas:
+            # Cópia em base64 (lançamento local do modo campo): miniatura da mesma foto.
+            for cat in categorias:
+                for item in lc.get(f"fotos_{cat}_b64") or []:
+                    try:
+                        caminho = _gravar(_b64m.b64decode(item) if isinstance(item, str) else bytes(item))
+                    except Exception:
+                        caminho = None
+                    if caminho:
+                        _registrar(caminho, cat)
+        if falhas and len(obtidas) < len(ids):
+            avisos.append(f"{ident}: {falhas} foto(s) do Drive não puderam ser recuperadas.")
+        caminhos.extend(obtidas)
+    st.session_state["_bs_fotos_avisos"] = avisos
+    st.session_state["_bs_fotos_metadados_visitas"] = metadados
+    return caminhos
+
+
 def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> list:
     """Coleta as fotos de campo das visitas do relatório Bem Star.
 
@@ -11326,9 +11446,11 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
             pass
 
     datas_periodo = set()
+    sem_arquivo_local = []  # visitas cujas fotos citadas não estão no disco deste servidor
     for lc in lancamentos or []:
         if not isinstance(lc, dict):
             continue
+        _qtd_antes_lc = len(fotos)
         _data = normalizar_data_visita(lc.get("data", ""))
         if re.fullmatch(r"\d{2}/\d{2}/\d{4}", _data or ""):
             datas_periodo.add(_data[6:] + _data[3:5] + _data[:2])
@@ -11351,6 +11473,13 @@ def _coletar_fotos_bem_star_preview(cliente: str, lancamentos: list[dict]) -> li
             "foto_casa_maquina", "imagem", "imagem_antes", "imagem_depois"
         ):
             _add_foto(lc.get(chave))
+        if len(fotos) == _qtd_antes_lc:
+            sem_arquivo_local.append(lc)
+
+    # Visitas lidas do Sheets em outro servidor (Streamlit Cloud reinicia sem a
+    # pasta fotos_campo): o payload traz só nomes e IDs do Drive. Antes nada era
+    # buscado e o PDF mensal saía sem o registro fotográfico, sem aviso.
+    fotos.extend(_materializar_fotos_remotas_bem_star(cliente, sem_arquivo_local))
 
     # Sem fotos citadas: fotos de campo gravadas nas datas das visitas do relatório.
     if not fotos and datas_periodo:
@@ -11564,6 +11693,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         st.session_state.get("_bs_rel_contexto"), GENERATED_DIR, baixar=drive_baixar_foto,
     ) if st.session_state.get("bs_mensal_fotos") else ([], {})
     fotos_paths = deduplicar_fotos(list(fotos_paths) + fotos_mensais)
+    # Legendas das fotos das visitas recuperadas do Drive (anexos mensais prevalecem).
+    metadados = {**(st.session_state.get("_bs_fotos_metadados_visitas") or {}), **(metadados or {})}
     return {
         "ok": True, "cliente": csr_sel, "mes": csr_mes, "ano": csr_ano,
         "operador": csr_operador_nome, "obs_geral": csr_obs_geral,
@@ -18784,6 +18915,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 _ctx_bs = _resultado_bs.get("dados", {})
                 _cliente_ctx_bs = (_ctx_bs.get("dados_cliente", {}) or {}).get("nome") or _ctx_bs.get("cliente", "")
                 st.success(f"✅ {_resultado_bs.get('mensagem', 'Relatório Bem Star gerado com sucesso.')}")
+                for _aviso_foto_bs in st.session_state.get("_bs_fotos_avisos") or []:
+                    st.warning(f"⚠️ Registro fotográfico incompleto — {_aviso_foto_bs}")
                 dl1, dl2 = st.columns(2)
                 with dl1:
                     with open(docx_csr, "rb") as _f:

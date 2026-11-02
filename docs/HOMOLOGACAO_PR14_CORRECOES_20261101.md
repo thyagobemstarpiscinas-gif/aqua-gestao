@@ -39,3 +39,53 @@ assinatura de gravação e não precisa de migração.
   bloqueio persistir, registrar o texto exibido (ex.: "Troca bloqueada…",
   "Rascunho de outra empresa…", "Fotografias pertencem a outro…").
 - Nova verificação independente no Streamlit Cloud (homologação não aprovada).
+
+---
+
+# Bloqueios finais (após `1a2eb61`)
+
+A homologação real confirmou as correções acima e apontou dois defeitos restantes.
+Os testes novos (`tests/test_homologacao_pr14_bloqueios.py` e
+`tests/test_homologacao_pr14_bloqueios_apptest.py`) foram executados sobre
+`1a2eb61`: os que reproduzem os defeitos falham lá e passam com a correção.
+
+## 1. Restauração/troca do rascunho RT bloqueada
+
+**Reprodução** (app real, planilha falsa): restaurar o rascunho de Alfa, trocar
+novembro → outubro com a planilha respondendo erro (cota/rede, como acontece no
+Sheets), restaurar o rascunho de Beta. Resultado em `1a2eb61`: "Troca bloqueada:
+não foi possível preservar o rascunho…", o mês volta para novembro (reversão da
+transação) e, a partir daí, todo salvamento automático falha com
+`ConflitoRascunho`.
+
+**Causa**: `_guardar_rascunho_rt_antes_da_troca` só deixava a troca seguir se o
+envio à planilha fosse confirmado na hora. Uma troca de período ou condomínio
+só tinha alternativa na restauração explícita, e mesmo essa dependia do
+estado da chave da sessão. O conteúdo, porém, já estava gravado de forma
+atômica no registro local (`utils/rascunho_sync`), que é a cópia autoritativa
+reenviada depois.
+
+**Correção**: nova `_relatorio_rt_preservar_localmente`. Se o envio não for
+confirmado, a troca segue somente quando o conteúdo atual já está num registro
+local não descartado (mesmo hash), ou quando foi gravado agora numa chave nova
+e conferido por releitura. Nenhuma cópia existente é alterada. A pendência é
+reenviada automaticamente quando a planilha volta. **Falha da gravação local
+continua bloqueando** (proteção contra perda de dados mantida, coberta por teste).
+
+## 2. Fotografia ausente no PDF mensal Bem Star
+
+**Cadeia verificada**: o Sheets guarda no payload da V00005 o nome do arquivo
+(`fotos_antes`) e o ID do Drive (`fotos_antes_ids`), sem base64. A importação e a
+deduplicação preservam os dois campos. O PDF individual resolve as fotos pelo
+Drive. O mensal (`_coletar_fotos_bem_star_preview`) procurava apenas o arquivo
+na pasta local `fotos_campo`, que não existe num servidor do Streamlit Cloud
+reiniciado. Resultado: zero fotos, a página "Registro fotográfico" omitida (PDF
+de 5 páginas) e nenhuma mensagem.
+
+**Correção**: visitas sem arquivo local passam a usar o Drive (bytes originais)
+e, na falta deste, a cópia base64 do lançamento local. Cada imagem é gravada em
+JPEG numa pasta persistente do cliente (`_fotos_relatorio_mensal_bs/<sha256>.jpg`),
+disponível até o fim da montagem, com deduplicação por conteúdo e legenda
+"Visita V00005 — Antes do tratamento". Foto irrecuperável gera aviso na tela
+("Registro fotográfico incompleto — V00005: …"), em vez de silêncio. Nenhuma
+visita, linha do Sheets ou arquivo do Drive é alterado ou duplicado.
