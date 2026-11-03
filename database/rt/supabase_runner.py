@@ -103,7 +103,7 @@ def connect(principal=None):
         if identity != (user, user, CONFIG["database"], marker):
             raise Refused("identidade ou marcador de destino divergente")
         tls = c.execute("SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()").fetchone()
-        if not tls or tls[0] is not True or not c.info.ssl_in_use:
+        if not tls or tls[0] is not True or not c.pgconn.ssl_in_use:
             raise Refused("TLS nao confirmado")
         if c.info.get_parameters().get("sslmode") != "verify-full":
             raise Refused("verify-full nao confirmado")
@@ -117,10 +117,10 @@ def connect(principal=None):
                 raise Refused("LOGIN de teste herda administrador")
         c.autocommit = False
         return c
-    except Exception:
+    except Exception as error:
         if c is not None:
             c.close()
-        raise Refused("conexao recusada; revisar destino, identidade e TLS sem publicar diagnostico bruto") from None
+        raise Refused("conexao recusada; tipo=" + type(error).__name__) from None
 
 
 def inspect():
@@ -173,6 +173,8 @@ def inspect():
                 if c.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, oid)).fetchone()[0]:
                     raise Refused("papel Data API possui acesso a funcao RT")
         for role in ROLES:
+            if c.execute("SELECT has_schema_privilege(%s,\'rt_persist\',\'CREATE\')", (role,)).fetchone()[0]:
+                raise Refused("LOGIN restrito pode criar objetos no esquema")
             for (oid,) in tables:
                 if c.execute("SELECT has_table_privilege(%s,%s,'SELECT,INSERT,UPDATE,DELETE,"
                              "TRUNCATE,REFERENCES,TRIGGER') OR "
