@@ -12977,12 +12977,27 @@ with st.sidebar:
                         col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
 
                         with col_a1:
-                            if st.button(
-                                "Abrir arquivo",
-                                key=f"abrir_arq_{file_key}",
-                                use_container_width=True,
-                            ):
-                                abrir_arquivo_windows(caminho)
+                            if (st.session_state.get("admin_logado")
+                                    and st.session_state.get("modo_atual") == "escritorio"):
+                                try:
+                                    conteudo_download = caminho.read_bytes()
+                                except OSError:
+                                    st.warning("Arquivo indisponível. Atualize o histórico e tente novamente.")
+                                else:
+                                    mime_download = {
+                                        ".pdf": "application/pdf",
+                                        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    }.get(caminho.suffix.lower(), "application/octet-stream")
+                                    st.download_button(
+                                        "Baixar arquivo",
+                                        data=conteudo_download,
+                                        file_name=nome_download_seguro(caminho.name),
+                                        mime=mime_download,
+                                        key=f"baixar_arq_{file_key}",
+                                        use_container_width=True,
+                                    )
+                            else:
+                                st.caption("Entre no acesso administrativo para baixar.")
 
                         with col_a2:
                             if st.button(
