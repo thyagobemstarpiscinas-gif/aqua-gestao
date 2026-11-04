@@ -1,5 +1,6 @@
 """Executor explicito: esquema ja instalado, LOGINs reais, TLS e fixtures novas."""
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ import unittest
 
 import psycopg
 from psycopg import sql
+from psycopg.pq import TransactionStatus
 import test_contract as base
 
 CONFIG = None
@@ -21,7 +23,10 @@ ROLES = ("rt_test_a", "rt_test_b", "rt_test_none")
 
 
 class Refused(RuntimeError):
-    pass
+    def __init__(self, message, *, evidence=None):
+        super().__init__(message)
+        # Somente indicadores booleanos calculados pelo executor, nunca credenciais.
+        self.evidence = evidence or {}
 
 
 def private_file(path):
@@ -37,8 +42,11 @@ def private_file(path):
 def validate(cfg, local=False):
     expected = {"environment", "project_name", "project_ref", "host", "port",
                 "database", "marker", "ca_file", "passfile", "admin_user"}
-    if set(cfg) != expected:
+    if set(cfg) - {"connection_mode"} != expected:
         raise Refused("campos de autorizacao ausentes ou desconhecidos")
+    mode = cfg.get("connection_mode", "direct")
+    if mode not in ("direct", "session_pooler"):
+        raise Refused("modo de conexao nao autorizado")
     if cfg["environment"] != "homologacao" or cfg["project_name"] != "acqua-gestao-homologacao":
         raise Refused("homologacao nao autorizada")
     if not isinstance(cfg["port"], int) or isinstance(cfg["port"], bool) or not 1 <= cfg["port"] <= 65535:
@@ -46,16 +54,24 @@ def validate(cfg, local=False):
     if not isinstance(cfg["marker"], str) or not re.fullmatch(r"[a-f0-9]{32}", cfg["marker"]):
         raise Refused("marcador de homologacao invalido")
     if local:
+        if mode != "direct":
+            raise Refused("pooler nao permitido no destino local")
         if (cfg["project_ref"], cfg["host"], cfg["database"]) != (
                 "local-ci", "localhost", "rt_contract_test"):
             raise Refused("destino local invalido")
     else:
         if not isinstance(cfg["project_ref"], str) or not re.fullmatch(r"[a-z0-9]{20}", cfg["project_ref"]):
             raise Refused("project ref invalido")
-        if cfg["host"] != "db." + cfg["project_ref"] + ".supabase.co" or cfg["database"] != "postgres":
-            raise Refused("endpoint direto fora da autorizacao")
+        if cfg["database"] != "postgres":
+            raise Refused("banco fora da autorizacao")
+        if mode == "direct":
+            if cfg["host"] != "db." + cfg["project_ref"] + ".supabase.co":
+                raise Refused("endpoint direto fora da autorizacao")
+        elif not isinstance(cfg["host"], str) or not re.fullmatch(
+                r"aws-[0-9]+-sa-east-1\.pooler\.supabase\.com", cfg["host"]):
+            raise Refused("Session Pooler fora da regiao de homologacao autorizada")
         if cfg["port"] != 5432:
-            raise Refused("porta Supabase direta invalida")
+            raise Refused("somente porta 5432; Transaction Pooler nao autorizado")
     if cfg["admin_user"] != "postgres":
         raise Refused("administrador de homologacao inesperado")
     for key in ("ca_file", "passfile"):
@@ -79,7 +95,37 @@ def load_config(path, local=False):
             os.environ.pop(key)
 
 
-def connect(principal=None):
+def connection_user(user):
+    """Nome de roteamento do pooler; a identidade SQL continua sendo o LOGIN."""
+    if user not in (*ROLES, CONFIG["admin_user"]):
+        raise Refused("LOGIN fora da lista autorizada")
+    if CONFIG.get("connection_mode", "direct") == "session_pooler":
+        return user + "." + CONFIG["project_ref"]
+    return user
+
+
+def verify_session_settings(c, *, read_only=False):
+    effective = c.execute(
+        "SELECT current_setting('statement_timeout')::interval = interval '20 seconds',"
+        "current_setting('lock_timeout')::interval = interval '10 seconds',"
+        "current_setting('transaction_read_only'),"
+        "current_setting('default_transaction_read_only')"
+    ).fetchone()
+    if not effective or effective[:2] != (True, True):
+        raise Refused("timeouts efetivos de sessao divergentes")
+    if read_only and effective[2:] != ("on", "on"):
+        raise Refused("inspecao exige transacoes somente de leitura")
+
+
+def begin_inspection(c):
+    """Revalidar a protecao antes de consultar em cada nova transacao."""
+    if c.info.transaction_status != TransactionStatus.IDLE:
+        raise Refused("inspecao exige nova transacao explicita")
+    c.execute("BEGIN READ ONLY")
+    verify_session_settings(c, read_only=True)
+
+
+def connect(principal=None, *, read_only=False):
     if CONFIG is None:
         raise Refused("configuracao nao carregada")
     user = principal or CONFIG["admin_user"]
@@ -89,10 +135,11 @@ def connect(principal=None):
     try:
         c = psycopg.connect(
             host=CONFIG["host"], port=CONFIG["port"], dbname=CONFIG["database"],
-            user=user, passfile=CONFIG["passfile"], sslmode="verify-full",
+            user=connection_user(user), passfile=CONFIG["passfile"], sslmode="verify-full",
             sslrootcert=CONFIG["ca_file"], connect_timeout=10,
             application_name="acqua-rt-homolog-contract",
-            options="-c statement_timeout=20000 -c lock_timeout=10000",
+            # Nao confiar em GUCs de startup: o Session Pooler pode ignora-las.
+            options="",
             prepare_threshold=None, autocommit=True)
         identity = c.execute(
             "SELECT session_user,current_user,current_database(),"
@@ -103,10 +150,23 @@ def connect(principal=None):
         if identity != (user, user, CONFIG["database"], marker):
             raise Refused("identidade ou marcador de destino divergente")
         tls = c.execute("SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()").fetchone()
-        if not tls or tls[0] is not True or not c.pgconn.ssl_in_use:
-            raise Refused("TLS nao confirmado")
-        if c.info.get_parameters().get("sslmode") != "verify-full":
-            raise Refused("verify-full nao confirmado")
+        evidence = dict(identity_matches=True, marker_matches=True,
+                        client_tls=bool(c.pgconn.ssl_in_use),
+                        client_verify_full=c.info.get_parameters().get("sslmode") == "verify-full",
+                        backend_ssl_row_present=bool(tls),
+                        backend_tls=bool(tls and tls[0] is True))
+        if not evidence["client_tls"] or not evidence["client_verify_full"]:
+            raise Refused("TLS verify-full do cliente nao confirmado", evidence=evidence)
+        if not evidence["backend_tls"]:
+            raise Refused("TLS do backend nao confirmado", evidence=evidence)
+        # Somente SQL de sessao, depois das barreiras de identidade/marcador/TLS.
+        c.execute("SET SESSION statement_timeout = '20s'")
+        c.execute("SET SESSION lock_timeout = '10s'")
+        if read_only:
+            c.execute("SET SESSION default_transaction_read_only = on")
+            begin_inspection(c)
+        else:
+            verify_session_settings(c)
         if principal:
             flags = c.execute(
                 "SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls "
@@ -115,16 +175,59 @@ def connect(principal=None):
                 raise Refused("LOGIN de teste possui atributos inadequados")
             if c.execute("SELECT pg_has_role(session_user,'postgres','MEMBER')").fetchone()[0]:
                 raise Refused("LOGIN de teste herda administrador")
-        c.autocommit = False
+        if not read_only:
+            c.autocommit = False
         return c
     except Exception as error:
         if c is not None:
             c.close()
-        raise Refused("conexao recusada; tipo=" + type(error).__name__) from None
+        raise Refused("conexao recusada; tipo=" + type(error).__name__,
+                      evidence=error.evidence if isinstance(error, Refused) else None) from None
+
+
+def inspect_session():
+    """Duas sessoes reais; SELECTs e controle transacional, sem DDL/DML/SET ROLE."""
+    snapshot_sql = (
+        "SELECT pg_backend_pid(),session_user,current_user,current_database(),"
+        "current_setting('transaction_read_only'),"
+        "current_setting('statement_timeout')::interval = interval '20 seconds',"
+        "current_setting('lock_timeout')::interval = interval '10 seconds',"
+        "current_setting('transaction_isolation')"
+    )
+    snapshots = []
+    with connect(read_only=True) as a, connect(read_only=True) as b:
+        for c in (a, b):
+            first = c.execute(snapshot_sql).fetchone()
+            expected = (CONFIG["admin_user"], CONFIG["admin_user"], CONFIG["database"],
+                        "on", True, True, "read committed")
+            if first[1:] != expected:
+                raise Refused("identidade, timeouts ou isolamento de sessao divergente")
+            c.commit()
+            begin_inspection(c)
+            if c.execute(snapshot_sql).fetchone() != first:
+                raise Refused("sessao nao preservada apos COMMIT")
+            c.execute("SAVEPOINT rt_readonly_probe")
+            c.execute("SELECT 1")
+            c.execute("ROLLBACK TO SAVEPOINT rt_readonly_probe")
+            c.execute("RELEASE SAVEPOINT rt_readonly_probe")
+            c.rollback()
+            begin_inspection(c)
+            if c.execute(snapshot_sql).fetchone() != first:
+                raise Refused("sessao nao preservada apos ROLLBACK")
+            c.rollback()
+            snapshots.append(first)
+        if snapshots[0][0] == snapshots[1][0]:
+            raise Refused("conexoes simultaneas sem backends independentes")
+    return dict(session_user=CONFIG["admin_user"], current_user=CONFIG["admin_user"],
+                database=CONFIG["database"], sslmode="verify-full", marker_matches=True,
+                read_only=True, independent_backends=True, stable_sessions=True,
+                timeouts_preserved=True, isolation="read committed", savepoint_rollback=True)
 
 
 def inspect():
-    with connect() as c:
+    if CONFIG.get("connection_mode", "direct") == "session_pooler":
+        inspect_session()
+    with connect(read_only=True) as c:
         if c.execute("SELECT version FROM rt_persist.schema_migrations").fetchall() != [(1,)]:
             raise Refused("versao de esquema inesperada")
         if c.execute("SHOW synchronous_commit").fetchone()[0] != "on":
@@ -182,7 +285,7 @@ def inspect():
                              (role, oid, role, oid)).fetchone()[0]:
                     raise Refused("LOGIN restrito possui acesso direto a tabela")
     for role in ROLES:
-        with connect(role) as c:
+        with connect(role, read_only=True) as c:
             if not c.execute("SELECT pg_has_role(session_user,'rt_persist_client','USAGE')").fetchone()[0]:
                 raise Refused("LOGIN sem heranca do contrato")
 
@@ -242,15 +345,18 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--inspect-session", action="store_true")
     parser.add_argument("--recover", action="store_true")
     parser.add_argument("--run-fixtures", action="store_true")
     args = parser.parse_args()
     try:
-        if sum((args.inspect, args.recover, args.run_fixtures)) != 1:
+        if sum((args.inspect, args.inspect_session, args.recover, args.run_fixtures)) != 1:
             raise Refused("selecionar uma unica operacao")
         load_config(args.config, args.local)
         base.connect = connect
-        if args.inspect:
+        if args.inspect_session:
+            print("SESSION_INSPECTION_OK " + json.dumps(inspect_session(), sort_keys=True))
+        elif args.inspect:
             inspect()
             print("INSPECTION_OK")
         elif args.recover:
@@ -262,7 +368,10 @@ def main():
             result = unittest.TextTestRunner(verbosity=2, resultclass=SafeResult).run(suite)
             return 0 if result.wasSuccessful() else 1
         return 0
-    except Exception:
+    except Exception as error:
+        if args.inspect_session and isinstance(error, Refused) and error.evidence:
+            print("SESSION_INSPECTION_STOP " + json.dumps(error.evidence, sort_keys=True),
+                  file=sys.stderr)
         print("EXECUCAO_RECUSADA: revisar configuracao, TLS, identidade, ACLs ou fixtures. "
               "Nenhuma mensagem bruta de conexao sera exibida.", file=sys.stderr)
         return 1

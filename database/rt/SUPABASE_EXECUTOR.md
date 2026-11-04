@@ -1,7 +1,8 @@
 # Executor Supabase — instalacao controlada, sem integracao ao aplicativo
 
 Implementacao derivada de 6f731373655c91c9283a8742ceecf56fed4b3e70.
-Nenhum comando deste roteiro foi aplicado ao Supabase.
+A instalacao inicial abaixo e um roteiro separado: nao reaplicar migracoes
+nem provisionar LOGINs ao executar as inspecoes de Session Pooler.
 A migracao original e o executor local original permanecem inalterados.
 Python 3.11+; dependencias em requirements-test.txt.
 
@@ -11,9 +12,11 @@ A execucao remota exige confirmacao do proprietario. Nao enviar senhas, tokens,
 pgpass ou strings de conexao pelo chat, Git ou logs. Usar computador controlado.
 Conferir no painel: acqua-gestao-homologacao, Free, sa-east-1, Healthy,
 Data API desativada. Obter Project Ref e endpoint direto no proprio painel.
-O executor suporta somente endpoint direto db.<ref>.supabase.co:5432, banco
-postgres. Se nao houver IPv6/acesso direto, interromper; poolers nao foram
-autorizados por este executor. Nao relaxar validacao de hostname ou TLS.
+O executor suporta endpoint direto db.<ref>.supabase.co:5432 ou, mediante
+manifesto explicito connection_mode="session_pooler", Session Pooler compartilhado
+em sa-east-1, porta 5432, banco postgres. Transaction Pooler/porta 6543 sao recusados.
+Nao relaxar validacao de hostname ou TLS. Configuracoes anteriores sem
+connection_mode continuam exigindo conexao direta.
 
 Configurar copia de supabase.example.toml FORA do repositorio, com modo 0600.
 Esse arquivo autoriza exatamente o Project Ref, hostname, porta e banco escolhidos.
@@ -32,6 +35,94 @@ O manifesto rejeita password, DSN, service, sslmode e outras opcoes desconhecida
 O executor sempre usa verify-full e CA explicita, e remove defaults PG* do
 ambiente de seu proprio processo para nao herdar PGOPTIONS/PGSERVICE ocultos.
 Proteger os arquivos com ACL equivalente em Windows; o ensaio validado usa Linux.
+
+## Session Pooler: inspecao previa, sem provisionamento
+
+Criar um manifesto separado em pasta privada fora do repo, usando o modelo
+abaixo. Substituir os placeholders localmente, sem enviar valores pelo chat/Git:
+
+```toml
+environment = "homologacao"
+connection_mode = "session_pooler"
+project_name = "acqua-gestao-homologacao"
+project_ref = "PREENCHER_REF_REAL"
+host = "aws-PREENCHER_INDICE-sa-east-1.pooler.supabase.com"
+port = 5432
+database = "postgres"
+marker = "PREENCHER_32_HEXADECIMAIS_EXISTENTES"
+admin_user = "postgres"
+ca_file = "/caminho/absoluto/ca-supabase.crt"
+passfile = "/caminho/absoluto/pgpass-session-pooler"
+```
+
+Esta secao atualiza o suporte de transporte do executor. O roteiro separado
+PROVISION_TEST_LOGINS.md descreve provisionamento por conexao direta; a
+inspecao de Session Pooler aqui documentada nao autoriza sua execucao pelo pooler.
+
+Conferir no painel Connect > Session pooler o host EXATO
+aws-<indice>-sa-east-1.pooler.supabase.com, porta 5432 e usuario
+postgres.<project_ref>. O indice nao pode ser deduzido pela regiao.
+O manifesto fixa esse host e o ref autorizado. admin_user permanece postgres.
+O executor deriva <LOGIN>.<project_ref> somente para autenticacao/roteamento;
+session_user e current_user devem retornar o LOGIN PostgreSQL sem sufixo.
+O comentario do banco deve coincidir com o marcador ja guardado no manifesto.
+O host compartilhado, sozinho, nao identifica o projeto.
+
+Usar passfile separado com host/banco/usuario exatos, sem curingas. O campo usuario
+passa a ser postgres.<project_ref> ou rt_test_a.<project_ref>, por exemplo. Nao
+alterar senhas no Supabase para mudar de transporte. Preservar arquivos diretos.
+CA explicita confiavel e TLS verify-full continuam obrigatorios. Tanto o TLS do
+cliente quanto o TLS observado no backend por pg_stat_ssl precisam ser verdadeiros;
+uma falha interrompe o executor, sem fallback para require ou verify-ca.
+
+Antes de criar LOGINs, executar SOMENTE:
+
+    python database/rt/supabase_runner.py --config /privado/authorization.session-pooler.toml --inspect-session
+
+Esse modo exige apenas o administrador existente. Abre duas conexoes reais,
+verifica identidade/marcador/TLS e somente depois aplica por SQL de sessao
+statement_timeout=20s, lock_timeout=10s e default_transaction_read_only=on.
+Nao envia esses ajustes em options de startup: na homologacao, o pooler aceitou
+essas opcoes sem aplica-las ao PostgreSQL. A simples presenca no cliente nao
+constitui validacao. Valores efetivos divergentes interrompem a conexao.
+Cada transacao de inspecao abre com BEGIN READ ONLY, confirma os dois timeouts,
+transaction_read_only=on e o padrao de leitura antes das consultas. Depois de
+COMMIT/ROLLBACK, a sondagem repete a abertura explicita e as verificacoes.
+Usa SELECTs, COMMIT, ROLLBACK e SAVEPOINT/ROLLBACK TO/RELEASE; sem SET ROLE,
+DDL, DML, tabelas temporarias, advisory locks ou escrita de fixtures. Os SETs
+acima afetam somente a sessao; nao alteram papeis, banco ou configuracao global.
+Conexoes de outros modos tambem aplicam e verificam os timeouts por SQL, mas o
+executor so habilita leitura obrigatoria nos modos de inspecao. Confere
+backends distintos e estaveis entre transacoes, statement_timeout=20s,
+lock_timeout=10s e isolamento read committed. Nenhuma senha ou marcador completo
+e impresso. Esperado: SESSION_INSPECTION_OK e resumo sem segredos.
+
+Em falha de TLS, SESSION_INSPECTION_STOP pode mostrar somente indicadores
+booleanos de identidade/marcador, TLS do cliente e TLS do backend, sem valores
+privados. pg_stat_ssl descreve a conexao que chega ao PostgreSQL; atraves do
+pooler, ela corresponde ao trecho pooler -> PostgreSQL. Ela nao substitui a
+validacao verify-full do cliente -> pooler. Se o backend nao confirmar TLS,
+parar. Nao remover a verificacao para liberar provisionamento.
+
+A documentacao oficial informa que Enforce SSL on incoming connections governa
+os dois trechos do Shared Pooler e que sua alteracao reinicia o banco. Verificar
+o estado atual no painel e revisar a correcao separadamente com o proprietario;
+este executor nao altera esse ajuste nem reinicia o banco.
+
+Essa sondagem comprova somente as propriedades observadas nessas sessoes.
+Nao comprova rollback de dados, concorrencia do contrato, custom LOGINs ainda
+ausentes, backup ou todos os cenarios transacionais. A suite de 15 testes continua
+pendente ate confirmacao do proprietario. Nao provisionar nem executar fixtures
+apenas porque o TCP funciona ou a sondagem passou. --inspect completo ainda
+exige os tres LOGINs existentes e verifica suas ACLs e identidades reais.
+Em Session Pooler, --inspect completo repete tambem a sondagem de sessoes.
+
+Referencias oficiais:
+- https://supabase.com/docs/guides/database/connecting-to-postgres
+- https://supabase.com/docs/guides/database/psql
+- https://supabase.com/docs/guides/database/postgres/timeouts
+- https://supabase.com/docs/guides/platform/ssl-enforcement
+- https://www.postgresql.org/docs/17/monitoring-stats.html#MONITORING-PG-STAT-SSL-VIEW
 
 ## Preparacao administrativa — somente apos confirmacao
 
