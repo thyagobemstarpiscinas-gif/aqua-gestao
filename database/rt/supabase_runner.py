@@ -8,6 +8,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 
@@ -15,11 +17,34 @@ import psycopg
 from psycopg import sql
 from psycopg.pq import TransactionStatus
 import test_contract as base
+import jit_dpapi
 
 CONFIG = None
 CONFIG_PATH = None
 LOCAL = False
 ROLES = ("rt_test_a", "rt_test_b", "rt_test_none")
+# Somente os tres cenarios recusados na abertura de conexao JIT da rodada de 2026-11-04.
+SELECTED = ("test_setting_cannot_forge_authorization",
+            "test_simultaneous_same_operation_is_one_revision",
+            "test_stale_retry_cannot_regress_head")
+RT_TABLES = ("companies", "condominiums", "access_scopes", "documents",
+             "revisions", "save_requests", "outbox")
+# Intervalo minimo entre aberturas JIT; 0 preserva o comportamento dos outros modos.
+JIT_MIN_INTERVAL = 0.0
+SELECTED_JIT_INTERVAL = 2.0
+_JIT_PACE = threading.Lock()
+_JIT_LAST = [float("-inf")]
+
+
+def pace_jit():
+    """Espaca autenticacoes JIT sem retry: falha continua sendo falha."""
+    if JIT_MIN_INTERVAL <= 0:
+        return
+    with _JIT_PACE:
+        wait = _JIT_LAST[0] + JIT_MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _JIT_LAST[0] = time.monotonic()
 
 
 class Refused(RuntimeError):
@@ -42,7 +67,7 @@ def private_file(path):
 def validate(cfg, local=False):
     expected = {"environment", "project_name", "project_ref", "host", "port",
                 "database", "marker", "ca_file", "passfile", "admin_user"}
-    if set(cfg) - {"connection_mode"} != expected:
+    if set(cfg) - {"connection_mode", "test_auth_mode", "jit_token_file"} != expected:
         raise Refused("campos de autorizacao ausentes ou desconhecidos")
     mode = cfg.get("connection_mode", "direct")
     if mode not in ("direct", "session_pooler"):
@@ -74,6 +99,19 @@ def validate(cfg, local=False):
             raise Refused("somente porta 5432; Transaction Pooler nao autorizado")
     if cfg["admin_user"] != "postgres":
         raise Refused("administrador de homologacao inesperado")
+    auth = cfg.get("test_auth_mode", "passfile")
+    if auth not in ("passfile", "jit_dpapi"):
+        raise Refused("modo de autenticacao de teste nao autorizado")
+    if auth == "jit_dpapi":
+        if (local or mode != "session_pooler" or cfg["port"] != 5432
+                or cfg["project_ref"] != "xfumoyxmhpxmqidmxjhq"
+                or cfg["host"] != "aws-1-sa-east-1.pooler.supabase.com"):
+            raise Refused("JIT restrito ao Session Pooler autorizado de homologacao")
+        if (not isinstance(cfg.get("jit_token_file"), str)
+                or not Path(cfg["jit_token_file"]).is_absolute()):
+            raise Refused("arquivo DPAPI absoluto obrigatorio para JIT")
+    elif "jit_token_file" in cfg:
+        raise Refused("arquivo DPAPI exige modo JIT explicito")
     for key in ("ca_file", "passfile"):
         if not isinstance(cfg[key], str) or not Path(cfg[key]).is_absolute():
             raise Refused("caminhos absolutos obrigatorios")
@@ -133,14 +171,23 @@ def connect(principal=None, *, read_only=False):
         raise Refused("LOGIN fora da lista autorizada")
     c = None
     try:
-        c = psycopg.connect(
-            host=CONFIG["host"], port=CONFIG["port"], dbname=CONFIG["database"],
-            user=connection_user(user), passfile=CONFIG["passfile"], sslmode="verify-full",
-            sslrootcert=CONFIG["ca_file"], connect_timeout=10,
-            application_name="acqua-rt-homolog-contract",
-            # Nao confiar em GUCs de startup: o Session Pooler pode ignora-las.
-            options="",
-            prepare_threshold=None, autocommit=True)
+        credentials = dict(passfile=CONFIG["passfile"], options="")
+        if CONFIG.get("test_auth_mode", "passfile") == "jit_dpapi" and user in ROLES:
+            # Revalidar o manifesto tambem nas chamadas programaticas. Sem fallback.
+            validate(CONFIG, LOCAL)
+            pace_jit()
+            credentials = dict(password=jit_dpapi.read_token(CONFIG["jit_token_file"]),
+                               passfile=os.devnull, options="-c jit=true")
+        try:
+            c = psycopg.connect(
+                host=CONFIG["host"], port=CONFIG["port"], dbname=CONFIG["database"],
+                user=connection_user(user), sslmode="verify-full",
+                sslrootcert=CONFIG["ca_file"], connect_timeout=10,
+                application_name="acqua-rt-homolog-contract",
+                # Nao confiar em GUCs de startup: o Session Pooler pode ignora-las.
+                prepare_threshold=None, autocommit=True, **credentials)
+        finally:
+            credentials.clear()
         identity = c.execute(
             "SELECT session_user,current_user,current_database(),"
             "shobj_description(oid,'pg_database') "
@@ -328,8 +375,73 @@ class SupabaseTests(base.ContractTests):
             command.append("--local")
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(command, check=True, capture_output=True,
-                                    text=True, cwd=directory, timeout=45)
+                                    text=True, cwd=directory, timeout=45,
+                                    env=recovery_environment())
         self.assertIn("RECOVERY_OK", result.stdout)
+
+
+def row_fingerprints(c):
+    """md5 de cada linha RT existente; somente leitura, sem expor conteudo."""
+    return {table: frozenset(r[0] for r in c.execute(
+                sql.SQL("SELECT md5(row_to_json(t)::text) FROM rt_persist.{} t")
+                .format(sql.Identifier(table))).fetchall())
+            for table in RT_TABLES}
+
+
+def selected_preflight(c):
+    """Exige as fixtures da rodada anterior intactas; nunca insere nem apaga base."""
+    companies = {r[0] for r in c.execute("SELECT company_id FROM rt_persist.companies").fetchall()}
+    if companies != {base.C1, base.C2}:
+        raise Refused("empresas ficticias da rodada anterior divergentes")
+    condos = set(c.execute("SELECT company_id,condominium_id FROM rt_persist.condominiums").fetchall())
+    if not {(base.C1, base.D1), (base.C1, base.D2), (base.C2, base.D1),
+            (base.C1, base.MARKER)} <= condos:
+        raise Refused("condominios ficticios da rodada anterior ausentes")
+    scopes = set(c.execute("SELECT principal,company_id,condominium_id,period "
+                           "FROM rt_persist.access_scopes").fetchall())
+    if not {("rt_test_a", base.C1, base.D1, base.PERIOD), ("rt_test_a", base.C1, base.D2, base.PERIOD),
+            ("rt_test_b", base.C2, base.D1, base.PERIOD),
+            ("rt_test_a", base.C1, base.MARKER, base.PERIOD)} <= scopes:
+        raise Refused("escopos ficticios da rodada anterior ausentes")
+    if {s for s in scopes if s[0] != "rt_test_a"} != {("rt_test_b", base.C2, base.D1, base.PERIOD)}:
+        raise Refused("escopos inesperados para rt_test_b ou rt_test_none")
+    if c.execute("SELECT count(*) FROM rt_persist.revisions WHERE condominium_id=%s",
+                 (base.MARKER,)).fetchone()[0] != 1:
+        raise Refused("marcador de recuperacao da rodada anterior ausente")
+    return row_fingerprints(c)
+
+
+class SupabaseSelectedTests(base.ContractTests):
+    """Somente SELECTED; metodos e assercoes herdados sem alteracao."""
+    @classmethod
+    def setUpClass(cls):
+        inspect()
+        with connect(read_only=True) as c:
+            cls.preexisting = selected_preflight(c)
+            c.rollback()
+
+    @classmethod
+    def tearDownClass(cls):
+        with connect(read_only=True) as c:
+            after = row_fingerprints(c)
+            c.rollback()
+        for table, rows in cls.preexisting.items():
+            if not rows <= after[table]:
+                raise Refused("dados da rodada anterior alterados: " + table)
+
+
+def selected_suite():
+    suite = unittest.TestSuite(SupabaseSelectedTests(name) for name in SELECTED)
+    if suite.countTestCases() != 3 or len(set(SELECTED)) != 3:
+        raise Refused("selecao de cenarios alterada")
+    return suite
+
+
+def recovery_environment():
+    """O filho relera o mesmo manifesto e DPAPI; nenhum token via argv/ambiente."""
+    return {key: value for key, value in os.environ.items()
+            if not key.upper().startswith("PG") and key.upper() not in (
+                "SUPABASE_ACCESS_TOKEN", "SUPABASE_MANAGEMENT_API_TOKEN", "RT_JIT_TOKEN")}
 
 
 class SafeResult(unittest.TextTestResult):
@@ -348,9 +460,12 @@ def main():
     parser.add_argument("--inspect-session", action="store_true")
     parser.add_argument("--recover", action="store_true")
     parser.add_argument("--run-fixtures", action="store_true")
+    parser.add_argument("--run-selected", action="store_true")
     args = parser.parse_args()
+    global JIT_MIN_INTERVAL
     try:
-        if sum((args.inspect, args.inspect_session, args.recover, args.run_fixtures)) != 1:
+        if sum((args.inspect, args.inspect_session, args.recover, args.run_fixtures,
+                args.run_selected)) != 1:
             raise Refused("selecionar uma unica operacao")
         load_config(args.config, args.local)
         base.connect = connect
@@ -361,6 +476,11 @@ def main():
             print("INSPECTION_OK")
         elif args.recover:
             base.verify_marker()
+        elif args.run_selected:
+            suite = selected_suite()
+            JIT_MIN_INTERVAL = SELECTED_JIT_INTERVAL
+            result = unittest.TextTestRunner(verbosity=2, resultclass=SafeResult).run(suite)
+            return 0 if result.wasSuccessful() else 1
         else:
             suite = unittest.defaultTestLoader.loadTestsFromTestCase(SupabaseTests)
             if suite.countTestCases() != 15:

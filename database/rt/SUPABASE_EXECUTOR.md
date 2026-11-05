@@ -212,3 +212,124 @@ Limites: resultado local nao comprova disponibilidade IPv6, CA, privilegios ou
 politicas do Supabase. Plano Free nao estabelece backup/PITR adequado a producao.
 O runner usa LOGINs de teste por identidade; nao integra autenticacao Streamlit.
 Nenhuma etapa 3 a 9, exportacao Sheets ou migracao de dados reais e implementada.
+
+
+## Temporary Access (JIT) para os tres papeis de teste
+
+Modo opt-in, sem alterar o contrato RT, as memberships ou os 15 cenarios.
+Somente `rt_test_a`, `rt_test_b` e `rt_test_none` usam JIT. `postgres` continua
+pelo passfile administrativo privado existente, sem token e sem `jit=true`.
+O modo anterior continua sendo o padrao (`test_auth_mode="passfile"`).
+
+O modo JIT exige o projeto `xfumoyxmhpxmqidmxjhq`, host exato
+`aws-1-sa-east-1.pooler.supabase.com`, banco `postgres`, porta 5432 e
+`connection_mode="session_pooler"`. Nao aceita destino local, conexao direta,
+Transaction Pooler ou outro indice/regiao/ref. As verificacoes existentes de
+marcador, identidade SQL real, CA, TLS do cliente/backend, timeouts por SQL,
+READ ONLY nas inspecoes e permissoes permanecem ativas.
+
+Preparar futuramente um manifesto privado separado, fora de ambos os worktrees,
+copiando os campos ja validados do manifesto do Session Pooler. Preservar o
+passfile anterior, que neste modo e usado somente pelo administrador. Adicionar:
+
+```toml
+test_auth_mode = "jit_dpapi"
+jit_token_file = 'C:\Users\SEU_USUARIO\AppData\Local\AcquaGestao\secrets\rt-tests.dpapi'
+```
+
+O arquivo apontado deve existir fora do repositorio e ter owner igual ao usuario
+Windows que executa o processo. A DACL deve conceder acesso somente a esse usuario,
+SYSTEM e/ou Administradores locais. Links/junctions, reparse points, DACL aberta,
+ACLs nao suportadas e arquivos maiores que 64 KiB sao recusados. Nenhuma ACL e
+alterada pelo executor. O formato aceito e DPAPI Windows sem entropia adicional:
+blob binario ou hexadecimal de `ConvertFrom-SecureString` com DPAPI (sem `-Key`),
+em arquivo UTF-8 ou UTF-16. O texto protegido deve ser um PAT `sbp_...` completo,
+sem espacos, quebras de linha ou wrappers. JWT e arquivo de token em texto puro
+nao sao aceitos. Os testes usam apenas um valor sintetico nao emitido pelo Supabase.
+
+Cada conexao de teste descriptografa pelo Windows no processo atual e passa o PAT
+apenas ao argumento de memoria `password` do driver. Envia `options="-c jit=true"`
+e o usuario de roteamento `<papel>.<ref>`; exige `session_user=current_user=<papel>`.
+O passfile da conexao JIT e explicitamente desabilitado (`os.devnull`). Ausencia,
+formato invalido, ACL inadequada, erro DPAPI ou recusa do servidor interrompem a
+conexao; nao ha fallback, criacao de senha, geracao/renovacao de token ou concessao.
+Um token com sintaxe valida ainda pode estar expirado/revogado: o servidor decide
+a autenticacao. O executor nao consulta nem modifica a Management API.
+
+O PAT nao e armazenado em globais, argv, ambiente, SQL, logs ou arquivos em texto
+puro. O buffer nativo DPAPI e zerado antes de `LocalFree`; as referencias temporarias
+sao liberadas apos conectar. Python/libpq podem reter copias imutaveis em memoria;
+nao ha promessa de apagamento forense. Nao habilitar debugger, tracing, dumps,
+logs do driver ou gravacao de memoria durante uma futura execucao real.
+
+A recuperacao em novo processo recebe somente o caminho do mesmo manifesto. O
+filho relera o modo JIT e descriptografara o arquivo sob o mesmo usuario Windows.
+O ambiente do filho exclui defaults `PG*` e variaveis conhecidas de tokens. Nenhum
+token e transmitido por argv/ambiente. A assercao original `RECOVERY_OK`, a revisao
+unica e a idempotencia do teste de recuperacao continuam inalteradas.
+
+### Comandos preparados; nao executados remotamente nesta etapa
+
+Antes de qualquer comando remoto futuro: obter autorizacao, preparar nova concessao
+exclusiva para os tres papeis com prazo/IP restritos, confirmar validade/IP e habilitar
+LOGIN como acao autorizada separada, mantendo senhas nulas. O token e a concessao
+do piloto revogados nao servem para esta etapa. Este executor nao habilita/desabilita
+LOGIN e nao revoga concessoes; a limpeza administrativa e uma etapa separada.
+
+No diretorio `database/rt` do worktree JIT, com as dependencias de teste instaladas:
+
+```powershell
+python -B -m unittest -v test_supabase_guard test_supabase_jit
+```
+
+Para uma futura rodada autorizada, na raiz do worktree JIT:
+
+```powershell
+$jitManifest = Join-Path $env:LOCALAPPDATA 'AcquaGestao\rt-homologacao\authorization.jit.toml'
+python database/rt/supabase_runner.py --config $jitManifest --inspect
+# Somente apos INSPECTION_OK e confirmacao de tabelas vazias; executar uma vez:
+python database/rt/supabase_runner.py --config $jitManifest --run-fixtures
+```
+
+`--run-fixtures` inclui a recuperacao em novo processo entre os 15 testes; nao
+repetir a suite nem iniciar uma recuperacao extra para contornar falhas. Na falha,
+preservar dados e resultados sanitizados. Nesta adaptacao foram executados somente
+testes offline; nenhum SQL remoto, fixture, senha, token real ou concessao foi usado.
+
+Referencias oficiais:
+- https://supabase.com/docs/guides/platform/temporary-access
+- https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptunprotectdata
+
+### Reexecucao seletiva (`--run-selected`) — somente os tres cenarios recusados
+
+Na rodada de 2026-11-04 (INSPECTION_OK, 15 cenarios, 44,8 s) 12 passaram e 3 terminaram
+em ERROR com `Refused` na abertura da conexao: `test_setting_cannot_forge_authorization`,
+`test_simultaneous_same_operation_is_one_revision` e `test_stale_retry_cannot_regress_head`.
+Os logs do Pooler registraram "A solicitacao JIT falhou para o usuario rt_test_a: erro de
+API inesperado" (21:21:50-52); a recusa ocorreu na validacao JIT do servico, antes do SQL.
+
+    python database/rt/supabase_runner.py --config $jitManifest --run-selected
+
+- Executa `--inspect` completo e depois somente `SELECTED` (exatamente 3 cenarios).
+- Os metodos sao herdados de `ContractTests` sem alteracao; assercoes identicas.
+- Pre-verificacao somente leitura exige as fixtures da rodada anterior (empresas,
+  condominios, escopos, marcador de recuperacao) e recusa escopos de `rt_test_none`.
+  Nao insere fixtures-base, nao apaga, nao limpa.
+- Cada cenario cria seu proprio condominio ficticio novo (`setUp` original, UUID aleatorio).
+- Antes de executar, registra md5 de cada linha RT existente; ao final exige que todas
+  continuem presentes (dados da rodada anterior preservados), senao falha.
+- Espaca aberturas JIT em 2 s, sem retry: uma recusa continua sendo falha.
+- Nao executa a recuperacao em novo processo nem os demais 12 cenarios.
+- Concessao, LOGIN temporario, limpeza e revogacao continuam etapas administrativas separadas.
+
+### Resultado registrado da homologacao (2026-11-04)
+
+- Rodada 1 (`--run-fixtures`, 15 cenarios, 44,8 s): 12 ok, 3 ERROR por recusa JIT do
+  servico na abertura de conexao (sem SQLSTATE; sem execucao de assercao).
+- Rodada 2 (`--run-selected`, 3 cenarios, 28,6 s): 3 ok; dados da rodada 1 preservados.
+- Consolidado: 15 de 15 cenarios unicos aprovados contra a homologacao; 0 falhas; 0 sem execucao.
+- Ao final de cada rodada: LOGINs `rt_test_*` NOLOGIN, senha nula, zero sessoes;
+  regra temporaria excluida e token revogado (API 401).
+- Ambiente local das rodadas: Windows, Python 3.14, `psycopg[binary]` 3.2.13 em venv
+  temporario (3.2.6 nao publica wheel para 3.14). O projeto, o devcontainer e o CI usam
+  Python 3.12 com `psycopg[binary]==3.2.6`; o pin de `requirements-test.txt` nao foi alterado.
