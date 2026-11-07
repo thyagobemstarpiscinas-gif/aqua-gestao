@@ -1,0 +1,12 @@
+# Copiar para FORA do repositorio; preencher localmente e chmod 600.
+# Nao contem senhas. Nenhum endpoint esta autorizado enquanto houver placeholders.
+environment = "homologacao"
+project_name = "acqua-gestao-homologacao"
+project_ref = "PREENCHER_REF_REAL"
+host = "db.PREENCHER_REF_REAL.supabase.co"
+port = 5432
+database = "postgres"
+marker = "PREENCHER_32_HEXADECIMAIS"
+admin_user = "postgres"
+ca_file = "/caminho/absoluto/ca-supabase.crt"
+passfile = "/caminho/absoluto/pgpass-homologacao"
