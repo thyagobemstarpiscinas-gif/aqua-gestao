@@ -44,6 +44,8 @@ if AppTest is not None:
     instalar()
 
 PIN_FICTICIO = "pin-ficticio-teste"
+# Coluna "Operador" (U) de visita técnica: o mensal RT só importa visitas com marca de RT.
+RT_FICTICIO = "Responsável Técnico Fictício"
 CAMPOS = ("rel_nome_condominio", "rel_endereco_condominio", "rel_representante",
           "rel_cnpj_condominio", "rel_mes_referencia", "rel_ano_referencia")
 
@@ -265,7 +267,7 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
 
         # Nova visita depois da recuperação, com a tabela editada pelo usuário: nada é sobrescrito.
         at.text_input(key="rel_analise_ph_0").input("7,9").run()
-        linha = ["", "V2", "22/09/2026", "", "Condomínio Alfa Fictício", "7,0", "1,2", "1,4", "80", "", "0"] + [""] * 15
+        linha = ["", "V2", "22/09/2026", "", "Condomínio Alfa Fictício", "7,0", "1,2", "1,4", "80", "", "0"] + [""] * 9 + [RT_FICTICIO] + [""] * 5
         visitas.linhas.append(linha)
         st_real.cache_data.clear()
         at.run()
@@ -327,7 +329,7 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         """Substitui as visitas fictícias de Alfa (data, nome gravado na visita, pH, CRL)."""
         aba = sys.modules["gspread"].PLANILHA.worksheet("🔬 Visitas")
         aba.linhas = aba.linhas[:1] + [
-            ["", f"V{i}", data, "", nome, ph, crl, "1,8", "90", "", "0"] + [""] * 15
+            ["", f"V{i}", data, "", nome, ph, crl, "1,8", "90", "", "0"] + [""] * 9 + [RT_FICTICIO] + [""] * 5
             for i, (data, nome, ph, crl) in enumerate(linhas, start=1)]
 
     def _analises(self, at, n=2):

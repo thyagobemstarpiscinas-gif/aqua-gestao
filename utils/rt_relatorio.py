@@ -164,15 +164,38 @@ def formatar_volume(v) -> str:
 
 
 # ── Leituras ─────────────────────────────────────────────────────────────────
+# Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
+# tratamento clorado simples), obtidos de utils.normas_piscinas. Cloro total não
+# tem limite próprio (avalia-se CC = CT − CRL) e por isso não recebe faixa.
+from utils.normas_piscinas import fora_limite as _fora_limite, limites as _limites, texto_limite as _texto_limite
+
+
+def _lim(campo):
+    mn, mx = _limites(campo)
+    return (0.0 if mn is None else mn), mx
+
+
 PARAMETROS = (
     # chave, rótulo, mínimo, máximo, unidade
-    ("ph", "pH", 7.2, 7.8, ""),
-    ("cloro_livre", "Cloro residual livre (CRL)", 0.5, 3.0, "mg/L"),
-    ("cloro_total", "Cloro total", 0.5, 3.0, "mg/L"),
-    ("alcalinidade", "Alcalinidade total", 80.0, 120.0, "mg/L CaCO3"),
-    ("dureza", "Dureza cálcica", 150.0, 300.0, "mg/L CaCO3"),
-    ("cianurico", "Ácido cianúrico", 30.0, 50.0, "mg/L"),
+    ("ph", "pH", *_lim("ph"), ""),
+    ("cloro_livre", "Cloro residual livre (CRL)", *_lim("crl"), "mg/L"),
+    ("cloro_total", "Cloro total", None, None, "mg/L"),
+    ("alcalinidade", "Alcalinidade total", *_lim("alcalinidade"), "mg/L CaCO3"),
+    ("dureza", "Dureza cálcica", *_lim("dureza"), "mg/L CaCO3"),
+    ("cianurico", "Ácido cianúrico", *_lim("cianurico"), "mg/L"),
 )
+
+
+def tem_limite(chave) -> bool:
+    return chave != "cloro_total" and _limites(chave) != (None, None)
+
+
+def dentro_limite(chave, valor) -> bool:
+    return not _fora_limite(chave, valor)
+
+
+def texto_faixa(chave) -> str:
+    return _texto_limite(chave) if tem_limite(chave) else "sem limite próprio"
 
 
 def leitura(texto):
@@ -312,11 +335,11 @@ def consolidar(linhas: list[dict], meses: list[tuple[int, int]]) -> dict:
             if not valores:
                 continue
             nums = [v for _, v in valores]
-            dentro = sum(1 for v in nums if mn <= v <= mx)
+            dentro = sum(1 for v in nums if dentro_limite(chave, v))
             grupo["parametros"][chave] = {
                 "rotulo": rotulo, "unidade": unidade, "faixa": (mn, mx), "n": len(nums),
                 "min": min(nums), "max": max(nums), "media": sum(nums) / len(nums),
-                "conformidade": 100.0 * dentro / len(nums),
+                "conformidade": (100.0 * dentro / len(nums)) if tem_limite(chave) else None,
             }
             for m, a in meses:
                 mes_vals = [v for d, v in valores if (d.month, d.year) == (m, a)]
@@ -347,7 +370,7 @@ def _fonte(tam: int, bold: bool = False):
 
 def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x: list[str], titulo: str,
                   subtitulo: str, destino: Path, parametros=PARAMETROS) -> Path | None:
-    """Painéis por parâmetro com faixa ideal em verde. series: [(chave, valores)]."""
+    """Painéis por parâmetro com o limite aceitável da NBR 10818:2026 em verde."""
     from PIL import Image, ImageDraw
     paineis = [(p, dict(series or {}).get(p[0])) for p in parametros]
     paineis = [(p, vals) for p, vals in paineis if vals and any(v is not None for v in vals)]
@@ -370,15 +393,19 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         cx, cy = 30 + (i % colunas) * larg_painel, topo + (i // colunas) * alt_painel
         x0, x1, y0, y1 = cx + 80, cx + larg_painel - 30, cy + 50, cy + alt_painel - 70
         nums = [v for v in vals if v is not None]
-        vmin, vmax = min(nums + [mn]), max(nums + [mx])
+        com_faixa = mn is not None and mx is not None and tem_limite(chave)
+        vmin, vmax = min(nums + ([mn] if com_faixa else [])), max(nums + ([mx] if com_faixa else []))
         pad = max((vmax - vmin) * 0.15, 0.1)
         vmin, vmax = max(0.0, vmin - pad), vmax + pad
 
         def ym(v):
             return y1 - (v - vmin) / (vmax - vmin) * (y1 - y0)
         draw.text((cx + 10, cy + 8), f"{rotulo}" + (f" ({unidade})" if unidade else ""), fill=texto, font=f_rot)
-        draw.text((x1 - 260, cy + 12), f"Faixa ideal: {fmt_num(mn, 1)} a {fmt_num(mx, 1)}", fill=(34, 120, 70), font=f_eixo)
-        draw.rectangle((x0, ym(mx), x1, ym(mn)), fill=faixa)
+        if com_faixa:
+            draw.text((x1 - 300, cy + 12), f"Limite NBR 10818:2026: {texto_faixa(chave)}", fill=(34, 120, 70), font=f_eixo)
+            draw.rectangle((x0, ym(mx), x1, ym(mn)), fill=faixa)
+        else:
+            draw.text((x1 - 300, cy + 12), "Sem limite próprio (avaliar CC)", fill=cinza, font=f_eixo)
         for g in range(5):
             y = y0 + (y1 - y0) * g / 4
             draw.line((x0, y, x1, y), fill=grid)
@@ -393,9 +420,9 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         if len(pts) > 1:
             draw.line([(x, y) for x, y, _ in pts], fill=linha_cor, width=4)
         for x, y, v in pts:
-            cor = linha_cor if mn <= v <= mx else fora
+            cor = fora if com_faixa and not dentro_limite(chave, v) else linha_cor
             draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=cor, outline=(255, 255, 255), width=2)
-    draw.text((50, altura - 45), "Faixa verde: limites operacionais de referência. Pontos vermelhos: leitura fora da faixa.",
+    draw.text((50, altura - 45), "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite.",
               fill=cinza, font=f_eixo)
     draw.line((0, 112, largura, 112), fill=dourado, width=4)
     destino = Path(destino)

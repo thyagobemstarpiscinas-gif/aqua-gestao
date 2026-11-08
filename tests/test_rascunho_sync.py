@@ -41,7 +41,13 @@ class TestPendenciaDuravel(unittest.TestCase):
             self.assertEqual(nova["ss"][k], v)
         self.assertEqual(gestor.ler(chave)["dados"]["campos"]["rel_diagnostico"], "EDICAO_LOCAL_PENDENTE")
 
-    def test_empate_duas_variantes_e_retentativa_nao_sobrescreve(self):
+    def divergir(self, chave, texto):
+        """Outro gravador altera a linha remota da chave depois da base local (conflito real)."""
+        outra = copy.deepcopy(self.s["_relatorio_rt_desserializar"](self.amb.linhas(chave)[0]))
+        outra["campos"]["rel_diagnostico"] = texto
+        self.s["_relatorio_rt_gravar_linha"](self.amb.aba(), chave, outra)
+
+    def test_empate_duas_variantes_pendencia_de_envio_nao_e_conflito(self):
         chave, gestor = self.pendencia()
         remota = copy.deepcopy(self.amb.linhas(chave))
         local = gestor.ler(chave)["dados"]
@@ -53,8 +59,25 @@ class TestPendenciaDuravel(unittest.TestCase):
         lista = self.s["_relatorio_rt_listar_rascunhos"]()["versoes"]
         variantes = [v for v in lista if v["chave"] == chave]
         self.assertEqual({v["origem"] for v in variantes}, {"local", "planilha"})
-        self.assertTrue(all(v["conflito"] for v in variantes))
+        # A linha remota é a base da cópia local: falha de conexão, não divergência.
+        self.assertFalse(any(v["conflito"] for v in variantes))
         self.assertEqual(lista[0]["origem"], "local")
+        self.assertEqual(gestor.ler(chave)["estado"], "pendente")
+        self.s["ss"]["_rt_rasc_proxima_tentativa"] = 0
+        self.assertTrue(self.s["_relatorio_rt_sincronizar_pendentes"]())
+        self.assertEqual(self.s["_relatorio_rt_desserializar"](self.amb.linhas(chave)[0])["campos"]["rel_diagnostico"],
+                         "EDICAO_LOCAL_PENDENTE")
+        self.assertEqual(len(self.amb.linhas(chave)), 1)
+        nova = self.sessao()
+        self.assertTrue(nova["_relatorio_rt_sincronizar_pendentes"]())
+        self.assertNotIn("_rt_rasc_aviso", nova["ss"])
+
+    def test_empate_com_conflito_real_nao_sobrescreve(self):
+        chave, gestor = self.pendencia()
+        self.divergir(chave, "REMOTA_ALTERADA_POR_OUTRO")
+        remota = copy.deepcopy(self.amb.linhas(chave))
+        variantes = [v for v in self.s["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave]
+        self.assertTrue(variantes and all(v["conflito"] for v in variantes))
         self.assertEqual(self.s["_relatorio_rt_carregar_rascunho"](), {})
         for s in (self.s, self.sessao()):
             s["ss"]["_rt_rasc_proxima_tentativa"] = 0
@@ -64,6 +87,7 @@ class TestPendenciaDuravel(unittest.TestCase):
 
     def test_todos_caminhos_de_envio_bloqueiam_reenvio_divergente(self):
         chave, gestor = self.pendencia()
+        self.divergir(chave, "REMOTA_ALTERADA_POR_OUTRO")
         remota = copy.deepcopy(self.amb.linhas(chave))
         with self.assertRaises(ConflitoRascunho):
             self.s["_relatorio_rt_enviar_planilha"](self.amb.aba(), chave, gestor.ler(chave)["dados"])
@@ -73,6 +97,7 @@ class TestPendenciaDuravel(unittest.TestCase):
 
     def test_restaura_ambas_variantes_em_novas_chaves(self):
         chave, gestor = self.pendencia()
+        self.divergir(chave, "REMOTA_ALTERADA_POR_OUTRO")  # conflito real
         remota = copy.deepcopy(self.amb.linhas(chave))
         variantes = [v for v in self.s["_relatorio_rt_listar_rascunhos"]()["versoes"] if v["chave"] == chave]
         for v in variantes:
@@ -170,6 +195,7 @@ class TestPendenciaDuravel(unittest.TestCase):
     def test_restauracao_explicita_preserva_edicao_ativa_diferente_da_pendencia(self):
         chave, gestor = self.pendencia()
         remota = copy.deepcopy(self.amb.linhas(chave))
+        self.amb.aba().falhar = True  # planilha ainda indisponível na restauração
         self.s["ss"]["rel_diagnostico"] = "ATIVA_AINDA_NAO_SALVA"
         self.assertTrue(self.s["_guardar_rascunho_rt_antes_da_troca"](restauracao_explicita=True))
         self.assertEqual(gestor.ler(chave)["dados"]["campos"]["rel_diagnostico"], "EDICAO_LOCAL_PENDENTE")

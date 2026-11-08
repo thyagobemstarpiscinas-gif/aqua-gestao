@@ -1,25 +1,41 @@
 """Campos mensais Bem Star, instanciados depois da seleção e troca do contexto."""
 from utils.bem_star_mensal import (PARAMETROS, TIPOS, AVISO, contexto_id, expandir, tipo_inferido,
-                                  token_pool, chave_campo, anexar_foto, data_ordem)
+                                  token_pool, chave_campo, anexar_foto, data_ordem, chave_piscina,
+                                  canonizar_nomes_piscinas)
 
 
-def renderizar_piscinas(st, lancamentos):
+SUGESTOES_PISCINAS = ['Piscina Adulto', 'Piscina Infantil', 'Piscina principal']
+
+
+def renderizar_piscinas(st, lancamentos, cadastradas=()):
+    """Piscinas do relatório. Nomes do cadastro e das visitas prevalecem.
+
+    Sugestões genéricas e seleções restauradas que forem outra grafia de uma
+    piscina existente ("Piscina adulta" × "Piscina Adulto") são convertidas
+    para o nome existente, sem criar uma piscina extra no PDF.
+    """
     ss = st.session_state
     # Protege os campos das piscinas recolhidas da limpeza automática de widgets.
     for k in list(ss):
         if k.startswith('bs_agenda_pool_'):
             ss[k] = ss[k]
-    existentes = list(dict.fromkeys(l['piscina'] for l in expandir(lancamentos)))
+    cadastradas = canonizar_nomes_piscinas(cadastradas)
+    existentes = list(dict.fromkeys(l['piscina'] for l in expandir(lancamentos, cadastradas)))
+    conhecidas = canonizar_nomes_piscinas(cadastradas + existentes)
     st.markdown('### Piscinas do relatório')
     st.caption('Cada piscina tem leituras, dosagens e gráficos próprios. Classifique a piscina principal como Adulto ou Infantil quando aplicável.')
     extras = st.text_input('Outras piscinas (separe os nomes por ponto e vírgula)', key='bs_mensal_outras',
                            placeholder='Ex.: Piscina aquecida; Spa')
-    opcoes = list(dict.fromkeys(existentes + ['Piscina adulta', 'Piscina infantil', 'Piscina principal'] +
-                               [n.strip() for n in extras.split(';') if n.strip()] + list(ss.get('bs_mensal_piscinas') or [])))
-    if not ss.get('bs_mensal_piscinas'):
-        ss['bs_mensal_piscinas'] = existentes or ['Piscina adulta']
+    selecionadas = canonizar_nomes_piscinas(ss.get('bs_mensal_piscinas') or [], conhecidas)
+    if not selecionadas:
+        selecionadas = list(existentes or cadastradas or SUGESTOES_PISCINAS[:1])
+    sugestoes = SUGESTOES_PISCINAS if not conhecidas else []
+    opcoes = canonizar_nomes_piscinas(conhecidas + sugestoes + [n.strip() for n in extras.split(';') if n.strip()]
+                                      + selecionadas, conhecidas)
+    if list(ss.get('bs_mensal_piscinas') or []) != selecionadas:
+        ss['bs_mensal_piscinas'] = selecionadas
     st.multiselect('Piscinas para preencher na agenda', opcoes, key='bs_mensal_piscinas')
-    nomes = list(dict.fromkeys(existentes + list(ss.get('bs_mensal_piscinas') or [])))
+    nomes = canonizar_nomes_piscinas(existentes + list(ss.get('bs_mensal_piscinas') or []), conhecidas)
     st.caption('As piscinas já presentes nas visitas salvas permanecem no relatório. Esta seleção define os campos manuais da agenda.')
     for nome in nomes:
         chave = f'bs_mensal_tipo_{token_pool(nome)}'
@@ -33,13 +49,13 @@ def renderizar_piscinas(st, lancamentos):
 def renderizar_agenda(st, lancamentos, datas, preencher):
     ss = st.session_state
     originais = {}
-    for linha in expandir(lancamentos):
-        originais.setdefault((linha['data'], linha['piscina']), linha)
+    for linha in expandir(lancamentos, ss.get('bs_mensal_piscinas') or []):
+        originais.setdefault((linha['data'], chave_piscina(linha['piscina'])), linha)
     for data in datas:
         with st.expander(f'Visita — {data}', expanded=False):
             for nome in ss.get('bs_mensal_piscinas', []) or []:
                 st.markdown(f'**{nome} · {ss.get("bs_mensal_tipo_" + token_pool(nome), "Não informado")}**')
-                base = originais.get((data, nome), {})
+                base = originais.get((data, chave_piscina(nome)), {})
                 # Somente a piscina de mesmo nome preenche seus campos.
                 for k, _, _ in PARAMETROS:
                     preencher(chave_campo(nome, data, k), base.get(k, ''))

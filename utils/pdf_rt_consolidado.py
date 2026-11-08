@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from utils.capa_acqua import desenhar_capa
-from utils.rt_relatorio import MARCA_COMPLETA, PARAMETROS, fmt_num, formatar_volume, texto_art
+from utils.rt_relatorio import MARCA_COMPLETA, PARAMETROS, fmt_num, formatar_volume, tem_limite, texto_art, texto_faixa
 
 
 def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bool, str | None]:
@@ -16,22 +16,31 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
         from reportlab.lib.enums import TA_JUSTIFY
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.lib.units import mm
         from reportlab.platypus import Image as RLImage
         from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
         from PIL import Image as PILImage
         from xml.sax.saxutils import escape
+        import reportlab
+
+        fonte_dir = Path(reportlab.__file__).parent / "fonts"
+        if "AcquaConsolidado" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("AcquaConsolidado", str(fonte_dir / "Vera.ttf")))
+            pdfmetrics.registerFont(TTFont("AcquaConsolidado-Bold", str(fonte_dir / "VeraBd.ttf")))
+        pdfmetrics.registerFontFamily("AcquaConsolidado", normal="AcquaConsolidado", bold="AcquaConsolidado-Bold")
 
         pdf_path = Path(pdf_path)
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         azul, azul2, claro = colors.HexColor("#173A5E"), colors.HexColor("#1D78A8"), colors.HexColor("#E8F1F7")
         cinza = colors.HexColor("#4D5661")
         ss = getSampleStyleSheet()
-        H1 = ParagraphStyle("H1c", parent=ss["Heading1"], fontName="Helvetica-Bold", fontSize=13, textColor=azul, spaceBefore=8, spaceAfter=4, keepWithNext=True)
-        H2 = ParagraphStyle("H2c", parent=ss["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, textColor=azul2, spaceBefore=6, spaceAfter=3, keepWithNext=True)
-        BODY = ParagraphStyle("Bc", parent=ss["BodyText"], fontName="Helvetica", fontSize=8.8, leading=11.4, alignment=TA_JUSTIFY)
-        CELL = ParagraphStyle("Cc", parent=ss["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.4)
-        CELLB = ParagraphStyle("CBc", parent=CELL, fontName="Helvetica-Bold", textColor=colors.white)
+        H1 = ParagraphStyle("H1c", parent=ss["Heading1"], fontName="AcquaConsolidado-Bold", fontSize=13, textColor=azul, spaceBefore=8, spaceAfter=4, keepWithNext=True)
+        H2 = ParagraphStyle("H2c", parent=ss["Heading2"], fontName="AcquaConsolidado-Bold", fontSize=10.5, textColor=azul2, spaceBefore=6, spaceAfter=3, keepWithNext=True)
+        BODY = ParagraphStyle("Bc", parent=ss["BodyText"], fontName="AcquaConsolidado", fontSize=8.8, leading=11.4, alignment=TA_JUSTIFY)
+        CELL = ParagraphStyle("Cc", parent=ss["BodyText"], fontName="AcquaConsolidado", fontSize=7.6, leading=9.4)
+        CELLB = ParagraphStyle("CBc", parent=CELL, fontName="AcquaConsolidado-Bold", textColor=colors.white)
 
         def P(t, st=BODY):
             return Paragraph(escape(str(t if t is not None else "")), st)
@@ -64,12 +73,12 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
             canvas.saveState()
             canvas.setStrokeColor(azul2)
             canvas.line(14 * mm, h - 16 * mm, w - 14 * mm, h - 16 * mm)
-            canvas.setFont("Helvetica-Bold", 8.5)
+            canvas.setFont("AcquaConsolidado-Bold", 8.5)
             canvas.setFillColor(azul)
             canvas.drawString(14 * mm, h - 13 * mm, "ACQUA GESTÃO")
             canvas.drawRightString(w - 14 * mm, h - 13 * mm, f"RELATÓRIO CONSOLIDADO — {ctx.get('periodo_rotulo', '').upper()}")
             canvas.line(14 * mm, 13 * mm, w - 14 * mm, 13 * mm)
-            canvas.setFont("Helvetica", 7)
+            canvas.setFont("AcquaConsolidado", 7)
             canvas.setFillColor(cinza)
             canvas.drawString(14 * mm, 8.5 * mm, MARCA_COMPLETA)
             canvas.drawRightString(w - 14 * mm, 8.5 * mm, f"Página {doc.page}")
@@ -102,20 +111,26 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
         cons = ctx.get("consolidado") or {}
         story.append(P("3. SÍNTESE DOS PARÂMETROS POR PISCINA", H1))
         story.append(P("Leitura inicial de cada visita (quando registrada como antes/após, considera-se o primeiro valor). "
-                       "Conformidade: percentual de leituras dentro da faixa de referência."))
+                       "Faixa: limite aceitável da ABNT NBR 10818:2026, Tabela 3 (piscina coletiva, tratamento clorado simples). "
+                       "Cloro total não tem limite próprio; avalia-se o cloro combinado. O percentual dentro do limite "
+                       "considera apenas as leituras registradas e não representa comprovação de conformidade normativa integral."))
         if not cons.get("piscinas"):
             story.append(P("Nenhuma leitura encontrada para o período selecionado."))
         for nome, grupo in (cons.get("piscinas") or {}).items():
             story.append(P(f"{nome} — {len(grupo['linhas'])} registro(s)", H2))
-            linhas = [["Parâmetro", "Faixa", "Leituras", "Mínimo", "Média", "Máximo", "Conformidade"]]
+            linhas = [["Parâmetro", "Faixa", "Leituras", "Mínimo", "Média", "Máximo", "% no limite"]]
             for chave, *_ in PARAMETROS:
                 p = grupo["parametros"].get(chave)
                 if not p:
                     continue
                 casas = 2 if p["max"] < 20 else 0
-                linhas.append([p["rotulo"], f"{fmt_num(p['faixa'][0], 1)}–{fmt_num(p['faixa'][1], 1)} {p['unidade']}".strip(),
+                faixa_txt = texto_faixa(chave)
+                if tem_limite(chave) and p["unidade"]:
+                    faixa_txt = f"{faixa_txt} {p['unidade']}"
+                pct = "—" if p.get("conformidade") is None else f"{fmt_num(p['conformidade'], 0)}%"
+                linhas.append([p["rotulo"], faixa_txt,
                                str(p["n"]), fmt_num(p["min"], casas), fmt_num(p["media"], casas), fmt_num(p["max"], casas),
-                               f"{fmt_num(p['conformidade'], 0)}%"])
+                               pct])
             story.append(tabela(linhas, [44 * mm, 34 * mm, 18 * mm, 20 * mm, 20 * mm, 20 * mm, 26 * mm]))
             if grupo["mensal"]:
                 cab = ["Mês"] + [r for k, r, *_ in PARAMETROS if k in grupo["parametros"]]
@@ -135,7 +150,8 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
             story.append(PageBreak())
             story.append(P("4. GRÁFICOS HISTÓRICOS POR PISCINA", H1))
             for nome, g in graficos:
-                iw, ih = PILImage.open(g).size
+                with PILImage.open(g) as grafico_imagem:
+                    iw, ih = grafico_imagem.size
                 largura = 182 * mm
                 story.append(P(nome, H2))
                 story.append(RLImage(str(g), width=largura, height=largura * ih / iw))
@@ -143,7 +159,7 @@ def gerar_pdf_consolidado(ctx: dict, pdf_path: Path, logo_path=None) -> tuple[bo
 
         story.append(P("5. CONSIDERAÇÕES DO RESPONSÁVEL TÉCNICO", H1))
         story.append(P(ctx.get("parecer") or "Síntese elaborada a partir dos registros do período. Recomenda-se a manutenção "
-                       "da rotina de monitoramento e a correção imediata de leituras fora da faixa de referência."))
+                       "da rotina de monitoramento e a correção imediata de leituras fora dos limites da ABNT NBR 10818:2026."))
         story.append(Spacer(1, 14 * mm))
         story.append(P("_______________________________________________", CELL))
         story.append(P(f"{ctx.get('responsavel', '')} — {ctx.get('crq', '')}", CELL))

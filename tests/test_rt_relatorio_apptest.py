@@ -19,10 +19,11 @@ from utils.rt_contexto import ler_fotos
 
 
 def _visita(i, data, piscinas):
-    payload = {"data": data, "condominio": "Condomínio Alfa Fictício", "operador": "Operador Fictício",
-               "status": "Concluída", "piscinas": piscinas}
+    payload = {"data": data, "condominio": "Condomínio Alfa Fictício", "operador": "Responsável Técnico Fictício",
+               "status": "Concluída", "piscinas": piscinas,
+               "visita_rt_semanal": True, "tipo_visita": "RT semanal"}  # visita técnica RT
     return ["", f"VP{i}", data, "C1", "Condomínio Alfa Fictício", "", "", "", "", "", ""] + [""] * 8 + \
-        ["Concluída", "Operador Fictício", "", json.dumps(payload, ensure_ascii=False)]
+        ["Concluída", "Responsável Técnico Fictício", "", json.dumps(payload, ensure_ascii=False)]
 
 
 @unittest.skipIf(AppTest is None, "Streamlit obrigatório")

@@ -45,7 +45,109 @@ def data_ordem(valor):
 
 
 def nome_piscina(pool):
-    return str(pool.get('nome') or pool.get('piscina') or 'Piscina principal').strip()
+    return re.sub(r'\s+', ' ', str(pool.get('nome') or pool.get('piscina') or 'Piscina principal')).strip()
+
+
+# Variações de grafia que designam a mesma piscina ("Piscina adulta" e
+# "Piscina Adulto"). Números, outras palavras e tipos diferentes continuam
+# distinguindo piscinas: "Piscina Adulto 2" e "Piscina Infantil" não se unem.
+_SINONIMOS_POOL = {'adulta': 'adulto', 'adultos': 'adulto', 'adultas': 'adulto',
+                   'infantis': 'infantil', 'piscinas': 'piscina'}
+
+
+def chave_piscina(nome):
+    """Chave de comparação do nome da piscina (caixa, acento, espaços, gênero)."""
+    import unicodedata
+    texto = unicodedata.normalize('NFKD', str(nome or '')).casefold()
+    texto = ''.join(c for c in texto if not unicodedata.combining(c))
+    tokens = re.findall(r'[a-z0-9]+', texto)
+    return ' '.join(_SINONIMOS_POOL.get(t, t) for t in tokens)
+
+
+def canonizar_nomes_piscinas(nomes, preferidos=()):
+    """Remove duplicatas equivalentes mantendo o nome preferido (cadastro) ou o primeiro."""
+    escolhido = {}
+    for nome in list(preferidos or []):
+        nome = re.sub(r'\s+', ' ', str(nome or '')).strip()
+        if nome:
+            escolhido.setdefault(chave_piscina(nome), nome)
+    saida = []
+    for nome in nomes or []:
+        nome = re.sub(r'\s+', ' ', str(nome or '')).strip()
+        if not nome:
+            continue
+        final = escolhido.setdefault(chave_piscina(nome), nome)
+        if final not in saida:
+            saida.append(final)
+    return saida
+
+
+def _id_visita(lc):
+    return re.sub(r'\s+', '', str(lc.get('id_visita') or lc.get('id') or '')).upper()
+
+
+def _vazio(valor):
+    return valor is None or valor == '' or valor == [] or valor == {}
+
+
+def _assinatura_gravacao(lc):
+    """Data + momento da gravação + operador: identifica a mesma visita sem ID.
+
+    O modo campo grava a cópia local antes de o Sheets gerar o ID; o payload do
+    Sheets guarda o mesmo "salvo_em". Sem "salvo_em" não há assinatura segura.
+    """
+    from utils.datas_visitas import normalizar_data_visita
+    salvo = str(lc.get('salvo_em') or '').strip()
+    if not salvo:
+        return None
+    return (normalizar_data_visita(lc.get('data', '')), salvo,
+            re.sub(r'\s+', ' ', str(lc.get('operador') or '')).strip().casefold())
+
+
+def _combinar(base, novo):
+    for k, v in novo.items():
+        if not _vazio(v):
+            base[k] = deepcopy(v)
+
+
+def deduplicar_lancamentos(lancamentos):
+    """Uma entrada por visita: a mesma visita (local + Sheets) vira um único lançamento.
+
+    Identidade: ID da visita; para a cópia local gravada antes do ID existir,
+    data + "salvo_em" + operador. Os campos são combinados: valores não vazios
+    das ocorrências posteriores (Sheets, fonte oficial) prevalecem; campos que
+    só a cópia local tem (fotos em base64, nomes de arquivos) são mantidos.
+    Visitas com IDs diferentes nunca são unidas; sem ID nem assinatura, só
+    cópias idênticas são removidas.
+    """
+    saida, por_id, por_assinatura, vistos = [], {}, {}, set()
+    for lc in lancamentos or []:
+        if not isinstance(lc, dict):
+            continue
+        vid = _id_visita(lc)
+        assinatura = _assinatura_gravacao(lc)
+        existente = por_id.get(vid) if vid else None
+        if existente is None and assinatura in por_assinatura:
+            candidato = por_assinatura[assinatura]
+            if not vid or not _id_visita(candidato):
+                existente = candidato
+        if existente is not None:
+            _combinar(existente, lc)
+            if vid:
+                por_id.setdefault(vid, existente)
+            continue
+        if not vid and not assinatura:
+            chave = json.dumps(lc, ensure_ascii=False, sort_keys=True, default=str)
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+        item = deepcopy(lc)
+        saida.append(item)
+        if vid:
+            por_id[vid] = item
+        if assinatura:
+            por_assinatura.setdefault(assinatura, item)
+    return saida
 
 
 def tipo_inferido(nome):
@@ -53,18 +155,28 @@ def tipo_inferido(nome):
     return 'Infantil' if 'infantil' in n else ('Adulto' if 'adult' in n else 'Não informado')
 
 
-def expandir(lancamentos):
-    """Uma linha por leitura/piscina. Nunca herda a química de outra piscina."""
+def expandir(lancamentos, preferidos=()):
+    """Uma linha por leitura/piscina. Nunca herda a química de outra piscina.
+
+    Visitas repetidas (mesmo ID) aparecem uma vez; grafias equivalentes da
+    mesma piscina recebem um único nome (o do cadastro, quando informado).
+    """
     from utils.datas_visitas import normalizar_data_visita
     saida = []
-    for lc in lancamentos or []:
+    nomes_canon = {}
+    for nome in preferidos or []:
+        nome = re.sub(r'\s+', ' ', str(nome or '')).strip()
+        if nome:
+            nomes_canon.setdefault(chave_piscina(nome), nome)
+    for lc in deduplicar_lancamentos(lancamentos):
         pools = [p for p in (lc.get('piscinas') or []) if isinstance(p, dict)]
         for p in pools or [lc]:
             linha = {k: deepcopy(v) for k, v in lc.items() if k not in {'piscinas', *[x[0] for x in PARAMETROS]}}
             # Com pools explícitas, campos ausentes ficam ausentes, não recebem valores globais.
             linha.update({k: p.get(k, '') for k, _, _ in PARAMETROS})
-            linha.update(data=normalizar_data_visita(lc.get('data', '')), piscina=nome_piscina(p),
-                         tipo_piscina=p.get('tipo_piscina') or p.get('tipo') or tipo_inferido(nome_piscina(p)))
+            _nome = nomes_canon.setdefault(chave_piscina(nome_piscina(p)), nome_piscina(p))
+            linha.update(data=normalizar_data_visita(lc.get('data', '')), piscina=_nome,
+                         tipo_piscina=p.get('tipo_piscina') or p.get('tipo') or tipo_inferido(_nome))
             if len(pools) > 1 and 'dosagens' not in p:
                 linha['dosagens'] = []
                 if lc.get('dosagens'):
@@ -77,15 +189,18 @@ def expandir(lancamentos):
     return sorted(saida, key=lambda x: (data_ordem(x['data']), x['piscina']))
 
 
-def unir_agenda(originais, manuais):
+def unir_agenda(originais, manuais, preferidos=()):
     """Edita por data + piscina; preserva as outras piscinas e as referências das fotos."""
-    resultado = expandir(originais)
-    for linha in expandir(manuais):
-        chave = (linha['data'], linha['piscina'])
+    resultado = expandir(originais, preferidos)
+    nomes = list(preferidos or []) + [l['piscina'] for l in resultado]
+    for linha in expandir(manuais, nomes):
+        chave = (linha['data'], chave_piscina(linha['piscina']))
         indice = next((i for i, item in enumerate(resultado)
-                       if (item['data'], item['piscina']) == chave), None)
+                       if (item['data'], chave_piscina(item['piscina'])) == chave), None)
         anterior = resultado[indice] if indice is not None else {}
         novo = {**anterior, **linha}
+        if anterior:
+            novo['piscina'] = anterior['piscina']
         for k in ['fotos', 'fotos_b64', 'fotos_limpeza', 'fotos_parametros', 'fotos_dosagens']:
             if anterior.get(k):
                 novo[k] = deepcopy(anterior[k])
