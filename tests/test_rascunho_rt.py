@@ -29,7 +29,8 @@ APP = RAIZ / "app.py"
 TREE = ast.parse(APP.read_text(encoding="utf-8"))
 
 FUNCOES_RT = [
-    "_rascunho_usa_sheets", "_relatorio_rt_tem_conteudo", "_relatorio_rt_tem_dados_em_tela",
+    "_rascunho_pg_ativo", "_rascunho_usa_sheets", "_rascunho_backend", "_rascunho_destino",
+    "_relatorio_rt_tem_conteudo", "_relatorio_rt_tem_dados_em_tela",
     "_relatorio_rt_coletar_rascunho", "_relatorio_rt_chave_sessao", "_relatorio_rt_arquivo_local",
     "_relatorio_rt_aba", "_relatorio_rt_ler_json", "_relatorio_rt_serializar", "_relatorio_rt_desserializar",
     "_relatorio_rt_eh_chave", "_relatorio_rt_ordem", "_relatorio_rt_listar_rascunhos", "_relatorio_rt_descartada",

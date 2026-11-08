@@ -4288,17 +4288,17 @@ def _relatorio_rt_preservar_localmente() -> bool:
             return True
     backup = f"{RASCUNHO_RT_USUARIO}#s#{os.urandom(6).hex()}"
     atual["_chave"] = backup
-    gestor.preparar(backup, atual, local_apenas=not _rascunho_usa_sheets())
+    gestor.preparar(backup, atual, local_apenas=_rascunho_backend() == "local")
     escrever_atomico(_relatorio_rt_arquivo_local(backup), atual)
     conferido = gestor.ler(backup)
     if not conferido or conferido["hash"] != digest:
         return False
-    if _rascunho_usa_sheets():
+    if _rascunho_backend() != "local":
         pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
         if backup not in pendentes:
             pendentes.append(backup)
         ss["_rt_rasc_sync_pendente"] = pendentes
-        ss.setdefault("_rt_rasc_aviso", "Cópia local pendente de envio à planilha.")
+        ss.setdefault("_rt_rasc_aviso", f"Cópia local pendente de envio {_rascunho_destino('a')}.")
     return True
 
 
@@ -12510,10 +12510,61 @@ _RASCUNHO_RT_CAMPOS_CONTEUDO = (
 _RASCUNHO_RT_NAO_RESTAURAR = {"rel_fotos_upload", "rel_pdf_visita_importador", "csr_sel_relatorio", "rel_regerar_pdf_visita_idx"}
 
 
+def _rascunho_pg_ativo() -> bool:
+    """PostgreSQL somente por configuração explícita de homologação:
+    ACQUA_RT_RASCUNHO_BACKEND=postgres e ACQUA_RT_PG_CONFIG (TOML fora do repositório
+    com ambiente="homologacao", validado em _rt_pg_repositorio)."""
+    return os.environ.get("ACQUA_RT_RASCUNHO_BACKEND", "").strip().lower() == "postgres"
+
+
 def _rascunho_usa_sheets() -> bool:
     """Rascunhos usam a planilha só em produção. No GitHub Codespaces (CODESPACES=true)
-    ficam apenas no disco local, sem ler nem gravar a planilha real."""
-    return os.environ.get("CODESPACES", "").strip().lower() != "true"
+    ficam apenas no disco local, sem ler nem gravar a planilha real; em homologação com
+    PostgreSQL a planilha de rascunhos também não é usada."""
+    return not _rascunho_pg_ativo() and os.environ.get("CODESPACES", "").strip().lower() != "true"
+
+
+def _rascunho_backend() -> str:
+    """"sheets" (padrão, produção) | "local" (Codespaces: só disco) | "postgres" (homologação)."""
+    if _rascunho_pg_ativo():
+        return "postgres"
+    return "sheets" if _rascunho_usa_sheets() else "local"
+
+
+def _rascunho_destino(forma: str = "") -> str:
+    """Destino com artigo: forma "a" (à/ao), "em" (na/no), "o" (A/O); vazia = só o nome."""
+    pg = _rascunho_pg_ativo()
+    nome = "PostgreSQL de homologação" if pg else "planilha"
+    artigo = {"a": ("ao", "à"), "em": ("no", "na"), "o": ("O", "A"), "o_min": ("o", "a")}.get(forma)
+    return f"{artigo[0 if pg else 1]} {nome}" if artigo else nome
+
+
+def _rt_pg_repositorio():
+    """Repositório do contrato rt_persist; recusa qualquer configuração fora de homologação."""
+    import sys
+    import tomllib
+    from utils import rt_postgres
+    caminho = os.environ.get("ACQUA_RT_PG_CONFIG", "").strip()
+    if not caminho or not Path(caminho).is_absolute() or not Path(caminho).is_file():
+        raise rt_postgres.RepositorioIndisponivel("Configuração PostgreSQL de homologação ausente.")
+    with open(caminho, "rb") as f:
+        cfg = tomllib.load(f)
+    if cfg.get("ambiente") != "homologacao":
+        raise rt_postgres.RepositorioIndisponivel("PostgreSQL de rascunhos só é permitido em homologação.")
+    conexao = cfg.get("conexao")
+    if conexao == "executor_homologacao":
+        # Mesmo executor validado nos 15 cenários: TLS verify-full, marcador, identidade real, JIT/DPAPI.
+        pasta = str(Path(__file__).resolve().parent / "database" / "rt")
+        if pasta not in sys.path:
+            sys.path.insert(0, pasta)
+        import supabase_runner
+        supabase_runner.load_config(str(cfg.get("manifesto") or ""))
+        conectar = supabase_runner.connect
+    elif conexao == "fabrica_teste" and "teste" in rt_postgres.FABRICAS:
+        conectar = rt_postgres.FABRICAS["teste"]  # registrada apenas por testes locais
+    else:
+        raise rt_postgres.RepositorioIndisponivel("Conexão PostgreSQL de homologação não configurada.")
+    return rt_postgres.Repositorio(cfg, conectar)
 
 
 def _relatorio_rt_tem_conteudo(campos: dict) -> bool:
@@ -12647,7 +12698,82 @@ def _relatorio_rt_gestor_sync():
 def _relatorio_rt_listar_rascunhos(incluir_descartados: bool = False) -> dict:
     gestor = _relatorio_rt_gestor_sync()
     gestor.reconstruir()  # só controles de sincronização; não altera campos ativos
+    if _rascunho_backend() == "postgres":
+        return _relatorio_rt_listar_postgres(gestor, incluir_descartados)
     return gestor.listar(_relatorio_rt_aba(), incluir_descartados)
+
+
+def _relatorio_rt_listar_postgres(gestor, incluir_descartados: bool = False) -> dict:
+    """Pendências locais + revisão mais recente no PostgreSQL das identidades em uso.
+
+    O contrato não oferece listagem global: consultam-se a identidade da tela e as das
+    pendências locais. Falha de consulta vira aviso, nunca ausência.
+    """
+    from utils.rascunho_sync import hash_conteudo
+    ss = st.session_state
+    empresa = ss.get("empresa_ativa", "aqua_gestao")
+    base = gestor.listar(None, incluir_descartados)
+    locais = [v for v in base["versoes"] if v.get("pendente")]  # confirmadas já estão no banco
+    avisos = [a for a in base["avisos"] if "planilha" not in a]
+    origens = {str(ss.get("rel_origem_dados") or "")}
+    origens |= {str((v["dados"].get("campos") or {}).get("rel_origem_dados") or "") for v in base["versoes"]}
+    remotas = []
+    try:
+        repo = _rt_pg_repositorio()
+    except Exception as e:
+        repo = None
+        avisos.append(f"PostgreSQL de homologação indisponível ({type(e).__name__}); pendências locais preservadas.")
+    for origem in sorted(o for o in origens if o.startswith(empresa + "|")):
+        if repo is None:
+            break
+        try:
+            achado = repo.ultima(empresa, origem)
+        except PermissionError:
+            avisos.append(f"Sem acesso no PostgreSQL de homologação para {origem.split('|')[-1]} deste cliente; "
+                          "nada foi lido nem gravado nesse período.")
+            continue
+        except ValueError:
+            continue  # identidade não comprovável (sem cliente/período): nada a consultar
+        except Exception as e:
+            avisos.append(f"Consulta ao PostgreSQL falhou para {origem.split('|')[-1]} ({type(e).__name__}); ausência não confirmada.")
+            continue
+        if achado:
+            dados, revisao = achado
+            remotas.append({"chave": f"pg:{dados['_pg']['doc']}", "dados": dados, "linha": revisao,
+                            "origem": "postgres", "hash": hash_conteudo(dados), "pendente": False,
+                            "descartado": False, "conflito": False, "revisao": revisao})
+    versoes = locais + remotas
+    versoes.sort(key=lambda v: (bool(v["pendente"]), _relatorio_rt_ordem(v["dados"], 0)), reverse=True)
+    return {"versoes": versoes, "ignorados": base["ignorados"], "avisos": avisos, "empresa": empresa}
+
+
+def _relatorio_rt_enviar_postgres(chave: str, dados: dict) -> bool:
+    """Grava a cópia local íntegra desta chave como nova revisão; conflito nunca sobrescreve."""
+    from utils.rascunho_sync import ConflitoRascunho, escrever_atomico, hash_conteudo
+    from utils.rt_postgres import ConflitoVersao
+    ss = st.session_state
+    gestor = _relatorio_rt_gestor_sync()
+    r = gestor.ler(chave)
+    if r is None or r["hash"] != hash_conteudo(dados):
+        raise ValueError("Envio sem cópia local íntegra persistida")
+    if r["estado"] == "descartado":
+        return False
+    repo = _rt_pg_repositorio()
+    ident = repo.identidade(ss.get("empresa_ativa", "aqua_gestao"), (dados.get("campos") or {}).get("rel_origem_dados"))
+    bases = ss.setdefault("_rt_pg_base", {})
+    if r.get("pg_base") is None:
+        # A base é a revisão que esta sessão viu ao editar; fica na cópia local para reenvio idempotente.
+        r["pg_base"] = int(bases.get(ident.doc, 0))
+        escrever_atomico(gestor.caminho(chave), r)
+    try:
+        resultado = repo.salvar(chave, r["dados"], int(r["pg_base"]))
+    except ConflitoVersao as e:
+        gestor.estado(chave, "conflito", str(e))
+        raise ConflitoRascunho(f"{e} As duas cópias foram preservadas; restaure a versão desejada.") from None
+    bases[ident.doc] = resultado["revision"]
+    gestor.estado(chave, "confirmado")
+    ss["_rt_pg_ultima_revisao"] = resultado["revision"]
+    return True
 
 def _relatorio_rt_descartada(row: list) -> bool:
     return len(row) > 3 and str(row[3]).strip().lower().startswith("descartado")
@@ -12718,11 +12844,17 @@ def _relatorio_rt_sincronizar_pendentes() -> bool:
     agora = datetime.now().timestamp()
     if agora < ss.get("_rt_rasc_proxima_tentativa", 0):
         return False
-    aba = _relatorio_rt_aba(criar=True)
+    pg = _rascunho_backend() == "postgres"
+    aba = None if pg else _relatorio_rt_aba(criar=True)
     erros = []
     for chave in pendentes:
         try:
             r = gestor.ler(chave)
+            if pg:
+                if r["estado"] == "conflito":
+                    continue  # conflito exige restauração explícita; reenviar não resolve
+                _relatorio_rt_enviar_postgres(chave, r["dados"])
+                continue
             if not gestor.enviar(aba, chave, r["dados"], retentativa=True):
                 continue  # descarte confirmado; nunca cria nova chave em retentativa
         except Exception as e:
@@ -12773,7 +12905,7 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
         if not mudou or not _relatorio_rt_tem_conteudo(campos):
             if mudou:
                 ss["_rt_rasc_ref"] = dict(campos)  # formulário vazio não vira rascunho
-            if _rascunho_usa_sheets():
+            if _rascunho_backend() != "local":
                 _relatorio_rt_sincronizar_pendentes()  # reenvio sem nova edição (só há pendência após edição real)
             return False
 
@@ -12782,6 +12914,24 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
         from utils.rascunho_sync import escrever_atomico
         gestor = _relatorio_rt_gestor_sync()
         registro_anterior = gestor.ler(chave)
+        if (registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")
+                and _rascunho_backend() == "postgres"
+                and (registro_anterior["dados"].get("campos") or {}).get("rel_origem_dados") != campos.get("rel_origem_dados")):
+            # Pendência de OUTRO documento (outro condomínio/período, p.ex. sem escopo no banco):
+            # continua preservada e listada; a edição atual segue em chave nova, sem ser bloqueada.
+            chave = _relatorio_rt_chave_sessao(nova=True)
+            dados["_chave"] = chave
+            registro_anterior = None
+        if (registro_anterior and registro_anterior["estado"] == "pendente"
+                and _rascunho_backend() == "postgres"):
+            # Pendência de envio (falha de conexão) desta chave: conclui antes da edição nova.
+            from utils.rascunho_sync import hash_conteudo as _hash_rt
+            if registro_anterior["hash"] != _hash_rt(dados):
+                try:
+                    _relatorio_rt_enviar_postgres(chave, registro_anterior["dados"])
+                except Exception:
+                    pass
+                registro_anterior = gestor.ler(chave)
         if (registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")
                 and _rascunho_usa_sheets()):
             # Pendência desta chave com conteúdo anterior: tenta concluir o envio
@@ -12799,19 +12949,22 @@ def _relatorio_rt_salvar_rascunho(motivo: str = "autosave") -> bool:
             chave = _relatorio_rt_chave_sessao(nova=True)
             dados["_chave"] = chave
             registro_anterior = None
-        registro = gestor.preparar(chave, dados, local_apenas=not _rascunho_usa_sheets())
+        registro = gestor.preparar(chave, dados, local_apenas=_rascunho_backend() == "local")
         dados = registro["dados"]
         escrever_atomico(_relatorio_rt_arquivo_local(chave), dados)
         ss["_rt_rasc_ref"] = dict(campos)  # a edição está guardada (local); a sincronização segue abaixo
         ss.pop("_rt_rasc_lista_cache", None)
-        if not _rascunho_usa_sheets():
+        if _rascunho_backend() == "local":
             ss["_relatorio_rt_ultimo_autosave"] = dados.get("salvo_em", "")
             ss.pop("_rt_contexto_erro", None)
             ss.pop("_relatorio_rt_autosave_erro", None)
             return True  # Codespaces: o disco local é o armazenamento
         try:
-            _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados,
-                retentativa=bool(registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")))
+            if _rascunho_backend() == "postgres":
+                _relatorio_rt_enviar_postgres(chave, dados)
+            else:
+                _relatorio_rt_enviar_planilha(_relatorio_rt_aba(criar=True), chave, dados,
+                    retentativa=bool(registro_anterior and registro_anterior["estado"] in ("pendente", "conflito")))
         except Exception as e:
             pendentes = list(ss.get("_rt_rasc_sync_pendente") or [])
             if chave not in pendentes:
@@ -12957,6 +13110,10 @@ def _relatorio_rt_aplicar_pendente():
     if not pendente:
         return
     if _relatorio_rt_aplicar_rascunho(pendente.get("dados") or {}):
+        meta_pg = (pendente.get("dados") or {}).get("_pg")
+        if isinstance(meta_pg, dict) and meta_pg.get("doc") and isinstance(meta_pg.get("revision"), int):
+            # Revisão restaurada vira a base das próximas gravações desta sessão.
+            st.session_state.setdefault("_rt_pg_base", {})[meta_pg["doc"]] = meta_pg["revision"]
         st.session_state.pop("_rt_rasc_pendente", None)
         _relatorio_rt_chave_sessao(nova=True)  # edições a partir daqui viram nova versão; nenhuma linha existente muda
         st.session_state["_rt_rasc_ref"] = None  # próxima execução só registra referência
@@ -13023,8 +13180,10 @@ def _relatorio_rt_renderizar_painel_rascunho():
             por_chave[v["chave"]] = por_chave.get(v["chave"], 0) + 1
         for v in versoes:
             chave, rasc = v["chave"], v["dados"]
-            if v.get("pendente") and not v.get("conflito"):
-                selo = " — cópia deste servidor com envio à planilha pendente (reenvio automático)"
+            if v["origem"] == "postgres":
+                selo = f" — PostgreSQL de homologação, revisão {v.get('revisao')}"
+            elif v.get("pendente") and not v.get("conflito"):
+                selo = f" — cópia deste servidor com envio {_rascunho_destino('a')} pendente (reenvio automático)"
             else:
                 selo = " — este acesso" if chave == minha else (" — cópia temporária deste servidor, NÃO salva na planilha" if v["origem"] == "local" else "")
             st.markdown(f"- **{_relatorio_rt_resumo(rasc)}**{selo}")
@@ -13038,7 +13197,9 @@ def _relatorio_rt_renderizar_painel_rascunho():
                 st.button("♻️ Restaurar", key=f"btn_restaurar_rascunho_rt_{id_btn}", use_container_width=True,
                           on_click=_relatorio_rt_cb_restaurar, args=(rasc,))
             with c_r2:
-                if chave not in descartes_exibidos:
+                if v["origem"] == "postgres":
+                    st.caption("Revisões no PostgreSQL são imutáveis.")
+                elif chave not in descartes_exibidos:
                     st.button("🗑️ Descartar", key=f"btn_descartar_rascunho_rt_{id_btn}", use_container_width=True,
                               on_click=_relatorio_rt_cb_pedir_descarte, args=(chave,))
             mostrar_descarte = chave not in descartes_exibidos
@@ -13072,11 +13233,13 @@ def _relatorio_rt_renderizar_painel_rascunho():
             st.error("Salvamento do rascunho não concluído; a cópia anterior foi preservada. " + ss["_relatorio_rt_autosave_erro"])
         if ss.get("_rt_rasc_aviso"):
             st.error(
-                "⚠️ Há alterações do rascunho RT que AINDA NÃO foram salvas na planilha e podem ser perdidas se o "
+                f"⚠️ Há alterações do rascunho RT que AINDA NÃO foram salvas {_rascunho_destino('em')} e podem ser perdidas se o "
                 "disco local for perdido. A pendência sobrevive à reabertura neste disco; conteúdo remoto divergente não será sobrescrito. "
-                f"A última versão salva na planilha foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
+                f"A última versão salva {_rascunho_destino('em')} foi preservada. Motivo: {ss['_rt_rasc_aviso']}"
             )
-        if not _rascunho_usa_sheets():
+        if _rascunho_backend() == "postgres":
+            st.caption("🧪 Homologação: rascunhos RT gravados no PostgreSQL de homologação, sem usar a planilha de produção.")
+        elif not _rascunho_usa_sheets():
             st.caption("🧪 Ambiente de desenvolvimento: rascunhos RT ficam só neste computador, sem usar a planilha de produção.")
         ultimo = ss.get("_relatorio_rt_ultimo_autosave", "")
         if ultimo and not ss.get("_rt_rasc_aviso"):
@@ -22474,6 +22637,18 @@ if nome_rel_atual and not _periodo_rel_ok:
         "Enquanto o período estiver vazio ou inválido, nenhuma visita é importada e os campos e análises atuais são mantidos."
     )
 
+# Só visitas técnicas RT (PIN RT ou RT manual) alimentam o mensal: visitas de operador
+# e linhas sem marca de RT ficam fora, antes do limite semanal, para não ocuparem a
+# vaga da semana. Os registros continuam na planilha.
+_qtd_antes_filtro_rt = len(lancamentos_disponiveis)
+lancamentos_disponiveis = exclude_operator_records(lancamentos_disponiveis)
+_qtd_excluidas_nao_rt = _qtd_antes_filtro_rt - len(lancamentos_disponiveis)
+if nome_rel_atual and _qtd_excluidas_nao_rt:
+    st.info(
+        f"{_qtd_excluidas_nao_rt} visita(s) do período ficaram fora do relatório RT por serem de operador "
+        "ou não terem marca de visita técnica RT. Os registros continuam na planilha."
+    )
+
 # Manter somente a visita semanal de RT (terça-feira) e impedir duplicidade na semana.
 lancamentos_disponiveis = _limitar_lancamentos_rt_um_por_semana(
     filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)
@@ -23069,14 +23244,14 @@ st.caption("O relatório mensal pode ser gerado independentemente de contrato. B
 if st.button("💾 Salvar rascunho", use_container_width=True):
     st.session_state["_rt_rasc_ref"] = {}
     if _relatorio_rt_salvar_rascunho("manual"):
-        st.success("Rascunho completo preservado na planilha. Use o painel de versões para restaurar.")
+        st.success(f"Rascunho completo preservado {_rascunho_destino('em')}. Use o painel de versões para restaurar.")
     else:
         _resultado_manual_rt = relatorio_rt_resultado_salvamento_manual()
         if _resultado_manual_rt == "pendente":
-            st.warning("Rascunho gravado neste servidor; o envio à planilha ficou pendente (falha de conexão) "
-                       "e será refeito automaticamente. O aviso some quando a planilha confirmar o recebimento.")
+            st.warning(f"Rascunho gravado neste servidor; o envio {_rascunho_destino('a')} ficou pendente (falha de conexão) "
+                       f"e será refeito automaticamente. O aviso some quando {_rascunho_destino('o_min')} confirmar o recebimento.")
         elif _resultado_manual_rt == "conflito":
-            st.warning("A planilha tem outra versão deste rascunho. Nada foi sobrescrito: as duas cópias estão "
+            st.warning(f"{_rascunho_destino('o')} tem outra versão deste rascunho. Nada foi sobrescrito: as duas cópias estão "
                        "preservadas no painel de versões; restaure a desejada.")
         else:
             st.error("Não foi possível confirmar o salvamento. Os dados continuam na tela.")

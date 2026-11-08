@@ -1,0 +1,65 @@
+name: RT Supabase executor isolated validation
+on:
+  push:
+    branches: ['dev/rt-supabase-test-executor']
+    paths: ['database/rt/**', '.github/workflows/rt-supabase-executor.yml']
+permissions:
+  contents: read
+jobs:
+  real-logins-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ephemeral-test-only
+          POSTGRES_DB: rt_contract_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rt_contract_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r database/rt/requirements-test.txt
+      - name: Configure TLS only on disposable local container
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          mkdir -p work/rt-supabase-ci
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" -keyout work/rt-supabase-ci/server.key -out work/rt-supabase-ci/server.crt 2>/dev/null
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=untrusted" -keyout work/rt-supabase-ci/untrusted.key -out work/rt-supabase-ci/untrusted.crt 2>/dev/null
+          docker cp work/rt-supabase-ci/server.key "$POSTGRES_CONTAINER:/tmp/rt-server.key"
+          docker cp work/rt-supabase-ci/server.crt "$POSTGRES_CONTAINER:/tmp/rt-server.crt"
+          docker exec -u root "$POSTGRES_CONTAINER" chown postgres:postgres /tmp/rt-server.key /tmp/rt-server.crt
+          docker exec -u root "$POSTGRES_CONTAINER" chmod 600 /tmp/rt-server.key
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -c "ALTER SYSTEM SET ssl='on'"
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -c "ALTER SYSTEM SET ssl_cert_file='/tmp/rt-server.crt'"
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -c "ALTER SYSTEM SET ssl_key_file='/tmp/rt-server.key'"
+          docker restart "$POSTGRES_CONTAINER"
+          for attempt in $(seq 1 20); do
+            if docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d rt_contract_test; then break; fi
+            sleep 1
+          done
+      - name: Explicit local bootstrap separate from runner
+        run: python database/rt/local_supabase_ci.py
+      - name: Offline guards and negative TLS tests
+        env:
+          RT_LOCAL_TLS_TEST: '1'
+        run: python database/rt/test_supabase_guard.py
+      - name: Inspect ACLs and real LOGIN identities
+        run: python database/rt/supabase_runner.py --config "$PWD/work/rt-supabase-ci/authorization.toml" --local --inspect
+      - name: Preserve all 15 transaction scenarios with real LOGINs and TLS
+        run: python database/rt/supabase_runner.py --config "$PWD/work/rt-supabase-ci/authorization.toml" --local --run-fixtures
+      - name: Refuse existing fixtures without cleanup
+        run: |
+          if python database/rt/supabase_runner.py --config "$PWD/work/rt-supabase-ci/authorization.toml" --local --run-fixtures; then
+            exit 1
+          fi
+          python database/rt/supabase_runner.py --config "$PWD/work/rt-supabase-ci/authorization.toml" --local --recover
