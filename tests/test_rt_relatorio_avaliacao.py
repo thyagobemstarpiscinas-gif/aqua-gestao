@@ -154,6 +154,40 @@ class TestRelatorioRTAvaliacaoCompleta(unittest.TestCase):
         self.assertIn("Status geral da água", paginas[pg_5])
         pg_graf = next(i for i, t in enumerate(paginas) if "GRÁFICOS TÉCNICOS POR PISCINA" in t)
         self.assertIn(1600, [im.image.size[0] for im in leitor.pages[pg_graf].images])
+        # Modelo completo (referência Alphaville): capa com volume e período por extenso,
+        # escopo e síntese, resumo numérico com CC e interpretação por grupo.
+        plano = " ".join(texto.split())
+        self.assertIn("Setembro de 2026", paginas[0])
+        self.assertIn("Piscina Adulto | 50 m³", plano)
+        self.assertIn("ESCOPO E SÍNTESE DO PERÍODO", texto)
+        self.assertIn("8 leitura(s) em 4 data(s): 01/09/2026, 08/09/2026, 15/09/2026, 22/09/2026", plano)
+        self.assertIn("Cloro combinado 0,30 mg/L", plano)  # CC = CT – CL de todas as leituras (0,30)
+        self.assertIn("RESUMO NUMÉRICO POR PISCINA", texto)
+        self.assertIn("Cloro combinado (CC = CT – CL) (mg/L) 4 0,30 0,30 0,30", plano)
+        self.assertIn("4.3 Interpretação dos Resultados", texto)
+        self.assertIn("Turbidez de 0,20 a 0,80 NTU; fora do limite < 0,5 NTU em: 15/09/2026, Piscina Adulto (0,80)", plano)
+
+
+class TestCloroCombinadoLinha(unittest.TestCase):
+    """CC = CT – CL pela função centralizada, por linha (mesma piscina e coleta)."""
+
+    def test_casos(self):
+        from utils.rt_relatorio import cloro_combinado_linha, texto_cc, resumo_numerico
+        self.assertEqual(cloro_combinado_linha({"cloro_livre": "2,1", "cloro_total": "2,4"}), (0.3, "ok"))
+        # Antes / após: usa a leitura inicial das duas células, sem misturar coletas.
+        self.assertEqual(cloro_combinado_linha({"cloro_livre": "2,0 / 2,5", "cloro_total": "2,9 / 3,0"}), (0.9, "ok"))
+        for faltando in ({"cloro_livre": "2,0", "cloro_total": ""}, {"cloro_livre": "abc", "cloro_total": "2,0"}, {}):
+            self.assertEqual(texto_cc(faltando), "Não calculado")  # nunca zero
+        self.assertEqual(texto_cc({"cloro_livre": "2,5", "cloro_total": "2,1"}), "Inconsistente (CT < CL)")
+        resumo = dict(resumo_numerico([
+            {"piscina": "A", "cloro_livre": "2,0", "cloro_total": "2,4"},
+            {"piscina": "A", "cloro_livre": "2,5", "cloro_total": "2,1"},   # inconsistente: fora do resumo
+            {"piscina": "A", "cloro_livre": "2,2", "cloro_total": ""},      # não calculado: fora do resumo
+            {"piscina": "A", "cloro_livre": "1,8", "cloro_total": "2,0"},
+        ]))["A"]
+        cc = next(l for l in resumo if l[0].startswith("Cloro combinado"))
+        self.assertEqual((cc[2], cc[3], cc[5]), (2, 0.2, 0.4))  # n, mínimo, máximo
+        self.assertAlmostEqual(cc[4], 0.3)  # média
 
 
 @unittest.skipIf(AppTest is None, "Streamlit obrigatório")

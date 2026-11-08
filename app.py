@@ -7475,17 +7475,10 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         ph = _pegar_alias(item, "ph", "pH")
         crl = _pegar_alias(item, "cloro_livre", "cl", "crl", "CRL")
         ct = _pegar_alias(item, "cloro_total", "ct", "cl_total", "CT")
-        cc = _pegar_alias(item, "cloro_combinado", "cc", "CC")
-        if isinstance(item.get("cloro_combinado"), (int, float)):
-            cc = f"{item['cloro_combinado']:.2f}".replace(".", ",")  # mesmo formato do cálculo abaixo
-        if not str(cc or "").strip() and str(crl or "").strip() and str(ct or "").strip():
-            try:
-                _crl_num = float(str(crl).replace(",", "."))
-                _ct_num = float(str(ct).replace(",", "."))
-                # CT < CRL é medição inconsistente: não converter em zero.
-                cc = f"{_ct_num - _crl_num:.2f}".replace(".", ",") if _ct_num >= _crl_num else "Inconsistente"
-            except Exception:
-                cc = ""
+        # CC = CT – CL da própria linha, pelo cálculo centralizado; sem CT/CL válidos,
+        # "Não calculado"; CT < CL, "Inconsistente (CT < CL)" — nunca zero.
+        from utils.rt_relatorio import texto_cc as _texto_cc
+        cc = _texto_cc({"cloro_livre": crl, "cloro_total": ct})
         alc = _pegar_alias(item, "alcalinidade", "alc", "AT")
         dc = _pegar_alias(item, "dureza", "dc", "dureza_calcica", "DC")
         cya = _pegar_alias(item, "cianurico", "cya", "acido_cianurico", "CYA")
@@ -7494,7 +7487,7 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         tds = _pegar_alias(item, "tds", "TDS")
         temperatura = _pegar_alias(item, "temperatura", "temp", "Temperatura")
         operador = _pegar_alias(item, "operador", "responsavel", "Operador")
-        if any(str(v or "").strip() for v in [data, ph, crl, ct, cc, alc, dc, cya, turbidez, orp, tds, temperatura, operador]):
+        if any(str(v or "").strip() for v in [data, ph, crl, ct, alc, dc, cya, turbidez, orp, tds, temperatura, operador]):
             linhas.append([
                 _rl_valor(normalizar_data_visita(data) if data else "", "—"),
                 _rl_f(ph),
@@ -7586,7 +7579,9 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         )
         from PIL import Image as PILImage
         from utils.capa_acqua import desenhar_capa
-        from utils.rt_relatorio import MARCA_COMPLETA, formatar_volume, graficos_por_piscina, legenda_foto
+        from utils.rt_relatorio import (MARCA_COMPLETA, formatar_volume, graficos_por_piscina, legenda_foto,
+                                        periodo_por_extenso, sintese_periodo, resumo_numerico, interpretacao_resultados,
+                                        fmt_par, PARAMETROS_MENSAIS)
 
         pdf_path = Path(pdf_path)
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7692,8 +7687,9 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             desenhar_capa(canvas, w, h, logo_path, "Relatório mensal de responsabilidade técnica",
                           "Controle técnico-operacional de piscinas", [
                               ("Cliente / estabelecimento", dados_relatorio.get("nome_condominio", "")),
-                              ("Período de referência", f"{dados_relatorio.get('mes_referencia', '')}/{dados_relatorio.get('ano_referencia', '')}"),
-                              ("Piscinas", ", ".join(p["nome"] for p in _pisc_cad.get("piscinas", [])) or "Conforme registros do período"),
+                              ("Período de referência", periodo_por_extenso(dados_relatorio.get('mes_referencia', ''), dados_relatorio.get('ano_referencia', ''))),
+                              ("Piscinas / volume", "; ".join(f"{p['nome']} | {formatar_volume(p['volume'])}" for p in _pisc_cad.get("piscinas", []))
+                               or "Conforme registros do período"),
                               ("Responsável técnico", f"{dados_relatorio.get('responsavel_tecnico', RESPONSAVEL_TÉCNICO)} | CRQ 024025748"),
                               ("Situação da ART", obter_status_art_texto(dados_relatorio)),
                               ("Data de emissão", dados_relatorio.get("data_emissao", hoje_br())),
@@ -7713,7 +7709,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             ["Empresa", dados_relatorio.get("empresa_rt", EMPRESA_RT)],
             ["Cliente / Estabelecimento", dados_relatorio.get("nome_condominio", "")],
             ["Endereço do Local", dados_relatorio.get("endereco_condominio", "")],
-            ["Período de Referência", f"Mês: {dados_relatorio.get('mes_referencia','')} / Ano: {dados_relatorio.get('ano_referencia','')}"],
+            ["Período de Referência", periodo_por_extenso(dados_relatorio.get('mes_referencia', ''), dados_relatorio.get('ano_referencia', ''))],
             ["Situação da ART – CRQ", obter_status_art_texto(dados_relatorio)],
             ["Data de Emissão", dados_relatorio.get("data_emissao", hoje_br())],
         ]
@@ -7740,6 +7736,21 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             story.append(P("Piscinas individuais não cadastradas para este cliente; as análises seguem a identificação registrada em cada linha.", "AqSmall"))
         if _pisc_cad.get("sem_distribuicao"):
             story.append(P(f"Volume total informado no cadastro, sem distribuição por piscina: {formatar_volume(_pisc_cad.get('volume_total'))}.", "AqSmall"))
+
+        # Escopo e síntese do período, gerados só a partir das leituras registradas.
+        _sint = sintese_periodo(dados_relatorio.get("analises", []) or [])
+        _datas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in _sint["datas"])
+        story.append(KeepTogether([P("ESCOPO E SÍNTESE DO PERÍODO", "AqH2"), table([
+            ["Campo", "Registro"],
+            ["Período", periodo_por_extenso(dados_relatorio.get('mes_referencia', ''), dados_relatorio.get('ano_referencia', ''))],
+            ["Leituras registradas", (f"{_sint['n_leituras']} leitura(s) em {len(_sint['datas'])} data(s): {_datas_txt}"
+                                      if _sint["n_leituras"] else "Sem leituras válidas no período.")],
+            ["Piscinas com leitura", ", ".join(_sint["piscinas"]) or "—"],
+            ["Síntese técnica", ("Faixas observadas: " + "; ".join(_sint["faixas"]) + ". O cloro combinado é calculado por "
+                                 "leitura (CC = CT – CL, mesma piscina e coleta).") if _sint["faixas"] else TEXTO_NAO_AVALIADO + "."],
+            ["Abrangência", "Consolida as leituras registradas no período para as piscinas listadas. Não registra vistoria "
+                            "adicional, não comprova emissão de ART e não garante a qualidade da água entre as datas das leituras."],
+        ], widths=[45*mm, 135*mm])]))
 
         story.append(P("1. CONFORMIDADE LEGAL – CFQ / CRQ", "AqH1"))
         story.append(P("Este Relatório de Responsabilidade Técnica é emitido em atendimento às obrigações legais do RT habilitado perante o Conselho Regional de Química de Minas Gerais — CRQ-MG 2ª Região, nos termos:", "AqBody"))
@@ -7814,7 +7825,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         _tit_41 = P("4.1 Registro de Análises Físico-Químicas", "AqH2")  # vai junto da primeira tabela
         linhas_a = _rl_linhas_analises(dados_relatorio)
         _cab_a = [["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]]
-        _larg_a = [18*mm, 10*mm, 11*mm, 11*mm, 11*mm, 13*mm, 14*mm, 12*mm, 13*mm, 13*mm, 13*mm, 13*mm, 28*mm]
+        # CC mais larga para "Não calculado" / "Inconsistente (CT < CL)" sem quebrar palavras.
+        _larg_a = [17*mm, 9*mm, 10*mm, 10*mm, 20*mm, 12*mm, 13*mm, 11*mm, 12*mm, 11*mm, 11*mm, 13*mm, 31*mm]
         _grupos_a = {}
         for _it in dados_relatorio.get("analises", []) or []:
             if isinstance(_it, dict):
@@ -7854,6 +7866,18 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 story.append(KeepTogether((_cab_g if _n_g == 0 else []) +
                                           [RLImage(str(_g), width=180*mm, height=180*mm * _gh / _gw, hAlign="CENTER")]))
                 story.append(Spacer(1, 3*mm))
+        _resumo = resumo_numerico(dados_relatorio.get("analises", []) or [])
+        if _resumo:
+            _chave_por_rotulo = {r: c for c, r, *_ in PARAMETROS_MENSAIS}
+            for _n_res, (_nome_r, _linhas_r) in enumerate(_resumo):
+                _tab_r = [["Parâmetro", "Leituras", "Mínimo", "Média", "Máximo"]] + [
+                    [f"{rot} ({uni})" if uni else rot, str(n), fmt_par(_chave_por_rotulo[rot], mn), fmt_par(_chave_por_rotulo[rot], md),
+                     fmt_par(_chave_por_rotulo[rot], mx)] for rot, uni, n, mn, md, mx in _linhas_r]
+                story.append(KeepTogether(([P("RESUMO NUMÉRICO POR PISCINA", "AqH2"),
+                                            P("Calculado a partir dos resultados individuais válidos; o cloro combinado usa só os valores calculados (CC = CT – CL).", "AqSmall")]
+                                           if _n_res == 0 else []) +
+                                          [P(f"Piscina: {_nome_r}", "AqCellBold"), table(_tab_r, widths=[70*mm, 22*mm, 29*mm, 29*mm, 30*mm])]))
+                story.append(Spacer(1, 2*mm))
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
         if linhas_d:
@@ -7861,6 +7885,13 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
                 widths=[48*mm, 38*mm, 22*mm, 22*mm, 50*mm]))
         else:
             story.append(P("Nenhuma dosagem foi informada para o período de referência.", "AqWarn"))
+
+        _interp = interpretacao_resultados(dados_relatorio.get("analises", []) or [])
+        if _interp:
+            story.append(P("4.3 Interpretação dos Resultados", "AqH2"))
+            story.append(P("Leitura por grupo de parâmetros, limitada às leituras registradas e aos limites da ABNT NBR 10818:2026 adotados neste relatório.", "AqSmall"))
+            for _tit_i, _txt_i in _interp:
+                story.append(KeepTogether([P(_tit_i, "AqCellBold"), P(_txt_i, "AqBody")]))
 
         story.append(P("5. PARECER TÉCNICO", "AqH1"))
         story.append(P("5.1 Diagnóstico da Qualidade da Água", "AqH2"))
@@ -7961,7 +7992,8 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
     sem mudar o status. TDS e temperatura são só informativos. Sem leitura avaliável,
     o status é NÃO AVALIADO.
     """
-    from utils.normas_piscinas import fora_limite, texto_limite, cloro_combinado, avaliar_leitura, limites as limites_norma
+    from utils.normas_piscinas import fora_limite, texto_limite, avaliar_leitura, limites as limites_norma
+    from utils.rt_relatorio import cloro_combinado_linha
 
     def _fmt_br(v):
         return f"{v:g}".replace(".", ",")
@@ -7984,7 +8016,8 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
                             f"(NBR 10818:2026, quando aplicável) — ponto de atenção{_onde(item)}")
         informativos.update(k for k in ("orp", "tds", "temperatura") if valor_float(item.get(k, "")) is not None)
         avaliaveis = [valor_float(item.get(k, "")) for k in LIMITES_RELATORIO]
-        par_cc = valor_float(item.get("cloro_livre", "")) is not None and valor_float(item.get("cloro_total", "")) is not None
+        combinado, estado_cc = cloro_combinado_linha(item)
+        par_cc = estado_cc != "nao_calculado"
         if not (any(v is not None for v in avaliaveis) or par_cc):
             continue
         houve_leitura = True
@@ -7994,10 +8027,8 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
                 continue
             if fora_limite(campo, v):
                 nao_conformes.append(f"Linha {idx}: {rotulo}={_fmt_br(v)} fora do limite {texto_limite(campo)} (NBR 10818:2026){_onde(item)}")
-        cl = valor_float(item.get("cloro_livre", ""))
-        ct = valor_float(item.get("cloro_total", ""))
-        combinado, erro_cc = cloro_combinado(cl, ct)
-        item["cloro_combinado"] = round(combinado, 2) if combinado is not None else None
+        erro_cc = estado_cc == "inconsistente"
+        item["cloro_combinado"] = combinado  # None quando não calculado ou inconsistente (nunca zero)
         if erro_cc:
             inconsistencias.append(f"Linha {idx}: cloro total inferior ao livre — conferir medição{_onde(item)}")
         elif combinado is not None and avaliar_leitura("cc", combinado) == "fora_limite":
