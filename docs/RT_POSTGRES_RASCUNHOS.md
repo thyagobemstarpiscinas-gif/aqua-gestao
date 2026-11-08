@@ -151,3 +151,73 @@ sobrescrita. Limpeza verificada: LOGINs NOLOGIN, regra excluída, token revogado
 `PYTHONUTF8=1`: 423 testes. 417 aprovados de primeira; 6 testes de app excederam
 o limite de 300 s por falta de memória (execução de cerca de 10,5 h) e passaram
 ao rodar de novo, um a um. Resultado: 423 de 423.
+
+## Homologação no Streamlit Cloud (2026-11-07)
+
+App de homologação criado só para este PR, sem alterar o pr14, o `homologacao-rt`
+nem a produção:
+
+- URL: https://aqua-gestao-homologacao-pr16.streamlit.app
+- Branch `feat/rt-postgres-rascunhos`, commit implantado
+  `4b32fcb4cd01d49e046ae4677f35ecf0ee0bb738` (o log do app mostra
+  `AQUA_HOMOLOGACAO_COMMIT`), Python 3.12.
+- Secrets iguais aos do pr14 (planilha fictícia), sem chaves `ACQUA_RT_*`: os
+  rascunhos ficam na planilha (backend padrão).
+
+| Verificação | Resultado |
+|---|---|
+| Fluxo do operador (PIN de operador) | Alfa, visita de 07/11/2026 (sábado) com foto, pH 7,4 / CRL 2,0 e 7,5 / 1,8; gravada como V00006 |
+| Fluxo do RT, sessão 1 (PIN administrativo) | Alfa 10/2026; foto com legenda `LEGENDA_PR16_CLOUD_OUT` e diagnóstico `DIAGNOSTICO_PR16_CLOUD`; "Rascunho completo preservado na planilha" |
+| Reabertura em outra sessão (outra aba, novo login) | rascunho das 18:44:36 restaurado com diagnóstico, linha de análise, legenda e foto |
+| PDF mensal (sessão 2) | 6 páginas; ACQUA GESTÃO em todas, sem Bem Star; diagnóstico na p. 5; "Foto 1 — LEGENDA_PR16_CLOUD_OUT" e a foto fictícia 640×480 na p. 6 |
+
+V00005 e V00006 foram preservadas. Ficaram na planilha de homologação a V00006 e
+os rascunhos de Alfa das 18:43 às 18:47.
+
+### Correção do registro: visitas de operador no mensal RT
+
+O relato da homologação dizia que uma visita do operador numa terça-feira
+entraria no mensal RT. Isso descrevia uma falha, não a regra. A regra é: o mensal
+RT usa só visitas técnicas RT, e visitas de operador ficam fora em qualquer dia.
+
+A conferência do código confirmou a falha. No relatório mensal do escritório, o
+filtro aplicava só "terça-feira + uma visita por semana". A área RT do PIN já
+usava `exclude_operator_records`, mas o escritório não. Na própria homologação, a
+linha de análise de 06/10/2026 do PDF acima veio da V00002, gravada pelo
+"OPERADOR FICTÍCIO" e sem marca de RT. Com a regra correta, ela não entra. As
+verificações de rascunho, reabertura, foto, legenda, diagnóstico e marca
+continuam válidas. A linha de análise daquele PDF não vale como evidência de
+visita técnica.
+
+Correção (`app.py`, importação do relatório mensal):
+
+- `exclude_operator_records` é aplicado antes do filtro de terça-feira e do limite
+  semanal, para que uma visita de operador não ocupe a vaga da semana.
+- Entram só visitas com marca de RT: PIN RT (`visita_rt_semanal` / `tipo_visita =
+  "RT semanal"`) ou RT manual.
+- Ficam fora as visitas de operador e as linhas antigas sem Payload JSON nem marca
+  (decisão do responsável). Um aviso informa quantas ficaram fora, e nenhum
+  registro é apagado.
+
+Testes:
+
+- `tests/test_rt_exclui_operador.py` (novo): visitas de operador em terças (06/10
+  e 27/10, esta antes de uma visita RT na mesma semana) e uma linha antiga sem
+  marca ficam fora; entram só as visitas RT de 13/10 e 27/10. Sem a correção, o
+  teste falha porque a visita de operador de 06/10 é importada e a do dia 27/10
+  toma a vaga da visita RT.
+- As fixtures que usavam visitas sem marca como fonte do mensal RT passaram a ter
+  marca de RT (coluna Operador "Responsável Técnico Fictício" ou payload
+  `RT semanal`). Nenhuma asserção mudou.
+- Testes locais relacionados (2026-11-07), todos aprovados, rodados módulo a módulo
+  por falta de memória numa rodada única: `test_rt_exclui_operador`,
+  `test_relatorio_rt_campos`, `test_rt_relatorio_apptest`, `test_rt_postgres`,
+  `test_rt_postgres_apptest`, `test_rascunho_rt`, `test_rt_protecao_integrada`,
+  `test_homologacao_pr14*` (5 módulos), `test_rt_ultimos_*`, `test_rt_cloud_fluxo`,
+  `test_fotos_isolamento`, `test_operador_formulario`,
+  `test_rascunho_legado_restauracao` e `test_ultimos_sheets`. São testes locais e
+  não substituem o reteste no app de homologação.
+
+Consequência na homologação: as visitas fictícias V00001–V00004 não têm marca de
+RT e não entram mais no mensal RT. Para repetir o teste do mensal no app, uma
+visita técnica precisa ser registrada pelo PIN RT numa terça-feira.

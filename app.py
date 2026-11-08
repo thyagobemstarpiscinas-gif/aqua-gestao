@@ -22637,6 +22637,18 @@ if nome_rel_atual and not _periodo_rel_ok:
         "Enquanto o período estiver vazio ou inválido, nenhuma visita é importada e os campos e análises atuais são mantidos."
     )
 
+# Só visitas técnicas RT (PIN RT ou RT manual) alimentam o mensal: visitas de operador
+# e linhas sem marca de RT ficam fora, antes do limite semanal, para não ocuparem a
+# vaga da semana. Os registros continuam na planilha.
+_qtd_antes_filtro_rt = len(lancamentos_disponiveis)
+lancamentos_disponiveis = exclude_operator_records(lancamentos_disponiveis)
+_qtd_excluidas_nao_rt = _qtd_antes_filtro_rt - len(lancamentos_disponiveis)
+if nome_rel_atual and _qtd_excluidas_nao_rt:
+    st.info(
+        f"{_qtd_excluidas_nao_rt} visita(s) do período ficaram fora do relatório RT por serem de operador "
+        "ou não terem marca de visita técnica RT. Os registros continuam na planilha."
+    )
+
 # Manter somente a visita semanal de RT (terça-feira) e impedir duplicidade na semana.
 lancamentos_disponiveis = _limitar_lancamentos_rt_um_por_semana(
     filtrar_lancamentos_rt_tercas(lancamentos_disponiveis)

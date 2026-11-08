@@ -92,7 +92,7 @@ _vis = PLANILHA.add_worksheet("🔬 Visitas", 100, 23)
 _vis.linhas = [
     ["", "ID", "Data", "", "Condomínio"] + [""] * 18,
     ["", "V1", "29/09/2026", "", "Condomínio Alfa Fictício", "7,4", "1,5", "1,8", "90", "", "0"]
-    + [""] * 8 + ["Concluída", "Operador Fictício", "", ""],
+    + [""] * 8 + ["Concluída", "Responsável Técnico Fictício", "", ""],
     ["", "V2", _terca.strftime("%d/%m/%Y"), "", "Residencial Beta Fictício", "7,2", "2,0", "2,1", "100", "", "30"]
-    + [""] * 8 + ["Concluída", "Operador Fictício", "", ""],
+    + [""] * 8 + ["Concluída", "Responsável Técnico Fictício", "", ""],
 ]
