@@ -4069,6 +4069,104 @@ def chave_fotos_rt() -> str:
     return "rel_fotos_upload" if not nonce else f"rt_fotos_upload_{nonce}"
 
 
+def uploads_fotos_rt_legiveis() -> list:
+    """Arquivos do upload de fotos RT que abrem como imagem.
+
+    Os ilegíveis ficam fora do relatório e vão para _rt_fotos_ilegiveis (nome só na
+    tela). O log recebe só extensão, tamanho, início do SHA-256 e tipo do erro,
+    uma vez por arquivo, sem nome nem conteúdo."""
+    import io as _io
+    import logging as _logging
+    ss = st.session_state
+    legiveis, ilegiveis = [], []
+    logados = set(ss.get("_rt_fotos_ilegiveis_logados") or [])
+    for up in ss.get(chave_fotos_rt()) or []:
+        try:
+            dados = bytes(up.getvalue())
+        except Exception as erro:  # upload interrompido: sem bytes para ler
+            dados, erro_leitura = b"", erro
+        else:
+            erro_leitura = None
+            try:
+                with Image.open(_io.BytesIO(dados)) as _img:
+                    _img.verify()
+            except Exception as erro:
+                erro_leitura = erro
+        if erro_leitura is None:
+            legiveis.append(up)
+            continue
+        nome = str(getattr(up, "name", "") or "arquivo sem nome")
+        ilegiveis.append(nome)
+        digest = hashlib.sha256(dados).hexdigest()
+        if digest not in logados:
+            logados.add(digest)
+            _logging.getLogger("aqua.rt_fotos").warning(
+                "Foto do relatorio RT ilegivel ignorada: extensao=%s tamanho=%d sha256=%s erro=%s",
+                Path(nome).suffix.lower() or "-", len(dados), digest[:12], type(erro_leitura).__name__)
+    ss["_rt_fotos_ilegiveis"] = ilegiveis
+    ss["_rt_fotos_ilegiveis_logados"] = sorted(logados)
+    return legiveis
+
+
+class _FotoPendenteRT:
+    """Foto selecionada antes de carregar o contexto, no formato que sincronizar_fotos lê."""
+    def __init__(self, name, dados):
+        self.name, self._dados = name, dados
+
+    def getvalue(self):
+        return self._dados
+
+
+def processar_fotos_rt() -> tuple[str, list, int]:
+    """Incorpora o upload de fotos RT ao contexto carregado e mostra o resultado.
+
+    Chamada logo depois do uploader, antes de qualquer contagem. As fotos só entram no
+    relatório com condomínio e período carregados (rel_origem_dados). A tela separa
+    arquivos selecionados de fotos incorporadas e avisa sobre arquivos ilegíveis.
+    Retorna (chave do contexto, fotos incorporadas, quantidade de fotos novas)."""
+    from utils.rt_contexto import ler_fotos, sincronizar_fotos
+    ss = st.session_state
+    selecionadas = ss.get(chave_fotos_rt()) or []
+    legiveis = uploads_fotos_rt_legiveis()
+    chave = str(ss.get("rel_origem_dados") or "")
+    fotos, novas = [], 0
+    if not chave:
+        # O "Carregar" faz st.rerun() antes deste uploader, e o Streamlit descarta os
+        # arquivos dele (o navegador continua mostrando os nomes). Guarda as fotos
+        # legíveis selecionadas sem contexto para incorporá-las ao contexto carregado.
+        if legiveis:
+            ss["_rt_fotos_pendentes"] = [(str(getattr(up, "name", "") or "foto"), bytes(up.getvalue()))
+                                         for up in legiveis]
+        else:
+            ss.pop("_rt_fotos_pendentes", None)
+    if chave:
+        try:
+            antes = {f["sha256"] for f in ler_fotos(ss, chave)}
+            pendentes = ss.pop("_rt_fotos_pendentes", None)
+            if pendentes:
+                hashes_upload = ss.get("_rt_upload_hashes")
+                sincronizar_fotos(ss, chave, [_FotoPendenteRT(n, b) for n, b in pendentes])
+                ss["_rt_upload_hashes"] = hashes_upload  # pendentes não são anexos do uploader atual
+            fotos = sincronizar_fotos(ss, chave, legiveis)
+            novas = len({f["sha256"] for f in fotos} - antes)
+        except (ValueError, KeyError, TypeError) as erro:
+            fotos = []
+            st.warning(f"Fotografias do rascunho: {erro}")
+    if selecionadas and not chave:
+        st.warning(f"⚠️ Carregue o condomínio e o período para anexar as fotos. "
+                   f"{len(selecionadas)} arquivo(s) selecionado(s), nenhum incorporado ao relatório ainda. "
+                   "As fotos válidas entram no relatório do condomínio que você carregar.")
+    elif selecionadas:
+        st.info(f"📷 {len(selecionadas)} arquivo(s) selecionado(s) no upload · "
+                f"{len(fotos)} foto(s) incorporada(s) ao relatório deste condomínio e período.")
+    elif fotos:
+        st.info(f"📷 {len(fotos)} foto(s) incorporada(s) ao relatório deste condomínio e período.")
+    for nome in ss.get("_rt_fotos_ilegiveis") or []:
+        st.warning(f"⚠️ Não foi possível ler a foto “{nome}”. Ela não foi incorporada ao relatório; "
+                   "envie a imagem em JPG, PNG ou WEBP.")
+    return chave, fotos, novas
+
+
 # Campos de texto do relatório RT: na troca de condomínio recebem "" (gravado antes dos
 # widgets, o valor vazio chega à tela). Os demais campos rel_ (seleções, marcações) saem
 # do session_state e voltam ao padrão.
@@ -4362,7 +4460,7 @@ def guardar_tabela_rt(origem: str, rotulo: str = "", gravar_rascunho: bool = Tru
         ss[k] = v
     try:
         if "chave_fotos_rt" in globals():
-            sincronizar_fotos(ss, origem, ss.get(chave_fotos_rt()) or [])
+            sincronizar_fotos(ss, origem, uploads_fotos_rt_legiveis())
         valores = campos(ss)
         if gravar_rascunho:
             salvo = (_guardar_rascunho_rt_antes_da_troca(restauracao_explicita=True)
@@ -11223,7 +11321,7 @@ def _resolver_fotos_relatorio_rt(pasta_condominio: Path, nome_condominio: str, m
     from utils.rt_contexto import materializar_fotos, sincronizar_fotos
     ss = st.session_state
     chave = str(ss.get("rel_origem_dados") or "")
-    sincronizar_fotos(ss, chave, ss.get(chave_fotos_rt()) or [])
+    sincronizar_fotos(ss, chave, uploads_fotos_rt_legiveis())
     fotos = materializar_fotos(ss, chave, GENERATED_DIR)
     return fotos, "anexos preservados deste condomínio e período" if fotos else "nenhuma foto vinculada"
 
@@ -14089,6 +14187,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             key=chave_fotos_rt(),
             help="As fotos podem ser inseridas no registro fotográfico do relatório mensal RT.",
         )
+        processar_fotos_rt()
         fcol1, fcol2 = st.columns(2)
         with fcol1:
             st.text_input("Legenda — Foto casa de máquinas", key="rel_foto_legenda_cmaq")
@@ -14427,7 +14526,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
         if st.session_state.get("rel_origem_dados"):
             try:
                 from utils.rt_contexto import sincronizar_fotos
-                sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], st.session_state.get(chave_fotos_rt()) or [])
+                sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], uploads_fotos_rt_legiveis())
                 _relatorio_rt_salvar_rascunho("autosave_rt_operador")
                 if st.session_state.get("_rt_rasc_aviso") or st.session_state.get("_relatorio_rt_autosave_erro"):
                     st.warning("Não foi possível confirmar o salvamento do relatório RT. A troca será bloqueada até recuperar o armazenamento.")
@@ -22947,13 +23046,7 @@ with rd2:
         key=chave_fotos_rt(),
         help="As fotos serão salvas na pasta do condomínio e inseridas no relatório."
     )
-    from utils.rt_contexto import ler_fotos
-    try:
-        _fotos_recuperadas_rt = ler_fotos(st.session_state, str(st.session_state.get("rel_origem_dados") or ""))
-        if _fotos_recuperadas_rt:
-            st.caption(f"📷 {len(_fotos_recuperadas_rt)} foto(s) preservada(s) neste condomínio e período.")
-    except (ValueError, KeyError, TypeError) as _foto_erro:
-        st.warning(f"Fotografias do rascunho: {_foto_erro}")
+    _chave_ctx_fotos, _fotos_meta_rt, _fotos_rt_novas = processar_fotos_rt()
     st.caption("Esses dados podem ser preenchidos diretamente aqui, mesmo quando o relatório for avulso e sem contrato.")
 
 # Piscinas do cadastro (identificação, tipo e volume individual) — somente leitura aqui.
@@ -22973,19 +23066,18 @@ with st.expander(f"🏊 Piscinas do cadastro ({len(_rt_piscinas_ui['piscinas'])}
         st.warning(_rt_piscinas_ui["aviso"])
 
 # Legenda e piscina de cada fotografia, gravadas no JSON de fotos do próprio contexto.
-if st.session_state.get("rel_origem_dados"):
-    from utils.rt_contexto import sincronizar_fotos as _sinc_fotos_rt, atualizar_metadados_fotos, remover_foto
+if _chave_ctx_fotos:
+    from utils.rt_contexto import atualizar_metadados_fotos, remover_foto
     import hashlib as _hl_fotos
-    _chave_ctx_fotos = st.session_state["rel_origem_dados"]
-    try:
-        _fotos_meta_rt = _sinc_fotos_rt(st.session_state, _chave_ctx_fotos, st.session_state.get(chave_fotos_rt()) or [])
-    except (ValueError, KeyError, TypeError) as _erro_sinc:
-        _fotos_meta_rt = []
-        st.warning(f"Fotografias do rascunho: {_erro_sinc}")
     if _fotos_meta_rt:
         _ctx_hash = _hl_fotos.sha256(_chave_ctx_fotos.encode()).hexdigest()[:10]
         _opcoes_pisc_foto = [""] + [p["nome"] for p in _rt_piscinas_ui["piscinas"]]
-        with st.expander(f"📷 Legendas e piscinas das fotografias ({len(_fotos_meta_rt)})", expanded=False):
+        # Abre sozinha quando chegam fotos novas (miniaturas na hora) e continua aberta nas
+        # execuções seguintes deste contexto, para não fechar enquanto o RT digita a legenda.
+        if _fotos_rt_novas:
+            st.session_state["_rt_fotos_painel_aberto"] = _chave_ctx_fotos
+        with st.expander(f"📷 Legendas e piscinas das fotografias ({len(_fotos_meta_rt)})",
+                         expanded=st.session_state.get("_rt_fotos_painel_aberto") == _chave_ctx_fotos):
             _metas_novas = {}
             for _n_foto, _foto in enumerate(_fotos_meta_rt, start=1):
                 _k = f"_rt_fmeta_{_ctx_hash}_{_foto['sha256'][:16]}"
@@ -23167,7 +23259,7 @@ for i in range(int(st.session_state.get('rel_analises_total', ANALISES_PADRAO) o
 try:
     from utils.rt_contexto import sincronizar_fotos
     if st.session_state.get("rel_origem_dados"):
-        sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], st.session_state.get(chave_fotos_rt()) or [])
+        sincronizar_fotos(st.session_state, st.session_state["rel_origem_dados"], uploads_fotos_rt_legiveis())
     _relatorio_rt_salvar_rascunho("autosave_apos_renderizar_linhas")
 except Exception as _e_autosave_rel:
     st.caption(f"Autosave RT indisponível: {_e_autosave_rel}")
