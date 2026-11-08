@@ -2896,6 +2896,10 @@ def garantir_logo_oficial_aqua() -> None:
 # ================================================================
 # PDF RT MENSAL — IDENTIDADE VISUAL OFICIAL AQUA GESTÃO
 # ================================================================
+_CAMPOS_LEITURA_CAMPO = {"ph", "cloro_livre", "crl", "cloro_total", "ct", "cloraminas", "alcalinidade", "alc",
+                         "dureza", "dc", "cianurico", "cya", "turbidez", "ntu", "orp", "tds", "temperatura"}
+
+
 def build_monthly_rt_pdf_bytes(
     records: list[dict],
     condominium: str,
@@ -2906,8 +2910,11 @@ def build_monthly_rt_pdf_bytes(
     art_number: str = "",
     rt_notes: str = "",
     representative_name: str = "",
+    fotos: list[tuple[str, str]] | None = None,
 ) -> bytes:
     """Gera o relatório mensal RT com a identidade visual oficial da Aqua Gestão.
+
+    fotos: (caminho, legenda) das fotos do relatório; sem ele, usa as fotos dos registros.
 
     Esta implementação local sobrescreve o import de rt_monthly_report para o fluxo
     RT2025, mantendo o conteúdo técnico padrão e aplicando a paleta da logo oficial
@@ -2999,6 +3006,17 @@ def build_monthly_rt_pdf_bytes(
             # Nunca usar observação técnica como legenda fotográfica.
             if "observacao" in rr and str(rr.get("observacao") or "").lower().startswith("importância técnica"):
                 rr["observacao"] = ""
+            # A visita grava cada piscina em "piscinas" (o topo repete só a primeira):
+            # uma linha por piscina, identificada, como no relatório do escritório.
+            piscinas_r = [p for p in (rr.get("piscinas") or []) if isinstance(p, dict)]
+            if piscinas_r:
+                base = {k: v for k, v in rr.items() if k not in _CAMPOS_LEITURA_CAMPO and k != "piscinas"}
+                for p_r in piscinas_r:
+                    linha = dict(base)
+                    linha.update({k: v for k, v in p_r.items() if k != "nome"})
+                    linha["piscina"] = str(p_r.get("nome") or "").strip()
+                    out.append(linha)
+                continue
             out.append(rr)
         return out
 
@@ -3029,22 +3047,36 @@ def build_monthly_rt_pdf_bytes(
         if fora_limite("orp", orp): desv.append("ORP")
         return desv
 
+    def _onde(r):
+        piscina = str(r.get("piscina") or "").strip()
+        return _fmt_data_br(r.get("data")) + (f", {piscina}" if piscina else "")
+
     desvios_linhas = []
     tem_desvios = False
     for r in recs:
         ds = _desvios_record(r)
         if ds:
             tem_desvios = True
-            desvios_linhas.append(f"{_fmt_data_br(r.get('data'))} — verificar: {', '.join(ds)} (limites da NBR 10818:2026).")
+            desvios_linhas.append(f"{_onde(r)} — verificar: {', '.join(ds)} (limites da NBR 10818:2026).")
 
+    # Leitura avaliável: algum parâmetro com limite da NBR 10818:2026 (TDS e temperatura são informativos).
+    leituras_avaliadas = [r for r in recs if any(
+        _to_float(r.get(a) or (r.get(b) if b else None)) is not None
+        for a, b in (("ph", None), ("cloro_livre", "crl"), ("cloro_total", "ct"), ("alcalinidade", "alc"),
+                     ("dureza", "dc"), ("cianurico", "cya"), ("turbidez", "ntu"), ("orp", None)))]
+    sem_dados = not leituras_avaliadas
     if tem_desvios:
         situacao_geral = "ATENÇÃO — HÁ DESVIOS NO PERÍODO"
         sintese = "Foram identificados desvios que exigem ação corretiva com rastreabilidade."
+    elif sem_dados:
+        situacao_geral = TEXTO_NAO_AVALIADO
+        sintese = f"{TEXTO_NAO_AVALIADO}: não há leituras válidas para concluir sobre desvios ou conformidade."
     else:
         situacao_geral = "AVALIAÇÃO PARCIAL — SEM DESVIOS OPERACIONAIS IDENTIFICADOS"
         sintese = "Não foram identificados desvios nos registros avaliados. Isto não comprova conformidade integral nem substitui o monitoramento operacional obrigatório."
 
     recs_validos = [r for r in recs if any(str(r.get(k) or "").strip() for k in ["data", "ph", "cloro_livre", "crl", "cloro_total", "ct", "alcalinidade", "dureza", "cianurico", "cya", "turbidez", "orp", "tds", "temperatura"])]
+    visitas_periodo = {str(r.get("id_visita") or r.get("data") or "") for r in recs_validos}
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -3112,10 +3144,11 @@ def build_monthly_rt_pdf_bytes(
     # Resumo executivo
     resumo = [
         ["Resumo Executivo", ""],
-        ["Visitas técnicas do RT", str(len(recs_validos))],
-        ["Leituras avaliadas", str(len(recs_validos))],
+        ["Visitas técnicas do RT", str(len(visitas_periodo))],
+        ["Leituras avaliadas", str(len(leituras_avaliadas))],
         ["Situação geral", situacao_geral],
-        ["Principais desvios", " ; ".join(desvios_linhas[:5]) if desvios_linhas else "Não foram identificados desvios relevantes nas leituras informadas."],
+        ["Principais desvios", " ; ".join(desvios_linhas[:5]) if desvios_linhas else
+         ("Sem leituras válidas no período." if sem_dados else "Não foram identificados desvios relevantes nas leituras informadas.")],
     ]
     t_res = Table([[ _p(a, st_tab_left), _p(b, st_tab_left)] for a, b in resumo], colWidths=[4.7 * cm, 13.1 * cm])
     t_res.setStyle(TableStyle([
@@ -3123,7 +3156,7 @@ def build_monthly_rt_pdf_bytes(
         ("BACKGROUND", (0,0), (-1,0), NAVY),
         ("TEXTCOLOR", (0,0), (-1,0), WHITE),
         ("BACKGROUND", (0,1), (0,-1), BLUE_SOFT),
-        ("BACKGROUND", (1,3), (1,3), ALERT_BG if tem_desvios else OK_BG),
+        ("BACKGROUND", (1,3), (1,3), ALERT_BG if tem_desvios else (colors.HexColor("#F2F4F7") if sem_dados else OK_BG)),
         ("GRID", (0,0), (-1,-1), 0.35, GRID),
         ("LEFTPADDING", (0,0), (-1,-1), 6),
         ("RIGHTPADDING", (0,0), (-1,-1), 6),
@@ -3135,7 +3168,7 @@ def build_monthly_rt_pdf_bytes(
     story.append(Spacer(1, 5 * mm))
 
     story.append(_p("2. Monitoramento Técnico", st_h))
-    head = ["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb. (NTU)", "ORP (mV)", "TDS (ppm)", "Temp. (°C)"]
+    head = ["Data / Piscina", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb. (NTU)", "ORP (mV)", "TDS (ppm)", "Temp. (°C)"]
     rows = [[_p(x, st_tab_head) for x in head]]
     for r in recs_validos:
         crl = _to_float(r.get("cloro_livre") or r.get("crl"))
@@ -3146,7 +3179,8 @@ def build_monthly_rt_pdf_bytes(
         elif cc is None:
             cc = ""
         rows.append([
-            _p(_fmt_data_br(r.get("data"), curta=True), st_tab),
+            _p(_fmt_data_br(r.get("data"), curta=True)
+               + ("\n" + str(r.get("piscina")) if str(r.get("piscina") or "").strip() else ""), st_tab),
             _p(_fmt(r.get("ph")), st_tab),
             _p(_fmt(r.get("cloro_livre") or r.get("crl")), st_tab),
             _p(_fmt(r.get("cloro_total") or r.get("ct")), st_tab),
@@ -3215,7 +3249,8 @@ def build_monthly_rt_pdf_bytes(
 
     story.append(_p("3. Parecer e Recomendações", st_h))
     recomendacoes = []
-    desvios_texto = " ; ".join(desvios_linhas) if desvios_linhas else "Não foram identificadas não conformidades relevantes no período."
+    desvios_texto = " ; ".join(desvios_linhas) if desvios_linhas else (
+        "Sem leituras válidas no período." if sem_dados else "Não foram identificadas não conformidades relevantes no período.")
     if any("CRL" in d or "CT" in d for d in desvios_linhas):
         recomendacoes.append("Reavaliar desinfecção (CRL/CT), revisar demanda oxidante e confirmar residual após recirculação.")
     if any("alcalinidade" in d for d in desvios_linhas):
@@ -3228,6 +3263,8 @@ def build_monthly_rt_pdf_bytes(
         recomendacoes.append("Verificar eficiência de filtração, retrolavagem e carga orgânica associada à turbidez.")
     if any("ORP" in d for d in desvios_linhas):
         recomendacoes.append("Correlacionar ORP com pH, cloro e CYA para confirmar a efetividade oxidante da água.")
+    if sem_dados:
+        recomendacoes.append("Registrar as medições físico-químicas do período para permitir a avaliação técnica.")
     if not recomendacoes:
         recomendacoes.append("Manter rotina de monitoramento técnico, registros semanais e acompanhamento do RT.")
 
@@ -3237,7 +3274,9 @@ def build_monthly_rt_pdf_bytes(
         "3. Recomendações técnicas: " + " ".join(recomendacoes),
         "4. Prazos sugeridos: Imediato para desvios críticos e até a próxima rotina para ajustes preventivos.",
         "5. Responsável pela ação: Operação local com acompanhamento do Responsável Técnico.",
-        "6. Conclusão técnica: " + ("No período avaliado, foram identificadas não conformidades pontuais e recomenda-se executar plano corretivo com reavaliação técnica sequencial." if tem_desvios else "No período avaliado, não foram identificados desvios nos registros avaliados. A avaliação é parcial, limitada às leituras registradas, e não substitui o monitoramento operacional diário."),
+        "6. Conclusão técnica: " + ("No período avaliado, foram identificadas não conformidades pontuais e recomenda-se executar plano corretivo com reavaliação técnica sequencial." if tem_desvios
+                                    else f"{TEXTO_NAO_AVALIADO}; não há conclusão técnica sobre a qualidade da água." if sem_dados
+                                    else "No período avaliado, não foram identificados desvios nos registros avaliados. A avaliação é parcial, limitada às leituras registradas, e não substitui o monitoramento operacional diário."),
     ]
     if complemento:
         parecer_linhas.append("7. Complemento do RT: " + complemento)
@@ -3268,27 +3307,31 @@ def build_monthly_rt_pdf_bytes(
     story.append(t_ass)
     story.append(_p("Aviso: análises microbiológicas dependem de coleta e laboratório competente, quando aplicável.", st_small))
 
-    # Registro fotográfico — só foto + legenda limpa.
-    fotos = []
-    for r in recs:
-        for f in r.get("fotos") or r.get("imagens") or []:
-            if f and f not in fotos:
-                fotos.append(f)
+    # Registro fotográfico — legenda logo acima da foto, na mesma página.
+    if fotos is None:
+        _fotos_recs = []
+        for r in recs:
+            for f in r.get("fotos") or r.get("imagens") or []:
+                if f and f not in _fotos_recs:
+                    _fotos_recs.append(f)
+        fotos = []
+        for idx_f, foto in enumerate(_fotos_recs, start=1):
+            legenda_padrao = "Registro técnico do período"
+            if idx_f == 1:
+                legenda_padrao = "Casa de máquinas / sistema de filtragem" if len(_fotos_recs) > 1 else "Registro técnico do período"
+            elif idx_f == 2:
+                legenda_padrao = "Vista geral da piscina no período de referência"
+            fotos.append((foto, f"{_fmt_data_br(recs_validos[-1].get('data') if recs_validos else '')} — {legenda_padrao}"))
 
     if fotos:
         story.append(_p("Registro Fotográfico", st_h))
-        for idx_f, foto in enumerate(fotos[:4], start=1):
+        for foto, legenda in fotos[:4]:
             try:
                 fp = Path(foto)
                 if fp.exists():
-                    story.append(RLImage(str(fp), width=9.0 * cm, height=7.0 * cm, kind="proportional"))
-                    legenda_padrao = "Registro técnico do período"
-                    if idx_f == 1:
-                        legenda_padrao = "Casa de máquinas / sistema de filtragem" if len(fotos) > 1 else "Registro técnico do período"
-                    elif idx_f == 2:
-                        legenda_padrao = "Vista geral da piscina no período de referência"
-                    story.append(_p(f"{_fmt_data_br(recs_validos[-1].get('data') if recs_validos else '')} — {legenda_padrao}", st_small))
-                    story.append(Spacer(1, 2 * mm))
+                    story.append(KeepTogether([_p(str(legenda or ""), st_small),
+                                               RLImage(str(fp), width=9.0 * cm, height=7.0 * cm, kind="proportional"),
+                                               Spacer(1, 2 * mm)]))
             except Exception:
                 continue
 
@@ -6392,6 +6435,8 @@ def _parecer_preview_por_status(status: str, diagnostico: str) -> str:
         return "Aceitável com correções em andamento conforme o preenchimento atual do formulário."
     if status == "NÃO CONFORME":
         return "Não satisfatório. O preenchimento atual indica necessidade de intervenção corretiva."
+    if status == STATUS_NAO_AVALIADO:
+        return f"{TEXTO_NAO_AVALIADO}. Sem medições válidas, não há parecer sobre a qualidade da água."
     return "Parecer técnico-operacional não informado no formulário atual."
 
 
@@ -7431,6 +7476,8 @@ def _rl_linhas_analises(dados_relatorio: dict) -> list[list[str]]:
         crl = _pegar_alias(item, "cloro_livre", "cl", "crl", "CRL")
         ct = _pegar_alias(item, "cloro_total", "ct", "cl_total", "CT")
         cc = _pegar_alias(item, "cloro_combinado", "cc", "CC")
+        if isinstance(item.get("cloro_combinado"), (int, float)):
+            cc = f"{item['cloro_combinado']:.2f}".replace(".", ",")  # mesmo formato do cálculo abaixo
         if not str(cc or "").strip() and str(crl or "").strip() and str(ct or "").strip():
             try:
                 _crl_num = float(str(crl).replace(",", "."))
@@ -7559,8 +7606,8 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
         styles = getSampleStyleSheet()
         styles.add(ParagraphStyle("AqTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=azul, alignment=TA_CENTER, spaceAfter=2))
         styles.add(ParagraphStyle("AqSubtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10.5, leading=13, textColor=azul2, alignment=TA_CENTER, spaceAfter=8))
-        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4))
-        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4))
+        styles.add(ParagraphStyle("AqH1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=azul, spaceBefore=10, spaceAfter=4, keepWithNext=1))
+        styles.add(ParagraphStyle("AqH2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=azul2, spaceBefore=8, spaceAfter=4, keepWithNext=1))
         styles.add(ParagraphStyle("AqBody", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7, leading=11.2, textColor=preto, alignment=TA_JUSTIFY, spaceAfter=4))
         styles.add(ParagraphStyle("AqSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.6, leading=9.2, textColor=cinza, spaceAfter=2))
         styles.add(ParagraphStyle("AqCell", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.4, leading=9.2, textColor=preto))
@@ -7764,7 +7811,7 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 
         story.append(P("4. CONTROLE OPERACIONAL – MONITORAMENTO IN LOCO", "AqH1"))
         story.append(P("Análises realizadas com Photometer Color Q e, nas visitas semanais de RT, turbidímetro, medidor de ORP, TDS e temperatura. Os resultados são confrontados com os limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3).", "AqBody"))
-        story.append(P("4.1 Registro de Análises Físico-Químicas", "AqH2"))
+        _tit_41 = P("4.1 Registro de Análises Físico-Químicas", "AqH2")  # vai junto da primeira tabela
         linhas_a = _rl_linhas_analises(dados_relatorio)
         _cab_a = [["Data", "pH", "CRL", "CT", "CC", "Alc.", "Dureza", "CYA", "Turb.", "ORP", "TDS", "Temp.", "Responsável"]]
         _larg_a = [18*mm, 10*mm, 11*mm, 11*mm, 11*mm, 13*mm, 14*mm, 12*mm, 13*mm, 13*mm, 13*mm, 13*mm, 28*mm]
@@ -7778,15 +7825,18 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             for _nome_p, _itens_p in _grupos_a.items():
                 _linhas_p = _rl_linhas_analises({"analises": _itens_p})
                 if _linhas_p:
-                    story.append(KeepTogether([P(f"Piscina: {_nome_p or 'não identificada'}", "AqCellBold"),
+                    story.append(KeepTogether(([_tit_41] if _tit_41 else []) +
+                                              [P(f"Piscina: {_nome_p or 'não identificada'}", "AqCellBold"),
                                                table(_cab_a + _linhas_p, widths=_larg_a)]))
+                    _tit_41 = None
                     story.append(Spacer(1, 2*mm))
+            if _tit_41:
+                story.append(_tit_41)
         elif linhas_a:
-            story.append(table(_cab_a + linhas_a, widths=_larg_a))
+            story.append(KeepTogether([_tit_41, table(_cab_a + linhas_a, widths=_larg_a)]))
         else:
-            story.append(P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn"))
-        story.append(P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"))
-        story.append(P("A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações que podem reduzir a transparência da água e prejudicar a ação do desinfetante. A turbidez complementa o controle operacional e não comprova qualidade microbiológica. Interpretar segundo o método, a resolução do instrumento e a edição aplicável da norma de qualidade da água; a NBR 10818:2016 consta cancelada com revisão em 21/09/2026.", "AqBody"))
+            story.append(KeepTogether([_tit_41, P("Nenhum lançamento físico-químico foi encontrado para o período de referência.", "AqWarn")]))
+        story.append(KeepTogether([P("IMPORTÂNCIA DA ANÁLISE DE TURBIDEZ", "AqH2"), P("A turbidez é medida com turbidímetro e expressa em NTU, permitindo identificar de forma objetiva partículas finas e matéria em suspensão que nem sempre são percebidas apenas pela inspeção visual. Seu acompanhamento auxilia na avaliação da eficiência da filtração e na detecção precoce de alterações que podem reduzir a transparência da água e prejudicar a ação do desinfetante. A turbidez complementa o controle operacional e não comprova qualidade microbiológica. Interpretar segundo o método, a resolução do instrumento e a edição aplicável da norma de qualidade da água; a NBR 10818:2016 consta cancelada com revisão em 21/09/2026.", "AqBody")]))
         try:
             _graficos = graficos_por_piscina(dados_relatorio.get("analises", []) or [], pdf_path.parent / f"{pdf_path.stem}_graficos",
                                              dados_relatorio.get("nome_condominio", ""),
@@ -7795,12 +7845,14 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             _graficos = []
             _log_sheets_erro("graficos_por_piscina", _e_graf)
         if _graficos:
-            story.append(P("GRÁFICOS TÉCNICOS POR PISCINA", "AqH2"))
-            story.append(P("Evolução dos parâmetros no período. Quando a célula registra antes/após, o gráfico usa a leitura inicial.", "AqSmall"))
-            for _nome_g, _g in _graficos:
+            _cab_g = [P("GRÁFICOS TÉCNICOS POR PISCINA", "AqH2"),
+                      P("Evolução dos parâmetros no período. Quando a célula registra antes/após, o gráfico usa a leitura inicial.", "AqSmall")]
+            for _n_g, (_nome_g, _g) in enumerate(_graficos):
                 with PILImage.open(_g) as _grafico_imagem:
                     _gw, _gh = _grafico_imagem.size
-                story.append(RLImage(str(_g), width=180*mm, height=180*mm * _gh / _gw, hAlign="CENTER"))
+                # Título da seção fica junto do primeiro gráfico (não sobra sozinho no fim da página).
+                story.append(KeepTogether((_cab_g if _n_g == 0 else []) +
+                                          [RLImage(str(_g), width=180*mm, height=180*mm * _gh / _gw, hAlign="CENTER")]))
                 story.append(Spacer(1, 3*mm))
         story.append(P("4.2 Registro de Dosagens de Produtos Químicos", "AqH2"))
         linhas_d = _rl_linhas_dosagens(dados_relatorio)
@@ -7812,9 +7864,10 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
 
         story.append(P("5. PARECER TÉCNICO", "AqH1"))
         story.append(P("5.1 Diagnóstico da Qualidade da Água", "AqH2"))
-        status = dados_relatorio.get("status_agua", "") or "EM CORREÇÃO"
-        cor_status = verde if status == "CONFORME" else (laranja if status == "EM CORREÇÃO" else vermelho)
-        status_tbl = Table([[P(f"Status geral da água: {status}", "AqCellBold")]], colWidths=[180*mm])
+        status = dados_relatorio.get("status_agua", "") or STATUS_NAO_AVALIADO
+        cor_status = (verde if status == "CONFORME" else laranja if status == "EM CORREÇÃO"
+                      else cinza if status == STATUS_NAO_AVALIADO else vermelho)
+        status_tbl = Table([[P(f"Status geral da água: {rotulo_status_agua(status)}", "AqCellBold")]], colWidths=[180*mm])
         status_tbl.setStyle(TableStyle([("BOX", (0,0), (-1,-1), 0.8, cor_status), ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F7FBFD")), ("LEFTPADDING", (0,0), (-1,-1), 7), ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7)]))
         story.append(status_tbl)
         story.append(Spacer(1, 3*mm))
@@ -7859,13 +7912,14 @@ def gerar_pdf_relatorio_rt_premium_reportlab(dados_relatorio: dict, fotos: list[
             for idx, fp in enumerate(fotos[:12], start=1):
                 try:
                     _meta_f = (dados_relatorio.get("fotos_meta") or {}).get(Path(fp).stem)
-                    story.append(P(legenda_foto(idx, _meta_f), "AqH2"))
-                    img = PILImage.open(fp)
-                    iw, ih = img.size
+                    with PILImage.open(fp) as img:
+                        iw, ih = img.size
                     max_w = 170*mm
                     max_h = 175*mm
                     ratio = min(max_w/iw, max_h/ih)
-                    story.append(RLImage(str(fp), width=iw*ratio, height=ih*ratio, hAlign="CENTER"))
+                    # Legenda e foto na mesma página.
+                    story.append(KeepTogether([P(legenda_foto(idx, _meta_f), "AqH2"),
+                                               RLImage(str(fp), width=iw*ratio, height=ih*ratio, hAlign="CENTER")]))
                     story.append(Spacer(1, 5*mm))
                 except Exception:
                     story.append(P(f"Foto {idx} — arquivo não pôde ser inserido no PDF.", "AqSmall"))
@@ -7885,7 +7939,16 @@ LIMITES_RELATORIO = {
     "alcalinidade": "alcalinidade total",
     "dureza": "dureza cálcica",
     "cianurico": "ácido cianúrico",
+    "turbidez": "turbidez",
 }
+# Sem nenhuma medição avaliável no período: nada de "EM CORREÇÃO" nem "sem desvios".
+STATUS_NAO_AVALIADO = "NÃO AVALIADO"
+TEXTO_NAO_AVALIADO = "Não avaliado — sem dados no período"
+
+
+def rotulo_status_agua(status: str) -> str:
+    """Texto do status geral da água nos documentos."""
+    return TEXTO_NAO_AVALIADO if str(status or "").strip().upper() == STATUS_NAO_AVALIADO else str(status or "")
 
 
 def avaliar_conformidade_analises(analises: list[dict]) -> dict:
@@ -7893,8 +7956,12 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
 
     "CONFORME" aqui significa ausência de leituras fora dos limites nos campos
     preenchidos; não comprova conformidade integral nem a frequência de medição.
+    Avaliáveis: pH, CRL, cloro combinado (CRL + CT), alcalinidade, dureza, CYA e
+    turbidez. ORP abaixo de 650 mV é ponto de atenção (referência quando aplicável),
+    sem mudar o status. TDS e temperatura são só informativos. Sem leitura avaliável,
+    o status é NÃO AVALIADO.
     """
-    from utils.normas_piscinas import fora_limite, texto_limite, cloro_combinado, avaliar_leitura
+    from utils.normas_piscinas import fora_limite, texto_limite, cloro_combinado, avaliar_leitura, limites as limites_norma
 
     def _fmt_br(v):
         return f"{v:g}".replace(".", ",")
@@ -7903,9 +7970,22 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
     houve_leitura = False
     cloraminas_altas = []
     inconsistencias = []
+    atencoes = []
+    informativos = set()
+    def _onde(item):
+        # Data e piscina da leitura: as tabelas do documento são por piscina, sem nº de linha.
+        partes = [str(item.get(k) or "").strip() for k in ("data", "piscina")]
+        return " — " + ", ".join(p for p in partes if p) if any(partes) else ""
+
     for idx, item in enumerate(analises, start=1):
-        linha_tem = any((item.get(k) or "").strip() for k in ["ph", "cloro_livre", "cloro_total", "alcalinidade", "dureza", "cianurico"])
-        if not linha_tem:
+        orp = valor_float(item.get("orp", ""))
+        if orp is not None and fora_limite("orp", orp):
+            atencoes.append(f"Leitura {idx}: ORP={_fmt_br(orp)} mV abaixo da referência mín. {_fmt_br(limites_norma('orp')[0])} mV "
+                            f"(NBR 10818:2026, quando aplicável) — ponto de atenção{_onde(item)}")
+        informativos.update(k for k in ("orp", "tds", "temperatura") if valor_float(item.get(k, "")) is not None)
+        avaliaveis = [valor_float(item.get(k, "")) for k in LIMITES_RELATORIO]
+        par_cc = valor_float(item.get("cloro_livre", "")) is not None and valor_float(item.get("cloro_total", "")) is not None
+        if not (any(v is not None for v in avaliaveis) or par_cc):
             continue
         houve_leitura = True
         for campo, rotulo in LIMITES_RELATORIO.items():
@@ -7913,25 +7993,27 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
             if v is None:
                 continue
             if fora_limite(campo, v):
-                nao_conformes.append(f"Linha {idx}: {rotulo}={_fmt_br(v)} fora do limite {texto_limite(campo)} (NBR 10818:2026)")
+                nao_conformes.append(f"Linha {idx}: {rotulo}={_fmt_br(v)} fora do limite {texto_limite(campo)} (NBR 10818:2026){_onde(item)}")
         cl = valor_float(item.get("cloro_livre", ""))
         ct = valor_float(item.get("cloro_total", ""))
         combinado, erro_cc = cloro_combinado(cl, ct)
         item["cloro_combinado"] = round(combinado, 2) if combinado is not None else None
         if erro_cc:
-            inconsistencias.append(f"Linha {idx}: cloro total inferior ao livre — conferir medição")
+            inconsistencias.append(f"Linha {idx}: cloro total inferior ao livre — conferir medição{_onde(item)}")
         elif combinado is not None and avaliar_leitura("cc", combinado) == "fora_limite":
             cloraminas_altas.append((idx, round(combinado, 2)))
-            nao_conformes.append(f"Linha {idx}: cloro combinado={_fmt_br(round(combinado, 2))} acima do limite {texto_limite('cc')} (NBR 10818:2026)")
+            nao_conformes.append(f"Linha {idx}: cloro combinado={_fmt_br(round(combinado, 2))} acima do limite {texto_limite('cc')} (NBR 10818:2026){_onde(item)}")
 
     nao_conformes.extend(inconsistencias)
-    status = "NÃO CONFORME" if nao_conformes else ("CONFORME" if houve_leitura else "EM CORREÇÃO")
+    status = "NÃO CONFORME" if nao_conformes else ("CONFORME" if houve_leitura else STATUS_NAO_AVALIADO)
     return {
         "status": status,
         "detalhes": nao_conformes,
         "houve_leitura": houve_leitura,
         "cloraminas_altas": cloraminas_altas,
         "inconsistencias": inconsistencias,
+        "atencoes": atencoes,
+        "informativos": sorted(informativos),
     }
 
 
@@ -8340,6 +8422,22 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
     observacoes = []
     recomendacoes = []
     detalhes = avaliacao.get("detalhes", [])
+    informativos = [k for k in avaliacao.get("informativos", []) if k in ("tds", "temperatura")]
+    nota_informativos = ("TDS e temperatura registrados para acompanhamento; não são classificados por leitura isolada."
+                         if informativos else "")
+    if avaliacao.get("status") == STATUS_NAO_AVALIADO:
+        # Sem medição avaliável: não há diagnóstico, conformidade nem "ausência de desvios".
+        observacoes.append("Sem medições físico-químicas válidas no período: não há base para apontar desvios nem conformidade.")
+        observacoes.extend(avaliacao.get("atencoes", [])[:2])
+        if nota_informativos:
+            observacoes.append(nota_informativos)
+        return {
+            "diagnostico": (f"{TEXTO_NAO_AVALIADO}. Não há medições físico-químicas válidas registradas para o período de "
+                            "referência; este relatório não emite diagnóstico da qualidade da água."),
+            "observacoes": observacoes[:5],
+            "recomendacoes": ["Registrar as medições físico-químicas do período (pH, CRL, CT, alcalinidade, dureza, CYA e "
+                              "turbidez) para permitir a avaliação técnica."],
+        }
     if detalhes:
         for detalhe in detalhes[:3]:
             observacoes.append(detalhe.replace("Linha", "Leitura"))
@@ -8359,17 +8457,22 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
         recomendacoes.append("Corrigir alcalinidade total para aumentar a estabilidade do pH e reduzir flutuações operacionais.")
     if any("dureza cálcica" in d for d in detalhes):
         recomendacoes.append("Ajustar dureza cálcica para reduzir risco de corrosão ou incrustação.")
-
-    if not observacoes:
-        observacoes.append("Parâmetros avaliados sem desvios críticos nas leituras registradas no período.")
+    if any(d.split(": ", 1)[-1].lower().startswith("turbidez=") for d in detalhes):
+        recomendacoes.append("Verificar a filtração (retrolavagem e meio filtrante) e a clarificação; repetir a turbidez após a correção.")
+    for atencao in avaliacao.get("atencoes", [])[:2]:
+        observacoes.append(atencao)
+    if avaliacao.get("atencoes"):
+        recomendacoes.append("Quando o ORP for aplicável ao tratamento, conferir a demanda oxidante e repetir a leitura com o medidor calibrado.")
+    if not detalhes and avaliacao.get("status") == "CONFORME":
+        observacoes.insert(0, "Nenhuma leitura fora dos limites da ABNT NBR 10818:2026 nos parâmetros registrados no período.")
+    if nota_informativos:
+        observacoes.append(nota_informativos)
     if not recomendacoes:
         recomendacoes.append("Manter rotina de monitoramento, rastreabilidade de dosagens e controle técnico periódico.")
 
     diagnostico = []
     if avaliacao["status"] == "CONFORME":
         diagnostico.append("No período avaliado, as leituras registradas não apresentaram valores fora dos limites da ABNT NBR 10818:2026. A avaliação é parcial, limitada aos parâmetros e datas registrados, e não substitui o monitoramento operacional diário.")
-    elif avaliacao["status"] == "EM CORREÇÃO":
-        diagnostico.append("O sistema registra fase operacional de correção, recomendando continuidade das medidas técnicas, reforço de monitoramento e nova conferência analítica após estabilização.")
     else:
         diagnostico.append("Foram observadas não conformidades físico-químicas que exigem ação corretiva e reavaliação técnica sequencial.")
     if avaliacao.get("cloraminas_altas"):
@@ -8382,6 +8485,21 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
         "observacoes": observacoes[:5],
         "recomendacoes": recomendacoes[:5],
     }
+
+
+_TEXTOS_AUTOMATICOS_AVALIACAO = (
+    "O sistema registra fase operacional de correção",
+    "No período avaliado, as leituras registradas",
+    "Foram observadas não conformidades",
+    "Parâmetros avaliados sem desvios críticos",
+    "Nenhuma leitura fora dos limites",
+)
+
+
+def _texto_automatico_de_avaliacao(texto: str) -> bool:
+    """Parecer/observação gerado automaticamente a partir de leituras (inválido sem dados)."""
+    t = str(texto or "").strip()
+    return any(t.startswith(p) for p in _TEXTOS_AUTOMATICOS_AVALIACAO)
 
 
 def sincronizar_status_agua_widget(opcoes: list[str]) -> str:
@@ -8429,7 +8547,8 @@ def aplicar_textos_automaticos_relatorio():
         st.session_state[chave_resp] = "Operação / RT" if texto_rec else ""
 
     # Não escrever diretamente na chave do selectbox após o widget existir.
-    if st.session_state.get("rel_status_agua") != "EM CORREÇÃO":
+    # EM CORREÇÃO manual é preservado só quando há medição avaliável.
+    if avaliacao["status"] == STATUS_NAO_AVALIADO or st.session_state.get("rel_status_agua") != "EM CORREÇÃO":
         st.session_state["rel_status_agua"] = avaliacao["status"]
 
 
@@ -8440,15 +8559,22 @@ def montar_dados_relatorio() -> dict:
     analises = coletar_analises_relatorio()
     avaliacao = avaliar_conformidade_analises(analises)
     status_manual = (st.session_state.get("rel_status_agua") or "CONFORME").strip()
-    status_final = "EM CORREÇÃO" if status_manual == "EM CORREÇÃO" else avaliacao["status"]
+    if avaliacao["status"] == STATUS_NAO_AVALIADO:
+        status_final = STATUS_NAO_AVALIADO  # sem medição avaliável, nenhum status manual se aplica
+    else:
+        status_final = "EM CORREÇÃO" if status_manual == "EM CORREÇÃO" else avaliacao["status"]
     textos_auto = gerar_textos_automaticos_relatorio(analises, avaliacao)
     diagnostico_base = (st.session_state.get("rel_diagnostico") or "").strip() or textos_auto["diagnostico"]
+    if status_final == STATUS_NAO_AVALIADO and _texto_automatico_de_avaliacao(diagnostico_base):
+        diagnostico_base = textos_auto["diagnostico"]  # parecer automático antigo não vale sem dados
 
     recomendacoes = coletar_recomendacoes_relatorio()
     if not any(r["recomendacao"] for r in recomendacoes):
         recomendacoes = [{"recomendacao": t, "prazo": "Imediato" if i == 0 else "Próxima rotina", "responsavel": "Operação / RT"} for i, t in enumerate(textos_auto["recomendacoes"])]
 
     observacoes = coletar_observacoes_relatorio()
+    if status_final == STATUS_NAO_AVALIADO:
+        observacoes = [o for o in observacoes if not _texto_automatico_de_avaliacao(o)]
     if not any(observacoes):
         observacoes = textos_auto["observacoes"]
 
@@ -8538,7 +8664,7 @@ def append_relatorio_fallback(doc: Document, dados_relatorio: dict):
     doc.add_paragraph(f"Data de emissão: {dados_relatorio['data_emissao']}")
     doc.add_paragraph(f"Responsável técnico: {dados_relatorio['assinatura_rt_texto']}")
     doc.add_paragraph(f"Certificações relevantes: {dados_relatorio['certificacoes']}")
-    doc.add_paragraph(f"Status geral da água: {dados_relatorio['status_agua']}")
+    doc.add_paragraph(f"Status geral da água: {rotulo_status_agua(dados_relatorio['status_agua'])}")
     doc.add_paragraph(f"Diagnóstico técnico: {dados_relatorio['diagnostico']}")
     doc.add_paragraph("Base normativa referencial do relatório: Lei nº 2.800/1956; Decreto nº 85.877/1981; Lei nº 6.839/1980; Resolução CFQ nº 332/2025, alterada pela nº 345/2026; ABNT NBR 10339; NR-26; NR-06.")
     doc.add_paragraph("Nota técnica: análises microbiológicas não são realizadas no local e dependem de laboratório acreditado, sob responsabilidade de contratação do cliente.")
@@ -8719,7 +8845,7 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
         "{{ART_FIM}}": dados_relatorio["art_fim"],
         "{{ART_TEXTO}}": dados_relatorio["art_texto"],
         "{{DATA_EMISSAO}}": dados_relatorio["data_emissao"],
-        "{{STATUS_AGUA}}": dados_relatorio["status_agua"],
+        "{{STATUS_AGUA}}": rotulo_status_agua(dados_relatorio["status_agua"]),
         "{{DIAGNOSTICO_TÉCNICO}}": dados_relatorio["diagnostico"],
         "{{DIAGNOSTICO_TECNICO}}": dados_relatorio["diagnostico"],
     }
@@ -8780,9 +8906,9 @@ def preencher_relatorio_mensal_docx(template_path: Path, output_docx: Path, dado
             for run in p.runs:
                 run.text = ""
             if p.runs:
-                p.runs[0].text = f"Status geral da água: {dados_relatorio['status_agua']}"
+                p.runs[0].text = f"Status geral da água: {rotulo_status_agua(dados_relatorio['status_agua'])}"
             else:
-                p.add_run(f"Status geral da água: {dados_relatorio['status_agua']}")
+                p.add_run(f"Status geral da água: {rotulo_status_agua(dados_relatorio['status_agua'])}")
         elif "aviso legal:" in txt:
             for run in p.runs:
                 run.text = ""
@@ -14338,6 +14464,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "tds": _v(f"rel_analise_tds_{idx_linha}"),
                     "temperatura": _v(f"rel_analise_temperatura_{idx_linha}"),
                     "operador": _v(f"rel_analise_operador_{idx_linha}"),
+                    "piscina": _v(f"rel_analise_piscina_{idx_linha}"),
                 }
 
                 tem_dado = any(
@@ -14391,6 +14518,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     "orp": item.get("orp", ""),
                     "tds": item.get("tds", ""),
                     "temperatura": item.get("temperatura", ""),
+                    "piscina": item.get("piscina", ""),
                     "observacao": "",
                     # O complemento não substitui o parecer automático; entra via rt_notes no PDF.
                     "parecer": "",
@@ -14498,6 +14626,19 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
                 garantir_logo_oficial_aqua()
 
+                # Fotos enviadas nesta tela (contexto do condomínio e período), com a legenda
+                # da própria foto ou, sem ela, a dos campos de legenda desta tela.
+                from utils.rt_relatorio import legenda_foto as _legenda_foto_rt
+                _meta_fotos_rt = _metadados_fotos_contexto_rt()
+                _legendas_tela = [st.session_state.get("rel_foto_legenda_cmaq"), st.session_state.get("rel_foto_legenda_piscina")]
+                _fotos_pdf_rt = []
+                for _n_foto_rt, _fp_rt in enumerate(_salvar_fotos_rt_upload(_sel_cond_rt, _sel_mes, _sel_ano), start=1):
+                    _meta_rt = dict(_meta_fotos_rt.get(Path(_fp_rt).stem) or {})
+                    if (not str(_meta_rt.get("legenda") or "").strip() and _n_foto_rt <= len(_legendas_tela)
+                            and str(_legendas_tela[_n_foto_rt - 1] or "").strip()):
+                        _meta_rt["legenda"] = str(_legendas_tela[_n_foto_rt - 1]).strip()
+                    _fotos_pdf_rt.append((_fp_rt, _legenda_foto_rt(_n_foto_rt, _meta_rt)))
+
                 pdf_bytes = build_monthly_rt_pdf_bytes(
                     records=_records_pdf,
                     condominium=_sel_cond_rt,
@@ -14508,6 +14649,7 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                     art_number=_art_num,
                     rt_notes=_obs_rt,
                     representative_name=_representante_cond,
+                    fotos=_fotos_pdf_rt,
                 )
 
                 _nome_pdf = safe_report_filename(_sel_cond_rt, _sel_mes, _sel_ano)
@@ -23157,7 +23299,12 @@ with r6:
 with r7:
     st.text_input("Vigência da ART - fim", key="rel_art_fim", placeholder="dd/mm/aaaa", on_change=lambda: formatar_data_relatorio_chave("rel_art_fim"), disabled=st.session_state.get("rel_art_status") != "Emitida")
 with r8:
-    opcoes_status_agua = ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO"]
+    opcoes_status_agua = ["CONFORME", "NÃO CONFORME", "EM CORREÇÃO", STATUS_NAO_AVALIADO]
+    # A tela mostra o mesmo status do documento (montar_dados_relatorio): o calculado
+    # pelas medições; EM CORREÇÃO escolhido pelo RT vale só quando há medição avaliável.
+    _status_tabela = avaliar_conformidade_analises(coletar_analises_relatorio())["status"]
+    if _status_tabela == STATUS_NAO_AVALIADO or st.session_state.get("rel_status_agua") != "EM CORREÇÃO":
+        st.session_state["rel_status_agua"] = _status_tabela
     sincronizar_status_agua_widget(opcoes_status_agua)
     opcao_status = st.selectbox(
         "Status geral da água",

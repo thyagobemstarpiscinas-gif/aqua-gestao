@@ -185,9 +185,28 @@ PARAMETROS = (
     ("cianurico", "Ácido cianúrico", *_lim("cianurico"), "mg/L"),
 )
 
+# Relatório mensal: também turbidez (limite < 0,5 NTU), ORP (referência mín. 650 mV,
+# quando aplicável) e TDS/temperatura, só informativos (sem classificação por leitura
+# isolada). O consolidado continua com PARAMETROS.
+PARAMETROS_MENSAIS = PARAMETROS + (
+    ("turbidez", "Turbidez", *_lim("turbidez"), "NTU"),
+    ("orp", "ORP", _limites("orp")[0], None, "mV"),
+    ("tds", "TDS", None, None, "mg/L"),
+    ("temperatura", "Temperatura", None, None, "°C"),
+)
+# Parâmetros sem faixa desenhada no gráfico: texto do painel no lugar do limite.
+NOTA_SEM_FAIXA = {
+    "cloro_total": "Sem limite próprio (avaliar CC)",
+    "orp": "Referência mín. 650 mV, quando aplicável",
+    "tds": "Informativo: sem classificação isolada",
+    "temperatura": "Informativo: sem limite normativo",
+}
+# Referência de mínimo desenhada como linha (não é limite de conformidade do relatório).
+REFERENCIA_MINIMA = {"orp": _limites("orp")[0]}
+
 
 def tem_limite(chave) -> bool:
-    return chave != "cloro_total" and _limites(chave) != (None, None)
+    return chave not in ("cloro_total", "orp", "tds", "temperatura") and _limites(chave) != (None, None)
 
 
 def dentro_limite(chave, valor) -> bool:
@@ -210,15 +229,15 @@ def leitura(texto):
     return v if math.isfinite(v) else None
 
 
-def linha_tem_leitura(item: dict) -> bool:
-    return any(leitura(item.get(k)) is not None for k, *_ in PARAMETROS)
+def linha_tem_leitura(item: dict, parametros=PARAMETROS) -> bool:
+    return any(leitura(item.get(k)) is not None for k, *_ in parametros)
 
 
-def agrupar_por_piscina(analises: list[dict]) -> list[tuple[str, list[dict]]]:
+def agrupar_por_piscina(analises: list[dict], parametros=PARAMETROS) -> list[tuple[str, list[dict]]]:
     """Linhas com leitura agrupadas pela piscina informada, na ordem de aparição."""
     grupos: dict[str, list[dict]] = {}
     for item in analises or []:
-        if not linha_tem_leitura(item):
+        if not linha_tem_leitura(item, parametros):
             continue
         nome = str(item.get("piscina") or "").strip() or SEM_PISCINA
         grupos.setdefault(nome, []).append(item)
@@ -383,7 +402,7 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
     img = Image.new("RGB", (largura, altura), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     azul, dourado, texto, cinza, grid = (11, 31, 58), (176, 135, 40), (26, 42, 74), (110, 124, 148), (215, 222, 232)
-    faixa, linha_cor, fora = (230, 245, 234), (29, 120, 168), (180, 35, 24)
+    faixa, linha_cor, fora, atencao = (230, 245, 234), (29, 120, 168), (180, 35, 24), (201, 107, 44)
     draw.rectangle((0, 0, largura, 110), fill=azul)
     draw.text((50, 26), titulo, fill=(255, 255, 255), font=_fonte(36, True))
     draw.text((50, 72), subtitulo, fill=(222, 196, 120), font=_fonte(20))
@@ -401,11 +420,17 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         def ym(v):
             return y1 - (v - vmin) / (vmax - vmin) * (y1 - y0)
         draw.text((cx + 10, cy + 8), f"{rotulo}" + (f" ({unidade})" if unidade else ""), fill=texto, font=f_rot)
+        ref = REFERENCIA_MINIMA.get(chave)
+        if ref is not None:
+            vmin, vmax = min(vmin, ref - pad), max(vmax, ref + pad)
         if com_faixa:
             draw.text((x1 - 300, cy + 12), f"Limite NBR 10818:2026: {texto_faixa(chave)}", fill=(34, 120, 70), font=f_eixo)
             draw.rectangle((x0, ym(mx), x1, ym(mn)), fill=faixa)
         else:
-            draw.text((x1 - 300, cy + 12), "Sem limite próprio (avaliar CC)", fill=cinza, font=f_eixo)
+            draw.text((x1 - 340, cy + 12), NOTA_SEM_FAIXA.get(chave, "Sem limite próprio"), fill=cinza, font=f_eixo)
+        if ref is not None:  # linha tracejada de referência (ponto de atenção, não limite)
+            for xa in range(int(x0), int(x1), 18):
+                draw.line((xa, ym(ref), min(xa + 10, x1), ym(ref)), fill=atencao, width=2)
         for g in range(5):
             y = y0 + (y1 - y0) * g / 4
             draw.line((x0, y, x1, y), fill=grid)
@@ -420,10 +445,13 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         if len(pts) > 1:
             draw.line([(x, y) for x, y, _ in pts], fill=linha_cor, width=4)
         for x, y, v in pts:
-            cor = fora if com_faixa and not dentro_limite(chave, v) else linha_cor
+            cor = (fora if com_faixa and not dentro_limite(chave, v)
+                   else atencao if ref is not None and v < ref else linha_cor)
             draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=cor, outline=(255, 255, 255), width=2)
-    draw.text((50, altura - 45), "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite.",
-              fill=cinza, font=f_eixo)
+    nota = "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite."
+    if any(p[0] in REFERENCIA_MINIMA for p, _ in paineis):
+        nota += " Linha laranja: referência mínima de ORP, quando aplicável (ponto de atenção)."
+    draw.text((50, altura - 45), nota, fill=cinza, font=f_eixo)
     draw.line((0, 112, largura, 112), fill=dourado, width=4)
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -434,13 +462,14 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
 def graficos_por_piscina(analises: list[dict], pasta: Path, nome_condominio: str, periodo: str) -> list[tuple[str, Path]]:
     """Um gráfico de evolução por piscina, a partir das análises do relatório mensal."""
     saida = []
-    for idx, (nome, itens) in enumerate(agrupar_por_piscina(analises), start=1):
+    for idx, (nome, itens) in enumerate(agrupar_por_piscina(analises, PARAMETROS_MENSAIS), start=1):
         ordenados = sorted(enumerate(itens), key=lambda t: (data_leitura(t[1].get("data")) or date.max, t[0]))
         itens = [it for _, it in ordenados]
         rotulos = [str(it.get("data") or f"#{k + 1}")[:5] for k, it in enumerate(itens)]
-        series = [(chave, [leitura(it.get(chave)) for it in itens]) for chave, *_ in PARAMETROS]
+        series = [(chave, [leitura(it.get(chave)) for it in itens]) for chave, *_ in PARAMETROS_MENSAIS]
         p = gerar_grafico(series, rotulos, f"Evolução dos parâmetros — {nome}",
-                          f"{nome_condominio} • {periodo}", Path(pasta) / f"grafico_piscina_{idx}.png")
+                          f"{nome_condominio} • {periodo}", Path(pasta) / f"grafico_piscina_{idx}.png",
+                          parametros=PARAMETROS_MENSAIS)
         if p:
             saida.append((nome, p))
     return saida
