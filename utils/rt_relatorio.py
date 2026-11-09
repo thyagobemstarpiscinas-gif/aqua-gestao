@@ -167,7 +167,8 @@ def formatar_volume(v) -> str:
 # Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
 # tratamento clorado simples), obtidos de utils.normas_piscinas. Cloro total não
 # tem limite próprio (avalia-se CC = CT − CRL) e por isso não recebe faixa.
-from utils.normas_piscinas import fora_limite as _fora_limite, limites as _limites, texto_limite as _texto_limite
+from utils.normas_piscinas import (fora_limite as _fora_limite, limites as _limites, texto_limite as _texto_limite,
+                                   cloro_combinado as _cloro_combinado)
 
 
 def _lim(campo):
@@ -185,9 +186,32 @@ PARAMETROS = (
     ("cianurico", "Ácido cianúrico", *_lim("cianurico"), "mg/L"),
 )
 
+# Relatório mensal: também turbidez (limite < 0,5 NTU), ORP (referência mín. 650 mV,
+# quando aplicável) e TDS/temperatura, só informativos (sem classificação por leitura
+# isolada). O consolidado continua com PARAMETROS.
+# No mensal, o cloro combinado (CC = CT – CL, calculado por linha) substitui o cloro total
+# nos gráficos e no resumo; CT e CL continuam medidos na tabela.
+PARAMETROS_MENSAIS = tuple(p for p in PARAMETROS if p[0] != "cloro_total")[:2] + (
+    ("cloro_combinado", "Cloro combinado (CC = CT – CL)", *_lim("cc"), "mg/L"),
+) + tuple(p for p in PARAMETROS if p[0] not in ("cloro_total", "ph", "cloro_livre")) + (
+    ("turbidez", "Turbidez", *_lim("turbidez"), "NTU"),
+    ("orp", "ORP", _limites("orp")[0], None, "mV"),
+    ("tds", "TDS", None, None, "mg/L"),
+    ("temperatura", "Temperatura", None, None, "°C"),
+)
+# Parâmetros sem faixa desenhada no gráfico: texto do painel no lugar do limite.
+NOTA_SEM_FAIXA = {
+    "cloro_total": "Sem limite próprio (avaliar CC)",
+    "orp": "Referência mín. 650 mV, quando aplicável",
+    "tds": "Informativo: sem classificação isolada",
+    "temperatura": "Informativo: sem limite normativo",
+}
+# Referência de mínimo desenhada como linha (não é limite de conformidade do relatório).
+REFERENCIA_MINIMA = {"orp": _limites("orp")[0]}
+
 
 def tem_limite(chave) -> bool:
-    return chave != "cloro_total" and _limites(chave) != (None, None)
+    return chave not in ("cloro_total", "orp", "tds", "temperatura") and _limites(chave) != (None, None)
 
 
 def dentro_limite(chave, valor) -> bool:
@@ -210,15 +234,15 @@ def leitura(texto):
     return v if math.isfinite(v) else None
 
 
-def linha_tem_leitura(item: dict) -> bool:
-    return any(leitura(item.get(k)) is not None for k, *_ in PARAMETROS)
+def linha_tem_leitura(item: dict, parametros=PARAMETROS) -> bool:
+    return any(leitura(item.get(k)) is not None for k, *_ in parametros)
 
 
-def agrupar_por_piscina(analises: list[dict]) -> list[tuple[str, list[dict]]]:
+def agrupar_por_piscina(analises: list[dict], parametros=PARAMETROS) -> list[tuple[str, list[dict]]]:
     """Linhas com leitura agrupadas pela piscina informada, na ordem de aparição."""
     grupos: dict[str, list[dict]] = {}
     for item in analises or []:
-        if not linha_tem_leitura(item):
+        if not linha_tem_leitura(item, parametros):
             continue
         nome = str(item.get("piscina") or "").strip() or SEM_PISCINA
         grupos.setdefault(nome, []).append(item)
@@ -383,7 +407,7 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
     img = Image.new("RGB", (largura, altura), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     azul, dourado, texto, cinza, grid = (11, 31, 58), (176, 135, 40), (26, 42, 74), (110, 124, 148), (215, 222, 232)
-    faixa, linha_cor, fora = (230, 245, 234), (29, 120, 168), (180, 35, 24)
+    faixa, linha_cor, fora, atencao = (230, 245, 234), (29, 120, 168), (180, 35, 24), (201, 107, 44)
     draw.rectangle((0, 0, largura, 110), fill=azul)
     draw.text((50, 26), titulo, fill=(255, 255, 255), font=_fonte(36, True))
     draw.text((50, 72), subtitulo, fill=(222, 196, 120), font=_fonte(20))
@@ -401,11 +425,17 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         def ym(v):
             return y1 - (v - vmin) / (vmax - vmin) * (y1 - y0)
         draw.text((cx + 10, cy + 8), f"{rotulo}" + (f" ({unidade})" if unidade else ""), fill=texto, font=f_rot)
+        ref = REFERENCIA_MINIMA.get(chave)
+        if ref is not None:
+            vmin, vmax = min(vmin, ref - pad), max(vmax, ref + pad)
         if com_faixa:
             draw.text((x1 - 300, cy + 12), f"Limite NBR 10818:2026: {texto_faixa(chave)}", fill=(34, 120, 70), font=f_eixo)
             draw.rectangle((x0, ym(mx), x1, ym(mn)), fill=faixa)
         else:
-            draw.text((x1 - 300, cy + 12), "Sem limite próprio (avaliar CC)", fill=cinza, font=f_eixo)
+            draw.text((x1 - 340, cy + 12), NOTA_SEM_FAIXA.get(chave, "Sem limite próprio"), fill=cinza, font=f_eixo)
+        if ref is not None:  # linha tracejada de referência (ponto de atenção, não limite)
+            for xa in range(int(x0), int(x1), 18):
+                draw.line((xa, ym(ref), min(xa + 10, x1), ym(ref)), fill=atencao, width=2)
         for g in range(5):
             y = y0 + (y1 - y0) * g / 4
             draw.line((x0, y, x1, y), fill=grid)
@@ -420,10 +450,13 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         if len(pts) > 1:
             draw.line([(x, y) for x, y, _ in pts], fill=linha_cor, width=4)
         for x, y, v in pts:
-            cor = fora if com_faixa and not dentro_limite(chave, v) else linha_cor
+            cor = (fora if com_faixa and not dentro_limite(chave, v)
+                   else atencao if ref is not None and v < ref else linha_cor)
             draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=cor, outline=(255, 255, 255), width=2)
-    draw.text((50, altura - 45), "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite.",
-              fill=cinza, font=f_eixo)
+    nota = "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite."
+    if any(p[0] in REFERENCIA_MINIMA for p, _ in paineis):
+        nota += " Linha laranja: referência mínima de ORP, quando aplicável (ponto de atenção)."
+    draw.text((50, altura - 45), nota, fill=cinza, font=f_eixo)
     draw.line((0, 112, largura, 112), fill=dourado, width=4)
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -431,16 +464,204 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
     return destino
 
 
-def graficos_por_piscina(analises: list[dict], pasta: Path, nome_condominio: str, periodo: str) -> list[tuple[str, Path]]:
-    """Um gráfico de evolução por piscina, a partir das análises do relatório mensal."""
+# ── Cloro combinado e resumo do período (relatório mensal) ──────────────────
+TEXTO_CC = {"nao_calculado": "Não calculado", "inconsistente": "Inconsistente (CT < CL)"}
+_CHAVES_COM_LEITURA_PARAMS = tuple((p[0],) for p in PARAMETROS_MENSAIS) + (("cloro_total",),)
+
+
+def cloro_combinado_linha(item: dict) -> tuple[float | None, str]:
+    """CC = CT – CL (mg/L) da mesma linha (mesma piscina e coleta), pelo cálculo centralizado.
+
+    Usa a leitura inicial de cada célula: quando há "antes / após", não mistura a leitura
+    de antes com a de depois do tratamento. Estados: "ok", "nao_calculado" (CT ou CL
+    ausente ou inválido; nunca vira zero) e "inconsistente" (CT < CL; nunca vira zero).
+    """
+    cl, ct = leitura(item.get("cloro_livre")), leitura(item.get("cloro_total"))
+    if cl is None or ct is None:
+        return None, "nao_calculado"
+    valor, erro = _cloro_combinado(cl, ct)
+    if erro or valor is None:
+        return None, "inconsistente"
+    return round(valor, 2), "ok"
+
+
+def texto_cc(item: dict) -> str:
+    valor, estado = cloro_combinado_linha(item)
+    return fmt_num(valor) if estado == "ok" else TEXTO_CC[estado]
+
+
+def _com_cc(analises: list[dict]) -> list[dict]:
+    """Cópias das linhas com o CC calculado (ou vazio), para gráficos e resumos."""
     saida = []
-    for idx, (nome, itens) in enumerate(agrupar_por_piscina(analises), start=1):
+    for it in analises or []:
+        if isinstance(it, dict):
+            valor, _ = cloro_combinado_linha(it)
+            saida.append({**it, "cloro_combinado": "" if valor is None else valor})
+    return saida
+
+
+MESES_EXTENSO = ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+                 "setembro", "outubro", "novembro", "dezembro")
+
+
+def periodo_por_extenso(mes, ano) -> str:
+    """"Setembro de 2026"; devolve "mes/ano" quando o mês não é válido."""
+    try:
+        m = int(str(mes).strip())
+        return f"{MESES_EXTENSO[m - 1].capitalize()} de {int(str(ano).strip())}"
+    except (ValueError, IndexError):
+        return f"{mes}/{ano}"
+
+
+def resumo_numerico(analises: list[dict]) -> list[tuple[str, list[tuple[str, str, int, float, float, float]]]]:
+    """Mínimo, média e máximo por piscina a partir dos resultados individuais válidos.
+
+    CC usa só os valores calculados ("Não calculado" e inconsistências ficam fora)."""
+    saida = []
+    for nome, itens in agrupar_por_piscina(_com_cc(analises), _CHAVES_COM_LEITURA_PARAMS):
+        linhas = []
+        for chave, rotulo, _mn, _mx, unidade in PARAMETROS_MENSAIS:
+            nums = [v for v in (leitura(it.get(chave)) for it in itens) if v is not None]
+            if nums:
+                linhas.append((rotulo, unidade, len(nums), min(nums), sum(nums) / len(nums), max(nums)))
+        if linhas:
+            saida.append((nome, linhas))
+    return saida
+
+
+CASAS = {"ph": 2, "cloro_livre": 2, "cloro_combinado": 2, "turbidez": 2, "temperatura": 1,
+         "alcalinidade": 0, "dureza": 0, "cianurico": 0, "orp": 0, "tds": 0}
+
+
+def fmt_par(chave: str, valor) -> str:
+    return fmt_num(valor, CASAS.get(chave, 2))
+
+
+def _faixa_txt(chave: str, nums: list[float], unidade: str = "") -> str:
+    u = f" {unidade}" if unidade else ""
+    lo, hi = min(nums), max(nums)
+    return f"{fmt_par(chave, lo)}{u}" if lo == hi else f"{fmt_par(chave, lo)} a {fmt_par(chave, hi)}{u}"
+
+
+def _onde(item: dict) -> str:
+    partes = [str(item.get("data") or "").strip(), str(item.get("piscina") or "").strip() or SEM_PISCINA]
+    return ", ".join(p for p in partes if p)
+
+
+def sintese_periodo(analises: list[dict]) -> dict:
+    """Datas, quantidade de leituras e faixas observadas (sem conclusões além das leituras)."""
+    linhas = [it for it in _com_cc(analises) if linha_tem_leitura(it, _CHAVES_COM_LEITURA_PARAMS)]
+    datas = sorted({d for d in (data_leitura(it.get("data")) for it in linhas) if d})
+    faixas = []
+    for chave, rotulo, _mn, _mx, unidade in PARAMETROS_MENSAIS:
+        nums = [v for v in (leitura(it.get(chave)) for it in linhas) if v is not None]
+        if nums:
+            faixas.append(f"{rotulo.split(' (')[0]} {_faixa_txt(chave, nums, unidade)}")
+    piscinas = []
+    for it in linhas:
+        nome = str(it.get("piscina") or "").strip() or SEM_PISCINA
+        if nome not in piscinas:
+            piscinas.append(nome)
+    return {"n_leituras": len(linhas), "datas": datas, "piscinas": piscinas, "faixas": faixas}
+
+
+def interpretacao_resultados(analises: list[dict]) -> list[tuple[str, str]]:
+    """Leitura por grupo de parâmetros, sustentada só pelas leituras e pelos limites centralizados.
+
+    Desvios citam data e piscina. ORP abaixo da referência é ponto de atenção (quando
+    aplicável); TDS e temperatura são informativos."""
+    linhas = [it for it in _com_cc(analises) if linha_tem_leitura(it, _CHAVES_COM_LEITURA_PARAMS)]
+    if not linhas:
+        return []
+
+    def faixa(chave, unidade=""):
+        nums = [v for v in (leitura(it.get(chave)) for it in linhas) if v is not None]
+        return _faixa_txt(chave, nums, unidade) if nums else None
+
+    def fora(chave, campo_norma):
+        return [f"{_onde(it)} ({fmt_par(chave, leitura(it.get(chave)))})" for it in linhas
+                if leitura(it.get(chave)) is not None and _fora_limite(campo_norma, leitura(it.get(chave)))]
+
+    blocos = []
+    # pH e cloro livre
+    partes = []
+    for chave, campo, nome, unid in (("ph", "ph", "pH", ""), ("cloro_livre", "crl", "Cloro livre", "mg/L")):
+        fx = faixa(chave, unid)
+        if fx:
+            lim = f"{_texto_limite(campo)}{' ' + unid if unid else ''}"
+            desv = fora(chave, campo)
+            partes.append(f"{nome} de {fx}" + (f"; fora do limite {lim} em: {'; '.join(desv)}" if desv
+                                               else f", dentro do limite {lim} nas leituras registradas"))
+    if partes:
+        blocos.append(("pH e cloro livre", ". ".join(partes) + "."))
+    # Alcalinidade e dureza
+    partes = []
+    for chave, campo, nome in (("alcalinidade", "alcalinidade", "Alcalinidade total"), ("dureza", "dureza", "Dureza cálcica")):
+        fx = faixa(chave, "mg/L CaCO3")
+        if fx:
+            desv = fora(chave, campo)
+            partes.append(f"{nome} de {fx}" + (f"; fora do limite {_texto_limite(campo)} mg/L CaCO3 em: {'; '.join(desv)}" if desv
+                                               else f", dentro do limite {_texto_limite(campo)} mg/L CaCO3"))
+    if partes:
+        blocos.append(("Alcalinidade e dureza", ". ".join(partes) + "."))
+    # Estabilizante e cloro combinado
+    partes = []
+    fx = faixa("cianurico", "mg/L")
+    if fx:
+        desv = fora("cianurico", "cya")
+        partes.append(f"Ácido cianúrico de {fx}" + (f"; acima do limite {_texto_limite('cya')} mg/L em: {'; '.join(desv)}" if desv
+                                                  else f", dentro do limite {_texto_limite('cya')} mg/L"))
+    estados = [(it, *cloro_combinado_linha(it)) for it in linhas]
+    validos = [(it, v) for it, v, e in estados if e == "ok"]
+    if validos:
+        acima = [f"{_onde(it)} ({fmt_num(v)} mg/L)" for it, v in validos if _fora_limite("cc", v)]
+        partes.append(f"Cloro combinado (CC = CT – CL) de {_faixa_txt('cloro_combinado', [v for _, v in validos], 'mg/L')}"
+                      f" em {len(validos)} leitura(s)"
+                      + (f"; acima do limite {_texto_limite('cc')} mg/L em: {'; '.join(acima)}" if acima
+                         else f", dentro do limite {_texto_limite('cc')} mg/L"))
+    incons = [_onde(it) for it, _v, e in estados if e == "inconsistente"]
+    if incons:
+        partes.append("CT menor que CL, medição inconsistente a conferir, em: " + "; ".join(incons))
+    nao_calc = sum(1 for _it, _v, e in estados if e == "nao_calculado"
+                   and (leitura(_it.get("cloro_livre")) is not None or leitura(_it.get("cloro_total")) is not None))
+    if nao_calc:
+        partes.append(f"CC não calculado em {nao_calc} leitura(s) sem CT ou CL válidos")
+    if partes:
+        blocos.append(("Estabilizante e cloro combinado", ". ".join(partes) + "."))
+    # Indicadores complementares
+    partes = []
+    fx = faixa("turbidez", "NTU")
+    if fx:
+        desv = fora("turbidez", "turbidez")
+        partes.append(f"Turbidez de {fx}" + (f"; fora do limite {_texto_limite('turbidez')} NTU em: {'; '.join(desv)}" if desv
+                                            else f", dentro do limite {_texto_limite('turbidez')} NTU"))
+    fx = faixa("orp", "mV")
+    if fx:
+        desv = fora("orp", "orp")
+        partes.append(f"ORP de {fx}" + (f"; abaixo da referência {_texto_limite('orp')} mV (quando aplicável, ponto de atenção) em: "
+                                        f"{'; '.join(desv)}" if desv else f", sem leitura abaixo da referência {_texto_limite('orp')} mV"))
+    fx_tds, fx_temp = faixa("tds", "mg/L"), faixa("temperatura", "°C")
+    if fx_tds or fx_temp:
+        partes.append("Informativos, sem classificação por leitura isolada: "
+                      + "; ".join(x for x in (f"TDS de {fx_tds}" if fx_tds else "", f"temperatura de {fx_temp}" if fx_temp else "") if x))
+    if partes:
+        blocos.append(("Turbidez, ORP, TDS e temperatura", ". ".join(partes) + "."))
+    return blocos
+
+
+def graficos_por_piscina(analises: list[dict], pasta: Path, nome_condominio: str, periodo: str) -> list[tuple[str, Path]]:
+    """Um gráfico de evolução por piscina, a partir das análises do relatório mensal.
+    O painel de cloro combinado usa o CC calculado de cada linha (CT – CL)."""
+    saida = []
+    analises = _com_cc(analises)
+    for idx, (nome, itens) in enumerate(agrupar_por_piscina(analises, _CHAVES_COM_LEITURA_PARAMS), start=1):
         ordenados = sorted(enumerate(itens), key=lambda t: (data_leitura(t[1].get("data")) or date.max, t[0]))
         itens = [it for _, it in ordenados]
         rotulos = [str(it.get("data") or f"#{k + 1}")[:5] for k, it in enumerate(itens)]
-        series = [(chave, [leitura(it.get(chave)) for it in itens]) for chave, *_ in PARAMETROS]
+        series = [(chave, [leitura(it.get(chave)) for it in itens]) for chave, *_ in PARAMETROS_MENSAIS]
         p = gerar_grafico(series, rotulos, f"Evolução dos parâmetros — {nome}",
-                          f"{nome_condominio} • {periodo}", Path(pasta) / f"grafico_piscina_{idx}.png")
+                          f"{nome_condominio} • {periodo}", Path(pasta) / f"grafico_piscina_{idx}.png",
+                          parametros=PARAMETROS_MENSAIS)
         if p:
             saida.append((nome, p))
     return saida
