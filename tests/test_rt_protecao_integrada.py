@@ -185,9 +185,12 @@ class TestDocumentosProtegidos(unittest.TestCase):
         self._carregar(at,'Residencial Beta Fictício')  # armazenamento recuperou
         persistidos=[json.loads(p.read_text()) for p in (self.pasta/'app'/'generated').glob('_rascunho_relatorio_rt*.json')]
         ultima=next(d for d in persistidos if d.get('campos',{}).get('rel_analise_cl_0')=='9,87')
-        at2=self._entrar_e_carregar('Residencial Beta Fictício')
         import re
         chave='btn_restaurar_rascunho_rt_'+re.sub(r'\W','_',ultima['_chave'])
+        # Rascunho de Alfa 09/2026: não aparece com Beta carregado; restaura com Alfa 09/2026.
+        at2=self._entrar_e_carregar('Residencial Beta Fictício');self._mes(at2,'09')
+        self.assertFalse(any(b.key==chave for b in at2.button))
+        self._carregar(at2,'Condomínio Alfa Fictício');self._mes(at2,'09')
         next(b for b in at2.button if b.key==chave).click().run();at2.run()
         self.assertEqual(at2.session_state['rel_analise_cl_0'],'9,87')
         self.assertEqual(at2.session_state['rel_nome_condominio'],'Condomínio Alfa Fictício')
