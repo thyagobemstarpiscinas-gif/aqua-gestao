@@ -156,6 +156,59 @@ def fora_limite(campo: str, valor: float | None, *, tratamento_complementar: boo
     return avaliar_leitura(chave, valor, tratamento_complementar=tratamento_complementar) == "fora_limite"
 
 
+# ── ORP: regra única dos relatórios do escritório e de campo ───────────────
+# Critério: ABNT NBR 10818:2026, seção 6 / Tabela 3, piscina coletiva com tratamento
+# clorado simples: "ORP mínimo 650 mV quando aplicável" (conferência do texto integral
+# registrada em docs/RT_NORMAS_20261101.md). O material aprovado não define quando o
+# ORP é aplicável nem atribui não conformidade à leitura abaixo da referência. Por isso:
+# - abaixo de 650 mV: ponto de atenção; não altera o status nem entra nas não conformidades;
+# - 650 mV ou mais (inclusive o limite): atende a referência;
+# - sem leitura: ausente; nunca vira zero, nem conformidade, nem leitura avaliável.
+ORP_AUSENTE = "ausente"
+ORP_ABAIXO_REFERENCIA = "abaixo_referencia"
+ORP_ATENDE_REFERENCIA = "atende_referencia"
+RECOMENDACAO_ORP = ("Quando o ORP for aplicável ao tratamento, conferir a demanda oxidante e repetir a "
+                    "leitura com o medidor calibrado.")
+
+
+def ler_orp(valor) -> float | None:
+    """Leitura de ORP em mV, aceitando "650", "650,5", "1.234,5"; vazio/traço/texto → None (nunca 0)."""
+    if isinstance(valor, bool) or valor is None:
+        return None
+    if isinstance(valor, (int, float)):
+        return None if valor != valor else float(valor)  # NaN = sem leitura
+    s = str(valor).strip().replace(" ", "")
+    if s.lower().endswith("mv"):
+        s = s[:-2]
+    if not s or s in {"—", "-", "–", "None", "nan"}:
+        return None
+    if s.count(",") == 1 and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return None if v != v else v
+
+
+def avaliar_orp(valor) -> str:
+    """ausente | abaixo_referencia | atende_referencia (ver regra acima)."""
+    v = ler_orp(valor)
+    if v is None:
+        return ORP_AUSENTE
+    return ORP_ABAIXO_REFERENCIA if fora_limite("orp", v) else ORP_ATENDE_REFERENCIA
+
+
+def texto_atencao_orp(valor, onde: str = "") -> str:
+    """Texto do ponto de atenção (mesmo nos dois relatórios); `onde` já vem formatado (" — data, piscina")."""
+    v = ler_orp(valor)
+    fmt = lambda x: f"{x:g}".replace(".", ",")  # noqa: E731
+    return (f"ORP={fmt(v)} mV abaixo da referência mín. {fmt(limites('orp')[0])} mV "
+            f"(NBR 10818:2026, quando aplicável) — ponto de atenção{onde}")
+
+
 def texto_resumo_limites() -> str:
     """Linha única com os limites usados nos relatórios (sem alegar conformidade)."""
     partes = [

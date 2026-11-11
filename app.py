@@ -3021,7 +3021,10 @@ def build_monthly_rt_pdf_bytes(
         return out
 
     recs = _limpar_records(records)
-    from utils.normas_piscinas import avaliar_leitura, cloro_combinado, fora_limite, texto_resumo_limites
+    from utils.normas_piscinas import (
+        ORP_ABAIXO_REFERENCIA, RECOMENDACAO_ORP, avaliar_leitura, avaliar_orp, cloro_combinado,
+        fora_limite, texto_atencao_orp, texto_resumo_limites,
+    )
 
     def _desvios_record(r):
         desv = []
@@ -3032,9 +3035,9 @@ def build_monthly_rt_pdf_bytes(
         dur = _to_float(r.get("dureza") or r.get("dc"))
         cya = _to_float(r.get("cianurico") or r.get("cya"))
         turb = _to_float(r.get("turbidez") or r.get("ntu"))
-        orp = _to_float(r.get("orp"))
         # Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3); faixas ideais
-        # não são tratadas como desvio.
+        # não são tratadas como desvio. ORP segue a regra única (ponto de atenção,
+        # fora das não conformidades): ver _atencoes_orp abaixo.
         if fora_limite("ph", ph): desv.append("pH")
         if fora_limite("crl", crl): desv.append("CRL")
         cc, erro_cc = cloro_combinado(crl, ct)
@@ -3044,7 +3047,6 @@ def build_monthly_rt_pdf_bytes(
         if fora_limite("dureza", dur): desv.append("dureza")
         if fora_limite("cya", cya): desv.append("CYA")
         if avaliar_leitura("turbidez", turb) == "fora_limite": desv.append("turbidez")
-        if fora_limite("orp", orp): desv.append("ORP")
         return desv
 
     def _onde(r):
@@ -3058,12 +3060,16 @@ def build_monthly_rt_pdf_bytes(
         if ds:
             tem_desvios = True
             desvios_linhas.append(f"{_onde(r)} — verificar: {', '.join(ds)} (limites da NBR 10818:2026).")
+    # Mesmos textos do relatório do escritório (avaliar_conformidade_analises).
+    _atencoes_orp = [texto_atencao_orp(r.get("orp"), f" — {_onde(r)}") for r in recs
+                     if avaliar_orp(r.get("orp")) == ORP_ABAIXO_REFERENCIA]
 
-    # Leitura avaliável: algum parâmetro com limite da NBR 10818:2026 (TDS e temperatura são informativos).
+    # Leitura avaliável: algum parâmetro com limite da NBR 10818:2026. ORP (referência
+    # quando aplicável), TDS e temperatura não tornam o período avaliável sozinhos.
     leituras_avaliadas = [r for r in recs if any(
         _to_float(r.get(a) or (r.get(b) if b else None)) is not None
         for a, b in (("ph", None), ("cloro_livre", "crl"), ("cloro_total", "ct"), ("alcalinidade", "alc"),
-                     ("dureza", "dc"), ("cianurico", "cya"), ("turbidez", "ntu"), ("orp", None)))]
+                     ("dureza", "dc"), ("cianurico", "cya"), ("turbidez", "ntu")))]
     sem_dados = not leituras_avaliadas
     if tem_desvios:
         situacao_geral = "ATENÇÃO — HÁ DESVIOS NO PERÍODO"
@@ -3218,6 +3224,8 @@ def build_monthly_rt_pdf_bytes(
     story.append(_p(f"Síntese dos resultados: {sintese}", st_body))
     if desvios_linhas:
         story.append(_p("Desvios relevantes: " + " ; ".join(desvios_linhas), st_body))
+    if _atencoes_orp:
+        story.append(_p("Pontos de atenção: " + " ; ".join(_atencoes_orp), st_body))
 
     # Nota técnica valorizando turbidez e ORP, sem virar legenda de foto.
     nota_turb_orp = (
@@ -3261,8 +3269,8 @@ def build_monthly_rt_pdf_bytes(
         recomendacoes.append("Revisar estabilizante (CYA) e considerar renovação parcial de água quando tecnicamente indicado.")
     if any("turbidez" in d for d in desvios_linhas):
         recomendacoes.append("Verificar eficiência de filtração, retrolavagem e carga orgânica associada à turbidez.")
-    if any("ORP" in d for d in desvios_linhas):
-        recomendacoes.append("Correlacionar ORP com pH, cloro e CYA para confirmar a efetividade oxidante da água.")
+    if _atencoes_orp:
+        recomendacoes.append(RECOMENDACAO_ORP)
     if sem_dados:
         recomendacoes.append("Registrar as medições físico-químicas do período para permitir a avaliação técnica.")
     if not recomendacoes:
@@ -3270,7 +3278,8 @@ def build_monthly_rt_pdf_bytes(
 
     parecer_linhas = [
         f"1. Avaliação técnica do período: {sintese}",
-        f"2. Não conformidades identificadas: {desvios_texto}",
+        f"2. Não conformidades identificadas: {desvios_texto}"
+        + (f" Pontos de atenção (não alteram a avaliação): {'; '.join(_atencoes_orp)}." if _atencoes_orp else ""),
         "3. Recomendações técnicas: " + " ".join(recomendacoes),
         "4. Prazos sugeridos: Imediato para desvios críticos e até a próxima rotina para ajustes preventivos.",
         "5. Responsável pela ação: Operação local com acompanhamento do Responsável Técnico.",
@@ -8010,11 +8019,12 @@ def avaliar_conformidade_analises(analises: list[dict]) -> dict:
         partes = [str(item.get(k) or "").strip() for k in ("data", "piscina")]
         return " — " + ", ".join(p for p in partes if p) if any(partes) else ""
 
+    from utils.normas_piscinas import ORP_ABAIXO_REFERENCIA, avaliar_orp, texto_atencao_orp
+
     for idx, item in enumerate(analises, start=1):
-        orp = valor_float(item.get("orp", ""))
-        if orp is not None and fora_limite("orp", orp):
-            atencoes.append(f"Leitura {idx}: ORP={_fmt_br(orp)} mV abaixo da referência mín. {_fmt_br(limites_norma('orp')[0])} mV "
-                            f"(NBR 10818:2026, quando aplicável) — ponto de atenção{_onde(item)}")
+        # Regra única de ORP (utils.normas_piscinas): ponto de atenção, sem mudar o status.
+        if avaliar_orp(item.get("orp")) == ORP_ABAIXO_REFERENCIA:
+            atencoes.append(f"Leitura {idx}: " + texto_atencao_orp(item.get("orp"), _onde(item)))
         informativos.update(k for k in ("orp", "tds", "temperatura") if valor_float(item.get(k, "")) is not None)
         avaliaveis = [valor_float(item.get(k, "")) for k in LIMITES_RELATORIO]
         combinado, estado_cc = cloro_combinado_linha(item)
@@ -8494,7 +8504,8 @@ def gerar_textos_automaticos_relatorio(analises: list[dict], avaliacao: dict) ->
     for atencao in avaliacao.get("atencoes", [])[:2]:
         observacoes.append(atencao)
     if avaliacao.get("atencoes"):
-        recomendacoes.append("Quando o ORP for aplicável ao tratamento, conferir a demanda oxidante e repetir a leitura com o medidor calibrado.")
+        from utils.normas_piscinas import RECOMENDACAO_ORP
+        recomendacoes.append(RECOMENDACAO_ORP)
     if not detalhes and avaliacao.get("status") == "CONFORME":
         observacoes.insert(0, "Nenhuma leitura fora dos limites da ABNT NBR 10818:2026 nos parâmetros registrados no período.")
     if nota_informativos:
