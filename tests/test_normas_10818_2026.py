@@ -47,7 +47,7 @@ def test_relatorio_mensal_usa_limites_2026_e_nao_metas_antigas():
         assert _status_for_value(campo, valor) == "ok", (campo, valor)
     # Fora dos limites 2026, mas dentro das faixas antigas (CRL 0,5–3,0).
     assert _status_for_value("crl", 0.8) == "out"
-    assert _status_for_value("orp", 600) == "out"
+    assert _status_for_value("orp", 600) == "attention"  # referência "quando aplicável": ponto de atenção
     assert _status_for_value("tds", 5000) == "ok"  # TDS não é classificado isoladamente
     desvios = _collect_deviation_data([{"data": "02/11/2026", "crl": 0.8, "ph": 7.1}])
     assert desvios == {"02/11/2026": ["CRL"]}

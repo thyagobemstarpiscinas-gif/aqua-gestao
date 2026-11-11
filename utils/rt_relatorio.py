@@ -637,7 +637,9 @@ def interpretacao_resultados(analises: list[dict]) -> list[tuple[str, str]]:
                                             else f", dentro do limite {_texto_limite('turbidez')} NTU"))
     fx = faixa("orp", "mV")
     if fx:
-        desv = fora("orp", "orp")
+        from utils.normas_piscinas import ORP_ABAIXO_REFERENCIA, avaliar_orp  # regra única de ORP
+        desv = [f"{_onde(it)} ({fmt_par('orp', leitura(it.get('orp')))})" for it in linhas
+                if avaliar_orp(leitura(it.get("orp"))) == ORP_ABAIXO_REFERENCIA]
         partes.append(f"ORP de {fx}" + (f"; abaixo da referência {_texto_limite('orp')} mV (quando aplicável, ponto de atenção) em: "
                                         f"{'; '.join(desv)}" if desv else f", sem leitura abaixo da referência {_texto_limite('orp')} mV"))
     fx_tds, fx_temp = faixa("tds", "mg/L"), faixa("temperatura", "°C")

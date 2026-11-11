@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from utils.datas_visitas import normalizar_data_visita
-from utils.normas_piscinas import avaliar_leitura, cloro_combinado, fora_limite, texto_limite, texto_ideal
+from utils.normas_piscinas import (
+    ORP_ABAIXO_REFERENCIA, RECOMENDACAO_ORP, avaliar_leitura, avaliar_orp, cloro_combinado,
+    fora_limite, texto_atencao_orp, texto_limite, texto_ideal,
+)
 
 
 RT_NAME = "Thyago Fernando da Silveira"
@@ -36,8 +39,9 @@ MONTH_NAMES_PT = {
 # Parâmetros com limite aceitável na ABNT NBR 10818:2026 (Tabela 3, piscina
 # coletiva, tratamento clorado simples). Os limites vêm de utils.normas_piscinas.
 # CT não possui faixa de conformidade independente: avaliar CC = CT - CRL.
-# TDS e temperatura não são classificados por número isolado.
-RANGES = ("ph", "crl", "alcalinidade", "dureza", "cya", "turbidez", "orp")
+# TDS e temperatura não são classificados por número isolado. ORP segue a regra única de
+# utils.normas_piscinas: abaixo da referência é ponto de atenção ("attention"), não desvio.
+RANGES = ("ph", "crl", "alcalinidade", "dureza", "cya", "turbidez")
 
 
 COLORS = {
@@ -226,6 +230,8 @@ def _status_for_value(field: str, value: Any) -> str:
     num = _to_float(value)
     if num is None:
         return "missing"
+    if field == "orp":
+        return "attention" if avaliar_orp(num) == ORP_ABAIXO_REFERENCIA else "ok"
     if field not in RANGES:
         return "ok"
     return "out" if fora_limite(field, num) else "ok"
@@ -306,7 +312,6 @@ def _collect_deviation_data(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
         "alcalinidade": "alcalinidade",
         "dureza": "dureza",
         "cya": "CYA",
-        "orp": "ORP",
     }
     for row in rows:
         data = row.get("data") or "—"
@@ -340,7 +345,7 @@ def _deviation_sentences(rows: list[dict[str, Any]]) -> list[str]:
 def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
     found = set()
     for row in rows:
-        for field in ["ph", "crl", "alcalinidade", "dureza", "cya", "orp"]:
+        for field in ["ph", "crl", "alcalinidade", "dureza", "cya"]:
             if _status_for_value(field, row.get(field)) == "out":
                 found.add(field)
         cc, erro = cloro_combinado(_to_float(row.get("crl")), _to_float(row.get("ct")))
@@ -366,8 +371,8 @@ def _recommendations_from_deviations(rows: list[dict[str, Any]]) -> list[str]:
         recs.append("Repetir as medições de cloro livre e total: CT inferior ao CRL é inconsistente.")
     if "cc" in found:
         recs.append("Investigar demanda oxidante e cloraminas; corrigir cloro combinado e confirmar o resultado por nova análise.")
-    if "orp" in found:
-        recs.append("Conferir o potencial de oxirredução (mínimo 650 mV, quando aplicável) e a calibração do sensor.")
+    if _orp_attention_points(rows):
+        recs.append(RECOMENDACAO_ORP)
     if "turbidez" in found:
         recs.append("Investigar turbidez, filtração e retenção de partículas, com nova medição após as providências.")
 
@@ -397,13 +402,21 @@ def _extract_photo_items(records: list[dict[str, Any]]) -> list[dict[str, str]]:
     return items
 
 
+def _orp_attention_points(rows: list[dict[str, Any]]) -> list[str]:
+    """Pontos de atenção de ORP (regra única, mesmos textos do relatório do escritório)."""
+    return [texto_atencao_orp(row.get("orp"), f" — {row.get('data') or '—'}") for row in rows
+            if avaliar_orp(row.get("orp")) == ORP_ABAIXO_REFERENCIA]
+
+
 def _collect_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(rows)
     leituras = 0
     for row in rows:
+        # Leitura avaliável: parâmetros com limite. ORP (referência quando aplicável),
+        # TDS e temperatura sozinhos não permitem avaliar o período.
         if any(
             _to_float(row.get(k)) is not None
-            for k in ["ph", "crl", "ct", "alcalinidade", "dureza", "cya", "turbidez", "orp", "tds", "temperatura"]
+            for k in ["ph", "crl", "ct", "alcalinidade", "dureza", "cya", "turbidez"]
         ):
             leituras += 1
 
@@ -427,6 +440,7 @@ def _collect_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "status": status,
         "status_flag": status_flag,
         "deviations": deviations,
+        "attention": _orp_attention_points(rows),
     }
 
 
@@ -716,6 +730,8 @@ def build_monthly_rt_pdf_bytes(
 
     story.append(P(f"Síntese dos resultados: {synthesis}", "Body"))
     story.append(P(f"Desvios relevantes: {' ; '.join(deviation_lines) if deviation_lines else 'Não foram observados desvios relevantes.'}", "Body"))
+    if summary["attention"]:
+        story.append(P(f"Pontos de atenção (não alteram a avaliação): {' ; '.join(summary['attention'])}", "Body"))
     story.append(P(f"Tendências observadas: {trends}", "Body"))
     story.append(P(f"Observações registradas pelo RT: {observations}", "Body"))
 
