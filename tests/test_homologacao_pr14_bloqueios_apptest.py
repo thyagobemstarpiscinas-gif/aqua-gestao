@@ -1,7 +1,8 @@
 """Bloqueios finais do PR #14 no app real (AppTest, planilha e Drive falsos, sem rede).
 
 1. Sequência da homologação: restaurar rascunho de Alfa, trocar novembro → outubro
-   com a planilha falhando, restaurar rascunho de Beta. Antes: "Troca bloqueada…",
+   com a planilha falhando, carregar Beta e restaurar o rascunho dele (rascunho de outro
+   condomínio/período não é listado). Antes: "Troca bloqueada…",
    o mês voltava para novembro e a restauração era recusada.
 2. Relatório mensal Bem Star do Épsilon com a V00005 lida só do Sheets (servidor
    sem pasta local) e a foto no Drive: antes o PDF saía sem registro fotográfico.
@@ -88,6 +89,12 @@ class SequenciaRestauracaoRT(_AppReal):
             self.assertEqual(at.session_state["rel_origem_dados"], "aqua_gestao|id:C1|10/2026")
             self.assertNotEqual(at.session_state["rel_diagnostico"], "ALFA_NOVEMBRO_EDITADO")  # sem mistura
 
+            # Rascunho de Beta/novembro só é listado com Beta/novembro carregado.
+            prefixo_beta = "btn_restaurar_rascunho_rt_" + re.sub(r"\W", "_", chave_beta)
+            self.assertFalse(any((b.key or "").startswith(prefixo_beta) for b in at.button))
+            at.selectbox(key="sel_cliente_rel").select("Residencial Beta Fictício").run()
+            next(b for b in at.button if b.label == "⬇️ Carregar").click().run()
+            at.text_input(key="rel_mes_referencia").input("11").run()
             _restaurar(at, chave_beta)
             self.assertFalse(at.exception, at.exception)
             self.assertNotIn("_relatorio_rt_restore_erro", at.session_state)

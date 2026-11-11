@@ -267,7 +267,11 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
 
         # Nova visita depois da recuperação, com a tabela editada pelo usuário: nada é sobrescrito.
         at.text_input(key="rel_analise_ph_0").input("7,9").run()
-        linha = ["", "V2", "22/09/2026", "", "Condomínio Alfa Fictício", "7,0", "1,2", "1,4", "80", "", "0"] + [""] * 9 + [RT_FICTICIO] + [""] * 5
+        marca_rt = json.dumps({"data": "22/09/2026", "condominio": "Condomínio Alfa Fictício", "ph": "7,0",
+                               "cloro_livre": "1,2", "cloro_total": "1,4", "alcalinidade": "80", "cianurico": "0",
+                               "operador": RT_FICTICIO, "status": "Concluída", "visita_rt_semanal": True, "tipo_visita": "RT semanal"})
+        linha = (["", "V2", "22/09/2026", "", "Condomínio Alfa Fictício", "7,0", "1,2", "1,4", "80", "", "0"]
+                 + [""] * 9 + [RT_FICTICIO] + ["", marca_rt, "", "", ""])
         visitas.linhas.append(linha)
         st_real.cache_data.clear()
         at.run()
@@ -328,9 +332,14 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
     def _visitas_alfa(self, *linhas):
         """Substitui as visitas fictícias de Alfa (data, nome gravado na visita, pH, CRL)."""
         aba = sys.modules["gspread"].PLANILHA.worksheet("🔬 Visitas")
-        aba.linhas = aba.linhas[:1] + [
-            ["", f"V{i}", data, "", nome, ph, crl, "1,8", "90", "", "0"] + [""] * 9 + [RT_FICTICIO] + [""] * 5
-            for i, (data, nome, ph, crl) in enumerate(linhas, start=1)]
+        def linha(i, data, nome, ph, crl):
+            # Formato do formulário RT real: Payload JSON (coluna W) com a marca do acesso RT.
+            payload = {"data": data, "condominio": nome, "operador": RT_FICTICIO, "status": "Concluída",
+                       "ph": ph, "cloro_livre": crl, "cloro_total": "1,8", "alcalinidade": "90", "cianurico": "0",
+                       "visita_rt_semanal": True, "tipo_visita": "RT semanal"}
+            return (["", f"V{i}", data, "", nome, ph, crl, "1,8", "90", "", "0"] + [""] * 9 + [RT_FICTICIO]
+                    + ["", json.dumps(payload, ensure_ascii=False), "", "", ""])
+        aba.linhas = aba.linhas[:1] + [linha(i, *l) for i, l in enumerate(linhas, start=1)]
 
     def _analises(self, at, n=2):
         ss = at.session_state
@@ -378,12 +387,29 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         at = self._entrar_e_carregar()
         self._mes(at, "09")
         at.text_area(key="rel_diagnostico").input("Diagnóstico do rascunho").run()  # gera o rascunho
+        chave_esperada = at.session_state["_rt_rasc_chave"]
         self._cadastrar("C10", "Alfa Park Fictício")
         # Nova sessão (ex.: página recarregada) restaura o rascunho com a visita já ambígua.
         at2 = self._entrar_e_carregar()
-        restaurar = [b for b in at2.button if (b.key or "").startswith("btn_restaurar_rascunho_rt_")]
-        self.assertTrue(restaurar, "rascunho não oferecido para restauração")
-        restaurar[0].click().run()
+        self._mes(at2, "09")  # o rascunho só é listado com o período dele (Alfa 09/2026)
+        import re
+        prefixo = "btn_restaurar_rascunho_rt_"
+        gravados = {}
+        for p in (self.pasta / "app" / "generated").glob("_rascunho_relatorio_rt*.json"):
+            d = json.loads(p.read_text(encoding="utf-8"))
+            gravados[prefixo + re.sub(r"\W", "_", d.get("_chave", ""))] = d
+        restaurar = [b for b in at2.button if (b.key or "").startswith(prefixo)]
+        # Todo rascunho oferecido é de Alfa 09/2026 e de origem RT (várias versões válidas podem existir).
+        for b in restaurar:
+            d = gravados.get(b.key)
+            self.assertIsNotNone(d, f"botão sem rascunho gravado correspondente: {b.key}")
+            self.assertEqual(d["campos"].get("rel_origem_dados"), "aqua_gestao|id:C1|09/2026", b.key)
+            self.assertIn(d.get("origem_acesso"), ("escritorio_rt", "rt_campo"), b.key)
+        # O rascunho esperado é localizado pelo identificador e restaurado explicitamente.
+        chave_botao = prefixo + re.sub(r"\W", "_", chave_esperada)
+        botao = next((b for b in restaurar if b.key == chave_botao), None)
+        self.assertIsNotNone(botao, "rascunho de Alfa 09/2026 não oferecido para restauração")
+        botao.click().run()
         at2.run()
         at2.run()
         self.assertEqual(self._analises(at2, 1), [("29/09/2026", "7,4", "1,5")])
@@ -459,9 +485,15 @@ class TestRelatorioRTCamposNoAppReal(_AppReal):
         at = self._cenario_d1()
         self._carregar(at, "Residencial Beta Fictício")  # Alfa vai para o rascunho próprio
         restaurado = None
+        beta = self._entrar_e_carregar("Residencial Beta Fictício")
+        self._mes(beta, "09")
+        listados_beta = {b.key for b in beta.button if (b.key or "").startswith("btn_restaurar_rascunho_rt_")}
         for i in range(6):
-            at2 = self._entrar_e_carregar("Residencial Beta Fictício")
+            # Rascunho só aparece com a identidade dele carregada (Alfa 09/2026).
+            at2 = self._entrar_e_carregar("Condomínio Alfa Fictício")
+            self._mes(at2, "09")
             botoes = [b for b in at2.button if (b.key or "").startswith("btn_restaurar_rascunho_rt_")]
+            self.assertFalse(listados_beta & {b.key for b in botoes}, "rascunho de Alfa listado com Beta")
             if i >= len(botoes):
                 break
             botoes[i].click().run()

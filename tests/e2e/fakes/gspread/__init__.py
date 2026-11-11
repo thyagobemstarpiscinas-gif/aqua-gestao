@@ -89,10 +89,19 @@ _cli.linhas = [
     ["", "C2", "Residencial Beta Fictício", "40", "", "Síndico Beta", "Rua B, 2", "", "Ativo", "", "", "", "Aqua Gestão", "", ""],
 ]
 _vis = PLANILHA.add_worksheet("🔬 Visitas", 100, 23)
+def _visita_rt(id_v, data, cond, ph, cl, ct, alc, dur, cya):
+    """Linha no formato do formulário RT real: colunas F–K e Payload JSON (W) com a marca
+    gravada pelo acesso autenticado (visita_rt_semanal / tipo_visita)."""
+    import json as _json
+    payload = {"data": data, "condominio": cond, "operador": "Responsável Técnico Fictício", "status": "Concluída",
+               "ph": ph, "cloro_livre": cl, "cloro_total": ct, "alcalinidade": alc, "dureza": dur, "cianurico": cya,
+               "visita_rt_semanal": True, "tipo_visita": "RT semanal"}
+    return (["", id_v, data, "", cond, ph, cl, ct, alc, dur, cya] + [""] * 8
+            + ["Concluída", "Responsável Técnico Fictício", "", _json.dumps(payload, ensure_ascii=False)])
+
+
 _vis.linhas = [
     ["", "ID", "Data", "", "Condomínio"] + [""] * 18,
-    ["", "V1", "29/09/2026", "", "Condomínio Alfa Fictício", "7,4", "1,5", "1,8", "90", "", "0"]
-    + [""] * 8 + ["Concluída", "Responsável Técnico Fictício", "", ""],
-    ["", "V2", _terca.strftime("%d/%m/%Y"), "", "Residencial Beta Fictício", "7,2", "2,0", "2,1", "100", "", "30"]
-    + [""] * 8 + ["Concluída", "Responsável Técnico Fictício", "", ""],
+    _visita_rt("V1", "29/09/2026", "Condomínio Alfa Fictício", "7,4", "1,5", "1,8", "90", "", "0"),
+    _visita_rt("V2", _terca.strftime("%d/%m/%Y"), "Residencial Beta Fictício", "7,2", "2,0", "2,1", "100", "", "30"),
 ]

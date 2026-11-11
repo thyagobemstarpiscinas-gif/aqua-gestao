@@ -156,8 +156,12 @@ def sincronizar_fotos(ss, chave, uploads):
         novos[digest] = {"nome": Path(up.name).name, "sha256": digest,
                          "bytes": base64.b64encode(b).decode("ascii")}
     # Remoção no uploader vale para os anexos ativos, sem apagar fotos restauradas.
-    for digest in set(ss.get("_rt_upload_hashes") or []) - set(novos):
-        fotos.pop(digest, None)
+    # Lista vazia não é remoção: o Streamlit entrega o uploader vazio quando a execução
+    # anterior parou antes dele (st.rerun() ou exceção), e isso apagava fotos e legendas.
+    # Remoção intencional: tirar um arquivo deixando outros no upload, ou "Remover foto".
+    if novos:
+        for digest in set(ss.get("_rt_upload_hashes") or []) - set(novos):
+            fotos.pop(digest, None)
     # Mesma imagem já preservada: mantém a entrada existente (legenda e piscina).
     fotos.update({d: f for d, f in novos.items() if d not in fotos})
     ss["_rt_upload_hashes"] = list(novos)
@@ -199,3 +203,33 @@ def materializar_fotos(ss, chave, raiz):
         p.write_bytes(base64.b64decode(f["bytes"], validate=True))
         resultado.append(p)
     return resultado
+
+
+# ── Rascunhos do relatório RT: o que pode ser listado/restaurado ─────────────
+# Origem do rascunho = perfil autenticado que o gravou (app.py, _perfil_acesso_rascunho):
+# "rt_campo" (PIN RT) ou "escritorio_rt" (relatório RT do escritório). "operador" e
+# rascunhos antigos sem origem gravada nunca são presumidos como RT.
+ORIGENS_RASCUNHO_RT = {"rt_campo", "escritorio_rt"}
+
+
+def motivo_rascunho_oculto(dados, empresa, identidade):
+    """"" quando o rascunho pode aparecer/ser restaurado na identidade carregada;
+    senão o motivo: "sem_identidade", "outra_identidade" ou "origem_nao_rt".
+
+    Identidade = empresa + ID do condomínio + período (rel_origem_dados). Os lançamentos
+    do rascunho (rel_lancamentos_origem) precisam ser todos de origem RT comprovada.
+    """
+    if not identidade:
+        return "sem_identidade"
+    campos_r = (dados or {}).get("campos") or {}
+    if ((dados or {}).get("empresa_ativa") or "aqua_gestao") != empresa or campos_r.get("rel_origem_dados") != identidade:
+        return "outra_identidade"
+    if (dados or {}).get("origem_acesso") not in ORIGENS_RASCUNHO_RT:
+        return "origem_nao_rt"
+    try:
+        lancamentos = json.loads(campos_r.get("rel_lancamentos_origem") or "[]")
+    except (TypeError, ValueError):
+        return "origem_nao_rt"
+    if not isinstance(lancamentos, list) or any(not (isinstance(l, dict) and l.get("rt") is True) for l in lancamentos):
+        return "origem_nao_rt"
+    return ""

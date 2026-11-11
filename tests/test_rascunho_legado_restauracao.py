@@ -79,21 +79,19 @@ class TestRestaurarRascunhoLegadoNaoGrava(_AppReal):
         botao("Entrar no escritório").click().run()
         return at
 
-    def test_restaurar_legado_nao_grava_e_primeira_edicao_vai_para_linha_propria(self):
+    def test_legado_sem_origem_fica_fora_da_lista_e_primeira_edicao_vai_para_linha_propria(self):
         at = self._entrar()
         at.run()
         at.run()
         self.assertEqual(self.gravacoes, [])  # abrir o escritório não grava
-        next(b for b in at.button if (b.key or "") == "btn_restaurar_rascunho_rt_thyago").click().run()
-        at.run()
-        at.run()
+        # Rascunho antigo sem identidade nem origem: preservado, mas fora da lista RT
+        # (sem condomínio carregado a lista global também não aparece).
+        self.assertFalse(any((b.key or "").startswith("btn_restaurar_rascunho_rt_") for b in at.button))
+        self.assertTrue(any("Carregue o condomínio e o período" in c.value for c in at.caption))
         ss = at.session_state
-        self.assertEqual(ss["rel_nome_condominio"], "Condomínio Legado Fictício")
-        self.assertEqual([ss[f"rel_analise_ph_{i}"] for i in range(4)], ["7.0", "7.1", "7.2", "7.3"])
-        for k, v in PADROES_ESCOLHA.items():
-            if k in ss:
-                self.assertEqual(ss[k], v, k)
-        self.assertEqual(self.gravacoes, [], "restaurar não pode gravar sem edição do usuário")
+        self.assertNotEqual(ss["rel_nome_condominio"] if "rel_nome_condominio" in ss else "", "Condomínio Legado Fictício")
+        self.assertEqual(self.gravacoes, [], "nada gravado sem edição do usuário")
+        self.assertEqual(self.aba.linhas[1], self.legado_original)
         self.assertFalse(at.exception, at.exception)
 
         at.text_area(key="rel_diagnostico").input("Diagnóstico editado 1").run()

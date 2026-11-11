@@ -1,7 +1,8 @@
 """Regressões da homologação do PR #14 no app real (AppTest, planilha falsa, sem rede).
 
-- Rascunho RT restaurado em outra sessão, com outro condomínio/período na tela:
-  dados, período e seletor de cliente passam a ser os do rascunho, sem mistura.
+- Rascunho RT de outra sessão: não é listado com outro condomínio/período na tela;
+  com a identidade dele carregada, a restauração traz dados, período e seletor de
+  cliente do rascunho, sem mistura, e a edição do outro condomínio fica guardada.
 - "Preencher parecer automático": o status calculado aparece no seletor
   "Status geral da água" na mesma execução e não é revertido depois.
 - Relatório mensal Bem Star do condomínio fictício Épsilon: a visita V00005
@@ -46,6 +47,11 @@ class RascunhoRTRestauracao(_AppReal):
         b = self._entrar_e_carregar("Residencial Beta Fictício")  # mês corrente, outro cliente
         b.text_area(key="rel_diagnostico").input("DIAGNOSTICO_BETA_ATUAL").run()
         prefixo = "btn_restaurar_rascunho_rt_" + re.sub(r"\W", "_", chave)
+        # Rascunho de Alfa 09/2026 não é listado com Beta; aparece ao carregar Alfa 09/2026.
+        self.assertFalse(any((x.key or "").startswith(prefixo) for x in b.button))
+        b.selectbox(key="sel_cliente_rel").select("Condomínio Alfa Fictício").run()
+        next(x for x in b.button if x.label == "⬇️ Carregar").click().run()
+        b.text_input(key="rel_mes_referencia").input("09").run()
         next(x for x in b.button if (x.key or "").startswith(prefixo)).click().run()
         self.assertFalse(b.exception, b.exception)
         self.assertNotIn("_relatorio_rt_restore_erro", b.session_state)

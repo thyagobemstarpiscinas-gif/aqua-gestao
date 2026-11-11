@@ -132,7 +132,7 @@ class TestUltimosNoAppReal(_AppReal):
         self.assertEqual(len(ler_fotos(at.session_state.filtered_state, origem)), 1)
         chave = "thyago#s#f123-invalido"
         dados = {"_chave": chave, "salvo_em": "28/10/2026 12:00:00", "_salvo_iso": "2099-01-01T00:00:00",
-                 "empresa_ativa": "aqua_gestao", "rel_analises_total": "abc",
+                 "empresa_ativa": "aqua_gestao", "origem_acesso": "escritorio_rt", "rel_analises_total": "abc",
                  "campos": {"rel_nome_condominio": "OUTRO_FICTICIO", "rel_diagnostico": "NAO_APLICAR", "rel_origem_dados": origem}}
         (self.generated / "_rascunho_relatorio_rt_f123_invalido.json").write_text(json.dumps(dados), encoding="utf-8")
         if "_rt_rasc_lista_cache" in at.session_state:

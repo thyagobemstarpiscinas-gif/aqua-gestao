@@ -176,40 +176,35 @@ def select_records_by_month_year(records: list[dict[str, Any]], month: str, year
     return filtered
 
 
+# Valores gravados pelo próprio app conforme o acesso autenticado (app.py, salvar lançamento):
+# visita_rt_semanal/tipo_visita vêm de op_dados_atual["is_rt"]; registros manuais do RT
+# trazem is_rt. Nome da pessoa, campo "operador", contrato RT ou texto livre NÃO contam.
+TIPOS_VISITA_RT = {"rt semanal", "relatorio mensal rt"}
+TIPOS_VISITA_OPERADOR = {"operador"}
+
+
 def identify_record_origin(record: dict[str, Any]) -> dict[str, Any]:
-    text_fields = " | ".join(
-        [
-            str(record.get("origem", "")),
-            str(record.get("tipo_visita", "")),
-            str(record.get("perfil", "")),
-            str(record.get("operador", "")),
-            str((record.get("raw") or {}).get("origem_lancamento", "")),
-            str((record.get("raw") or {}).get("acesso_origem", "")),
-            str((record.get("raw") or {}).get("usuario_tipo", "")),
-        ]
-    )
-    norm = _norm_text(text_fields)
+    """Origem do lançamento pelo que o acesso autenticado gravou.
 
-    has_rt_marker = (
-        _truthy(record.get("visita_rt_semanal"))
-        or _truthy(record.get("is_rt"))
-        or "rt" in _norm_text(record.get("tipo_visita"))
-        or "responsavel tecnico" in norm
-        or "pin rt" in norm
-        or "acesso rt" in norm
-        or "origem rt" in norm
-    )
+    RT: visita_rt_semanal verdadeiro, is_rt verdadeiro ou tipo_visita "RT semanal" /
+    "Relatório mensal RT". Operador: visita_rt_semanal gravado como falso ou tipo_visita
+    "Operador". Sem essas marcas (registros antigos) a origem é desconhecida e o
+    lançamento não é tratado como RT.
+    """
+    raw = record.get("raw") if isinstance(record.get("raw"), dict) else {}
 
-    has_operator_marker = (
-        "operador" in norm
-        or "campo" in norm
-        or "pin operador" in norm
-        or _norm_text((record.get("raw") or {}).get("is_operador")) in {"1", "true", "sim"}
-    )
+    def campo(nome):
+        v = record.get(nome)
+        return raw.get(nome) if v in (None, "") else v
 
+    tipo = _norm_text(campo("tipo_visita"))
+    marca_rt = campo("visita_rt_semanal")
+    has_rt_marker = _truthy(marca_rt) or _truthy(campo("is_rt")) or tipo in TIPOS_VISITA_RT
+    has_operator_marker = (not has_rt_marker) and (
+        tipo in TIPOS_VISITA_OPERADOR or (marca_rt is not None and marca_rt != "" and not _truthy(marca_rt)))
     return {
-        "is_rt": bool(has_rt_marker and not (has_operator_marker and not has_rt_marker)),
-        "is_operator": bool(has_operator_marker and not has_rt_marker),
+        "is_rt": bool(has_rt_marker),
+        "is_operator": bool(has_operator_marker),
         "reason": "rt_marker" if has_rt_marker else ("operator_marker" if has_operator_marker else "unknown"),
     }
 

@@ -4370,6 +4370,7 @@ def retirar_importacao_rt() -> str:
     ss = st.session_state
     for k in _preenchidos(ss.pop("_rel_autoimport_snapshot", None) or {}):
         ss[k] = ""
+    ss["rel_lancamentos_origem"] = ""  # sem lançamentos importados na tabela
     return ss.pop("_rel_autoimport_periodo", "")
 
 
@@ -12834,12 +12835,27 @@ def _relatorio_rt_tem_dados_em_tela() -> bool:
     return _relatorio_rt_tem_conteudo(dict(st.session_state))
 
 
+def _perfil_acesso_rascunho() -> str:
+    """Perfil autenticado desta sessão, gravado no rascunho RT ("origem_acesso").
+
+    Vem só da autenticação: sessão de operador com op_dados_atual["is_rt"] → "rt_campo";
+    sem is_rt → "operador"; relatório RT do escritório (login administrativo da Aqua
+    Gestão) → "escritorio_rt". Nome, campo "operador" ou contrato não contam."""
+    ss = st.session_state
+    if ss.get("op_pin_ok") and isinstance(ss.get("op_dados_atual"), dict):
+        return "rt_campo" if ss["op_dados_atual"].get("is_rt") is True else "operador"
+    if ss.get("admin_logado") and ss.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
+        return "escritorio_rt"
+    return "desconhecido"
+
+
 def _relatorio_rt_coletar_rascunho() -> dict:
     total = int(st.session_state.get("rel_analises_total", ANALISES_PADRAO) or ANALISES_PADRAO)
     dados = {
         "salvo_em": _agora_brasilia() if "_agora_brasilia" in globals() else datetime.now().isoformat(),
         "_salvo_iso": datetime.now().isoformat(timespec="microseconds"),
         "empresa_ativa": st.session_state.get("empresa_ativa", "aqua_gestao"),
+        "origem_acesso": _perfil_acesso_rascunho(),
         "rel_analises_total": max(total, ANALISES_PADRAO),
         "campos": {},
     }
@@ -13387,6 +13403,16 @@ def _relatorio_rt_resumo(dados: dict) -> str:
 # Callbacks dos botões do painel: rodam antes do script, então dispensam st.rerun()
 # no meio da página (que interromperia a execução antes da tabela de análises).
 def _relatorio_rt_cb_restaurar(dados: dict):
+    from utils.rt_contexto import motivo_rascunho_oculto
+    motivo = motivo_rascunho_oculto(dados, st.session_state.get("empresa_ativa", "aqua_gestao"),
+                                    str(st.session_state.get("rel_origem_dados") or ""))
+    if motivo:
+        st.session_state["_relatorio_rt_restore_erro"] = {
+            "sem_identidade": "carregue o condomínio e o período antes de restaurar.",
+            "outra_identidade": "o rascunho é de outro condomínio ou período.",
+            "origem_nao_rt": "o rascunho não tem origem RT comprovada.",
+        }.get(motivo, motivo)
+        return
     anterior = st.session_state.get("_rt_rasc_pendente")
     tinha_pendente = "_rt_rasc_pendente" in st.session_state
     st.session_state["_rt_rasc_pendente"] = {"dados": dados}
@@ -13425,7 +13451,17 @@ def _relatorio_rt_renderizar_painel_rascunho():
             ss["_rt_rasc_lista_cache"] = (agora, lista)
         for aviso in lista.get("avisos", []):
             st.warning(aviso)
-        versoes = lista["versoes"]
+        from utils.rt_contexto import motivo_rascunho_oculto
+        _identidade_rasc = str(ss.get("rel_origem_dados") or "")
+        _empresa_rasc = ss.get("empresa_ativa", "aqua_gestao")
+        _motivos = [motivo_rascunho_oculto(v["dados"], _empresa_rasc, _identidade_rasc) for v in lista["versoes"]]
+        # Filtro aplicado a cada execução: trocar de condomínio/período atualiza a lista na hora.
+        versoes = [v for v, m in zip(lista["versoes"], _motivos) if not m]
+        if not _identidade_rasc:
+            st.caption("Carregue o condomínio e o período para ver os rascunhos RT deste relatório.")
+        elif _motivos.count("origem_nao_rt"):
+            st.caption(f"{_motivos.count('origem_nao_rt')} rascunho(s) deste condomínio e período sem origem RT comprovada "
+                       "(acesso de operador ou registro antigo) não são listados; continuam preservados.")
         minha = ss.get("_rt_rasc_chave")
         if versoes:
             st.warning("🛡️ Rascunhos de Relatório RT disponíveis (do mais recente para o mais antigo):")
@@ -13471,8 +13507,6 @@ def _relatorio_rt_renderizar_painel_rascunho():
                 with c_c2:
                     st.button("Cancelar", key=f"btn_cancelar_descarte_rt_{id_btn}", use_container_width=True,
                               on_click=_relatorio_rt_cb_cancelar_descarte)
-        if len(lista["versoes"]) > len(versoes):
-            st.caption(f"Mais {len(lista['versoes']) - len(versoes)} versão(ões) antiga(s) guardada(s) na planilha.")
         if lista["ignorados"]:
             st.caption(f"{lista['ignorados']} versão(ões) ignorada(s) por estarem incompletas ou corrompidas.")
         if ss.get("_relatorio_rt_restore_erro"):
@@ -22685,9 +22719,11 @@ rr0a, rr0b, rr0c = st.columns([1.1, 1.2, 1.1])
 with rr0a:
     st.selectbox("Tipo de atendimento", ["Contrato ativo", "Visita técnica avulsa", "Inspeção técnica", "Acompanhamento sem contrato"], key="rel_tipo_atendimento")
 with rr0b:
-    if st.button("Carregar dados do cadastro no relatório", use_container_width=True):
-        carregar_dados_cadastro_no_relatorio()
-        st.rerun()
+    # Callback: roda antes dos widgets. Chamado depois deles, alterava rel_tipo_atendimento
+    # já instanciado (StreamlitAPIException), interrompia a execução antes do upload e,
+    # com o JSON de fotos já limpo, perdia fotos e legendas.
+    st.button("Carregar dados do cadastro no relatório", use_container_width=True,
+              on_click=carregar_dados_cadastro_no_relatorio)
 with rr0c:
     st.checkbox("Salvar alterações deste relatório no cadastro principal", key="rel_salvar_alteracoes_cadastro")
 
@@ -22953,6 +22989,12 @@ def _importar_lancamentos(lancamentos):
         ):
             st.session_state[pref + str(idx)] = ""
     from utils.rt_relatorio import linhas_de_lancamentos
+    from rt_monthly_report import identify_record_origin as _origem_lanc
+    # Origem gravada pelo acesso autenticado de cada lançamento importado; acompanha o
+    # rascunho (salvar/restaurar) e decide se ele pode ser listado como RT.
+    st.session_state["rel_lancamentos_origem"] = json.dumps(
+        [{"id": str(lc.get("id_visita") or ""), "rt": bool(_origem_lanc(lc)["is_rt"])} for lc in lancamentos or []],
+        ensure_ascii=False)
     _linhas_import = linhas_de_lancamentos(lancamentos)
     garantir_campos_analises(max(len(_linhas_import), _linhas_base), minimo=1)
     for idx in range(ANALISES_MAX_SUGERIDO):
