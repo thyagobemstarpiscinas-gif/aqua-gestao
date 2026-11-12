@@ -258,9 +258,14 @@ class AppAposReinicio(unittest.TestCase):
         _escrever(beta / "Aditivo_Residencial_Beta_Ficticio.docx", b"DOCX-ADITIVO-BETA", 1_700_000_100)
         ns["registrar_documento_manifest"](beta, "Residencial Beta Fictício", "Aditivo",
                                            beta / "Aditivo_Residencial_Beta_Ficticio.docx", None, False, "sem PDF")
+        # Pastas internas do app (criadas conforme o uso da sessão) não contam como condomínio.
+        (gen / "_rt_contextos" / "abc").mkdir(parents=True)
+        (gen / "_rascunhos_rt_sync").mkdir()
         antes = self._estado(ns)
-        bytes_antes = {p.relative_to(gen): p.read_bytes() for p in gen.rglob("*") if p.is_file()}
+        bytes_antes = {p.relative_to(gen): p.read_bytes() for p in gen.rglob("*")
+                       if p.is_file() and not p.relative_to(gen).parts[0].startswith("_")}
         self.assertEqual([x[0] for x in antes[0]], ["condominio_alfa_ficticio", "residencial_beta_ficticio"])
+        self.assertEqual([x[0] for x in antes[1]], ["condominio_alfa_ficticio", "residencial_beta_ficticio"])
         self.assertEqual(ns["_st"].avisos, [])
 
         shutil.rmtree(gen)                       # reinício do Streamlit Cloud

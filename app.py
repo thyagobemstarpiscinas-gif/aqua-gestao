@@ -5744,7 +5744,8 @@ def listar_historico():
     if not GENERATED_DIR.exists():
         return []
 
-    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    # Pastas internas do app (_rt_contextos, _rascunhos_rt_sync...) não são condomínios.
+    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))]
     pastas = filtrar_pastas_por_empresa(pastas, st.session_state.get("empresa_ativa", "aqua_gestao"))
     pastas = sorted(pastas, key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -5774,7 +5775,8 @@ def listar_painel_vencimentos(alerta_dias: int):
     if not GENERATED_DIR.exists():
         return []
 
-    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    # Pastas internas do app (_rt_contextos, _rascunhos_rt_sync...) não são condomínios.
+    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))]
     # Painel exclusivo da Aqua Gestão: pastas de clientes só Bem Star ficam fora.
     pastas = filtrar_pastas_por_empresa(pastas, "aqua_gestao")
     itens = []
