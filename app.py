@@ -9578,7 +9578,10 @@ def _resolver_fotos_visita_para_relatorio(lancamento: dict) -> dict[str, list[st
         categorias[cat]["ids"] = list(lancamento.get(f"fotos_{cat}_ids", []) or [])
         categorias[cat]["nomes"] = list(lancamento.get(f"fotos_{cat}", []) or [])
 
-    if not categorias["antes"]["ids"]:
+    # fotos_drive_ids reúne os IDs de todas as categorias. Só vale como "antes" nas visitas
+    # antigas sem IDs por categoria; com IDs por categoria, levaria Depois e Casa de máquinas
+    # para "Antes" (e a deduplicação global as tiraria das seções corretas).
+    if not any(categorias[c]["ids"] for c in categorias):
         categorias["antes"]["ids"] = list(lancamento.get("fotos_drive_ids", []) or [])
 
     nomes_gerais = list(lancamento.get("fotos", []) or [])
