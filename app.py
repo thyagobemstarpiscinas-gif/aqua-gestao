@@ -2904,21 +2904,26 @@ def _drive_pastas():
     return estado["drive"]
 
 
+_INTERVALO_TENTATIVA_PASTAS_S = 15  # após falha (ex.: Drive lento logo após o app acordar)
+
+
 def garantir_pastas_restauradas() -> None:
     """Uma vez por processo: traz do Drive as pastas de condomínio que faltam no disco."""
     import time as _time
     estado = _estado_persistencia_pastas()
     pronto = estado["restaurado"] and not estado["pendentes"]
-    if pronto or _time.time() - estado["ultima_tentativa"] < 120:
+    if pronto or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S:
         return
     with estado["lock"]:
-        if (estado["restaurado"] and not estado["pendentes"]) or _time.time() - estado["ultima_tentativa"] < 120:
+        if ((estado["restaurado"] and not estado["pendentes"])
+                or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S):
             return
         estado["ultima_tentativa"] = _time.time()
         try:
             from utils.persistencia_pastas import restaurar, sincronizar_pasta
             drive = _drive_pastas()
             if drive is None:
+                print("[persistencia_pastas] Drive indisponível; nova tentativa em instantes.", flush=True)
                 return
             if not estado["restaurado"]:
                 estado["resumo"] = restaurar(drive, GENERATED_DIR)
@@ -2930,6 +2935,8 @@ def garantir_pastas_restauradas() -> None:
         except Exception as e:
             estado["drive"] = None
             _log_sheets_erro("restaurar_pastas_condominio", e)
+            # No log do app (só tipo e início da mensagem; nunca credenciais).
+            print(f"[persistencia_pastas] restauração falhou: {type(e).__name__}: {str(e)[:160]}", flush=True)
 
 
 def persistir_pasta_condominio(pasta: Path) -> bool:
@@ -2958,6 +2965,8 @@ def persistir_pasta_condominio(pasta: Path) -> bool:
         estado["drive"] = None
         estado["pendentes"].add(str(pasta))
         _log_sheets_erro("persistir_pasta_condominio", e)
+        print(f"[persistencia_pastas] cópia pendente de {Path(pasta).name}: {type(e).__name__}: {str(e)[:160]}",
+              flush=True)
         if not st.session_state.get("_aviso_persistencia_pastas"):
             st.session_state["_aviso_persistencia_pastas"] = True  # um aviso por sessão
             st.warning("Não foi possível guardar a cópia persistente agora (Drive). O arquivo está salvo neste "
