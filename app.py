@@ -5885,6 +5885,17 @@ def abrir_pasta_windows(caminho: Path):
         st.error(f"Não foi possível abrir a pasta no Windows: {e}")
 
 
+def botao_baixar_documento(caminho: Path, chave: str, rotulo: str = "Baixar") -> None:
+    """Download do arquivo guardado no servidor (no Streamlit Cloud "Abrir" usa os.startfile, que
+    só funciona em Windows local). O arquivo só é lido no clique."""
+    import mimetypes
+    caminho = Path(caminho)
+    if caminho.is_file():
+        st.download_button(rotulo, data=lambda c=caminho: c.read_bytes(), file_name=caminho.name,
+                           mime=mimetypes.guess_type(caminho.name)[0] or "application/octet-stream",
+                           key=chave, use_container_width=True)
+
+
 def abrir_arquivo_windows(caminho: Path):
     try:
         os.startfile(str(caminho))
@@ -14021,6 +14032,7 @@ with st.sidebar:
                             unsafe_allow_html=True,
                         )
 
+                        botao_baixar_documento(caminho, f"baixar_arq_{file_key}")
                         col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
 
                         with col_a1:
@@ -18766,6 +18778,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_contrato:
                 if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_contrato["path"])
+                botao_baixar_documento(ultimo_contrato["path"], f"baixar_contrato_{item_key}", "Baixar último contrato")
             else:
                 st.button("Sem contrato", key=f"sem_contrato_{item_key}", disabled=True, use_container_width=True)
 
@@ -18773,6 +18786,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_aditivo:
                 if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_aditivo["path"])
+                botao_baixar_documento(ultimo_aditivo["path"], f"baixar_aditivo_{item_key}", "Baixar último aditivo")
             else:
                 st.button("Sem aditivo", key=f"sem_aditivo_{item_key}", disabled=True, use_container_width=True)
 
@@ -18780,6 +18794,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_relatorio:
                 if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_relatorio["path"])
+                botao_baixar_documento(ultimo_relatorio["path"], f"baixar_relatorio_{item_key}", "Baixar último relatório")
             else:
                 st.button("Sem relatório", key=f"sem_relatorio_{item_key}", disabled=True, use_container_width=True)
 

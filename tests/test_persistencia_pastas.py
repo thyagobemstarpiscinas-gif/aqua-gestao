@@ -366,6 +366,32 @@ class AppAposReinicio(unittest.TestCase):
         self.assertEqual((item["data_fim"], item["dados"]["valor_mensal"], item["dados"]["data_inicio"]),
                          ("04/02/2028", ss["valor_mensal"], "05/02/2026"))
 
+    def test_documento_restaurado_pode_ser_baixado(self):
+        ns = self._app()
+        botoes = []
+        ns["_st"].download_button = lambda rotulo, **kw: botoes.append((rotulo, kw))
+        pasta = ns["GENERATED_DIR"] / "condominio_alfa_ficticio"
+        _escrever(pasta / "Caderno_POPs_Alfa.pdf", b"%PDF-POPS", 1_700_000_000)
+        ns["persistir_pasta_condominio"](pasta)
+        ns["_estado_persistencia_pastas"]()["restaurado"] = True
+        ns["persistir_pasta_condominio"](pasta)
+        shutil.rmtree(ns["GENERATED_DIR"])
+        ns2 = self._app()
+        ns2["_st"].download_button = lambda rotulo, **kw: botoes.append((rotulo, kw))
+        ns2["garantir_pastas_restauradas"]()
+        ns2["botao_baixar_documento"](pasta / "Caderno_POPs_Alfa.pdf", "baixar_x")
+        ns2["botao_baixar_documento"](pasta / "nao_existe.pdf", "baixar_y")
+        self.assertEqual(len(botoes), 1)
+        rotulo, kw = botoes[0]
+        self.assertEqual((rotulo, kw["file_name"], kw["mime"], kw["key"]),
+                         ("Baixar", "Caderno_POPs_Alfa.pdf", "application/pdf", "baixar_x"))
+        self.assertTrue(callable(kw["data"]))                 # lido só no clique
+        self.assertEqual(kw["data"](), b"%PDF-POPS")
+        fonte = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+        self.assertIn('botao_baixar_documento(caminho, f"baixar_arq_{file_key}")', fonte)       # histórico
+        for rot in ("contrato", "aditivo", "relatório"):
+            self.assertIn(f'"Baixar último {rot}")', fonte)                                    # painel
+
     def test_drive_indisponivel_nao_bloqueia_gravacao_local(self):
         ns = self._app()
         ns["conectar_drive"] = lambda: None
