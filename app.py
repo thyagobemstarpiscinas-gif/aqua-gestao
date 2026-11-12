@@ -2884,6 +2884,96 @@ LOGO_CANDIDATOS = [
 GENERATED_DIR.mkdir(exist_ok=True)
 
 
+# Cópia persistente das pastas de condomínio no Drive (utils/persistencia_pastas.py):
+# o disco do Streamlit Cloud é apagado a cada reinício.
+@st.cache_resource(show_spinner=False)
+def _estado_persistencia_pastas() -> dict:
+    import threading
+    return {"restaurado": False, "ultima_tentativa": 0.0, "resumo": None, "lock": threading.Lock(), "drive": None,
+            "pendentes": set()}
+
+
+def _drive_pastas():
+    from utils.persistencia_pastas import DrivePastas
+    estado = _estado_persistencia_pastas()
+    if estado["drive"] is None:
+        service = conectar_drive()
+        if service is None or not DRIVE_FOTOS_FOLDER_ID:
+            return None
+        estado["drive"] = DrivePastas(service, DRIVE_FOTOS_FOLDER_ID)
+    return estado["drive"]
+
+
+_INTERVALO_TENTATIVA_PASTAS_S = 15  # após falha (ex.: Drive lento logo após o app acordar)
+
+
+def garantir_pastas_restauradas() -> None:
+    """Uma vez por processo: traz do Drive as pastas de condomínio que faltam no disco."""
+    import time as _time
+    estado = _estado_persistencia_pastas()
+    pronto = estado["restaurado"] and not estado["pendentes"]
+    if pronto or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S:
+        return
+    with estado["lock"]:
+        if ((estado["restaurado"] and not estado["pendentes"])
+                or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S):
+            return
+        estado["ultima_tentativa"] = _time.time()
+        try:
+            from utils.persistencia_pastas import restaurar, sincronizar_pasta
+            drive = _drive_pastas()
+            if drive is None:
+                print("[persistencia_pastas] Drive indisponível; nova tentativa em instantes.", flush=True)
+                return
+            if not estado["restaurado"]:
+                estado["resumo"] = restaurar(drive, GENERATED_DIR)
+                estado["restaurado"] = True
+                estado["pendentes"].clear()  # restaurar() já envia o que só existe no disco
+            for pasta in sorted(estado["pendentes"]):
+                sincronizar_pasta(drive, Path(pasta))
+                estado["pendentes"].discard(pasta)
+        except Exception as e:
+            estado["drive"] = None
+            _log_sheets_erro("restaurar_pastas_condominio", e)
+            # No log do app (só tipo e início da mensagem; nunca credenciais).
+            print(f"[persistencia_pastas] restauração falhou: {type(e).__name__}: {str(e)[:160]}", flush=True)
+
+
+def persistir_pasta_condominio(pasta: Path) -> bool:
+    """Envia ao Drive os arquivos novos/alterados da pasta; False quando a cópia falhou."""
+    from utils.persistencia_pastas import pasta_persistivel, sincronizar_pasta
+    if not pasta_persistivel(Path(pasta), GENERATED_DIR):
+        return True
+    estado = _estado_persistencia_pastas()
+    try:
+        if not estado["restaurado"]:
+            # Antes da restauração não se envia nada: um manifesto gravado sobre um disco
+            # vazio substituiria o histórico do Drive. A pasta fica pendente e a restauração
+            # mescla os dois e envia o resultado.
+            estado["pendentes"].add(str(pasta))
+            garantir_pastas_restauradas()
+            if not estado["restaurado"]:
+                raise RuntimeError("cópia persistente ainda não restaurada")
+            return True
+        drive = _drive_pastas()
+        if drive is None:
+            raise RuntimeError("Drive indisponível")
+        sincronizar_pasta(drive, Path(pasta))
+        estado["pendentes"].discard(str(pasta))
+        return True
+    except Exception as e:
+        estado["drive"] = None
+        estado["pendentes"].add(str(pasta))
+        _log_sheets_erro("persistir_pasta_condominio", e)
+        print(f"[persistencia_pastas] cópia pendente de {Path(pasta).name}: {type(e).__name__}: {str(e)[:160]}",
+              flush=True)
+        if not st.session_state.get("_aviso_persistencia_pastas"):
+            st.session_state["_aviso_persistencia_pastas"] = True  # um aviso por sessão
+            st.warning("Não foi possível guardar a cópia persistente agora (Drive). O arquivo está salvo neste "
+                       "servidor e a cópia será reenviada automaticamente em instantes.")
+        return False
+
+
 def garantir_logo_oficial_aqua() -> None:
     """Mantida por compatibilidade com chamadas antigas; não faz mais nada.
 
@@ -5069,6 +5159,13 @@ def on_change_nome_condominio():
         salvar_dados_condominio(pasta, salvar_snapshot_formulario())
 
 
+def _autosalvar_dados_contrato():
+    """Valores e datas do contrato alterados depois do nome também são gravados (antes só o
+    nome disparava a gravação e os valores finais se perdiam num reinício)."""
+    if (st.session_state.get("nome_condominio") or "").strip():
+        on_change_nome_condominio()
+
+
 def on_change_cpf():
     st.session_state.cpf_sindico = formatar_cpf(st.session_state.get("cpf_sindico", ""))
 
@@ -5118,22 +5215,27 @@ def on_change_whatsapp():
 
 def on_change_valor_mensal():
     st.session_state.valor_mensal = moeda_br(st.session_state.get("valor_mensal", ""))
+    _autosalvar_dados_contrato()
 
 
 def on_change_valor_aditivo():
     st.session_state.valor_aditivo = moeda_br(st.session_state.get("valor_aditivo", ""))
+    _autosalvar_dados_contrato()
 
 
 def on_change_data_inicio():
     st.session_state.data_inicio = formatar_data_digitada(st.session_state.get("data_inicio", ""))
+    _autosalvar_dados_contrato()
 
 
 def on_change_data_fim():
     st.session_state.data_fim = formatar_data_digitada(st.session_state.get("data_fim", ""))
+    _autosalvar_dados_contrato()
 
 
 def on_change_data_assinatura():
     st.session_state.data_assinatura = formatar_data_digitada(st.session_state.get("data_assinatura", ""))
+    _autosalvar_dados_contrato()
 
 def on_change_bs_cont_data_inicio():
     st.session_state.bs_cont_data_inicio = formatar_data_digitada(st.session_state.get("bs_cont_data_inicio", ""))
@@ -5419,6 +5521,7 @@ def validar_campos_obrigatorios(dados: dict) -> list[str]:
 
 
 def carregar_manifest_condominio(pasta_condominio: Path) -> dict:
+    garantir_pastas_restauradas()
     caminho = pasta_condominio / MANIFEST_JSON_NAME
     if caminho.exists():
         try:
@@ -5431,6 +5534,7 @@ def carregar_manifest_condominio(pasta_condominio: Path) -> dict:
 def salvar_manifest_condominio(pasta_condominio: Path, manifest: dict):
     caminho = pasta_condominio / MANIFEST_JSON_NAME
     caminho.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    persistir_pasta_condominio(pasta_condominio)  # manifesto + documentos novos da pasta
 
 
 def registrar_documento_manifest(pasta_condominio: Path, nome_condominio: str, tipo: str, arquivo_docx: Path | None, arquivo_pdf: Path | None, pdf_gerado: bool, erro_pdf: str | None, dados_utilizados: dict | None = None, extras: dict | None = None):
@@ -5465,9 +5569,11 @@ def salvar_dados_condominio(pasta_condominio: Path, dados_para_salvar: dict):
     caminho_json = pasta_condominio / DADOS_JSON_NAME
     with open(caminho_json, "w", encoding="utf-8") as f:
         json.dump(dados_para_salvar, f, ensure_ascii=False, indent=2)
+    persistir_pasta_condominio(pasta_condominio)
 
 
 def carregar_dados_condominio(pasta_condominio: Path) -> dict | None:
+    garantir_pastas_restauradas()
     caminho_json = pasta_condominio / DADOS_JSON_NAME
     if not caminho_json.exists():
         return None
@@ -5643,10 +5749,12 @@ def filtrar_pastas_por_empresa(pastas: list, empresa_codigo: str, clientes: list
 
 
 def listar_historico():
+    garantir_pastas_restauradas()
     if not GENERATED_DIR.exists():
         return []
 
-    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    # Pastas internas do app (_rt_contextos, _rascunhos_rt_sync...) não são condomínios.
+    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))]
     pastas = filtrar_pastas_por_empresa(pastas, st.session_state.get("empresa_ativa", "aqua_gestao"))
     pastas = sorted(pastas, key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -5672,10 +5780,12 @@ def listar_historico():
 
 
 def listar_painel_vencimentos(alerta_dias: int):
+    garantir_pastas_restauradas()
     if not GENERATED_DIR.exists():
         return []
 
-    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir()]
+    # Pastas internas do app (_rt_contextos, _rascunhos_rt_sync...) não são condomínios.
+    pastas = [p for p in GENERATED_DIR.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))]
     # Painel exclusivo da Aqua Gestão: pastas de clientes só Bem Star ficam fora.
     pastas = filtrar_pastas_por_empresa(pastas, "aqua_gestao")
     itens = []
@@ -5784,6 +5894,17 @@ def abrir_pasta_windows(caminho: Path):
         st.error(f"Não foi possível abrir a pasta no Windows: {e}")
 
 
+def botao_baixar_documento(caminho: Path, chave: str, rotulo: str = "Baixar") -> None:
+    """Download do arquivo guardado no servidor (no Streamlit Cloud "Abrir" usa os.startfile, que
+    só funciona em Windows local). O arquivo só é lido no clique."""
+    import mimetypes
+    caminho = Path(caminho)
+    if caminho.is_file():
+        st.download_button(rotulo, data=lambda c=caminho: c.read_bytes(), file_name=caminho.name,
+                           mime=mimetypes.guess_type(caminho.name)[0] or "application/octet-stream",
+                           key=chave, use_container_width=True)
+
+
 def abrir_arquivo_windows(caminho: Path):
     try:
         os.startfile(str(caminho))
@@ -5791,15 +5912,34 @@ def abrir_arquivo_windows(caminho: Path):
         st.error(f"Não foi possível abrir o arquivo: {e}")
 
 
+def _excluir_copia_persistente(acao, pasta: Path, *args) -> None:
+    """Envia a cópia do Drive para a lixeira, para a restauração não trazer de volta o excluído."""
+    from utils.persistencia_pastas import pasta_persistivel
+    if not pasta_persistivel(pasta, GENERATED_DIR):
+        return
+    try:
+        drive = _drive_pastas()
+        if drive is not None:
+            acao(drive, pasta, *args)
+    except Exception as e:
+        _log_sheets_erro("excluir_copia_persistente", e)
+        st.warning("A cópia persistente no Drive não pôde ser enviada para a lixeira; ela pode reaparecer "
+                   "após um reinício e precisará ser excluída de novo.")
+
+
 def deletar_pasta_condominio(pasta: Path):
+    from utils.persistencia_pastas import excluir_pasta
     if pasta.exists() and pasta.is_dir():
         shutil.rmtree(pasta)
+        _excluir_copia_persistente(excluir_pasta, pasta)
 
 
 def deletar_arquivo_individual(arquivo: Path):
     pasta = arquivo.parent
     if arquivo.exists() and arquivo.is_file():
+        from utils.persistencia_pastas import excluir_arquivo
         arquivo.unlink()
+        _excluir_copia_persistente(excluir_arquivo, pasta, arquivo.name)
 
     if pasta.exists() and pasta.is_dir():
         restantes = list(pasta.iterdir())
@@ -13901,6 +14041,7 @@ with st.sidebar:
                             unsafe_allow_html=True,
                         )
 
+                        botao_baixar_documento(caminho, f"baixar_arq_{file_key}")
                         col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
 
                         with col_a1:
@@ -18646,6 +18787,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_contrato:
                 if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_contrato["path"])
+                botao_baixar_documento(ultimo_contrato["path"], f"baixar_contrato_{item_key}", "Baixar último contrato")
             else:
                 st.button("Sem contrato", key=f"sem_contrato_{item_key}", disabled=True, use_container_width=True)
 
@@ -18653,6 +18795,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_aditivo:
                 if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_aditivo["path"])
+                botao_baixar_documento(ultimo_aditivo["path"], f"baixar_aditivo_{item_key}", "Baixar último aditivo")
             else:
                 st.button("Sem aditivo", key=f"sem_aditivo_{item_key}", disabled=True, use_container_width=True)
 
@@ -18660,6 +18803,7 @@ if _empresa_ativa_codigo() != "bem_star":
             if ultimo_relatorio:
                 if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_relatorio["path"])
+                botao_baixar_documento(ultimo_relatorio["path"], f"baixar_relatorio_{item_key}", "Baixar último relatório")
             else:
                 st.button("Sem relatório", key=f"sem_relatorio_{item_key}", disabled=True, use_container_width=True)
 
