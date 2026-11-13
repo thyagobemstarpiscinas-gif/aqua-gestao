@@ -8,9 +8,12 @@ e o histórico. Este módulo mantém uma cópia deles no Drive já usado pelo ap
     <pasta de fotos do app>/_Pastas_Condominios/<nome da pasta local>/<arquivo>
 
 Regras:
-- só pastas de condomínio (filhas diretas de generated/, nome sem "_" inicial) e só os
-  arquivos do nível principal com nome sem "_" inicial (rascunhos, temporários e
-  subpastas de fotos têm armazenamento próprio e ficam de fora);
+- só pastas de condomínio (filhas diretas de generated/, nome sem "_" inicial); delas, os
+  arquivos do nível principal com nome sem "_" inicial, o rascunho do operador
+  (_rascunho_operador.json) e as fotos desse rascunho (subpasta fotos_rascunho/, que no
+  Drive vira uma subpasta da pasta do condomínio). Fotos de visitas concluídas vão ao
+  Drive pelo próprio fluxo de lançamento (IDs gravados na visita); demais temporários
+  ficam de fora;
 - cada arquivo tem uma única cópia por nome: gravações seguintes atualizam a mesma
   (sem duplicar); a data de modificação original vai em appProperties.mtime;
 - restauração: baixa só o que falta (ou está mais antigo) no disco local e devolve a
@@ -38,10 +41,26 @@ def pasta_persistivel(pasta: Path, raiz: Path) -> bool:
         return False
 
 
+ARQUIVOS_INTERNOS_PERSISTIVEIS = frozenset({"_rascunho_operador.json"})
+SUBPASTAS_PERSISTIVEIS = ("fotos_rascunho",)
+
+
+def _nome_persistivel(nome: str) -> bool:
+    return (not nome.startswith(("_", ".")) or nome in ARQUIVOS_INTERNOS_PERSISTIVEIS) \
+        and "/" not in nome and "\\" not in nome
+
+
 def arquivos_persistiveis(pasta: Path) -> list[Path]:
     if not pasta.is_dir():
         return []
-    return sorted(p for p in pasta.iterdir() if p.is_file() and not p.name.startswith(("_", ".")))
+    return sorted(p for p in pasta.iterdir() if p.is_file() and _nome_persistivel(p.name))
+
+
+def _arquivos_subpasta(pasta: Path, sub: str) -> list[Path]:
+    alvo = pasta / sub
+    if not alvo.is_dir():
+        return []
+    return sorted(p for p in alvo.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
 def _esc(texto: str) -> str:
@@ -156,12 +175,7 @@ def _mesclar_manifesto(destino: Path, remoto_bytes: bytes) -> None:
         destino.write_text(json.dumps(local, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def sincronizar_pasta(drive: DrivePastas, pasta: Path) -> int:
-    """Envia ao Drive os arquivos novos ou alterados da pasta. Retorna quantos enviou."""
-    locais = arquivos_persistiveis(pasta)
-    if not locais:
-        return 0
-    pasta_id = drive.pasta_condominio(pasta.name, criar=True)
+def _enviar_alterados(drive: DrivePastas, locais: list[Path], pasta_id: str) -> int:
     remotos = drive.arquivos(pasta_id)
     enviados = 0
     for arq in locais:
@@ -171,6 +185,44 @@ def sincronizar_pasta(drive: DrivePastas, pasta: Path) -> int:
             drive.enviar(arq, pasta_id, rem)
             enviados += 1
     return enviados
+
+
+def sincronizar_pasta(drive: DrivePastas, pasta: Path) -> int:
+    """Envia ao Drive os arquivos novos ou alterados da pasta. Retorna quantos enviou."""
+    locais = arquivos_persistiveis(pasta)
+    subs = {sub: _arquivos_subpasta(pasta, sub) for sub in SUBPASTAS_PERSISTIVEIS}
+    if not locais and not any(subs.values()):
+        return 0
+    pasta_id = drive.pasta_condominio(pasta.name, criar=True)
+    enviados = _enviar_alterados(drive, locais, pasta_id) if locais else 0
+    for sub, arquivos in subs.items():
+        if arquivos:
+            enviados += _enviar_alterados(drive, arquivos, drive._pasta(sub, pasta_id, criar=True))
+    return enviados
+
+
+def _baixar_faltantes(drive: DrivePastas, pasta_id: str, local: Path, permitido) -> int:
+    baixados = 0
+    for nome_arq, item in drive.arquivos(pasta_id).items():
+        if not permitido(nome_arq):
+            continue
+        destino = local / nome_arq
+        mt = _mtime_remoto(item)
+        if destino.exists():
+            if _md5_remoto(item) and _md5_remoto(item) == _md5(destino):
+                continue  # mesmo conteúdo
+            if destino.stat().st_mtime + TOLERANCIA_S >= mt:
+                if nome_arq == NOME_MANIFESTO:
+                    _mesclar_manifesto(destino, drive.baixar(item["id"]))
+                continue  # local mais novo: preservado (enviado em seguida)
+        local.mkdir(parents=True, exist_ok=True)
+        temporario = destino.with_name(f".{nome_arq}.restaurando")
+        temporario.write_bytes(drive.baixar(item["id"]))
+        os.replace(temporario, destino)
+        if mt:
+            os.utime(destino, (mt, mt))
+        baixados += 1
+    return baixados
 
 
 def restaurar(drive: DrivePastas, raiz: Path) -> dict:
@@ -185,25 +237,12 @@ def restaurar(drive: DrivePastas, raiz: Path) -> dict:
         resumo["pastas"] += 1
         drive._ids[(drive.base(criar=False), nome)] = pasta_id
         mais_recente = None
-        for nome_arq, item in drive.arquivos(pasta_id).items():
-            if nome_arq.startswith(("_", ".")) or "/" in nome_arq or "\\" in nome_arq:
-                continue
-            destino = local / nome_arq
-            mt = _mtime_remoto(item)
-            if destino.exists():
-                if _md5_remoto(item) and _md5_remoto(item) == _md5(destino):
-                    continue  # mesmo conteúdo
-                if destino.stat().st_mtime + TOLERANCIA_S >= mt:
-                    if nome_arq == NOME_MANIFESTO:
-                        _mesclar_manifesto(destino, drive.baixar(item["id"]))
-                    continue  # local mais novo: preservado (enviado em seguida)
-            local.mkdir(exist_ok=True)
-            temporario = destino.with_name(f".{nome_arq}.restaurando")
-            temporario.write_bytes(drive.baixar(item["id"]))
-            os.replace(temporario, destino)
-            if mt:
-                os.utime(destino, (mt, mt))
-            resumo["baixados"] += 1
+        resumo["baixados"] += _baixar_faltantes(drive, pasta_id, local, _nome_persistivel)
+        for sub in SUBPASTAS_PERSISTIVEIS:
+            sub_id = drive._pasta(sub, pasta_id, criar=False)
+            if sub_id:
+                resumo["baixados"] += _baixar_faltantes(
+                    drive, sub_id, local / sub, lambda n: not n.startswith(".") and "/" not in n and "\\" not in n)
         datas = [p.stat().st_mtime for p in arquivos_persistiveis(local)]
         if datas:
             mais_recente = max(datas)
@@ -220,6 +259,16 @@ def excluir_arquivo(drive: DrivePastas, pasta: Path, nome_arquivo: str) -> None:
         item = drive.arquivos(pasta_id).get(nome_arquivo)
         if item:
             drive.lixeira(item["id"])
+
+
+def excluir_subpasta(drive: DrivePastas, pasta: Path, sub: str) -> None:
+    """Envia a cópia da subpasta (ex.: fotos do rascunho já descartado) para a lixeira."""
+    pasta_id = drive.pasta_condominio(pasta.name, criar=False)
+    if pasta_id:
+        sub_id = drive._pasta(sub, pasta_id, criar=False)
+        if sub_id:
+            drive.lixeira(sub_id)
+            drive._ids.pop((pasta_id, sub), None)
 
 
 def excluir_pasta(drive: DrivePastas, pasta: Path) -> None:

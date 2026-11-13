@@ -127,7 +127,7 @@ class ModuloPersistencia(unittest.TestCase):
         pasta = self.raiz / "condominio_alfa"
         _escrever(pasta / "dados_condominio.json", '{"valor_mensal": "1.234,56"}', 1_700_000_000)
         _escrever(pasta / "Contrato_Alfa.docx", b"DOCX-ALFA", 1_700_000_100)
-        _escrever(pasta / "_rascunho_operador.json", "{}")          # rascunho: fora
+        _escrever(pasta / "_temporario_previa.json", "{}")          # temporário interno: fora
         _escrever(pasta / "fotos_campo" / "foto.jpg", b"JPG")       # subpasta: fora
         self.assertEqual(pp.sincronizar_pasta(self.drive, pasta), 2)
         self.assertEqual(pp.sincronizar_pasta(self.drive, pasta), 0)   # nada mudou
@@ -218,7 +218,8 @@ class AppAposReinicio(unittest.TestCase):
         st = _StTeste()
         ns.update(json=json, shutil=shutil, os=os, time=time)
         ns.update(st=st, GENERATED_DIR=self.tmp / "generated", DRIVE_FOTOS_FOLDER_ID=self.root,
-                  conectar_drive=lambda: self.fake, sheets_listar_clientes_completo=lambda: [],
+                  AMBIENTE_APP="homologacao", _servico_drive_persistencia=lambda: self.fake,
+                  sheets_listar_clientes_completo=lambda: [],
                   _log_sheets_erro=lambda ctx, e: (_ for _ in ()).throw(e))
         ns["GENERATED_DIR"].mkdir(parents=True, exist_ok=True)
         ns["_st"] = st
@@ -322,9 +323,9 @@ class AppAposReinicio(unittest.TestCase):
         _escrever(alfa / "Contrato_1.docx", b"C1", 1_700_000_000)
         ns["registrar_documento_manifest"](alfa, "Alfa", "Contrato", alfa / "Contrato_1.docx", None, False, None)
         shutil.rmtree(gen)
-        # Reinício com o Drive fora do ar: o novo documento só fica no disco (pendente).
+        # Reinício com o Drive fora do ar (falha passageira): o novo documento só fica no disco.
         ns2 = self._app()
-        ns2["conectar_drive"] = lambda: None
+        ns2["_servico_drive_persistencia"] = lambda: (_ for _ in ()).throw(TimeoutError("rede fora do ar"))
         ns2["_log_sheets_erro"] = lambda ctx, e: None
         alfa.mkdir()
         _escrever(alfa / "Aditivo_2.docx", b"A2")
@@ -332,7 +333,7 @@ class AppAposReinicio(unittest.TestCase):
         self.assertEqual(len(self.fake.ativos("manifest.json")), 1)
         self.assertNotIn(b"Aditivo_2", self.fake.ativos("manifest.json")[0]["dados"])  # nada sobrescrito
         # Drive volta: a restauração mescla os dois históricos e envia o resultado.
-        ns2["conectar_drive"] = lambda: self.fake
+        ns2["_servico_drive_persistencia"] = lambda: self.fake
         ns2["_estado_persistencia_pastas"]()["ultima_tentativa"] = 0.0
         ns2["garantir_pastas_restauradas"]()
         docs = json.loads(self.fake.ativos("manifest.json")[0]["dados"])["documentos"]
@@ -392,17 +393,199 @@ class AppAposReinicio(unittest.TestCase):
         for rot in ("contrato", "aditivo", "relatório"):
             self.assertIn(f'"Baixar último {rot}")', fonte)                                    # painel
 
-    def test_drive_indisponivel_nao_bloqueia_gravacao_local(self):
+    def test_copia_nao_configurada_nao_bloqueia_gravacao_e_avisa_corretamente(self):
         ns = self._app()
-        ns["conectar_drive"] = lambda: None
+        ns["_servico_drive_persistencia"] = lambda: None             # produção sem [google_oauth_drive]
         ns["_log_sheets_erro"] = lambda ctx, e: None
         pasta = ns["GENERATED_DIR"] / "condominio_alfa_ficticio"
         pasta.mkdir()
         ns["salvar_dados_condominio"](pasta, {"data_fim": "31/12/2027"})
         self.assertTrue((pasta / "dados_condominio.json").exists())   # gravado no disco
         self.assertEqual(len(ns["_st"].avisos), 1)                      # aviso único na sessão
+        aviso = ns["_st"].avisos[0]
+        self.assertIn("Cópia persistente pendente: 1 pasta(s)", aviso)
+        self.assertIn("não configurada", aviso)
+        self.assertIn("Não haverá nova tentativa", aviso)
+        self.assertNotIn("reenviada", aviso)                            # nada de promessa falsa
         ns["salvar_dados_condominio"](pasta, {"data_fim": "30/12/2027"})
         self.assertEqual(len(ns["_st"].avisos), 1)
+
+    def test_erro_permanente_do_drive_para_as_tentativas(self):
+        class Http403(Exception):
+            resp = type("R", (), {"status": 403})()
+
+            def __str__(self):
+                return '<HttpError 403 returned "Service Accounts do not have storage quota.">'
+
+        chamadas = []
+
+        class DriveSemCota(DriveFalso):
+            def create(self, body, media_body=None, fields=None, **_):
+                chamadas.append(body["name"])
+                return _Exec(lambda: (_ for _ in ()).throw(Http403()))
+
+        ns = self._app()
+        self.fake = DriveSemCota()
+        self.fake.novo_root()
+        ns["_servico_drive_persistencia"] = lambda: self.fake
+        ns["_log_sheets_erro"] = lambda ctx, e: None
+        pasta = ns["GENERATED_DIR"] / "condominio_alfa_ficticio"
+        _escrever(pasta / "dados_condominio.json", "{}")
+        ns["garantir_pastas_restauradas"]()
+        tentativas = len(chamadas)
+        self.assertGreaterEqual(tentativas, 1)
+        situacao = ns["situacao_persistencia_pastas"]()
+        self.assertEqual((situacao["ok"], situacao["permanente"], situacao["pendentes"]), (False, True, 1))
+        self.assertIn("não tem cota", situacao["motivo"])
+        for _ in range(3):                                   # sem novas chamadas ao Drive
+            ns["_estado_persistencia_pastas"]()["ultima_tentativa"] = 0.0
+            ns["garantir_pastas_restauradas"]()
+            ns["salvar_dados_condominio"](pasta, {"data_fim": "31/12/2027"})
+        self.assertEqual(len(chamadas), tentativas)
+        self.assertTrue((pasta / "dados_condominio.json").exists())
+        texto = ns["texto_aviso_persistencia_pastas"](ns["situacao_persistencia_pastas"]())
+        self.assertIn("guardadas só neste servidor", texto)
+        self.assertIn("Não haverá nova tentativa", texto)
+
+    def test_falha_passageira_tenta_de_novo(self):
+        ns = self._app()
+        ns["_log_sheets_erro"] = lambda ctx, e: None
+        ns["_servico_drive_persistencia"] = lambda: (_ for _ in ()).throw(TimeoutError("rede"))
+        pasta = ns["GENERATED_DIR"] / "condominio_alfa_ficticio"
+        _escrever(pasta / "dados_condominio.json", "{}")
+        ns["garantir_pastas_restauradas"]()
+        situacao = ns["situacao_persistencia_pastas"]()
+        self.assertEqual((situacao["permanente"], situacao["pendentes"]), (False, 1))
+        self.assertIn("Nova tentativa automática", ns["texto_aviso_persistencia_pastas"](situacao))
+        ns["_servico_drive_persistencia"] = lambda: self.fake
+        ns["_estado_persistencia_pastas"]()["ultima_tentativa"] = 0.0
+        ns["garantir_pastas_restauradas"]()
+        self.assertTrue(ns["situacao_persistencia_pastas"]()["ok"])
+        self.assertEqual(len(self.fake.ativos("dados_condominio.json")), 1)
+
+    def test_producao_grava_e_restaura_na_pasta_propria_da_raiz(self):
+        ns = self._app()
+        ns["AMBIENTE_APP"] = "producao"
+        ns["DRIVE_FOTOS_FOLDER_ID"] = "pasta_de_fotos_inacessivel"   # drive.file não alcança
+        pasta = ns["GENERATED_DIR"] / "ASSOCIAÇÃO_TERRAS_ALTAS"
+        _escrever(pasta / "dados_condominio.json", '{"nome_condominio": "ASSOCIAÇÃO TERRAS ALTAS"}', 1_700_000_000)
+        ns["garantir_pastas_restauradas"]()
+        bases = [it for it in self.fake.itens.values() if it["mimeType"] == PASTA and "root" in it["parents"]]
+        self.assertEqual([b["name"] for b in bases], [ns["NOME_BASE_PASTAS_PRODUCAO"]])
+        self.assertEqual(len(self.fake.ativos("dados_condominio.json")), 1)
+        shutil.rmtree(ns["GENERATED_DIR"])
+        ns2 = self._app()
+        ns2["AMBIENTE_APP"] = "producao"
+        ns2["DRIVE_FOTOS_FOLDER_ID"] = "pasta_de_fotos_inacessivel"
+        ns2["garantir_pastas_restauradas"]()
+        self.assertEqual(json.loads((pasta / "dados_condominio.json").read_text(encoding="utf-8"))["nome_condominio"],
+                         "ASSOCIAÇÃO TERRAS ALTAS")
+        self.assertTrue(ns2["situacao_persistencia_pastas"]()["ok"])
+
+
+class FotosDeCampo(unittest.TestCase):
+    """Fotos de rascunho e de visita concluída continuam acessíveis após reinício."""
+
+    setUp = AppAposReinicio.setUp
+    _app = AppAposReinicio._app
+
+    def _producao(self, ns):
+        ns["AMBIENTE_APP"] = "producao"
+        ns["DRIVE_FOTOS_FOLDER_ID"] = "pasta_de_fotos_da_conta_de_servico"
+        ns["_st"].secrets = {"google_oauth_drive": {"client_id": "x", "client_secret": "y", "refresh_token": "z"}}
+        ns["conectar_drive"] = lambda: (_ for _ in ()).throw(AssertionError("conta de serviço não deve gravar"))
+
+    def test_rascunho_e_fotos_voltam_apos_reinicio_no_condominio_certo(self):
+        ns = self._app()
+        self._producao(ns)
+        gen = ns["GENERATED_DIR"]
+        nome = "Condomínio Alfa Fictício"
+        pasta = gen / ns["slugify_nome"](nome)
+        outro = gen / ns["slugify_nome"]("Residencial Beta Fictício")
+        fotos = {"rasc_depois_IMG_A.jpg": b"\xff\xd8JPEG-A", "rasc_cmaq_IMG_B.jpg": b"\xff\xd8JPEG-B"}
+        for n, b in fotos.items():
+            _escrever(pasta / "fotos_rascunho" / n, b, 1_700_000_000)
+        ns["persistir_pasta_condominio"](pasta)                     # foto nova (imediato)
+        ns["salvar_rascunho_operador"](nome, {"data_visita": "12/11/2026", "operador": "Operador Fictício",
+                                             "fotos_rascunho": {"depois": ["rasc_depois_IMG_A.jpg"],
+                                                                "cmaq": ["rasc_cmaq_IMG_B.jpg"]}})
+        ns["_estado_persistencia_pastas"]()["ultima_tentativa"] = 0.0
+        ns["garantir_pastas_restauradas"]()
+        outro.mkdir()
+        json_antes = (pasta / "_rascunho_operador.json").read_bytes()
+        shutil.rmtree(gen)                                          # reinício: disco vazio
+        ns2 = self._app()
+        self._producao(ns2)
+        ns2["garantir_pastas_restauradas"]()
+        self.assertEqual((pasta / "_rascunho_operador.json").read_bytes(), json_antes)
+        for n, b in fotos.items():
+            self.assertEqual((pasta / "fotos_rascunho" / n).read_bytes(), b)
+        rasc = ns2["carregar_rascunho_operador"](nome)
+        self.assertEqual(rasc["fotos_rascunho"]["depois"], ["rasc_depois_IMG_A.jpg"])
+        self.assertFalse((outro / "fotos_rascunho").exists())       # sem mistura de condomínios
+        # Rascunho concluído/descartado: cópias vão para a lixeira e não voltam.
+        ns2["deletar_rascunho_operador"](nome)
+        from utils.persistencia_pastas import excluir_subpasta
+        ns2["_excluir_copia_persistente"](excluir_subpasta, pasta, "fotos_rascunho")
+        shutil.rmtree(gen)
+        ns3 = self._app()
+        self._producao(ns3)
+        ns3["garantir_pastas_restauradas"]()
+        self.assertFalse((pasta / "_rascunho_operador.json").exists())
+        self.assertFalse((pasta / "fotos_rascunho").exists())
+
+    def test_foto_de_visita_concluida_vai_ao_drive_pelo_oauth_e_volta_pelo_id(self):
+        ns = self._app()
+        self._producao(ns)
+        foto = b"\xff\xd8ORIGINAL-DA-VISITA"
+        fid = ns["drive_upload_foto"](foto, "depois_20261112_140000_1_IMG_C.jpg", "Condomínio Alfa Fictício", "2026-11")
+        self.assertTrue(fid)
+        # Estrutura: raiz do Drive / pasta própria das fotos / condomínio / mês
+        itens = self.fake.itens
+        arq = itens[fid]
+        mes = itens[arq["parents"][0]]
+        cond = itens[mes["parents"][0]]
+        base = itens[cond["parents"][0]]
+        self.assertEqual((mes["name"], cond["name"], base["name"], base["parents"]),
+                         ("2026-11", "Condomínio Alfa Fictício", ns["NOME_PASTA_FOTOS_PRODUCAO"], ["root"]))
+        shutil.rmtree(ns["GENERATED_DIR"])                          # reinício: disco vazio
+        ns2 = self._app()
+        self._producao(ns2)
+        self.assertEqual(ns2["drive_baixar_foto"](fid), foto)       # recuperada pelo ID da visita
+        # Foto antiga (enviada pela conta de serviço) continua legível pelo caminho de sempre.
+        antigo = DriveFalso()
+        antigo.itens["id_antigo"] = {"name": "x.jpg", "parents": [], "mimeType": "image/jpeg", "trashed": False,
+                                     "appProperties": {}, "dados": b"FOTO-ANTIGA"}
+        ns2["conectar_drive"] = lambda: antigo
+        self.assertEqual(ns2["drive_baixar_foto"]("id_antigo"), b"FOTO-ANTIGA")
+
+    def test_homologacao_continua_na_pasta_configurada(self):
+        ns = self._app()
+        ns["conectar_drive"] = lambda: self.fake
+        fid = ns["drive_upload_foto"](b"FOTO-H", "antes_1.jpg", "Condomínio Alfa Fictício", "2026-11")
+        cond = self.fake.itens[self.fake.itens[self.fake.itens[fid]["parents"][0]]["parents"][0]]
+        self.assertEqual(cond["parents"], [self.root])               # DRIVE_FOTOS_FOLDER_ID da homologação
+
+
+class CredencialDrivePersistencia(unittest.TestCase):
+    def test_producao_usa_secao_propria_so_com_drive_file(self):
+        from unittest.mock import patch
+        from utils import google_auth as ga
+        self.assertIsNone(ga.credenciais_drive_persistencia({}, "producao"))      # não configurada
+        with self.assertRaises(ga.ConfiguracaoGoogleInvalida):
+            ga.credenciais_drive_persistencia({"google_oauth_drive": {"client_id": "x"}}, "producao")
+        amplo = {"client_id": "a", "client_secret": "b", "refresh_token": "c",
+                 "scopes": ["https://www.googleapis.com/auth/drive"]}
+        with self.assertRaises(ga.ConfiguracaoGoogleInvalida):
+            ga.credenciais_drive_persistencia({"google_oauth_drive": amplo}, "producao")
+        ok = dict(amplo, scopes=[ga.ESCOPO_OAUTH_HOMOLOGACAO])
+        with patch.object(ga, "credenciais_oauth", return_value="CREDS") as m:
+            self.assertEqual(ga.credenciais_drive_persistencia({"google_oauth_drive": ok}, "producao"), "CREDS")
+            self.assertEqual(m.call_args.kwargs["rotulo"], "produção (cópia persistente)")
+        # A conta de serviço continua sendo a credencial principal; [google_oauth] segue recusado.
+        self.assertEqual(ga.tipo_credencial({"google_oauth_drive": ok}, "producao"), "conta_servico")
+        with self.assertRaises(ga.ConfiguracaoGoogleInvalida):
+            ga.tipo_credencial({"google_oauth": ok}, "producao")
 
 
 if __name__ == "__main__":

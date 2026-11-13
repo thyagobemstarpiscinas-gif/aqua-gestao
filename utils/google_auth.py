@@ -107,7 +107,7 @@ def validar_escopos_concedidos(escopos) -> None:
             "). Revogue o acesso e gere um novo token somente com drive.file.")
 
 
-def credenciais_oauth(oauth: Mapping):
+def credenciais_oauth(oauth: Mapping, rotulo: str = "homologação"):
     """Credenciais de usuário (refresh token) limitadas a drive.file."""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -124,8 +124,8 @@ def credenciais_oauth(oauth: Mapping):
         creds.refresh(Request())
     except Exception as erro:  # sem detalhes: a resposta pode ecoar dados do cliente
         raise ConfiguracaoGoogleInvalida(
-            f"Falha ao renovar o token OAuth de homologação ({type(erro).__name__}). "
-            "O token pode ter expirado ou sido revogado; gere outro com scripts/oauth_homologacao_setup.py."
+            f"Falha ao renovar o token OAuth de {rotulo} ({type(erro).__name__}). "
+            "O token pode ter expirado ou sido revogado; é preciso gerar outro."
         ) from None
     validar_escopos_concedidos(getattr(creds, "granted_scopes", None))
     return creds
@@ -149,3 +149,42 @@ def credenciais_google(secrets, ambiente: str, base_dir: Path | None = None):
     if not caminho.exists():
         return None
     return Credentials.from_service_account_file(str(caminho), scopes=list(ESCOPOS_PRODUCAO))
+
+
+# ── Cópia persistente das pastas de condomínio (Drive) ─────────────────────
+# Produção: a conta de serviço continua em Sheets e no restante, mas não pode gravar
+# arquivos no Drive de uma conta Gmail (403 "Service Accounts do not have storage
+# quota"). Só a cópia persistente usa um OAuth de usuário PRÓPRIO DA PRODUÇÃO, em
+# [google_oauth_drive], limitado a drive.file (o token só alcança arquivos criados por
+# esse cliente). [google_oauth] continua recusado na produção.
+SECAO_OAUTH_DRIVE_PRODUCAO = "google_oauth_drive"
+
+
+def oauth_drive_producao_configurado(secrets) -> bool:
+    return _secao(secrets, SECAO_OAUTH_DRIVE_PRODUCAO) is not None
+
+
+def credenciais_drive_persistencia(secrets, ambiente: str):
+    """Credencial da cópia persistente; None quando não configurada.
+
+    - homologação: a mesma [google_oauth] do app (já limitada a drive.file);
+    - produção: [google_oauth_drive], completo e somente com drive.file.
+    """
+    if ambiente == "homologacao":
+        if tipo_credencial(secrets, ambiente) != "oauth_usuario":
+            return None
+        return credenciais_oauth(_secao(secrets, "google_oauth"))
+    secao = _secao(secrets, SECAO_OAUTH_DRIVE_PRODUCAO)
+    if secao is None:
+        return None
+    if not isinstance(secao, Mapping):
+        raise ConfiguracaoGoogleInvalida("[google_oauth_drive] inválido.")
+    faltando = [c for c in CAMPOS_OAUTH if not str(secao.get(c) or "").strip()]
+    if faltando:
+        raise ConfiguracaoGoogleInvalida("[google_oauth_drive] incompleto: falta " + ", ".join(faltando) + ".")
+    escopos = secao.get("scopes")
+    if escopos is not None:
+        escopos = [escopos] if isinstance(escopos, str) else list(escopos)
+        if set(escopos) - ESCOPOS_OAUTH_PERMITIDOS:
+            raise ConfiguracaoGoogleInvalida("[google_oauth_drive] pede escopo amplo; só drive.file é permitido.")
+    return credenciais_oauth(secao, rotulo="produção (cópia persistente)")

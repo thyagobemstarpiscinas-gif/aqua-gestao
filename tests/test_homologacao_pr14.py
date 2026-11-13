@@ -41,7 +41,9 @@ from utils.formatacao import slugify_nome  # noqa: E402
 
 EPSILON = "Condomínio Épsilon Fictício"
 GAMA = "Condomínio Gama Fictício"
-CONSTANTES_APP = {"LOGO_CANDIDATOS", "LOGO_BEM_STAR_CANDIDATOS", "NBR_LIM", "NBR_TXT", "NBR_CC_MAX"}
+CONSTANTES_APP = {"LOGO_CANDIDATOS", "LOGO_BEM_STAR_CANDIDATOS", "NBR_LIM", "NBR_TXT", "NBR_CC_MAX",
+                  # cópia persistente das pastas de condomínio e fotos de campo
+                  "_INTERVALO_TENTATIVA_PASTAS_S", "NOME_BASE_PASTAS_PRODUCAO", "NOME_PASTA_FOTOS_PRODUCAO"}
 
 
 def _foto(cor=(200, 30, 30), tamanho=(640, 480)) -> bytes:

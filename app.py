@@ -158,10 +158,39 @@ def conectar_drive():
         return None
 
 
-def drive_criar_pasta(nome_pasta: str, pasta_pai_id: str) -> str | None:
+NOME_PASTA_FOTOS_PRODUCAO = "ACQUA GESTÃO — Fotos de campo (produção)"
+
+
+def _drive_fotos():
+    """(service, pasta_raiz) das fotos de campo.
+
+    Produção com [google_oauth_drive]: OAuth exclusivo do Drive (drive.file) e pasta criada
+    pelo app na raiz do Drive, pois a conta de serviço não tem cota para gravar arquivos no
+    Drive de uma conta Gmail. Demais casos (homologação, produção sem a credencial): a
+    conexão de sempre e a pasta configurada. O Sheets não muda.
+    """
+    from utils.google_auth import oauth_drive_producao_configurado
+    if AMBIENTE_APP != "homologacao" and oauth_drive_producao_configurado(st.secrets):
+        estado = _estado_persistencia_pastas()
+        if estado.get("fotos") is None:
+            try:
+                service = _servico_drive_persistencia()
+            except Exception as e:
+                _log_sheets_erro("drive_fotos", e)
+                return None, None
+            raiz = drive_criar_pasta(NOME_PASTA_FOTOS_PRODUCAO, "root", service=service) if service else None
+            if not raiz:
+                return None, None
+            estado["fotos"] = (service, raiz)
+        return estado["fotos"]
+    service = conectar_drive()
+    return (service, DRIVE_FOTOS_FOLDER_ID) if service else (None, None)
+
+
+def drive_criar_pasta(nome_pasta: str, pasta_pai_id: str, service=None) -> str | None:
     """Cria pasta no Drive se não existir. Retorna o ID da pasta."""
     try:
-        service = conectar_drive()
+        service = service or conectar_drive()
         if not service:
             return None
 
@@ -194,18 +223,18 @@ def drive_upload_foto(arquivo_bytes: bytes, nome_arquivo: str, nome_condominio: 
         import io
         from googleapiclient.http import MediaIoBaseUpload
 
-        service = conectar_drive()
+        service, raiz = _drive_fotos()
         if not service:
             return None
 
         if not mes_ano:
             mes_ano = datetime.now().strftime("%Y-%m")
 
-        # Estrutura: Aqua Gestão – Fotos / Condomínio / Ano-Mês
-        pasta_cond = drive_criar_pasta(nome_condominio, DRIVE_FOTOS_FOLDER_ID)
+        # Estrutura: <pasta de fotos> / Condomínio / Ano-Mês
+        pasta_cond = drive_criar_pasta(nome_condominio, raiz, service=service)
         if not pasta_cond:
             return None
-        pasta_mes = drive_criar_pasta(mes_ano, pasta_cond)
+        pasta_mes = drive_criar_pasta(mes_ano, pasta_cond, service=service)
         if not pasta_mes:
             return None
 
@@ -224,16 +253,29 @@ def drive_upload_foto(arquivo_bytes: bytes, nome_arquivo: str, nome_condominio: 
 
 
 def drive_baixar_foto(file_id: str) -> bytes | None:
-    """Baixa foto do Drive pelo ID. Retorna bytes da imagem."""
+    """Baixa foto do Drive pelo ID. Retorna bytes da imagem.
+
+    Tenta a conexão das fotos de campo (na produção, o OAuth exclusivo do Drive) e, para
+    fotos antigas enviadas por outra credencial, a conexão de sempre."""
+    servicos = []
     try:
-        service = conectar_drive()
-        if not service:
-            return None
-        conteudo = service.files().get_media(fileId=file_id).execute()
-        return conteudo
+        servico_fotos, _raiz = _drive_fotos()
+        if servico_fotos:
+            servicos.append(servico_fotos)
     except Exception as e:
         _log_sheets_erro("drive_baixar_foto", e)
-        return None
+    ultimo_erro = None
+    for service in servicos + [None]:
+        try:
+            service = service or conectar_drive()
+            if not service:
+                continue
+            return service.files().get_media(fileId=file_id).execute()
+        except Exception as e:
+            ultimo_erro = e
+    if ultimo_erro is not None:
+        _log_sheets_erro("drive_baixar_foto", ultimo_erro)
+    return None
 
 
 # =========================================
@@ -2886,36 +2928,91 @@ GENERATED_DIR.mkdir(exist_ok=True)
 
 # Cópia persistente das pastas de condomínio no Drive (utils/persistencia_pastas.py):
 # o disco do Streamlit Cloud é apagado a cada reinício.
+# Credencial própria da cópia (utils.google_auth.credenciais_drive_persistencia):
+# homologação usa o mesmo OAuth do app; produção usa [google_oauth_drive] (OAuth separado,
+# só drive.file), pois a conta de serviço não tem cota para gravar no Drive de uma conta Gmail.
+NOME_BASE_PASTAS_PRODUCAO = "ACQUA GESTÃO — Pastas de condomínio (produção)"
+_INTERVALO_TENTATIVA_PASTAS_S = 15  # só para falhas passageiras (rede, Drive lento ao acordar)
+
+
 @st.cache_resource(show_spinner=False)
 def _estado_persistencia_pastas() -> dict:
     import threading
     return {"restaurado": False, "ultima_tentativa": 0.0, "resumo": None, "lock": threading.Lock(), "drive": None,
-            "pendentes": set()}
+            "pendentes": set(), "falha_permanente": "", "falha_registrada": False}
+
+
+def _servico_drive_persistencia():
+    """Drive v3 com a credencial da cópia persistente; None quando não configurada."""
+    from googleapiclient.discovery import build
+    from utils.google_auth import credenciais_drive_persistencia
+    creds = credenciais_drive_persistencia(st.secrets, AMBIENTE_APP)
+    if creds is None:
+        return None
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _drive_pastas():
-    from utils.persistencia_pastas import DrivePastas
+    """DrivePastas na pasta prevista; None quando a cópia não está configurada (falha permanente)."""
+    from utils.persistencia_pastas import NOME_BASE, DrivePastas
     estado = _estado_persistencia_pastas()
     if estado["drive"] is None:
-        service = conectar_drive()
-        if service is None or not DRIVE_FOTOS_FOLDER_ID:
+        service = _servico_drive_persistencia()
+        if service is None:
+            estado["falha_permanente"] = ("cópia persistente não configurada neste ambiente "
+                                          "(credencial do Drive ausente)")
             return None
-        estado["drive"] = DrivePastas(service, DRIVE_FOTOS_FOLDER_ID)
+        if AMBIENTE_APP == "homologacao":
+            estado["drive"] = DrivePastas(service, DRIVE_FOTOS_FOLDER_ID, NOME_BASE)
+        else:
+            # drive.file só alcança arquivos criados por este cliente: pasta própria na raiz do Drive.
+            estado["drive"] = DrivePastas(service, "root", NOME_BASE_PASTAS_PRODUCAO)
     return estado["drive"]
 
 
-_INTERVALO_TENTATIVA_PASTAS_S = 15  # após falha (ex.: Drive lento logo após o app acordar)
+def _motivo_falha_permanente(erro: Exception) -> str:
+    """Texto para a tela quando repetir não adianta; "" para falhas passageiras."""
+    from utils.google_auth import ConfiguracaoGoogleInvalida
+    if isinstance(erro, ConfiguracaoGoogleInvalida):
+        return str(erro)
+    status = getattr(getattr(erro, "resp", None), "status", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        return ""
+    texto = str(erro)
+    if status in (400, 401, 403, 404) and not re.search(r"rateLimit|userRateLimit|backendError", texto):
+        if "storageQuota" in texto or "storage quota" in texto:
+            return "a credencial em uso não tem cota para gravar no Drive"
+        return f"o Drive recusou o acesso (HTTP {status})"
+    return ""
+
+
+def _registrar_falha_persistencia(estado: dict, contexto: str, erro: Exception) -> None:
+    estado["drive"] = None
+    _log_sheets_erro(contexto, erro)
+    motivo = _motivo_falha_permanente(erro)
+    if motivo:
+        estado["falha_permanente"] = motivo
+    if not motivo or not estado["falha_registrada"]:
+        estado["falha_registrada"] = estado["falha_registrada"] or bool(motivo)
+        tipo = "permanente, sem novas tentativas" if motivo else "passageira, nova tentativa em instantes"
+        # No log do app (só tipo e início da mensagem; nunca credenciais).
+        print(f"[persistencia_pastas] {contexto} falhou ({tipo}): {type(erro).__name__}: {str(erro)[:160]}",
+              flush=True)
 
 
 def garantir_pastas_restauradas() -> None:
     """Uma vez por processo: traz do Drive as pastas de condomínio que faltam no disco."""
     import time as _time
     estado = _estado_persistencia_pastas()
+    if estado["falha_permanente"]:
+        return  # repetir não adianta; a tela informa a pendência
     pronto = estado["restaurado"] and not estado["pendentes"]
     if pronto or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S:
         return
     with estado["lock"]:
-        if ((estado["restaurado"] and not estado["pendentes"])
+        if (estado["falha_permanente"] or (estado["restaurado"] and not estado["pendentes"])
                 or _time.time() - estado["ultima_tentativa"] < _INTERVALO_TENTATIVA_PASTAS_S):
             return
         estado["ultima_tentativa"] = _time.time()
@@ -2923,7 +3020,9 @@ def garantir_pastas_restauradas() -> None:
             from utils.persistencia_pastas import restaurar, sincronizar_pasta
             drive = _drive_pastas()
             if drive is None:
-                print("[persistencia_pastas] Drive indisponível; nova tentativa em instantes.", flush=True)
+                if not estado["falha_registrada"]:
+                    estado["falha_registrada"] = True
+                    print(f"[persistencia_pastas] {estado['falha_permanente']}.", flush=True)
                 return
             if not estado["restaurado"]:
                 estado["resumo"] = restaurar(drive, GENERATED_DIR)
@@ -2933,19 +3032,63 @@ def garantir_pastas_restauradas() -> None:
                 sincronizar_pasta(drive, Path(pasta))
                 estado["pendentes"].discard(pasta)
         except Exception as e:
-            estado["drive"] = None
-            _log_sheets_erro("restaurar_pastas_condominio", e)
-            # No log do app (só tipo e início da mensagem; nunca credenciais).
-            print(f"[persistencia_pastas] restauração falhou: {type(e).__name__}: {str(e)[:160]}", flush=True)
+            _registrar_falha_persistencia(estado, "restauração", e)
 
 
-def persistir_pasta_condominio(pasta: Path) -> bool:
-    """Envia ao Drive os arquivos novos/alterados da pasta; False quando a cópia falhou."""
+def situacao_persistencia_pastas() -> dict:
+    """{"ok", "pendentes" (nº de pastas só neste servidor), "motivo", "permanente"} para a tela."""
+    from utils.persistencia_pastas import arquivos_persistiveis, pasta_persistivel
+    estado = _estado_persistencia_pastas()
+    if estado["restaurado"] and not estado["pendentes"]:
+        return {"ok": True, "pendentes": 0, "motivo": "", "permanente": False}
+    if estado["restaurado"]:
+        pendentes = len(estado["pendentes"])
+    else:  # nada foi copiado ainda neste processo: todas as pastas locais com arquivos
+        pendentes = sum(1 for p in (GENERATED_DIR.iterdir() if GENERATED_DIR.exists() else [])
+                        if p.is_dir() and pasta_persistivel(p, GENERATED_DIR) and arquivos_persistiveis(p))
+    motivo = estado["falha_permanente"]
+    return {"ok": False, "pendentes": pendentes, "motivo": motivo or "tentando novamente", "permanente": bool(motivo)}
+
+
+def texto_aviso_persistencia_pastas(situacao: dict) -> str:
+    if situacao["ok"]:
+        return ""
+    if situacao["permanente"]:
+        alcance = (f"{situacao['pendentes']} pasta(s) de condomínio estão guardadas só neste servidor e se perdem "
+                   "se o app reiniciar" if situacao["pendentes"] else "novas gravações ficarão só neste servidor")
+        return (f"Cópia persistente pendente: {alcance}. Motivo: {situacao['motivo']}. "
+                "Não haverá nova tentativa até a configuração ser corrigida.")
+    if not situacao["pendentes"]:
+        return ""
+    return (f"Cópia persistente pendente: {situacao['pendentes']} pasta(s) de condomínio ainda não foram guardadas "
+            "no Drive. Nova tentativa automática em instantes.")
+
+
+def mostrar_aviso_persistencia_pastas() -> None:
+    texto = texto_aviso_persistencia_pastas(situacao_persistencia_pastas())
+    if texto:
+        st.warning(texto)
+
+
+def persistir_pasta_condominio(pasta: Path, intervalo_minimo_s: float = 0) -> bool:
+    """Envia ao Drive os arquivos novos/alterados da pasta; False quando a cópia ficou pendente.
+
+    intervalo_minimo_s: gravações automáticas frequentes (rascunho do operador ao digitar)
+    ficam pendentes e são enviadas na próxima rodada de garantir_pastas_restauradas()."""
+    import time as _time
     from utils.persistencia_pastas import pasta_persistivel, sincronizar_pasta
     if not pasta_persistivel(Path(pasta), GENERATED_DIR):
         return True
     estado = _estado_persistencia_pastas()
+    envios = estado.setdefault("ultimo_envio", {})
+    if (intervalo_minimo_s and estado["restaurado"] and not estado["falha_permanente"]
+            and _time.time() - envios.get(str(pasta), 0) < intervalo_minimo_s):
+        estado["pendentes"].add(str(pasta))  # enviada em instantes, sem travar a digitação
+        return True
+    envios[str(pasta)] = _time.time()
     try:
+        if estado["falha_permanente"]:
+            raise RuntimeError(estado["falha_permanente"])
         if not estado["restaurado"]:
             # Antes da restauração não se envia nada: um manifesto gravado sobre um disco
             # vazio substituiria o histórico do Drive. A pasta fica pendente e a restauração
@@ -2953,24 +3096,21 @@ def persistir_pasta_condominio(pasta: Path) -> bool:
             estado["pendentes"].add(str(pasta))
             garantir_pastas_restauradas()
             if not estado["restaurado"]:
-                raise RuntimeError("cópia persistente ainda não restaurada")
+                raise RuntimeError(estado["falha_permanente"] or "cópia persistente ainda não restaurada")
             return True
         drive = _drive_pastas()
         if drive is None:
-            raise RuntimeError("Drive indisponível")
+            raise RuntimeError(estado["falha_permanente"] or "Drive indisponível")
         sincronizar_pasta(drive, Path(pasta))
         estado["pendentes"].discard(str(pasta))
         return True
     except Exception as e:
-        estado["drive"] = None
         estado["pendentes"].add(str(pasta))
-        _log_sheets_erro("persistir_pasta_condominio", e)
-        print(f"[persistencia_pastas] cópia pendente de {Path(pasta).name}: {type(e).__name__}: {str(e)[:160]}",
-              flush=True)
+        if not isinstance(e, RuntimeError):
+            _registrar_falha_persistencia(estado, "cópia", e)
         if not st.session_state.get("_aviso_persistencia_pastas"):
-            st.session_state["_aviso_persistencia_pastas"] = True  # um aviso por sessão
-            st.warning("Não foi possível guardar a cópia persistente agora (Drive). O arquivo está salvo neste "
-                       "servidor e a cópia será reenviada automaticamente em instantes.")
+            st.session_state["_aviso_persistencia_pastas"] = True  # um aviso por sessão; o painel mantém o estado
+            mostrar_aviso_persistencia_pastas()
         return False
 
 
@@ -3834,6 +3974,8 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
         with open(pasta / "_rascunho_operador.json", "w", encoding="utf-8") as f:
             json.dump(dados_local, f, ensure_ascii=False, indent=2)
         salvo_local = True
+        # Cópia persistente do rascunho e das fotos dele (no máximo a cada 30 s ao digitar).
+        persistir_pasta_condominio(pasta, intervalo_minimo_s=30)
     except Exception:
         pass
 
@@ -3941,6 +4083,8 @@ def deletar_rascunho_operador(nome_cond: str):
         rascunho_path = pasta / "_rascunho_operador.json"
         if rascunho_path.exists():
             rascunho_path.unlink()
+            from utils.persistencia_pastas import excluir_arquivo as _excluir_arquivo_copia
+            _excluir_copia_persistente(_excluir_arquivo_copia, pasta, "_rascunho_operador.json")
     except Exception:
         pass
     if not _rascunho_usa_sheets():
@@ -5915,7 +6059,7 @@ def abrir_arquivo_windows(caminho: Path):
 def _excluir_copia_persistente(acao, pasta: Path, *args) -> None:
     """Envia a cópia do Drive para a lixeira, para a restauração não trazer de volta o excluído."""
     from utils.persistencia_pastas import pasta_persistivel
-    if not pasta_persistivel(pasta, GENERATED_DIR):
+    if not pasta_persistivel(pasta, GENERATED_DIR) or _estado_persistencia_pastas()["falha_permanente"]:
         return
     try:
         drive = _drive_pastas()
@@ -8443,12 +8587,12 @@ def buscar_fotos_drive_para_relatorio(nome_condominio: str, mes_ano: str = None)
     if not mes_ano:
         mes_ano = datetime.now().strftime("%Y-%m")
     try:
-        service = conectar_drive()
+        service, raiz_fotos = _drive_fotos()
         if not service:
             return []
 
         # Busca pasta do condomínio
-        q_cond = f"name='{nome_condominio}' and '{DRIVE_FOTOS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        q_cond = f"name='{nome_condominio}' and '{raiz_fotos}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         res_cond = service.files().list(q=q_cond, fields="files(id,name)").execute()
         pastas_cond = res_cond.get("files", [])
         if not pastas_cond:
@@ -9434,7 +9578,10 @@ def _resolver_fotos_visita_para_relatorio(lancamento: dict) -> dict[str, list[st
         categorias[cat]["ids"] = list(lancamento.get(f"fotos_{cat}_ids", []) or [])
         categorias[cat]["nomes"] = list(lancamento.get(f"fotos_{cat}", []) or [])
 
-    if not categorias["antes"]["ids"]:
+    # fotos_drive_ids reúne os IDs de todas as categorias. Só vale como "antes" nas visitas
+    # antigas sem IDs por categoria; com IDs por categoria, levaria Depois e Casa de máquinas
+    # para "Antes" (e a deduplicação global as tiraria das seções corretas).
+    if not any(categorias[c]["ids"] for c in categorias):
         categorias["antes"]["ids"] = list(lancamento.get("fotos_drive_ids", []) or [])
 
     nomes_gerais = list(lancamento.get("fotos", []) or [])
@@ -15652,6 +15799,8 @@ avisar o RT.
                         if not _path_f.exists():
                             with open(_path_f, "wb") as _ff:
                                 _ff.write(foto.getbuffer())
+                            # Foto nova do rascunho: cópia persistente imediata (pasta do condomínio).
+                            persistir_pasta_condominio(_pasta_fotos_rasc.parent)
                         salvos.append(_nome_f)
                     except Exception:
                         pass  # foto individual falhou — continua as demais
@@ -15717,6 +15866,8 @@ avisar o RT.
                 import shutil
                 if _pasta_fotos_rasc and _pasta_fotos_rasc.exists():
                     shutil.rmtree(str(_pasta_fotos_rasc))
+                    from utils.persistencia_pastas import excluir_subpasta as _excluir_subpasta_copia
+                    _excluir_copia_persistente(_excluir_subpasta_copia, _pasta_fotos_rasc.parent, "fotos_rascunho")
                 st.rerun()
 
 
@@ -15952,11 +16103,11 @@ avisar o RT.
                     for _fp_rasc in sorted(_pasta_rasc_f.glob("rasc_*")):
                         if not _fp_rasc.is_file():
                             continue
-                        for _cat, _nomes_cat, _b64s_cat in [
-                            ("antes",  fotos_antes_nomes,  fotos_antes_b64),
-                            ("depois", fotos_depois_nomes, fotos_depois_b64),
-                            ("cmaq",   fotos_cmaq_nomes,   fotos_cmaq_b64),
-                            ("extras", fotos_extras_nomes, fotos_extras_b64),
+                        for _cat, _nomes_cat, _b64s_cat, _ids_cat in [
+                            ("antes",  fotos_antes_nomes,  fotos_antes_b64,  fotos_antes_ids),
+                            ("depois", fotos_depois_nomes, fotos_depois_b64, fotos_depois_ids),
+                            ("cmaq",   fotos_cmaq_nomes,   fotos_cmaq_b64,   fotos_cmaq_ids),
+                            ("extras", fotos_extras_nomes, fotos_extras_b64, fotos_extras_ids),
                         ]:
                             if f"rasc_{_cat}_" not in _fp_rasc.name:
                                 continue
@@ -15974,6 +16125,18 @@ avisar o RT.
                                 _hashes_ja_salvos.add(_hash_rasc)
                             if _nome_dest not in _nomes_cat:
                                 _nomes_cat.append(_nome_dest)
+                                # Antes só ficava no disco: envia ao Drive como as fotos do upload atual.
+                                try:
+                                    _id_rasc = drive_upload_foto(
+                                        arquivo_bytes=_dest.read_bytes(),
+                                        nome_arquivo=f"{_cat}_{_nome_dest}",
+                                        nome_condominio=op_nome_cond.strip(),
+                                        mes_ano=mes_ano,
+                                    )
+                                    if _id_rasc:
+                                        _ids_cat.append(_id_rasc)
+                                except Exception:
+                                    pass
                                 try:
                                     from PIL import Image as _PI, ImageOps as _IO
                                     import io as _io2
@@ -15986,6 +16149,8 @@ avisar o RT.
                                 except Exception:
                                     pass
                     _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
+                    from utils.persistencia_pastas import excluir_subpasta as _excluir_subpasta_copia
+                    _excluir_copia_persistente(_excluir_subpasta_copia, pasta_op, "fotos_rascunho")
 
                 fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes + fotos_extras_nomes
                 fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids + fotos_extras_ids
@@ -16315,6 +16480,7 @@ else:
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Dashboard executivo")
+    mostrar_aviso_persistencia_pastas()  # cópia persistente pendente: quantas pastas e por quê
 
     d1, d2, d3, d4, d5 = st.columns(5)
     with d1:
