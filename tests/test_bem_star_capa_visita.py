@@ -79,7 +79,9 @@ st.text_input('Observação', key='obs')
         at=AppTest.from_string(code,default_timeout=30)
         at.session_state['fotos']=[Upload('a.jpg',self.a),Upload('b.heic',self.b)]
         at.run();self.assertFalse(at.exception)
-        self.assertEqual(at.session_state['salvo'],hash_foto(self.a))
+        self.assertEqual(at.selectbox[0].value,hash_foto(self.a))
+        self.assertNotIn('salvo',at.session_state)
+        self.assertNotIn('op_capa_depois_hash',at.session_state)
         at.selectbox[0].set_value(hash_foto(self.b)).run()
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state['salvo'],hash_foto(self.b))
@@ -91,10 +93,13 @@ st.text_input('Observação', key='obs')
         at2.run();self.assertEqual(at2.selectbox[0].value,hash_foto(self.b))
         at2.session_state['fotos']=[Upload('a.jpg',self.a)]
         at2.run();self.assertFalse(at2.exception)
-        self.assertEqual(at2.session_state['salvo'],hash_foto(self.a))
+        self.assertEqual(at2.selectbox[0].value,hash_foto(self.a))
+        self.assertEqual(at2.session_state['op_capa_depois_hash'],'')
+        self.assertNotIn('salvo',at2.session_state)
         at2.session_state['fotos']=[]
         at2.run();self.assertFalse(at2.exception)
-        self.assertEqual(at2.session_state['salvo'],'')
+        self.assertEqual(at2.session_state['op_capa_depois_hash'],'')
+        self.assertNotIn('salvo',at2.session_state)
         self.assertEqual(len(at2.image),0)
 
     def test_rascunho_guarda_escolha_e_troca_isola_condominio(self):
@@ -107,6 +112,41 @@ st.text_input('Observação', key='obs')
         self.assertEqual(b['salvos'][-1][1]['capa_depois_hash'],hash_foto(self.b))
         b['restaurar_rascunho_operador'](d)
         self.assertEqual(b['ss']['op_capa_depois_hash'],hash_foto(self.b))
+
+    def test_abrir_fotos_existentes_nao_sobrescreve_rascunho_nao_restaurado(self):
+        code='''
+import streamlit as st
+from utils.bem_star_visita_capa import renderizar_seletor_capa, _abrir_imagem
+def carregar(f):
+    return _abrir_imagem(f.getvalue())
+def salvar():
+    st.session_state['armazenado'] = {
+        'capa_depois_hash': st.session_state.get('op_capa_depois_hash', ''),
+        'obs': st.session_state.get('op_obs_campo', ''),
+        'ph': st.session_state.get('op_adulto_ph', '')}
+def restaurar():
+    d = st.session_state['armazenado']
+    st.session_state['op_capa_depois_hash'] = d['capa_depois_hash']
+    st.session_state['op_obs_campo'] = d['obs']
+    st.session_state['op_adulto_ph'] = d['ph']
+st.button('Restaurar rascunho', on_click=restaurar)
+st.text_input('pH', key='op_adulto_ph')
+renderizar_seletor_capa(st, st.session_state['fotos'], [], carregar, salvar)
+st.text_input('Observação', key='op_obs_campo')
+'''
+        original={'capa_depois_hash':hash_foto(self.b),'obs':'Observação preservada','ph':'7,4'}
+        at=AppTest.from_string(code,default_timeout=30)
+        at.session_state['fotos']=[Upload('a.jpg',self.a),Upload('b.heic',self.b)]
+        at.session_state['armazenado']=dict(original)
+        at.run();self.assertFalse(at.exception)
+        self.assertEqual(at.session_state['armazenado'],original)
+        at.run();self.assertEqual(at.session_state['armazenado'],original)
+        at.button[0].click().run();self.assertFalse(at.exception)
+        self.assertEqual(at.selectbox[0].value,hash_foto(self.b))
+        self.assertEqual(at.text_input[0].value,'7,4')
+        self.assertEqual(at.text_input[1].value,'Observação preservada')
+        at.selectbox[0].set_value(hash_foto(self.a)).run()
+        self.assertEqual(at.session_state['armazenado'],dict(original,capa_depois_hash=hash_foto(self.a)))
 
     def test_salvamento_real_de_upload_e_rascunho_preserva_referencia(self):
         # Executa o trecho real que salva todas as categorias, até a assinatura.

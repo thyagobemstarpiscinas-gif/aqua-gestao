@@ -67,12 +67,13 @@ def renderizar_seletor_capa(st, uploads, rascunhos, carregar, salvar):
     if not opcoes:
         if ss.get("op_capa_depois_hash"):
             ss["op_capa_depois_hash"] = ""
-            salvar()
         st.caption("Anexe uma foto em Depois do tratamento para incluí-la na capa. Sem foto válida, a capa sai apenas com os dados da visita.")
         return
     chaves = [o["chave"] for o in opcoes]
     preferida = ss.get("op_capa_depois_hash")
     escolhida = preferida if preferida in chaves else chaves[0]
+    if preferida and preferida not in chaves:
+        ss["op_capa_depois_hash"] = ""
     chave_widget = f"_op_capa_depois_escolha_{ss.get('_op_fotos_nonce', 0)}"
     # Reconciliação antes de instanciar o widget; a chave durável fica no rascunho.
     if ss.get(chave_widget) != escolhida:
@@ -85,9 +86,10 @@ def renderizar_seletor_capa(st, uploads, rascunhos, carregar, salvar):
     rotulos = {o["chave"]: f"Foto {i + 1} — {o['nome']}" for i, o in enumerate(opcoes)}
     escolhida = st.selectbox("Foto da capa", chaves, format_func=rotulos.get,
                             key=chave_widget, on_change=ao_trocar)
-    if ss.get("op_capa_depois_hash") != escolhida:
-        ss["op_capa_depois_hash"] = escolhida
-        salvar()
+    # Exibir a opção padrão não é uma edição. Ao voltar ao condomínio, as fotos
+    # já existem, mas os demais campos aguardam “Restaurar rascunho”. Salvar aqui
+    # sobrescreveria esse rascunho com campos vazios. Só a escolha manual grava;
+    # sem escolha explícita, o PDF usa a primeira foto válida de Depois.
     st.image(next(o["imagem"] for o in opcoes if o["chave"] == escolhida), width=300)
     st.caption("A foto também permanece em Após o tratamento, no registro fotográfico.")
 
