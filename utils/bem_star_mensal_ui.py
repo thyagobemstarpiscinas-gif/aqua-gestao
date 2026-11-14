@@ -61,9 +61,9 @@ def renderizar_agenda(st, lancamentos, datas, preencher):
                     preencher(chave_campo(nome, data, k), base.get(k, ''))
                 preencher(chave_campo(nome, data, 'observacao'), base.get('observacao', ''))
                 if data_ordem(data).weekday() == 0:
-                    st.caption('Análise semanal completa — preencha somente os parâmetros efetivamente medidos.')
+                    st.caption('Dia da análise semanal. O mensal usa as medições salvas no acesso do operador Thyago.')
                 else:
-                    st.caption('Acompanhamento operacional. Leituras adicionais, quando realizadas, também entram nos gráficos.')
+                    st.caption('Acompanhamento operacional. Os gráficos mensais usam as análises de segunda-feira do operador Thyago.')
                 colunas = st.columns(3)
                 for i, (k, label, unidade) in enumerate(PARAMETROS):
                     with colunas[i % 3]:

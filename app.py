@@ -11924,7 +11924,10 @@ def _materializar_fotos_remotas_bem_star(cliente: str, lancamentos: list[dict]) 
         ids = []  # (id, categoria)
         for cat in categorias:
             ids.extend((i, cat) for i in (lc.get(f"fotos_{cat}_ids") or []))
-        ids.extend((i, "antes") for i in (lc.get("fotos_drive_ids") or []))
+        # A lista geral só é fallback de visitas antigas sem categorias.
+        # Acrescentá-la depois sobrescrevia Depois/Casa de máquinas como Antes.
+        if not ids:
+            ids.extend((i, "antes") for i in (lc.get("fotos_drive_ids") or []))
         ids = list({str(i).strip(): (str(i).strip(), c) for i, c in ids if str(i or "").strip()}.values())
         obtidas = []
         falhas = 0
@@ -12141,13 +12144,15 @@ def _bs_dia_semana_resumo():
 
 def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", mes: str = "", ano: str = "") -> str:
     """Resumo descritivo das leituras, sem diagnóstico ou declaração de conformidade."""
-    from utils.bem_star_mensal import PARAMETROS, numero, expandir
-    registros = expandir(lancamentos)
+    from utils.bem_star_mensal import (PARAMETROS_RELATORIO, valor_parametro, expandir,
+                                       filtrar_analises_semanais, ANALISTA_SEMANAL)
+    registros = expandir(filtrar_analises_semanais(lancamentos))
     linhas = [f"Registro operacional de {mes}/{ano} para {cliente}. "
-              f"Foram identificadas {len({l['data'] for l in registros})} data(s) com registro nesta piscina. "
+              f"Foram identificadas {len({l['data'] for l in registros})} data(s) de análise semanal de segunda-feira "
+              f"do operador {ANALISTA_SEMANAL} nesta piscina. "
               "O resumo descreve os dados informados, sem atestar conformidade normativa ou condições de segurança."]
-    for campo, label, unidade in PARAMETROS:
-        vals = [numero(l.get(campo)) for l in registros if numero(l.get(campo)) is not None]
+    for campo, label, unidade in PARAMETROS_RELATORIO:
+        vals = [valor_parametro(l, campo) for l in registros if valor_parametro(l, campo) is not None]
         if vals:
             fmt = lambda v: f"{v:.2f}".replace(".", ",")
             linhas.append(f"{label}: {len(vals)} medição(ões), mínimo {fmt(min(vals))}, "
@@ -12207,7 +12212,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     from utils.bem_star_mensal import (unir_agenda, token_pool, materializar_fotos,
-                                       deduplicar_lancamentos, canonizar_nomes_piscinas)
+                                       deduplicar_lancamentos, canonizar_nomes_piscinas,
+                                       filtrar_analises_semanais)
     # A mesma visita existe no JSON local e no Sheets com campos diferentes
     # (fotos em base64, horário de gravação): comparar o JSON inteiro deixava
     # as duas cópias e duplicava as leituras. A chave é o ID da visita.
@@ -12253,6 +12259,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "parecer_tecnico": st.session_state.get("bs_rel_parecer_tecnico", ""),
         "dados_cliente": csr_dados_sel, "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio, "fotos": fotos_paths,
+        # A agenda operacional não altera a autoria ou as medições da coleta semanal.
+        "analises_semanais": filtrar_analises_semanais(lancamentos_csr),
         "fotos_metadados": metadados, "tipos_piscinas": tipos, "foto_capa": foto_capa,
         "piscinas": piscinas_sel,
         "piscinas_cadastradas": piscinas_cadastradas,
@@ -19600,7 +19608,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         if _contexto_bs_mudou:
             st.info("Cliente ou período alterado. A agenda e o parecer agora correspondem à seleção atual; confira os dados antes de gerar.")
 
-        from utils.bem_star_mensal import ABA as _BS_ABA, carregar_complementos, salvar_complementos, unir_agenda, token_pool
+        from utils.bem_star_mensal import (ABA as _BS_ABA, carregar_complementos, salvar_complementos,
+                                          unir_agenda, token_pool, filtrar_analises_semanais, expandir)
         from utils.bem_star_mensal_ui import renderizar_piscinas, renderizar_fotos
         _bs_origem_ok = origem_validada(_situacao_csr_tela, chave_validacao_origem("bem_star", csr_sel, str(csr_mes or "").strip(), str(csr_ano or "").strip())) if "_situacao_csr_tela" in locals() else False
         with st.expander("Retomar complementos salvos deste cliente e mês"):
@@ -19634,6 +19643,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             st.success("Complementos recuperados para o cliente e mês selecionados. Confira antes de gerar.")
         _bs_piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
         renderizar_piscinas(st, lancamentos_csr, _bs_piscinas_cadastradas)
+        _bs_analises_semanais = filtrar_analises_semanais(lancamentos_csr)
+        st.caption("Análise semanal: segunda-feira, operador Thyago Silveira. Tabelas, gráficos e resumo numérico "
+                   "usam os lançamentos salvos desse operador no período. CC é calculado automaticamente: CT − CL.")
+        if not _bs_analises_semanais:
+            st.info("Nenhuma análise semanal de segunda-feira de Thyago foi encontrada neste período. "
+                    "As seções de análise ficarão sem resultados; visitas, serviços e fotos continuam no relatório.")
 
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
@@ -19642,6 +19657,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         # ── Agenda mensal de visitas Bem Star ────────────────────────────────
         st.markdown("### Agenda mensal de visitas")
         st.caption("Escolha a frequência e os dias da semana. O sistema monta automaticamente as visitas do mês.")
+        st.caption("A agenda abaixo registra a operação. Edições manuais de parâmetros não substituem as análises semanais "
+                   "salvas pelo operador Thyago para as tabelas, gráficos e resumo numérico.")
 
         _dias_semana_bs = [
             "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira",
@@ -19692,10 +19709,11 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         st.markdown("### Resumo e recomendações operacionais")
         st.caption("Clique para gerar um texto automático com base nas visitas, parâmetros e dosagens lançados. Depois revise e edite antes de gerar o PDF.")
 
-        _bs_lancs_para_parecer = unir_agenda(lancamentos_csr, _bs_coletar_lancamentos_agenda_manual(), _bs_piscinas_cadastradas)
+        _bs_lancs_para_parecer = expandir(_bs_analises_semanais, _bs_piscinas_cadastradas)
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
             _blocos_bs = []
-            for _nome_bs in dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer):
+            _nomes_parecer_bs = list(dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer)) or list(st.session_state.get("bs_mensal_piscinas") or [])
+            for _nome_bs in _nomes_parecer_bs:
                 _leituras_bs = [l for l in _bs_lancs_para_parecer if l["piscina"] == _nome_bs]
                 _texto_bs = gerar_parecer_tecnico_bem_star(_leituras_bs, cliente=csr_sel, mes=csr_mes, ano=csr_ano)
                 _blocos_bs.append(_nome_bs + "\n" + _texto_bs)

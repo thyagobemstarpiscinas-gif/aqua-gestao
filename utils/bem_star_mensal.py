@@ -13,6 +13,11 @@ import uuid
 PARAMETROS = [('ph', 'pH', ''), ('cloro_livre', 'Cloro livre', 'mg/L'),
               ('cloro_total', 'Cloro total', 'mg/L'), ('alcalinidade', 'Alcalinidade', 'mg/L'),
               ('dureza', 'Dureza cálcica', 'mg/L'), ('cianurico', 'Ácido cianúrico', 'mg/L')]
+PARAMETROS_RELATORIO = PARAMETROS[:3] + [('cloro_combinado', 'Cloro Combinado', 'mg/L')] + PARAMETROS[3:]
+ANALISTA_SEMANAL = 'Thyago Silveira'
+# Nomes usados pelo cadastro do operador e pelo acesso pessoal existente.
+# A comparação é exata: não aceita outro operador apenas por conter "Thyago".
+NOMES_ANALISTA_SEMANAL = {'thyago silveira', 'thyago fernando da silveira'}
 TIPOS = ['Não informado', 'Adulto', 'Infantil', 'Outros']
 AVISO = ('Registro operacional de manutenção. Não constitui relatório de Responsabilidade Técnica (RT), '
          'laudo ou ART e não substitui o acompanhamento por profissional habilitado quando aplicável.')
@@ -34,6 +39,42 @@ def numero(valor):
         return n if math.isfinite(n) else None
     except (TypeError, ValueError):
         return None
+
+
+def cloro_combinado(linha):
+    """CC calculado por leitura; ausência/inconsistência nunca vira zero."""
+    cl, ct = numero(linha.get('cloro_livre')), numero(linha.get('cloro_total'))
+    if cl is None or ct is None or cl < 0 or ct < 0 or ct < cl:
+        return None
+    return round(ct - cl, 10)
+
+
+def valor_parametro(linha, campo):
+    return cloro_combinado(linha) if campo == 'cloro_combinado' else numero(linha.get(campo))
+
+
+def texto_cloro_combinado(linha):
+    cl, ct = numero(linha.get('cloro_livre')), numero(linha.get('cloro_total'))
+    if cl is None or ct is None:
+        return 'Não calculado'
+    if cl < 0 or ct < 0 or ct < cl:
+        return 'Inconsistente'
+    return f'{cloro_combinado(linha):g}'.replace('.', ',')
+
+
+def filtrar_analises_semanais(lancamentos):
+    """Somente medições de segunda-feira do operador Thyago, sem atribuir autoria."""
+    import unicodedata
+    saida = []
+    for lc in lancamentos or []:
+        if not isinstance(lc, dict) or lc.get('fonte') == 'Agenda mensal Bem Star':
+            continue
+        nome = unicodedata.normalize('NFKD', str(lc.get('operador') or '')).casefold()
+        nome = ' '.join(''.join(c for c in nome if not unicodedata.combining(c)).split())
+        data = data_ordem(lc.get('data'))
+        if nome in NOMES_ANALISTA_SEMANAL and data != datetime.max and data.weekday() == 0:
+            saida.append(lc)
+    return saida
 
 
 def data_ordem(valor):
@@ -126,15 +167,20 @@ def deduplicar_lancamentos(lancamentos):
             continue
         vid = _id_visita(lc)
         assinatura = _assinatura_gravacao(lc)
-        existente = por_id.get(vid) if vid else None
-        if existente is None and assinatura in por_assinatura:
-            candidato = por_assinatura[assinatura]
+        # Após expandir, uma visita possui uma linha por piscina com o mesmo ID.
+        # Deduplique cópias da mesma linha, nunca piscinas diferentes da visita.
+        pool = chave_piscina(lc.get('piscina')) if lc.get('piscina') and not lc.get('piscinas') else None
+        chave_id = (vid, pool)
+        chave_assinatura = (assinatura, pool)
+        existente = por_id.get(chave_id) if vid else None
+        if existente is None and assinatura and chave_assinatura in por_assinatura:
+            candidato = por_assinatura[chave_assinatura]
             if not vid or not _id_visita(candidato):
                 existente = candidato
         if existente is not None:
             _combinar(existente, lc)
             if vid:
-                por_id.setdefault(vid, existente)
+                por_id.setdefault(chave_id, existente)
             continue
         if not vid and not assinatura:
             chave = json.dumps(lc, ensure_ascii=False, sort_keys=True, default=str)
@@ -144,9 +190,9 @@ def deduplicar_lancamentos(lancamentos):
         item = deepcopy(lc)
         saida.append(item)
         if vid:
-            por_id[vid] = item
+            por_id[chave_id] = item
         if assinatura:
-            por_assinatura.setdefault(assinatura, item)
+            por_assinatura.setdefault(chave_assinatura, item)
     return saida
 
 

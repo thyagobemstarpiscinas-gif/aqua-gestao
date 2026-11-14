@@ -19,7 +19,7 @@ def contexto():
             for i in range(1, 13)
         ),
         "lancamentos": [
-            {"data": f"{d:02d}/09/2026", "ph": "7.5", "cloro_livre": "2.1",
+            {"data": f"{d:02d}/09/2026", "operador": "Thyago Silveira", "ph": "7.5", "cloro_livre": "2.1",
              "cloro_total": "2.3", "alcalinidade": "110", "dureza": "250", "cianurico": "40"}
             for d in [2, 4, 7, 9, 11, 14, 16, 18, 21, 23, 25, 28, 30]
         ],
