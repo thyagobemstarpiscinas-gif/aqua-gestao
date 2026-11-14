@@ -139,7 +139,8 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             return t
         def capa(c, doc):
             desenhar_capa_bem_star(c, cliente=cliente, mes_nome=nome_mes, ano=str(ano), periodo_ini=ini,
-                                   periodo_fim=fim, data_emissao=emissao, logo_path=logo_path, cnpj=cnpj)
+                                   periodo_fim=fim, data_emissao=emissao, logo_path=logo_path, cnpj=cnpj,
+                                   foto_path=ctx.get('foto_capa'))
         def rodape(c, doc):
             c.saveState(); w, h = A4
             c.setFillColor(AZUL); c.setFont('Helvetica-Bold', 8)

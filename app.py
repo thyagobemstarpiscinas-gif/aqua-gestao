@@ -12241,6 +12241,9 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         st.session_state.get("bs_mensal_fotos", []) or [],
         st.session_state.get("_bs_rel_contexto"), GENERATED_DIR, baixar=drive_baixar_foto,
     ) if st.session_state.get("bs_mensal_fotos") else ([], {})
+    # Só os anexos já validados deste cliente e mês podem ser escolhidos para a capa.
+    foto_capa = next((p for p in fotos_mensais
+                      if p.stem == st.session_state.get("bs_mensal_capa_hash", "")), None)
     fotos_paths = deduplicar_fotos(list(fotos_paths) + fotos_mensais)
     # Legendas das fotos das visitas recuperadas do Drive (anexos mensais prevalecem).
     metadados = {**(st.session_state.get("_bs_fotos_metadados_visitas") or {}), **(metadados or {})}
@@ -12250,7 +12253,7 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "parecer_tecnico": st.session_state.get("bs_rel_parecer_tecnico", ""),
         "dados_cliente": csr_dados_sel, "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio, "fotos": fotos_paths,
-        "fotos_metadados": metadados, "tipos_piscinas": tipos,
+        "fotos_metadados": metadados, "tipos_piscinas": tipos, "foto_capa": foto_capa,
         "piscinas": piscinas_sel,
         "piscinas_cadastradas": piscinas_cadastradas,
         "origem_fotos": "visitas do período e anexos mensais isolados" if fotos_paths else "sem fotos",
