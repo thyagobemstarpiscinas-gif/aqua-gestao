@@ -172,8 +172,10 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             resumo.append([nome, ', '.join(tipos), str(cont)])
         story.append(tabela(resumo, [81*mm,43*mm,47*mm]))
         story.extend([p('Como ler este relatório', 'h2'), p('As tabelas e os gráficos apresentam somente os valores informados, individualmente por piscina. '
-                f'A análise semanal é realizada às segundas-feiras pelo operador {ANALISTA_SEMANAL}. '
-                'As tabelas, os gráficos e o resumo numérico usam exclusivamente esses lançamentos salvos no período. '
+                f'A análise semanal é identificada pelo operador {ANALISTA_SEMANAL} na visita. '
+                'A segunda-feira é o dia habitual; coletas selecionadas em outros dias também são incluídas, com a data real. '
+                'As tabelas, os gráficos e o resumo numérico usam esses lançamentos salvos no período. '
+                'Registros anteriores à opção de escolha seguem a regra de segunda-feira. '
                 'As demais visitas permanecem no registro da operação e no registro fotográfico. '
                 'Campos vazios permanecem sem resultado. Ausência de medição não significa resultado adequado.'),
                 p('As linhas dos gráficos apenas conectam medições consecutivas informadas. Lacunas interrompem o traçado; '
@@ -185,7 +187,7 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
         for nome, dados in grupos.items():
             story.extend([PageBreak(), p(nome, 'h1')])
             tipo = next((l['tipo_piscina'] for l in dados), tipos_das_visitas.get(nome, 'Não informado'))
-            story.append(p(f'Tipo: {tipo} | Análises de segunda-feira — {ANALISTA_SEMANAL}', 'small'))
+            story.append(p(f'Tipo: {tipo} | Análises semanais — {ANALISTA_SEMANAL}', 'small'))
             rows = [['Data', 'pH', 'CL', 'CT', 'CC', 'Alc.', 'Dur.', 'CYA']]
             for l in dados:
                 rows.append([l['data']] + [texto_cloro_combinado(l) if k == 'cloro_combinado'

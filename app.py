@@ -4116,9 +4116,11 @@ def _slug_piscina_operador(nome: str) -> str:
 
 def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     """Coleta estado atual do formulário do operador para salvar como rascunho."""
+    from utils.bem_star_mensal import analise_semanal_no_formulario
     dados = {
         "data_visita":  st.session_state.get("op_data_visita", ""),
         "operador":     st.session_state.get("op_operador", ""),
+        "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
         "obs":          st.session_state.get("op_obs_campo", ""),
         "problemas":    st.session_state.get("op_problemas", ""),
         "resp_local":   st.session_state.get("op_resp_local", ""),
@@ -4205,6 +4207,8 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
 
 def restaurar_rascunho_operador(rascunho: dict):
     """Restaura rascunho nos campos do formulário do operador."""
+    from utils.bem_star_mensal import restaurar_analise_semanal
+    restaurar_analise_semanal(st.session_state, rascunho)
     st.session_state["op_capa_depois_hash"] = rascunho.get("capa_depois_hash", "")
     if rascunho.get("data_visita"):
         st.session_state["op_data_visita"] = rascunho["data_visita"]
@@ -4303,6 +4307,8 @@ def limpar_formulario_operador():
     ss["op_resp_local"] = ""
     ss["op_parecer_visita"] = "✅ Satisfatório"
     ss["op_capa_depois_hash"] = ""
+    ss.pop("op_analise_semanal_bem_star", None)
+    ss.pop("_op_analise_semanal_widget", None)
     ss["op_assinatura_responsavel_b64"] = ""
     ss["op_assinatura_responsavel_data"] = ""
     ss["_op_ass_canvas_nonce"] = ss.get("_op_ass_canvas_nonce", 0) + 1
@@ -12148,7 +12154,7 @@ def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", m
                                        filtrar_analises_semanais, ANALISTA_SEMANAL)
     registros = expandir(filtrar_analises_semanais(lancamentos))
     linhas = [f"Registro operacional de {mes}/{ano} para {cliente}. "
-              f"Foram identificadas {len({l['data'] for l in registros})} data(s) de análise semanal de segunda-feira "
+              f"Foram identificadas {len({l['data'] for l in registros})} data(s) de análise semanal selecionada "
               f"do operador {ANALISTA_SEMANAL} nesta piscina. "
               "O resumo descreve os dados informados, sem atestar conformidade normativa ou condições de segurança."]
     for campo, label, unidade in PARAMETROS_RELATORIO:
@@ -15468,6 +15474,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 except Exception:
                     pass  # autosave nunca pode derrubar o app
 
+        from utils.bem_star_mensal_ui import renderizar_analise_semanal_operador
+        renderizar_analise_semanal_operador(st, _autosave_rascunho)
+
         def _num_op(chave, label, placeholder, quinzenal=False):
             lbl = f"{label} ⏱ 15d" if quinzenal else label
             v = st.text_input(lbl, key=chave, placeholder=placeholder,
@@ -16183,8 +16192,10 @@ avisar o RT.
                     for _p_lanc in op_piscinas_dados:
                         _p_lanc.update(_parametros_apos_lanc)
 
+                from utils.bem_star_mensal import analise_semanal_no_formulario
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
+                    "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
                     "visita_rt_semanal": bool(_op_is_rt),
                     "tipo_visita": "RT semanal" if _op_is_rt else "Operador",
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
@@ -19644,10 +19655,11 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _bs_piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
         renderizar_piscinas(st, lancamentos_csr, _bs_piscinas_cadastradas)
         _bs_analises_semanais = filtrar_analises_semanais(lancamentos_csr)
-        st.caption("Análise semanal: segunda-feira, operador Thyago Silveira. Tabelas, gráficos e resumo numérico "
-                   "usam os lançamentos salvos desse operador no período. CC é calculado automaticamente: CT − CL.")
+        st.caption("Análise semanal: visitas escolhidas pelo operador Thyago Silveira, na data real da coleta. "
+                   "Segunda-feira é o padrão; coletas marcadas em outros dias também entram no mensal. "
+                   "CC é calculado automaticamente: CT − CL.")
         if not _bs_analises_semanais:
-            st.info("Nenhuma análise semanal de segunda-feira de Thyago foi encontrada neste período. "
+            st.info("Nenhuma análise semanal de Thyago foi encontrada neste período. "
                     "As seções de análise ficarão sem resultados; visitas, serviços e fotos continuam no relatório.")
 
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")

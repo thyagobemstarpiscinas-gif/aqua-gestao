@@ -1,10 +1,32 @@
 """Campos mensais Bem Star, instanciados depois da seleção e troca do contexto."""
 from utils.bem_star_mensal import (PARAMETROS, TIPOS, AVISO, contexto_id, expandir, tipo_inferido,
                                   token_pool, chave_campo, anexar_foto, data_ordem, chave_piscina,
-                                  canonizar_nomes_piscinas)
+                                  canonizar_nomes_piscinas, acesso_analista_semanal,
+                                  analise_semanal_no_formulario)
 
 
 SUGESTOES_PISCINAS = ['Piscina Adulto', 'Piscina Infantil', 'Piscina principal']
+
+
+def renderizar_analise_semanal_operador(st, salvar):
+    ss = st.session_state
+    if not acesso_analista_semanal(ss):
+        ss.pop('op_analise_semanal_bem_star', None)
+        ss.pop('_op_analise_semanal_widget', None)
+        return
+    ss['_op_analise_semanal_widget'] = analise_semanal_no_formulario(ss)
+
+    def escolher():
+        if acesso_analista_semanal(ss):
+            ss['op_analise_semanal_bem_star'] = bool(ss.get('_op_analise_semanal_widget'))
+            salvar()
+
+    st.checkbox('Usar esta visita como análise semanal no mensal Bem Star',
+                key='_op_analise_semanal_widget', on_change=escolher,
+                help='Informe a data real da visita. Segunda-feira é o padrão, mas você pode '
+                     'marcar a coleta semanal em outro dia. Desmarque nas visitas apenas de rotina.')
+    st.caption('A análise entra no mês da data da visita, com as medições de cada piscina. '
+               'A escolha fica guardada no rascunho e na visita salva.')
 
 
 def renderizar_piscinas(st, lancamentos, cadastradas=()):
@@ -60,10 +82,8 @@ def renderizar_agenda(st, lancamentos, datas, preencher):
                 for k, _, _ in PARAMETROS:
                     preencher(chave_campo(nome, data, k), base.get(k, ''))
                 preencher(chave_campo(nome, data, 'observacao'), base.get('observacao', ''))
-                if data_ordem(data).weekday() == 0:
-                    st.caption('Dia da análise semanal. O mensal usa as medições salvas no acesso do operador Thyago.')
-                else:
-                    st.caption('Acompanhamento operacional. Os gráficos mensais usam as análises de segunda-feira do operador Thyago.')
+                st.caption('Os gráficos mensais usam as visitas escolhidas por Thyago como análise semanal. '
+                           'A segunda-feira é o padrão, com possibilidade de coleta em outro dia.')
                 colunas = st.columns(3)
                 for i, (k, label, unidade) in enumerate(PARAMETROS):
                     with colunas[i % 3]:

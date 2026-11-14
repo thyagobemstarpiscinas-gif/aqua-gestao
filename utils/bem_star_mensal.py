@@ -62,17 +62,51 @@ def texto_cloro_combinado(linha):
     return f'{cloro_combinado(linha):g}'.replace('.', ',')
 
 
-def filtrar_analises_semanais(lancamentos):
-    """Somente medições de segunda-feira do operador Thyago, sem atribuir autoria."""
+def operador_analista_semanal(nome):
     import unicodedata
+    nome = unicodedata.normalize('NFKD', str(nome or '')).casefold()
+    nome = ' '.join(''.join(c for c in nome if not unicodedata.combining(c)).split())
+    return nome in NOMES_ANALISTA_SEMANAL
+
+
+def acesso_analista_semanal(estado):
+    """A escolha depende do PIN autenticado, nunca do nome editável/restaurado."""
+    acesso = estado.get('op_dados_atual') or {}
+    return (estado.get('op_pin_ok') is True and isinstance(acesso, dict)
+            and not acesso.get('is_rt') and operador_analista_semanal(acesso.get('nome')))
+
+
+def analise_semanal_no_formulario(estado):
+    if not acesso_analista_semanal(estado):
+        return False
+    escolha = estado.get('op_analise_semanal_bem_star')
+    if type(escolha) is bool:
+        return escolha
+    data = data_ordem(estado.get('op_data_visita'))
+    return data != datetime.max and data.weekday() == 0
+
+
+def restaurar_analise_semanal(estado, rascunho):
+    estado.pop('op_analise_semanal_bem_star', None)
+    estado.pop('_op_analise_semanal_widget', None)
+    escolha = rascunho.get('analise_semanal_bem_star')
+    if (acesso_analista_semanal(estado) and operador_analista_semanal(rascunho.get('operador'))
+            and type(escolha) is bool):
+        estado['op_analise_semanal_bem_star'] = escolha
+
+
+def filtrar_analises_semanais(lancamentos):
+    """Usa a seleção salva por Thyago; visitas antigas mantêm a regra de segunda."""
     saida = []
     for lc in lancamentos or []:
         if not isinstance(lc, dict) or lc.get('fonte') == 'Agenda mensal Bem Star':
             continue
-        nome = unicodedata.normalize('NFKD', str(lc.get('operador') or '')).casefold()
-        nome = ' '.join(''.join(c for c in nome if not unicodedata.combining(c)).split())
         data = data_ordem(lc.get('data'))
-        if nome in NOMES_ANALISTA_SEMANAL and data != datetime.max and data.weekday() == 0:
+        if not operador_analista_semanal(lc.get('operador')) or data == datetime.max:
+            continue
+        selecionada = (lc['analise_semanal_bem_star'] is True if 'analise_semanal_bem_star' in lc
+                       else data.weekday() == 0)
+        if selecionada:
             saida.append(lc)
     return saida
 
