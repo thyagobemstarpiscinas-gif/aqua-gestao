@@ -130,3 +130,21 @@ def renderizar_fotos(st):
                 st.rerun()
     if fotos:
         st.caption(f'{len(fotos)} imagem(ns) adicional(is) anexada(s) a este cliente e mês.')
+    renderizar_capa_mensal(st)
+
+
+def renderizar_capa_mensal(st):
+    """Escolha mensal isolada pelo contexto, salva junto dos complementos existentes."""
+    ss = st.session_state
+    cid = contexto_id(ss.get('_bs_rel_contexto'))
+    fotos = {f['sha256']: f for f in ss.get('bs_mensal_fotos', [])
+             if f.get('contexto') == cid}
+    chave = 'bs_mensal_capa_hash'
+    escolha = ss.get(chave, '')
+    ss[chave] = escolha if escolha in fotos else ''
+    st.selectbox('Foto da capa do relatório mensal', [''] + list(fotos), key=chave,
+                 format_func=lambda valor: fotos[valor]['nome'] if valor else 'Sem foto na capa')
+    st.caption('Escolha uma imagem do período anexada em Adicionar imagens. Ela também permanece no registro fotográfico. A escolha é salva com os complementos deste cliente e mês.')
+    escolhida = fotos.get(ss[chave])
+    if escolhida and escolhida.get('bytes'):
+        st.image(escolhida['bytes'], width=300)
