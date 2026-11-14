@@ -5205,7 +5205,7 @@ def _enriquecer_cliente_com_dados_locais(cliente: dict | None) -> dict:
 
 
 def carregar_imagem_corrigida_orientacao(origem):
-    """Corrige orientação EXIF para preview no Streamlit sem alterar o upload original."""
+    """Decodifica o preview sem alterar o original; retorna None se a foto for ilegível."""
     try:
         import io as _io
         from PIL import Image as _PILImg, ImageOps as _IOps
@@ -5217,13 +5217,17 @@ def carregar_imagem_corrigida_orientacao(origem):
         elif isinstance(origem, bytes):
             dados = origem
         else:
-            return origem
+            return None
 
-        img = _PILImg.open(_io.BytesIO(dados))
-        img = _IOps.exif_transpose(img)
+        with _PILImg.open(_io.BytesIO(dados)) as original:
+            img = _IOps.exif_transpose(original)
+            img.load()  # identifica falhas de decodificação antes de chamar st.image
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
         return img
     except Exception:
-        return origem
+        # Repassar os bytes ilegíveis para st.image interromperia todo o formulário.
+        return None
 
 
 def deduplicar_fotos(lista):
@@ -15858,7 +15862,11 @@ avisar o RT.
                 _cols = st.columns(min(len(_all_show), 3))
                 for _i, _f in enumerate(_all_show):
                     with _cols[_i % 3]:
-                        st.image(carregar_imagem_corrigida_orientacao(_f), use_container_width=True)
+                        _imagem_preview = carregar_imagem_corrigida_orientacao(_f)
+                        if _imagem_preview is None:
+                            st.warning("Não foi possível abrir esta foto. O arquivo foi mantido no rascunho; tente uma cópia em JPG ou PNG.")
+                        else:
+                            st.image(_imagem_preview, use_container_width=True)
 
         # Botão para limpar fotos do rascunho
         if _total_fotos_rasc > 0:
