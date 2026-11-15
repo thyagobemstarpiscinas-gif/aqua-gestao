@@ -172,10 +172,10 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             resumo.append([nome, ', '.join(tipos), str(cont)])
         story.append(tabela(resumo, [81*mm,43*mm,47*mm]))
         story.extend([p('Como ler este relatório', 'h2'), p('As tabelas e os gráficos apresentam somente os valores informados, individualmente por piscina. '
-                f'A análise semanal é identificada pelo operador {ANALISTA_SEMANAL} na visita. '
+                f'As análises semanais são selecionadas pelo acesso autenticado de {ANALISTA_SEMANAL}. '
                 'A segunda-feira é o dia habitual; coletas selecionadas em outros dias também são incluídas, com a data real. '
                 'As tabelas, os gráficos e o resumo numérico usam esses lançamentos salvos no período. '
-                'Registros anteriores à opção de escolha seguem a regra de segunda-feira. '
+                'Registros antigos sem a marca de análise semanal não são incluídos automaticamente nas análises. '
                 'As demais visitas permanecem no registro da operação e no registro fotográfico. '
                 'Campos vazios permanecem sem resultado. Ausência de medição não significa resultado adequado.'),
                 p('As linhas dos gráficos apenas conectam medições consecutivas informadas. Lacunas interrompem o traçado; '
