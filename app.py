@@ -3606,7 +3606,7 @@ def _autosave_rascunho():
     pass
 
 st.set_page_config(
-    page_title="",
+    page_title="Gestão de piscinas | ACQUA e Bem Star",
     page_icon="📘",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -13972,273 +13972,213 @@ if "empresa_selecionada" not in st.session_state:
 logo = encontrar_logo()
 logo_bs = encontrar_logo_bem_star()
 
-# Topo só aparece no modo escritório (não na entrada nem no operador)
-if st.session_state.get("modo_atual", "entrada") == "escritorio":
-    _empresa_topo = st.session_state.get("empresa_ativa", "aqua_gestao")
-    _eh_bs_topo = _empresa_topo == "bem_star"
+from utils.navegacao import aplicar_estilo, ancora, empresa_do_escritorio, renderizar_inicio, renderizar_menu
 
-    col_top1, col_top2 = st.columns([1, 5])
-    with col_top1:
-        if _eh_bs_topo:
-            if logo_bs:
-                st.image(str(logo_bs), width=150)
-        else:
-            if logo:
-                st.image(str(logo), width=150)
-    with col_top2:
-        if _eh_bs_topo:
-            st.markdown(
-                f"""
-                <div class="top-card">
-                    <div class="top-title">Bem Star Piscinas</div>
-                    <div class="top-subtitle">
-                        Limpeza e Manutenção de Piscinas
-                    </div>
-                    <div>
-                        <span class="info-badge">CNPJ: {CNPJ_BEM_STAR}</span>
-                        <span class="info-badge">Uberlândia/MG</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f"""
-                <div class="top-card">
-                    <div class="top-title">{APP_TITLE}</div>
-                    <div class="top-subtitle">
-                        Responsabilidade Técnica, controle documental, relatórios, POPs e ART
-                    </div>
-                    <div>
-                        <span class="info-badge">{RESPONSAVEL_TÉCNICO}</span>
-                        <span class="info-badge">{CRQ}</span>
-                        <span class="info-badge">Windows + Word + DOCX/PDF</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+aplicar_estilo(st)
+renderizar_inicio(st, st.session_state,
+                  logo_bs if st.session_state.get("empresa_ativa") == "bem_star" else logo)
 
 # =========================================
 # SIDEBAR – CONFIG + HISTÓRICO
 # =========================================
 
-with st.sidebar:
-    if st.session_state.get("modo_atual", "entrada") == "escritorio":
-        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — INÍCIO ===
-        # _SIDEBAR_EMPRESA_FIXA_PELO_LOGIN_V1_
-        st.markdown("### Painel administrativo")
+if empresa_do_escritorio(st.session_state):
+    with st.sidebar:
+        renderizar_menu(st, st.session_state)
+        st.caption(f"Empresa logada: {_admin_nome_empresa(st.session_state['empresa_ativa'])}")
+        with st.expander("Histórico e arquivos", expanded=False):
+            st.number_input(
+                "Lembrete de vencimento (dias)",
+                min_value=1,
+                max_value=180,
+                step=1,
+                key="alerta_vencimento_dias",
+            )
 
-        _empresa_atual_admin = st.session_state.get("empresa_ativa", "aqua_gestao")
-        if _empresa_atual_admin not in ("aqua_gestao", "bem_star"):
-            _empresa_atual_admin = "aqua_gestao"
-            st.session_state["empresa_ativa"] = _empresa_atual_admin
+            st.text_input(
+                "Filtrar condomínio",
+                key="filtro_historico",
+                placeholder="Digite parte do nome...",
+            )
 
-        _nome_painel_admin = "Bem Star Piscinas" if _empresa_atual_admin == "bem_star" else "Aqua Gestão"
-        _icone_painel_admin = "⭐" if _empresa_atual_admin == "bem_star" else "🔵"
-
-        st.info(f"{_icone_painel_admin} Empresa logada: **{_nome_painel_admin}**")
-
-        if st.button("🚪 Sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
-            _admin_sair_para_entrada(abrir_login=True)
-            st.rerun()
-
-        st.caption(f"Painel ativo: {_nome_painel_admin}")
-        st.divider()
-        # === EMPRESA ADMINISTRATIVA FIXA PELO LOGIN — FIM ===
-
-    if st.session_state.get("modo_atual", "entrada") != "operador":
-        st.header("Histórico recente")
-
-    st.number_input(
-        "Lembrete de vencimento (dias)",
-        min_value=1,
-        max_value=180,
-        step=1,
-        key="alerta_vencimento_dias",
-    )
-
-    st.text_input(
-        "Filtrar condomínio",
-        key="filtro_historico",
-        placeholder="Digite parte do nome...",
-    )
-
-    # v4 — no painel Bem Star, o histórico local completo fica sob demanda.
-    # Evita varredura pesada de GENERATED_DIR antes dos módulos Bem Star aparecerem.
-    _carregar_historico_sidebar = True
-    if st.session_state.get("empresa_ativa") == "bem_star":
-        _carregar_historico_sidebar = st.checkbox(
-            "Carregar histórico local",
-            value=False,
-            key="sidebar_carregar_historico_bemstar",
-            help="Carrega pastas/arquivos locais somente quando necessário.",
-        )
-
-    historico = listar_historico() if _carregar_historico_sidebar else []
-    filtro = st.session_state.filtro_historico.strip().lower()
-
-    if filtro:
-        historico = [h for h in historico if filtro in h["nome"].lower()]
-
-    if not historico:
-        st.caption("Histórico local não carregado." if not _carregar_historico_sidebar else "Nenhum histórico encontrado.")
-    else:
-        for item in historico:
-            nome_cond = item["nome"]
-            pasta = item["pasta"]
-            arquivos = item["arquivos"]
-            folder_key = chave_segura(str(pasta))
-            status = status_vencimento(item["data_fim"], st.session_state.alerta_vencimento_dias)
-
-            titulo = f"{nome_cond} ({item['total_arquivos']})"
-
-            with st.expander(titulo, expanded=False):
-                st.caption(str(pasta))
-                st.markdown(
-                    f"<span class='status-badge {status['css']}'>{status['rotulo']}</span>",
-                    unsafe_allow_html=True,
+            # v4 — no painel Bem Star, o histórico local completo fica sob demanda.
+            # Evita varredura pesada de GENERATED_DIR antes dos módulos Bem Star aparecerem.
+            _carregar_historico_sidebar = True
+            if st.session_state.get("empresa_ativa") == "bem_star":
+                _carregar_historico_sidebar = st.checkbox(
+                    "Carregar histórico local",
+                    value=False,
+                    key="sidebar_carregar_historico_bemstar",
+                    help="Carrega pastas/arquivos locais somente quando necessário.",
                 )
-                st.caption(status["mensagem"])
 
-                col_h1, col_h2 = st.columns(2)
-                with col_h1:
-                    if st.button(
-                        "Carregar dados",
-                        key=f"carregar_dados_{folder_key}",
-                        use_container_width=True,
-                    ):
-                        dados_salvos = carregar_dados_condominio(pasta)
-                        if dados_salvos:
-                            aplicar_dados_no_formulario(dados_salvos)
-                            st.success("Dados carregados no formulário.")
-                            st.rerun()
-                        else:
-                            st.warning("Nenhum cadastro salvo encontrado para este condomínio.")
+            historico = listar_historico() if _carregar_historico_sidebar else []
+            filtro = st.session_state.filtro_historico.strip().lower()
 
-                with col_h2:
-                    if st.button(
-                        "Abrir pasta",
-                        key=f"abrir_pasta_{folder_key}",
-                        use_container_width=True,
-                    ):
-                        abrir_pasta_windows(pasta)
+            if filtro:
+                historico = [h for h in historico if filtro in h["nome"].lower()]
 
-                if st.session_state.confirm_delete_folder == folder_key:
-                    if st.button(
-                        "Confirmar pasta",
-                        key=f"confirmar_del_pasta_{folder_key}",
-                        type="primary",
-                        use_container_width=True,
-                    ):
-                        try:
-                            deletar_pasta_condominio(pasta)
-                            st.session_state.confirm_delete_folder = ""
-                            st.success(f"Pasta de '{nome_cond}' excluída.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao excluir pasta: {e}")
-                else:
-                    if st.button(
-                        "Excluir pasta",
-                        key=f"pedir_del_pasta_{folder_key}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.confirm_delete_folder = folder_key
-                        st.rerun()
+            if not historico:
+                st.caption("Histórico local não carregado." if not _carregar_historico_sidebar else "Nenhum histórico encontrado.")
+            else:
+                for item in historico:
+                    nome_cond = item["nome"]
+                    pasta = item["pasta"]
+                    arquivos = item["arquivos"]
+                    folder_key = chave_segura(str(pasta))
+                    status = status_vencimento(item["data_fim"], st.session_state.alerta_vencimento_dias)
 
-                if st.session_state.confirm_delete_folder == folder_key:
-                    st.markdown(
-                        "<div class='confirm-box'><strong>Confirma excluir toda a pasta deste condomínio?</strong></div>",
-                        unsafe_allow_html=True,
-                    )
-                    if st.button(
-                        "Cancelar exclusão da pasta",
-                        key=f"cancelar_del_pasta_{folder_key}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.confirm_delete_folder = ""
-                        st.rerun()
+                    titulo = f"{nome_cond} ({item['total_arquivos']})"
 
-                st.markdown("**Arquivos:**")
-                if not arquivos:
-                    st.caption("Sem arquivos.")
-                else:
-                    for arq in arquivos:
-                        caminho = arq["path"]
-                        nome = arq["name"]
-                        tipo_doc = arq["tipo_doc"]
-                        tipo_ext = arq["tipo_ext"]
-                        modificado = arq["modificado_em"]
-
-                        file_key = chave_segura(str(caminho))
-
+                    with st.expander(titulo, expanded=False):
+                        st.caption(str(pasta))
                         st.markdown(
-                            f"**{tipo_doc} • {tipo_ext}**\n\n"
-                            f"<div class='history-meta'>{nome}</div>"
-                            f"<div class='history-meta'>Atualizado em: {modificado}</div>",
+                            f"<span class='status-badge {status['css']}'>{status['rotulo']}</span>",
                             unsafe_allow_html=True,
                         )
+                        st.caption(status["mensagem"])
 
-                        botao_baixar_documento(caminho, f"baixar_arq_{file_key}")
-                        col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
-
-                        with col_a1:
+                        col_h1, col_h2 = st.columns(2)
+                        with col_h1:
                             if st.button(
-                                "Abrir arquivo",
-                                key=f"abrir_arq_{file_key}",
+                                "Carregar dados",
+                                key=f"carregar_dados_{folder_key}",
                                 use_container_width=True,
                             ):
-                                abrir_arquivo_windows(caminho)
+                                dados_salvos = carregar_dados_condominio(pasta)
+                                if dados_salvos:
+                                    aplicar_dados_no_formulario(dados_salvos)
+                                    st.success("Dados carregados no formulário.")
+                                    st.rerun()
+                                else:
+                                    st.warning("Nenhum cadastro salvo encontrado para este condomínio.")
 
-                        with col_a2:
+                        with col_h2:
                             if st.button(
                                 "Abrir pasta",
-                                key=f"abrir_pasta_arq_{file_key}",
+                                key=f"abrir_pasta_{folder_key}",
                                 use_container_width=True,
                             ):
-                                abrir_pasta_windows(caminho.parent)
+                                abrir_pasta_windows(pasta)
 
-                        with col_a3:
-                            if st.session_state.confirm_delete_file == file_key:
-                                if st.button(
-                                    "OK",
-                                    key=f"confirmar_del_arq_{file_key}",
-                                    type="primary",
-                                    use_container_width=True,
-                                ):
-                                    try:
-                                        deletar_arquivo_individual(caminho)
-                                        st.session_state.confirm_delete_file = ""
-                                        st.success(f"Arquivo excluído: {nome}")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro ao excluir arquivo: {e}")
-                            else:
-                                if st.button(
-                                    "🗑️",
-                                    key=f"pedir_del_arq_{file_key}",
-                                    help="Excluir somente este arquivo",
-                                    use_container_width=True,
-                                ):
-                                    st.session_state.confirm_delete_file = file_key
+                        if st.session_state.confirm_delete_folder == folder_key:
+                            if st.button(
+                                "Confirmar pasta",
+                                key=f"confirmar_del_pasta_{folder_key}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                try:
+                                    deletar_pasta_condominio(pasta)
+                                    st.session_state.confirm_delete_folder = ""
+                                    st.success(f"Pasta de '{nome_cond}' excluída.")
                                     st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao excluir pasta: {e}")
+                        else:
+                            if st.button(
+                                "Excluir pasta",
+                                key=f"pedir_del_pasta_{folder_key}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.confirm_delete_folder = folder_key
+                                st.rerun()
 
-                        if st.session_state.confirm_delete_file == file_key:
+                        if st.session_state.confirm_delete_folder == folder_key:
                             st.markdown(
-                                "<div class='confirm-box'>Excluir este arquivo?</div>",
+                                "<div class='confirm-box'><strong>Confirma excluir toda a pasta deste condomínio?</strong></div>",
                                 unsafe_allow_html=True,
                             )
                             if st.button(
-                                "Cancelar",
-                                key=f"cancelar_del_arq_{file_key}",
+                                "Cancelar exclusão da pasta",
+                                key=f"cancelar_del_pasta_{folder_key}",
                                 use_container_width=True,
                             ):
-                                st.session_state.confirm_delete_file = ""
+                                st.session_state.confirm_delete_folder = ""
                                 st.rerun()
 
-                        st.markdown("---")
+                        st.markdown("**Arquivos:**")
+                        if not arquivos:
+                            st.caption("Sem arquivos.")
+                        else:
+                            for arq in arquivos:
+                                caminho = arq["path"]
+                                nome = arq["name"]
+                                tipo_doc = arq["tipo_doc"]
+                                tipo_ext = arq["tipo_ext"]
+                                modificado = arq["modificado_em"]
+
+                                file_key = chave_segura(str(caminho))
+
+                                st.markdown(
+                                    f"**{tipo_doc} • {tipo_ext}**\n\n"
+                                    f"<div class='history-meta'>{nome}</div>"
+                                    f"<div class='history-meta'>Atualizado em: {modificado}</div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                                botao_baixar_documento(caminho, f"baixar_arq_{file_key}")
+                                col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
+
+                                with col_a1:
+                                    if st.button(
+                                        "Abrir arquivo",
+                                        key=f"abrir_arq_{file_key}",
+                                        use_container_width=True,
+                                    ):
+                                        abrir_arquivo_windows(caminho)
+
+                                with col_a2:
+                                    if st.button(
+                                        "Abrir pasta",
+                                        key=f"abrir_pasta_arq_{file_key}",
+                                        use_container_width=True,
+                                    ):
+                                        abrir_pasta_windows(caminho.parent)
+
+                                with col_a3:
+                                    if st.session_state.confirm_delete_file == file_key:
+                                        if st.button(
+                                            "OK",
+                                            key=f"confirmar_del_arq_{file_key}",
+                                            type="primary",
+                                            use_container_width=True,
+                                        ):
+                                            try:
+                                                deletar_arquivo_individual(caminho)
+                                                st.session_state.confirm_delete_file = ""
+                                                st.success(f"Arquivo excluído: {nome}")
+                                                st.rerun()
+                                            except Exception as e:
+                                                st.error(f"Erro ao excluir arquivo: {e}")
+                                    else:
+                                        if st.button(
+                                            "🗑️",
+                                            key=f"pedir_del_arq_{file_key}",
+                                            help="Excluir somente este arquivo",
+                                            use_container_width=True,
+                                        ):
+                                            st.session_state.confirm_delete_file = file_key
+                                            st.rerun()
+
+                                if st.session_state.confirm_delete_file == file_key:
+                                    st.markdown(
+                                        "<div class='confirm-box'>Excluir este arquivo?</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    if st.button(
+                                        "Cancelar",
+                                        key=f"cancelar_del_arq_{file_key}",
+                                        use_container_width=True,
+                                    ):
+                                        st.session_state.confirm_delete_file = ""
+                                        st.rerun()
+
+                                st.markdown("---")
+        st.divider()
+        if st.button("🚪 Sair do admin", key="btn_trocar_empresa_login_admin", use_container_width=True):
+            _admin_sair_para_entrada(abrir_login=True)
+            st.rerun()
 
 # =========================================
 # MODO DE OPERAÇÃO — TELA DE ENTRADA
@@ -14368,17 +14308,12 @@ modo = "Modo Escritório" if _modo_interno == "escritorio" else (
 )
 
 # Botão de saída controlada. No admin, só sai quando clicar explicitamente em sair.
-if _modo_interno in ("escritorio", "operador"):
-    if _modo_interno == "escritorio":
-        if st.button("🚪 Sair do admin", key="btn_voltar_inicio"):
-            _admin_sair_para_entrada(abrir_login=True)
-            st.rerun()
-    else:
-        if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
-            st.session_state["modo_atual"] = "entrada"
-            st.session_state["op_pin_ok"] = False
-            st.session_state.pop("op_dados_atual", None)
-            st.rerun()
+if _modo_interno == "operador":
+    if st.button("← Voltar à tela inicial", key="btn_voltar_inicio"):
+        st.session_state["modo_atual"] = "entrada"
+        st.session_state["op_pin_ok"] = False
+        st.session_state.pop("op_dados_atual", None)
+        st.rerun()
 
 # =========================================
 # MODO OPERADOR — LANÇAMENTO DE CAMPO
@@ -16458,6 +16393,8 @@ else:
 # DASHBOARD EXECUTIVO / BEM STAR
 # =========================================
 
+ancora(st, "nav-painel")
+
 if st.session_state.get("empresa_ativa") == "bem_star":
     # --- DASHBOARD BEM STAR ---
     metricas_bs = obter_metricas_bem_star()
@@ -16552,27 +16489,29 @@ else:
 # SAÚDE DO SISTEMA
 # =========================================
 
-diag = diagnostico_sistema()
+ancora(st, "nav-diagnostico")
+with st.expander("Diagnóstico do sistema", expanded=False):
+    diag = diagnostico_sistema()
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Saúde do sistema")
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Saúde do sistema")
 
-s1, s2, s3, s4, s5, s6 = st.columns(6)
-with s1:
-    st.markdown(f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
-    st.markdown(f"Template Bem Star<br><span class='{'health-ok' if diag['template_bem_star_ok'] else 'health-no'}'>{'OK' if diag['template_bem_star_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
-with s2:
-    st.markdown(f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
-with s3:
-    st.markdown(f"Template do relatório<br><span class='{'health-ok' if diag['template_relatorio_ok'] else 'health-no'}'>{'OK' if diag['template_relatorio_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
-with s4:
-    st.markdown(f"Pasta de documentos<br><span class='{'health-ok' if diag['generated_ok'] else 'health-no'}'>{'OK' if diag['generated_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
-with s5:
-    st.markdown(f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>", unsafe_allow_html=True)
-with s6:
-    st.markdown(f"Ambiente Windows<br><span class='{'health-ok' if diag['windows_ok'] else 'health-no'}'>{'OK' if diag['windows_ok'] else 'Fora do padrão'}</span>", unsafe_allow_html=True)
+    s1, s2, s3, s4, s5, s6 = st.columns(6)
+    with s1:
+        st.markdown(f"Template do contrato<br><span class='{'health-ok' if diag['template_contrato_ok'] else 'health-no'}'>{'OK' if diag['template_contrato_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+        st.markdown(f"Template Bem Star<br><span class='{'health-ok' if diag['template_bem_star_ok'] else 'health-no'}'>{'OK' if diag['template_bem_star_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    with s2:
+        st.markdown(f"Template do aditivo<br><span class='{'health-ok' if diag['template_aditivo_ok'] else 'health-no'}'>{'OK' if diag['template_aditivo_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    with s3:
+        st.markdown(f"Template do relatório<br><span class='{'health-ok' if diag['template_relatorio_ok'] else 'health-no'}'>{'OK' if diag['template_relatorio_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    with s4:
+        st.markdown(f"Pasta de documentos<br><span class='{'health-ok' if diag['generated_ok'] else 'health-no'}'>{'OK' if diag['generated_ok'] else 'Ausente'}</span>", unsafe_allow_html=True)
+    with s5:
+        st.markdown(f"Logo institucional<br><span class='{'health-ok' if diag['logo_ok'] else 'health-no'}'>{'OK' if diag['logo_ok'] else 'Não localizada'}</span>", unsafe_allow_html=True)
+    with s6:
+        st.markdown(f"Ambiente Windows<br><span class='{'health-ok' if diag['windows_ok'] else 'health-no'}'>{'OK' if diag['windows_ok'] else 'Fora do padrão'}</span>", unsafe_allow_html=True)
 
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # BUSCA RÁPIDA
@@ -16606,6 +16545,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 _crm_empresa_nome = _empresa_ativa_nome()
+ancora(st, "nav-comercial")
 st.subheader(f"📈 Gestão Comercial — {_crm_empresa_nome}")
 st.caption("Organiza contatos, origem, próxima ação, propostas e fechamento. Os dados deste painel não alteram clientes, visitas, dosagens ou relatórios técnicos.")
 
@@ -17312,6 +17252,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 # =========================================
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
+ancora(st, "nav-operadores")
 st.subheader("👷 Gestão de Operadores")
 st.caption("Tela administrativa segura para cadastrar, editar, ativar/inativar operadores e definir exatamente quais condomínios cada PIN pode acessar.")
 st.info("🔐 O PIN mestre de acesso geral é definido somente no Streamlit Secrets e não aparece no sistema. "
@@ -17932,6 +17873,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 _empresa_cadastro_nome = _empresa_ativa_nome()
+ancora(st, "nav-clientes")
 st.subheader(f"👥 Cadastro de Clientes — {_empresa_cadastro_nome}")
 if _empresa_ativa_codigo() == "aqua_gestao":
     st.caption("Neste painel aparecem somente clientes de RT/controle técnico da Aqua Gestão.")
@@ -18468,6 +18410,7 @@ def _clientes_aqua_limpeza_cache():
 # =========================================
 
 if _empresa_ativa_codigo() == "aqua_gestao":
+    ancora(st, "nav-aqua-manutencao")
     st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
 
     def gerar_contrato_limpeza_aqua_pdf(dados: dict) -> bytes:
@@ -18803,6 +18746,7 @@ if _empresa_ativa_codigo() != "bem_star":
     # =========================================
     # _CENTRAL_EMAIL_DOCUMENTOS_DEFINITIVA_V3_
     st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
+    ancora(st, "nav-envio")
     st.subheader("📧 Central de Envio de Documentos")
     st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
 
@@ -18938,6 +18882,7 @@ if _empresa_ativa_codigo() != "bem_star":
     # =========================================
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    ancora(st, "nav-documentos")
     st.subheader("Painel de vencimentos")
 
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -19219,6 +19164,7 @@ if _empresa_ativa_codigo() != "bem_star":
 # =========================================
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    ancora(st, "nav-mensal-bs")
     st.subheader("Bem Star — Relatório Mensal Operacional")
     st.caption("Módulo exclusivo da Bem Star Piscinas para limpeza, manutenção, visitas operacionais, análises básicas, dosagens e relatório sem RT.")
     
@@ -19822,6 +19768,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     # =========================================
 
     st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    ancora(st, "nav-proposta-bs")
     st.subheader("📄 Proposta Comercial — Bem Star Piscinas")
     st.caption("Gera proposta personalizada em PDF premium para o cliente.")
 
@@ -19864,6 +19811,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     # =========================================
     
     st.markdown('<div class="section-card bs-only">', unsafe_allow_html=True)
+    ancora(st, "nav-contrato-bs")
     st.subheader("📝 Contrato Bem Star Piscinas")
     st.caption("Gera o contrato de prestação de serviços de limpeza e manutenção de piscinas em PDF.")
     
@@ -20914,6 +20862,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     st.stop()
 
+ancora(st, "nav-dossie")
 st.subheader("🧪 Dossiê de Segurança Química — FDS essenciais e GHS")
 st.caption("Gera dossiê padrão Aqua para qualquer condomínio cadastrado, com fichas essenciais por produto e quadro GHS.")
 
@@ -23947,6 +23896,7 @@ with btn_col2:
 
 # Relatório consolidado RT (ACQUA GESTÃO) — trimestral, semestral ou anual.
 if st.session_state.get("empresa_ativa", "aqua_gestao") == "aqua_gestao":
+    ancora(st, "nav-consolidados")
     with st.expander("📊 Relatório consolidado RT — trimestral, semestral ou anual", expanded=False):
         st.caption("Síntese por piscina das visitas registradas do cliente carregado, com gráficos históricos. "
                    "Não altera o relatório mensal, os rascunhos nem o cadastro.")
