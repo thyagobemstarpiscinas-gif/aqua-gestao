@@ -4891,16 +4891,20 @@ def buscar_cep(cep: str) -> dict:
     return {}
 
 
-def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str) -> list:
+def filtrar_clientes_por_empresa(clientes: list, empresa_ativa: str, status: str = "Ativos") -> list:
     """Filtra clientes por empresa compativel.
     empresa_ativa: 'aqua_gestao' | 'bem_star'
     Critério: servico marcado OU campo empresa do cadastro bate.
     Clientes sem empresa/servico definido aparecem em ambos (legado).
+    Inativos só entram quando a gestão solicita explicitamente Inativos/Todos.
     """
+    if status not in ("Ativos", "Inativos", "Todos"):
+        status = "Ativos"
     resultado = []
     for c in clientes:
         _status_cliente = normalizar_texto_busca(c.get("status", "Ativo"))
-        if _status_cliente in ("inativo", "desativado", "excluido", "cancelado"):
+        _inativo = _status_cliente in ("inativo", "desativado", "excluido", "cancelado")
+        if (status == "Ativos" and _inativo) or (status == "Inativos" and not _inativo):
             continue
 
         servicos = _normalizar_servicos_cliente(c)
@@ -5032,9 +5036,9 @@ def _servicos_padrao_empresa_ativa() -> dict:
     return {"rt": _empresa_ativa_codigo() == "aqua_gestao", "limpeza": _empresa_ativa_codigo() == "bem_star"}
 
 
-def _filtrar_clientes_painel_ativo(clientes: list[dict]) -> list[dict]:
+def _filtrar_clientes_painel_ativo(clientes: list[dict], status: str = "Ativos") -> list[dict]:
     """Mantém os clientes separados visualmente por empresa/painel."""
-    return filtrar_clientes_por_empresa(clientes or [], _empresa_ativa_codigo())
+    return filtrar_clientes_por_empresa(clientes or [], _empresa_ativa_codigo(), status)
 
 
 def _normalizar_lista_textos_unicos(valores) -> list[str]:
@@ -17921,13 +17925,21 @@ def _clientes_cadastrados():
     return sheets_listar_clientes_completo()
 
 clientes_cadastrados_todos = _clientes_cadastrados()
-clientes_cadastrados = _filtrar_clientes_painel_ativo(clientes_cadastrados_todos)
+if _cc_mensagem_status := st.session_state.pop("_cc_mensagem_status", ""):
+    st.success(_cc_mensagem_status)
+_cc_filtro_status = st.selectbox(
+    "Situação dos clientes", ["Ativos", "Inativos", "Todos"], key="cc_filtro_status",
+    help="Este filtro vale apenas para consultar e editar cadastros. As listas de trabalho continuam mostrando clientes ativos.",
+)
+clientes_cadastrados = _filtrar_clientes_painel_ativo(clientes_cadastrados_todos, _cc_filtro_status)
 
 if clientes_cadastrados:
-    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) cadastrado(s) para {_empresa_cadastro_nome} no Google Sheets:")
+    st.success(f"✅ {len(clientes_cadastrados)} cliente(s) — {_cc_filtro_status.lower()} — para {_empresa_cadastro_nome}:")
     for c in clientes_cadastrados:
         _serv = _normalizar_servicos_cliente(c)
         _badges = []
+        if normalizar_texto_busca(c.get("status", "Ativo")) in ("inativo", "desativado", "excluido", "cancelado"):
+            _badges.append("⚪ Cliente inativo")
         if _serv.get("rt"):
             _badges.append("🔵 RT")
         if _serv.get("limpeza"):
@@ -17936,7 +17948,7 @@ if clientes_cadastrados:
         _ops_txt = f" • Operadores: {', '.join(_ops)}" if _ops else ""
         st.caption(f"• {c.get('nome', '')} {' '.join(_badges)}{_ops_txt}")
 else:
-    st.info(f"Nenhum cliente cadastrado para {_empresa_cadastro_nome} ainda. Use o formulário abaixo para adicionar.")
+    st.info(f"Nenhum cliente no filtro {_cc_filtro_status.lower()} para {_empresa_cadastro_nome}.")
 
 # Processa flag de limpeza ANTES de renderizar os widgets
 if st.session_state.pop("_cc_limpar", False):
@@ -17963,11 +17975,18 @@ if _cc_modo == "✏️ Editar cliente existente":
     @st.cache_data(ttl=30)
     def _clientes_completos_edit():
         return sheets_listar_clientes_completo()
-    _clientes_edit = _filtrar_clientes_painel_ativo(_clientes_completos_edit())
+    _clientes_edit = _filtrar_clientes_painel_ativo(_clientes_completos_edit(), _cc_filtro_status)
     if _clientes_edit:
-        _nomes_edit = [c["nome"] for c in _clientes_edit]
+        from collections import Counter
+        _contagem_nomes_edit = Counter(c["nome"] for c in _clientes_edit)
+        _clientes_por_rotulo_edit = {
+            (c["nome"] if _contagem_nomes_edit[c["nome"]] == 1
+             else f"{c['nome']} — {c['id']} ({c.get('status') or 'Ativo'})"): c
+            for c in _clientes_edit
+        }
+        _nomes_edit = list(_clientes_por_rotulo_edit)
         _sel_edit = st.selectbox("Selecione o cliente para editar", _nomes_edit, key="cc_sel_editar")
-        _cc_cliente_editar = next((c for c in _clientes_edit if c["nome"] == _sel_edit), {})
+        _cc_cliente_editar = _clientes_por_rotulo_edit.get(_sel_edit, {})
         if _cc_cliente_editar and st.button("📂 Carregar dados", key="btn_carregar_editar"):
             st.session_state["_cc_cliente_carregado"] = (_cc_cliente_editar.get("id"), _empresa_cadastro_nome)
             st.session_state["cc_nome"]         = _cc_cliente_editar.get("nome","")
@@ -17999,13 +18018,22 @@ if _cc_modo == "✏️ Editar cliente existente":
             st.rerun()
 
         if _cc_cliente_editar:
-            with st.expander("⚙️ Transferir ou desativar cliente", expanded=True):
+            with st.expander("⚙️ Situação e empresa do cliente", expanded=True):
                 _empresa_atual_cliente = str(_cc_cliente_editar.get("empresa", "") or "Aqua Gestão").strip()
                 _status_atual_cliente = str(_cc_cliente_editar.get("status", "") or "Ativo").strip()
+                _cc_inativo = normalizar_texto_busca(_status_atual_cliente) in ("inativo", "desativado", "excluido", "cancelado")
+                _cc_chave_status = f"{_empresa_ativa_codigo()}_{_cc_cliente_editar['id']}"
+                # Pastas antigas usam só o nome; com homônimos, atualize apenas o ID no Sheets.
+                _cc_nome_local_unico = sum(
+                    normalizar_texto_busca(c.get("nome", "")) == normalizar_texto_busca(_cc_cliente_editar["nome"])
+                    for c in clientes_cadastrados_todos
+                ) == 1
                 st.caption(
                     f"Cliente selecionado: **{_cc_cliente_editar.get('nome','')}** · "
                     f"Empresa atual: **{_empresa_atual_cliente}** · Status: **{_status_atual_cliente}**"
                 )
+                if _cc_inativo:
+                    st.info("Cliente inativo. O cadastro pode ser consultado e editado; visitas e relatórios anteriores permanecem preservados.")
 
                 _opcoes_empresa_cliente = ["Aqua Gestão", "Bem Star Piscinas", "Ambas"]
                 try:
@@ -18017,7 +18045,7 @@ if _cc_modo == "✏️ Editar cliente existente":
                     "Transferir cliente para",
                     _opcoes_empresa_cliente,
                     index=_idx_empresa_cliente,
-                    key="cc_transferir_empresa_destino",
+                    key=f"cc_transferir_empresa_destino_{_cc_chave_status}",
                     help="Atualiza a coluna M do cadastro: Aqua Gestão = RT, Bem Star = Limpeza sem RT, Ambas = RT + Limpeza.",
                 )
 
@@ -18025,65 +18053,72 @@ if _cc_modo == "✏️ Editar cliente existente":
                     _ok_transferir = sheets_atualizar_cliente_empresa_status(
                         _cc_cliente_editar.get("id", ""),
                         empresa=_nova_empresa_cliente,
-                        status="Ativo",
                     )
                     if _ok_transferir:
                         try:
-                            _pasta_cliente_transferir = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
-                            _pasta_cliente_transferir.mkdir(parents=True, exist_ok=True)
-                            _dados_cliente_transferir = carregar_dados_condominio(_pasta_cliente_transferir) or {}
-                            _servicos_transferir = _normalizar_servicos_cliente({"empresa": _nova_empresa_cliente})
-                            _dados_cliente_transferir.update({
-                                "nome_condominio": _cc_cliente_editar.get("nome", ""),
-                                "empresa": _nova_empresa_cliente,
-                                "servicos": _servicos_transferir,
-                                "status": "Ativo",
-                            })
-                            salvar_dados_condominio(_pasta_cliente_transferir, _dados_cliente_transferir)
+                            if _cc_nome_local_unico:
+                                _pasta_cliente_transferir = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
+                                _pasta_cliente_transferir.mkdir(parents=True, exist_ok=True)
+                                _dados_cliente_transferir = carregar_dados_condominio(_pasta_cliente_transferir) or {}
+                                _servicos_transferir = _normalizar_servicos_cliente({"empresa": _nova_empresa_cliente})
+                                _dados_cliente_transferir.update({
+                                    "nome_condominio": _cc_cliente_editar.get("nome", ""),
+                                    "empresa": _nova_empresa_cliente,
+                                    "servicos": _servicos_transferir,
+                                    "status": _status_atual_cliente,
+                                })
+                                salvar_dados_condominio(_pasta_cliente_transferir, _dados_cliente_transferir)
                         except Exception as e:
                             _log_sheets_erro("atualizar_local_transferencia_cliente", e)
-                        st.success(f"Cliente transferido para {_nova_empresa_cliente}.")
+                        st.session_state["_cc_mensagem_status"] = f"Cliente transferido para {_nova_empresa_cliente}. Status preservado: {_status_atual_cliente}."
                         st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error("Não foi possível transferir o cliente. Verifique o diagnóstico do Sheets.")
 
                 st.divider()
-                st.warning("Desativar remove o cliente das listas ativas sem apagar visitas, relatórios ou histórico.")
+                _cc_acao_status = "reativar" if _cc_inativo else "desativar"
+                _cc_novo_status = "Ativo" if _cc_inativo else "Inativo"
+                st.caption("Reativar devolve o mesmo cadastro às listas de trabalho, mantendo o ID e o histórico."
+                           if _cc_inativo else "Desativar remove o cliente das listas ativas sem apagar visitas, relatórios ou histórico.")
                 _conf_desativar_cliente = st.checkbox(
-                    "Confirmo que desejo desativar este cliente",
-                    key="cc_confirmar_desativar_cliente",
+                    f"Confirmo que desejo {_cc_acao_status} este cliente",
+                    key=f"cc_confirmar_{_cc_acao_status}_{_cc_chave_status}",
                 )
                 if st.button(
-                    "🗑️ Desativar cliente",
-                    key="btn_desativar_cliente",
+                    "♻️ Reativar cliente" if _cc_inativo else "🗑️ Desativar cliente",
+                    key="btn_reativar_cliente" if _cc_inativo else "btn_desativar_cliente",
                     disabled=not _conf_desativar_cliente,
                     use_container_width=True,
                 ):
                     _ok_desativar = sheets_atualizar_cliente_empresa_status(
                         _cc_cliente_editar.get("id", ""),
-                        status="Inativo",
+                        status=_cc_novo_status,
                     )
                     if _ok_desativar:
                         try:
-                            _pasta_cliente_desativar = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
-                            _pasta_cliente_desativar.mkdir(parents=True, exist_ok=True)
-                            _dados_cliente_desativar = carregar_dados_condominio(_pasta_cliente_desativar) or {}
-                            _dados_cliente_desativar.update({
-                                "nome_condominio": _cc_cliente_editar.get("nome", ""),
-                                "empresa": _empresa_atual_cliente,
-                                "servicos": _normalizar_servicos_cliente({"empresa": _empresa_atual_cliente}),
-                                "status": "Inativo",
-                                "desativado_em": _agora_brasilia(),
-                            })
-                            salvar_dados_condominio(_pasta_cliente_desativar, _dados_cliente_desativar)
+                            if _cc_nome_local_unico:
+                                _pasta_cliente_desativar = GENERATED_DIR / slugify_nome(_cc_cliente_editar.get("nome", ""))
+                                _pasta_cliente_desativar.mkdir(parents=True, exist_ok=True)
+                                _dados_cliente_desativar = carregar_dados_condominio(_pasta_cliente_desativar) or {}
+                                _dados_cliente_desativar.update({
+                                    "nome_condominio": _cc_cliente_editar.get("nome", ""),
+                                    "empresa": _empresa_atual_cliente,
+                                    "servicos": _normalizar_servicos_cliente({"empresa": _empresa_atual_cliente}),
+                                    "status": _cc_novo_status,
+                                    ("reativado_em" if _cc_inativo else "desativado_em"): _agora_brasilia(),
+                                })
+                                salvar_dados_condominio(_pasta_cliente_desativar, _dados_cliente_desativar)
                         except Exception as e:
                             _log_sheets_erro("atualizar_local_desativacao_cliente", e)
-                        st.success("Cliente desativado. O histórico foi preservado.")
+                        st.session_state["_cc_mensagem_status"] = (
+                            f"Cliente '{_cc_cliente_editar.get('nome', '')}' "
+                            f"{'reativado' if _cc_inativo else 'desativado'}. O histórico foi preservado.")
+                        st.session_state["_cc_limpar"] = True
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("Não foi possível desativar o cliente. Verifique o diagnóstico do Sheets.")
+                        st.error(f"Não foi possível {_cc_acao_status} o cliente. Verifique o diagnóstico do Sheets.")
     else:
         st.info("Nenhum cliente para editar.")
 
@@ -19607,6 +19642,10 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         if not _bs_analises_semanais:
             st.info("Nenhuma análise semanal de Thyago foi encontrada neste período. "
                     "As seções de análise ficarão sem resultados; visitas, serviços e fotos continuam no relatório.")
+        from utils.conferencia_mensal_bem_star import renderizar_conferencia
+        renderizar_conferencia(st, lancamentos_csr,
+                              _bs_piscinas_cadastradas + list(st.session_state.get("bs_mensal_piscinas") or []),
+                              csr_mes, csr_ano)
 
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
@@ -19665,7 +19704,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
     
         # ── Parecer e recomendações técnicas ────────────────────────────────
         st.markdown("### Resumo e recomendações operacionais")
-        st.caption("Clique para gerar um texto automático com base nas visitas, parâmetros e dosagens lançados. Depois revise e edite antes de gerar o PDF.")
+        st.caption("O preenchimento automático usa as análises semanais de Thyago mostradas na conferência acima. "
+                   "Revise e edite o texto antes de gerar o PDF. Editar este resumo não altera as medições, tabelas ou gráficos.")
 
         _bs_lancs_para_parecer = expandir(_bs_analises_semanais, _bs_piscinas_cadastradas)
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
