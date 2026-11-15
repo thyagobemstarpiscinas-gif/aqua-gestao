@@ -19708,6 +19708,12 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                    "Revise e edite o texto antes de gerar o PDF. Editar este resumo não altera as medições, tabelas ou gráficos.")
 
         _bs_lancs_para_parecer = expandir(_bs_analises_semanais, _bs_piscinas_cadastradas)
+        if ("bs_rel_parecer_tecnico" in st.session_state.get("_bs_rel_campos_restaurados", set())
+                and st.session_state.get("bs_rel_parecer_tecnico")
+                and st.session_state.get("bs_mensal_resumo_origem") != "analises_semanais_v1"):
+            st.warning("O resumo recuperado foi salvo sem identificação da origem das análises e pode usar "
+                       "a regra antiga da agenda manual. Confira o texto ou use o botão abaixo para "
+                       "recalculá-lo com as análises semanais exibidas na conferência. O texto salvo foi preservado.")
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
             _blocos_bs = []
             _nomes_parecer_bs = list(dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer)) or list(st.session_state.get("bs_mensal_piscinas") or [])
@@ -19716,6 +19722,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 _texto_bs = gerar_parecer_tecnico_bem_star(_leituras_bs, cliente=csr_sel, mes=csr_mes, ano=csr_ano)
                 _blocos_bs.append(_nome_bs + "\n" + _texto_bs)
             st.session_state["bs_rel_parecer_tecnico"] = "\n\n".join(_blocos_bs)
+            st.session_state["bs_mensal_resumo_origem"] = "analises_semanais_v1"
             st.success("Resumo preenchido por piscina. Revise os dados e o texto antes de gerar.")
 
         st.text_area(
