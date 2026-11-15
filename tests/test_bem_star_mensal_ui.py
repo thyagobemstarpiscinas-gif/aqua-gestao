@@ -20,6 +20,40 @@ renderizar_fotos(st)
 
 
 class WidgetsMensal(unittest.TestCase):
+    def test_restaurar_grafia_antiga_preserva_piscina_agenda_e_tipo(self):
+        tela = '''
+import streamlit as st
+from utils.bem_star_mensal_ui import renderizar_piscinas, renderizar_agenda
+from utils.bem_star_mensal import chave_campo, token_pool
+from utils.contexto_bem_star import preencher_campo_agenda_bem_star
+cadastradas = CADASTRADAS
+if st.button('Restaurar complemento fictício'):
+    st.session_state.update({
+        'bs_mensal_piscinas': ['Piscina adulta'],
+        'bs_mensal_tipo_' + token_pool('Piscina adulta'): 'Outros',
+        chave_campo('Piscina adulta', '02/10/2026', 'ph'): '7.6',
+        chave_campo('Piscina adulta', '02/10/2026', 'cloro_livre'): '0',
+        chave_campo('Piscina adulta', '02/10/2026', 'observacao'): 'Registro fictício',
+    })
+    st.rerun()
+renderizar_piscinas(st, [], cadastradas)
+renderizar_agenda(st, [], ['02/10/2026'],
+    lambda k,v: preencher_campo_agenda_bem_star(st.session_state,k,v))
+'''
+        for cadastradas, nome in [([], 'Piscina adulta'), (['Piscina Adulto'], 'Piscina Adulto')]:
+            with self.subTest(cadastradas=cadastradas):
+                at = AppTest.from_string(tela.replace('CADASTRADAS', repr(cadastradas))).run()
+                at.button[0].click().run()
+                self.assertEqual(len(at.exception), 0)
+                self.assertEqual(at.multiselect[0].value, [nome])
+                self.assertEqual(at.text_input(key=chave_campo(nome,'02/10/2026','ph')).value, '7.6')
+                self.assertEqual(at.text_input(key=chave_campo(nome,'02/10/2026','cloro_livre')).value, '0')
+                self.assertEqual(at.text_area(key=chave_campo(nome,'02/10/2026','observacao')).value, 'Registro fictício')
+                self.assertEqual(at.selectbox(key='bs_mensal_tipo_' + token_pool(nome)).value, 'Outros')
+                at.run()
+                self.assertEqual(at.multiselect[0].value, [nome])
+                self.assertEqual(at.text_input(key=chave_campo(nome,'02/10/2026','ph')).value, '7.6')
+
     def test_duas_piscinas_nao_misturam_e_cliente_retorna_editado(self):
         at=AppTest.from_string(TELA).run()
         self.assertEqual(len(at.exception),0)

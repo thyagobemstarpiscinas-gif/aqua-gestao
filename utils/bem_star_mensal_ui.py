@@ -48,12 +48,29 @@ def renderizar_piscinas(st, lancamentos, cadastradas=()):
     st.caption('Cada piscina tem leituras, dosagens e gráficos próprios. Classifique a piscina principal como Adulto ou Infantil quando aplicável.')
     extras = st.text_input('Outras piscinas (separe os nomes por ponto e vírgula)', key='bs_mensal_outras',
                            placeholder='Ex.: Piscina aquecida; Spa')
-    selecionadas = canonizar_nomes_piscinas(ss.get('bs_mensal_piscinas') or [], conhecidas)
+    anteriores = list(ss.get('bs_mensal_piscinas') or [])
+    selecionadas = canonizar_nomes_piscinas(anteriores, conhecidas)
+    # A normalização do nome também precisa levar os campos da agenda.
+    # As chaves antigas são mantidas; um valor já preenchido no nome atual prevalece.
+    for anterior in anteriores:
+        atual = canonizar_nomes_piscinas([anterior], conhecidas)[0]
+        if token_pool(anterior) == token_pool(atual):
+            continue
+        prefixo = 'bs_agenda_pool_' + token_pool(anterior) + '_'
+        for chave in list(ss):
+            if chave.startswith(prefixo):
+                destino = 'bs_agenda_pool_' + token_pool(atual) + '_' + chave[len(prefixo):]
+                if ss.get(destino) in (None, ''):
+                    ss[destino] = ss[chave]
+        tipo_antigo = 'bs_mensal_tipo_' + token_pool(anterior)
+        tipo_atual = 'bs_mensal_tipo_' + token_pool(atual)
+        if ss.get(tipo_atual) not in TIPOS and ss.get(tipo_antigo) in TIPOS:
+            ss[tipo_atual] = ss[tipo_antigo]
     if not selecionadas:
         selecionadas = list(existentes or cadastradas or SUGESTOES_PISCINAS[:1])
     sugestoes = SUGESTOES_PISCINAS if not conhecidas else []
     opcoes = canonizar_nomes_piscinas(conhecidas + sugestoes + [n.strip() for n in extras.split(';') if n.strip()]
-                                      + selecionadas, conhecidas)
+                                      + selecionadas, conhecidas + selecionadas)
     if list(ss.get('bs_mensal_piscinas') or []) != selecionadas:
         ss['bs_mensal_piscinas'] = selecionadas
     st.multiselect('Piscinas para preencher na agenda', opcoes, key='bs_mensal_piscinas')
