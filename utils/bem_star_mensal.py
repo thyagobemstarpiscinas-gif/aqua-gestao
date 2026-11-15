@@ -86,28 +86,51 @@ def analise_semanal_no_formulario(estado):
     return data != datetime.max and data.weekday() == 0
 
 
+def origem_analise_semanal(estado):
+    """Identificação do acesso, sem PIN e sem usar o nome restaurado da visita."""
+    acesso = estado.get('op_dados_atual') or {}
+    if not isinstance(acesso, dict):
+        acesso = {}
+    return {'autenticado': estado.get('op_pin_ok') is True,
+            'nome': str(acesso.get('nome') or ''),
+            'perfil': 'rt' if acesso.get('is_rt') else 'operador'}
+
+
+def _origem_semanal_valida(lancamento):
+    # Antes deste campo, a marca booleana já era calculada exclusivamente pelo
+    # acesso autenticado de Thyago. Sem a marca, nome e dia não provam autoria.
+    if 'acesso_analise_bem_star' not in lancamento:
+        return True
+    origem = lancamento['acesso_analise_bem_star']
+    return (isinstance(origem, dict) and origem.get('autenticado') is True
+            and origem.get('perfil') == 'operador'
+            and operador_analista_semanal(origem.get('nome')))
+
+
 def restaurar_analise_semanal(estado, rascunho):
     estado.pop('op_analise_semanal_bem_star', None)
     estado.pop('_op_analise_semanal_widget', None)
     escolha = rascunho.get('analise_semanal_bem_star')
-    if (acesso_analista_semanal(estado) and operador_analista_semanal(rascunho.get('operador'))
+    if (acesso_analista_semanal(estado) and _origem_semanal_valida(rascunho)
+            and operador_analista_semanal(rascunho.get('operador'))
             and type(escolha) is bool):
         estado['op_analise_semanal_bem_star'] = escolha
 
 
 def filtrar_analises_semanais(lancamentos):
-    """Usa a seleção salva por Thyago; visitas antigas mantêm a regra de segunda."""
+    """Somente a seleção salva pelo acesso de Thyago, em qualquer dia da semana."""
     saida = []
     for lc in lancamentos or []:
         if not isinstance(lc, dict) or lc.get('fonte') == 'Agenda mensal Bem Star':
             continue
+        if (lc.get('analise_semanal_bem_star') is not True
+                or not _origem_semanal_valida(lc)
+                or lc.get('visita_rt_semanal') is True):
+            continue
         data = data_ordem(lc.get('data'))
         if not operador_analista_semanal(lc.get('operador')) or data == datetime.max:
             continue
-        selecionada = (lc['analise_semanal_bem_star'] is True if 'analise_semanal_bem_star' in lc
-                       else data.weekday() == 0)
-        if selecionada:
-            saida.append(lc)
+        saida.append(lc)
     return saida
 
 
@@ -463,3 +486,6 @@ def carregar_complementos(contexto, linhas):
         return campos
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError('Rascunho inválido; os dados da tela foram preservados.') from exc
+
+
+REVISAO_AUTORIA_SEMANAL = 2

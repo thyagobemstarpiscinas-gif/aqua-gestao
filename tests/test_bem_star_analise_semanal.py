@@ -20,6 +20,7 @@ POOLS = ['Piscina Adulto', 'Piscina Infantil']
 
 def visita(data='05/10/2026', operador='Thyago Silveira', vid='VTESTE1'):
     return dict(id_visita=vid, data=data, operador=operador, salvo_em=data+' 09:00:00',
+        analise_semanal_bem_star=True,
         piscinas=[
             dict(nome=POOLS[0], ph='7.4', cloro_livre='2.0', cloro_total='2.3',
                  alcalinidade='90', dureza='160', cianurico='40'),
@@ -47,10 +48,10 @@ class PiscinasEOrigem(unittest.TestCase):
         self.assertEqual(sum(r['piscina'] == POOLS[0] for r in resultado), 2)
         self.assertEqual(len(deduplicar_lancamentos([visita(), visita()])), 1)
 
-    def test_seleciona_segunda_e_autoria_exata_sem_herdar_nome_do_formulario(self):
+    def test_seleciona_marcacao_e_autoria_exata_sem_herdar_nome_do_formulario(self):
         entradas = [visita(),
             visita('12/10/2026', ' THYAGO  FERNANDO DA SILVEIRA ', 'V2'),
-            visita('07/10/2026', 'Thyago Silveira', 'V3'),
+            dict(visita('07/10/2026', 'Thyago Silveira', 'V3'), analise_semanal_bem_star=False),
             visita('05/10/2026', 'João', 'V4'),
             visita('05/10/2026', '', 'V5'),
             visita('05/10/2026', 'Thyago Silveira Junior', 'V6'),
@@ -100,7 +101,7 @@ class CloroCombinado(unittest.TestCase):
     def test_resumo_automatico_usa_mesma_fonte_e_ordem_cc(self):
         ns = _carregar(['gerar_parecer_tecnico_bem_star'])
         a = expandir([visita()])[0]
-        b = dict(a, data='07/10/2026', cloro_livre='99', cloro_total='100')
+        b = dict(a, data='07/10/2026', cloro_livre='99', cloro_total='100', analise_semanal_bem_star=False)
         texto = ns['gerar_parecer_tecnico_bem_star']([a,b], 'Gama TESTE','10','2026')
         self.assertIn('1 data(s) de análise semanal',texto)
         self.assertIn('Cloro Combinado: 1 medição(ões), mínimo 0,30',texto)

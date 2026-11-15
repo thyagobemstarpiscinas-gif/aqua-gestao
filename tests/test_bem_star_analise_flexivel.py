@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from streamlit.testing.v1 import AppTest
 
 from utils.bem_star_mensal import (analise_semanal_no_formulario,
-    filtrar_analises_semanais, restaurar_analise_semanal)
+    filtrar_analises_semanais, restaurar_analise_semanal, origem_analise_semanal)
 from test_bem_star_analise_semanal import visita
 import test_bem_star_analise_semanal as semanal
 from test_operador_formulario import _sessao
@@ -24,18 +24,30 @@ class EscolhaSemanal(unittest.TestCase):
     def test_terca_marcada_substitui_segunda_desmarcada_sem_mudar_datas(self):
         segunda = dict(visita('12/10/2026'), analise_semanal_bem_star=False)
         terca = dict(visita('13/10/2026', vid='TERCA'), analise_semanal_bem_star=True)
-        extra = visita('14/10/2026', vid='QUARTA')
+        extra = dict(visita('14/10/2026', vid='QUARTA'), analise_semanal_bem_star=False)
         self.assertEqual(filtrar_analises_semanais([segunda, terca, extra]), [terca])
         self.assertEqual(terca['data'], '13/10/2026')
         self.assertEqual(segunda['data'], '12/10/2026')
 
-    def test_legado_preservado_outros_operadores_e_valores_invalidos_excluidos(self):
+    def test_marca_anterior_preservada_nome_e_dia_sozinhos_nao_comprovam_acesso(self):
         antigo = visita('12/10/2026')
-        entradas = [antigo, visita('13/10/2026'),
+        sem_marca = visita('12/10/2026'); sem_marca.pop('analise_semanal_bem_star')
+        entradas = [antigo, sem_marca,
                     dict(visita('13/10/2026', 'João'), analise_semanal_bem_star=True),
                     dict(visita('12/10/2026'), analise_semanal_bem_star='true'),
                     dict(visita('inválida'), analise_semanal_bem_star=True)]
         self.assertEqual(filtrar_analises_semanais(entradas), [antigo])
+
+    def test_origem_autenticada_prevalece_sobre_nome_preenchido(self):
+        boa = dict(visita('13/10/2026'), acesso_analise_bem_star=origem_analise_semanal(acesso()))
+        for estado in [acesso('João'), acesso(rt=True), dict(acesso(), op_pin_ok=False)]:
+            with self.subTest(estado=estado):
+                outra = dict(boa, acesso_analise_bem_star=origem_analise_semanal(estado))
+                self.assertEqual(filtrar_analises_semanais([outra, boa]), [boa])
+        for origem in [None, 'Thyago', {}, {'autenticado': 'true', 'nome': 'Thyago Silveira', 'perfil': 'operador'}]:
+            self.assertEqual(filtrar_analises_semanais([dict(boa, acesso_analise_bem_star=origem)]), [])
+        self.assertEqual(filtrar_analises_semanais([dict(boa, visita_rt_semanal=True)]), [])
+        self.assertEqual(set(boa['acesso_analise_bem_star']), {'autenticado', 'nome', 'perfil'})
 
     def test_escolha_depende_do_acesso_autenticado_e_nao_do_nome_restaurado(self):
         for nome, rt, pin in [('João', False, True), ('Thyago Silveira', True, True),
@@ -51,6 +63,7 @@ class EscolhaSemanal(unittest.TestCase):
                                     op_adulto_ph='7.4')
         rasc = json.loads(json.dumps(a['coletar_rascunho_operador']('Alfa TESTE', ['Piscina Adulto'])))
         self.assertTrue(rasc['analise_semanal_bem_star'])
+        self.assertEqual(rasc['acesso_analise_bem_star'], origem_analise_semanal(acesso()))
         b = _sessao(); b['ss'].update(acesso())
         b['restaurar_rascunho_operador'](rasc)
         self.assertTrue(analise_semanal_no_formulario(b['ss']))
@@ -64,6 +77,19 @@ class EscolhaSemanal(unittest.TestCase):
         # Rascunho de outro operador não transfere sua marca para o PIN de Thyago.
         restaurar_analise_semanal(b['ss'], dict(rasc, operador='João'))
         self.assertNotIn('op_analise_semanal_bem_star', b['ss'])
+
+    def test_pdf_exclui_segunda_sem_marca_e_acesso_de_outro_operador(self):
+        antiga = visita('12/10/2026'); antiga.pop('analise_semanal_bem_star')
+        antiga['piscinas'][0]['ph'] = '9.9'
+        outra = dict(visita('19/10/2026'), acesso_analise_bem_star=origem_analise_semanal(acesso('João')))
+        outra['piscinas'][0]['ph'] = '8.8'
+        boa = dict(visita('13/10/2026'), acesso_analise_bem_star=origem_analise_semanal(acesso()))
+        paginas = semanal.MensalPDFSemanal.gerar(self, [antiga, outra, boa])
+        adulto = next(p for p in paginas if 'Resumo numérico da piscina' in p and 'Piscina Adulto' in p)
+        self.assertIn('13/10/2026', adulto)
+        self.assertIn('7,4', adulto)
+        for texto in ['12/10/2026', '19/10/2026', '9,9', '8,8']:
+            self.assertNotIn(texto, adulto)
 
     def test_desmarcado_na_segunda_persiste_e_legado_nao_herda_escolha_anterior(self):
         a = _sessao(); a['ss'].update(acesso(), op_data_visita='12/10/2026',
@@ -150,13 +176,20 @@ class PersistenciaSemanalSheets(_Homologacao):
         marcado = eval(compile(ast.Expression(expr), 'payload_real', 'eval'),
                        {'st': SimpleNamespace(session_state=ss),
                         'analise_semanal_no_formulario': analise_semanal_no_formulario})
+        expr_origem = next(v for k, v in zip(payload.keys, payload.values)
+                           if isinstance(k, ast.Constant) and k.value == 'acesso_analise_bem_star')
+        origem = eval(compile(ast.Expression(expr_origem), 'origem_real', 'eval'),
+                      {'st': SimpleNamespace(session_state=ss),
+                       'origem_analise_semanal': origem_analise_semanal})
         v = self._lancamento_operador()
-        v.update(data='13/10/2026', operador='Thyago Silveira', analise_semanal_bem_star=marcado)
+        v.update(data='13/10/2026', operador='Thyago Silveira', analise_semanal_bem_star=marcado,
+                 acesso_analise_bem_star=origem)
         self.assertTrue(self.app['sheets_salvar_lancamento_campo'](v, EPSILON))
         recuperada = next(x for x in self.app['situacao_visitas_condominio'](EPSILON)['visitas']
                           if x['id_visita'] == v['id_visita'])
         self.assertIs(recuperada['analise_semanal_bem_star'], True)
         self.assertEqual(recuperada['data'], '13/10/2026')
+        self.assertEqual(recuperada['acesso_analise_bem_star'], origem_analise_semanal(acesso()))
         self.assertEqual(filtrar_analises_semanais([recuperada]), [recuperada])
 
 

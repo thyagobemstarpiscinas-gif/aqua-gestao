@@ -19,7 +19,7 @@ def foto(cor='blue'):
 
 
 def visita():
-    return {'data':'07/09/2026', 'operador':'Thyago Silveira', 'ph':'9.9', 'fotos':['original.jpg'], 'piscinas':[
+    return {'data':'07/09/2026', 'operador':'Thyago Silveira', 'analise_semanal_bem_star':True, 'ph':'9.9', 'fotos':['original.jpg'], 'piscinas':[
         {'nome':'Adulto','tipo':'Adulto','ph':'7.4','cloro_livre':'2.2'},
         {'nome':'Infantil','tipo':'Infantil','ph':'8.3'}]}
 
@@ -155,7 +155,7 @@ class MensalPDF(unittest.TestCase):
             self.assertTrue(any(p.get_images() for p in doc)); doc.close()
 
     def test_valor_invalido_nao_vira_lacuna_silenciosa(self):
-        ctx={'cliente':A[1],'mes':'09','ano':'2026','lancamentos':[{'data':'07/09/2026','operador':'Thyago Silveira','ph':'7x'}]}
+        ctx={'cliente':A[1],'mes':'09','ano':'2026','lancamentos':[{'data':'07/09/2026','operador':'Thyago Silveira','analise_semanal_bem_star':True,'ph':'7x'}]}
         with tempfile.TemporaryDirectory() as d:
             ok,err=gerar_pdf(Path(d)/'teste.pdf',ctx,cnpj='TESTE',responsavel='TESTE',logo_path=None)
             self.assertFalse(ok); self.assertIn('Valor inválido',err)

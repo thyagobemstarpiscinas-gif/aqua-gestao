@@ -62,6 +62,13 @@ from rt_monthly_report import (
 )
 from utils.normas_piscinas import limites as _nbr_limites, texto_limite as _nbr_texto_limite
 
+# Atualiza a regra pura mesmo quando o observador de arquivos do servidor falha.
+# Não limpa rascunhos nem reinicia sessões autenticadas.
+import utils.bem_star_mensal as _bs_regras_mensais
+if getattr(_bs_regras_mensais, "REVISAO_AUTORIA_SEMANAL", 0) < 2:
+    import importlib
+    _bs_regras_mensais = importlib.reload(_bs_regras_mensais)
+
 # Limites aceitáveis da ABNT NBR 10818:2026 (Tabela 3, piscina coletiva,
 # tratamento clorado simples), centralizados em utils.normas_piscinas e usados
 # nos alertas e documentos. CYA não tem mínimo: usa-se 0 para comparação.
@@ -4116,11 +4123,12 @@ def _slug_piscina_operador(nome: str) -> str:
 
 def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     """Coleta estado atual do formulário do operador para salvar como rascunho."""
-    from utils.bem_star_mensal import analise_semanal_no_formulario
+    from utils.bem_star_mensal import analise_semanal_no_formulario, origem_analise_semanal
     dados = {
         "data_visita":  st.session_state.get("op_data_visita", ""),
         "operador":     st.session_state.get("op_operador", ""),
         "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
+        "acesso_analise_bem_star": origem_analise_semanal(st.session_state),
         "obs":          st.session_state.get("op_obs_campo", ""),
         "problemas":    st.session_state.get("op_problemas", ""),
         "resp_local":   st.session_state.get("op_resp_local", ""),
@@ -16131,10 +16139,11 @@ avisar o RT.
                     for _p_lanc in op_piscinas_dados:
                         _p_lanc.update(_parametros_apos_lanc)
 
-                from utils.bem_star_mensal import analise_semanal_no_formulario
+                from utils.bem_star_mensal import analise_semanal_no_formulario, origem_analise_semanal
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
                     "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
+                    "acesso_analise_bem_star": origem_analise_semanal(st.session_state),
                     "visita_rt_semanal": bool(_op_is_rt),
                     "tipo_visita": "RT semanal" if _op_is_rt else "Operador",
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
@@ -19643,8 +19652,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _bs_piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
         renderizar_piscinas(st, lancamentos_csr, _bs_piscinas_cadastradas)
         _bs_analises_semanais = filtrar_analises_semanais(lancamentos_csr)
-        st.caption("Análise semanal: visitas escolhidas pelo operador Thyago Silveira, na data real da coleta. "
+        st.caption("Análise semanal: somente visitas marcadas pelo acesso autenticado de Thyago, na data real da coleta. "
                    "Segunda-feira é o padrão; coletas marcadas em outros dias também entram no mensal. "
+                   "Registros antigos sem essa marca não entram automaticamente nas análises. "
                    "CC é calculado automaticamente: CT − CL.")
         if not _bs_analises_semanais:
             st.info("Nenhuma análise semanal de Thyago foi encontrada neste período. "
@@ -19717,9 +19727,9 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         _bs_lancs_para_parecer = expandir(_bs_analises_semanais, _bs_piscinas_cadastradas)
         if ("bs_rel_parecer_tecnico" in st.session_state.get("_bs_rel_campos_restaurados", set())
                 and st.session_state.get("bs_rel_parecer_tecnico")
-                and st.session_state.get("bs_mensal_resumo_origem") != "analises_semanais_v1"):
-            st.warning("O resumo recuperado foi salvo sem identificação da origem das análises e pode usar "
-                       "a regra antiga da agenda manual. Confira o texto ou use o botão abaixo para "
+                and st.session_state.get("bs_mensal_resumo_origem") != "analises_acesso_thyago_v2"):
+            st.warning("O resumo recuperado foi salvo antes da conferência pelo acesso de Thyago e pode usar "
+                       "análises da regra anterior. Confira o texto ou use o botão abaixo para "
                        "recalculá-lo com as análises semanais exibidas na conferência. O texto salvo foi preservado.")
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
             _blocos_bs = []
@@ -19729,7 +19739,7 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
                 _texto_bs = gerar_parecer_tecnico_bem_star(_leituras_bs, cliente=csr_sel, mes=csr_mes, ano=csr_ano)
                 _blocos_bs.append(_nome_bs + "\n" + _texto_bs)
             st.session_state["bs_rel_parecer_tecnico"] = "\n\n".join(_blocos_bs)
-            st.session_state["bs_mensal_resumo_origem"] = "analises_semanais_v1"
+            st.session_state["bs_mensal_resumo_origem"] = "analises_acesso_thyago_v2"
             st.success("Resumo preenchido por piscina. Revise os dados e o texto antes de gerar.")
 
         st.text_area(
