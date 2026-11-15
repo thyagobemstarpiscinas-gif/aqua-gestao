@@ -4116,13 +4116,16 @@ def _slug_piscina_operador(nome: str) -> str:
 
 def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
     """Coleta estado atual do formulário do operador para salvar como rascunho."""
+    from utils.bem_star_mensal import analise_semanal_no_formulario
     dados = {
         "data_visita":  st.session_state.get("op_data_visita", ""),
         "operador":     st.session_state.get("op_operador", ""),
+        "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
         "obs":          st.session_state.get("op_obs_campo", ""),
         "problemas":    st.session_state.get("op_problemas", ""),
         "resp_local":   st.session_state.get("op_resp_local", ""),
         "parecer":      st.session_state.get("op_parecer_visita", "✅ Satisfatório"),
+        "capa_depois_hash": st.session_state.get("op_capa_depois_hash", ""),
         "assinatura_responsavel_b64": st.session_state.get("op_assinatura_responsavel_b64", ""),
         "assinatura_responsavel_data": st.session_state.get("op_assinatura_responsavel_data", ""),
         "piscinas": [],
@@ -4204,6 +4207,9 @@ def coletar_rascunho_operador(nome_cond: str, piscinas_ativas: list) -> dict:
 
 def restaurar_rascunho_operador(rascunho: dict):
     """Restaura rascunho nos campos do formulário do operador."""
+    from utils.bem_star_mensal import restaurar_analise_semanal
+    restaurar_analise_semanal(st.session_state, rascunho)
+    st.session_state["op_capa_depois_hash"] = rascunho.get("capa_depois_hash", "")
     if rascunho.get("data_visita"):
         st.session_state["op_data_visita"] = rascunho["data_visita"]
     if rascunho.get("operador"):
@@ -4300,6 +4306,9 @@ def limpar_formulario_operador():
     ss["op_problemas"] = ""
     ss["op_resp_local"] = ""
     ss["op_parecer_visita"] = "✅ Satisfatório"
+    ss["op_capa_depois_hash"] = ""
+    ss.pop("op_analise_semanal_bem_star", None)
+    ss.pop("_op_analise_semanal_widget", None)
     ss["op_assinatura_responsavel_b64"] = ""
     ss["op_assinatura_responsavel_data"] = ""
     ss["_op_ass_canvas_nonce"] = ss.get("_op_ass_canvas_nonce", 0) + 1
@@ -4330,6 +4339,7 @@ def trocar_condominio_operador(anterior: str, novo: str) -> bool:
             tem_conteudo = (
                 any(str(v).strip() for p in dados.get("piscinas", []) for k, v in p.items() if k != "nome")
                 or dados.get("dosagens")
+                or dados.get("capa_depois_hash")
                 or any(str(dados.get(k) or "").strip() for k in ("obs", "problemas", "resp_local", "assinatura_responsavel_b64"))
             )
             if str(dados.get("assinatura_responsavel_b64") or "").strip():
@@ -10064,6 +10074,9 @@ def _imagem_foto_pdf_em_memoria(foto, image_cls, largura_max, altura_max):
 def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) -> bytes:
     """Gera PDF premium do relatorio de visita operacional da Bem Star Piscinas."""
     import io
+    from utils.bem_star_visita_capa import (desenhar_capa_visita, foto_capa_visita,
+        APRESENTACAO, INTRO_ANALISE, NOTA_OPERACIONAL)
+    from utils.formatacao import slugify_nome as _slug_capa
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.units import mm
@@ -10122,10 +10135,6 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     E_CAMPO = E("CA",  fontSize=8,  textColor=colors.HexColor("#718096"), leading=11)
     E_AVISO = E("AV",  fontSize=8,  textColor=colors.HexColor("#7A4000"),
                 backColor=colors.HexColor("#FFFBEB"), leading=12, alignment=TA_JUSTIFY)
-    E_CAPA_TAG  = E("CT", fontSize=9,  textColor=GOLD,  alignment=TA_CENTER, spaceAfter=6, leading=12)
-    E_CAPA_MAIN = E("CM", fontSize=22, textColor=BRANCO, fontName=_font_bold, alignment=TA_CENTER, spaceAfter=4, leading=26)
-    E_CAPA_SUB  = E("CS", fontSize=10, textColor=colors.HexColor("#A8D4E0"), alignment=TA_CENTER, spaceAfter=14, leading=15)
-    E_CAPA_INFO = E("CI", fontSize=8,  textColor=colors.HexColor("#8FC8CC"), alignment=TA_CENTER, leading=13)
     E_RODAPE    = E("RO", fontSize=7,  textColor=colors.HexColor("#A0AEC0"), alignment=TA_CENTER)
 
     data_visita = lancamento.get("data", datetime.now().strftime("%d/%m/%Y"))
@@ -10138,19 +10147,31 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
     sindico     = lancamento.get("sindico", "")
     endereco    = lancamento.get("endereco", "")
 
+    # FOTOS
+    # Mesma resolução do PDF ACQUA: base64 do lançamento → Drive → pastas
+    # locais. Um PDF regerado a partir do Sheets (sem base64) mantém as fotos.
+    # Só resolve quando o lançamento declara fotos, para não puxar por padrão
+    # de nome fotos de outras visitas da mesma pasta.
+    _declara_fotos_bs = any(lancamento.get(k) for k in (
+        "fotos", "fotos_drive_ids",
+        *(f"fotos_{c}{suf}" for c in ("antes", "depois", "cmaq", "extras") for suf in ("", "_ids", "_b64")),
+    ))
+    try:
+        _fotos_res_bs = _resolver_fotos_visita_para_relatorio(lancamento) if _declara_fotos_bs else {}
+    except Exception:
+        _fotos_res_bs = {}
+    fotos_b64_antes  = _fotos_res_bs.get("antes")  or lancamento.get("fotos_antes_b64",  [])
+    fotos_b64_depois = _fotos_res_bs.get("depois") or lancamento.get("fotos_depois_b64", [])
+    fotos_b64_cmaq   = _fotos_res_bs.get("cmaq")   or lancamento.get("fotos_cmaq_b64",   [])
+    fotos_b64_extras = _fotos_res_bs.get("extras") or lancamento.get("fotos_extras_b64", [])
+
+    _pasta_capa = GENERATED_DIR / _slug_capa(nome_condominio) / "fotos_campo" if lancamento.get("capa_depois") else None
+    _foto_capa = foto_capa_visita(lancamento, fotos_b64_depois,
+        lambda fid: drive_baixar_foto(fid), _pasta_capa)
+
     def capa_fn(canvas, doc):
-        canvas.saveState()
-        canvas.setFillColor(NAVY)
-        canvas.rect(0, 0, W, H, fill=1, stroke=0)
-        canvas.setFillColor(GOLD)
-        canvas.rect(0, H-3*mm, W, 3*mm, fill=1, stroke=0)
-        canvas.rect(0, 0, W, 3*mm, fill=1, stroke=0)
-        canvas.setFillColor(colors.HexColor("#0A2540"))
-        # Cartão abaixo do subtítulo: a faixa superior não deve cruzar o texto.
-        canvas.roundRect(M, H*0.28, W-2*M, H*0.43, 8, fill=1, stroke=0)
-        canvas.setFillColor(TEAL)
-        canvas.rect(M, H*0.28 + H*0.43 - 2*mm, W-2*M, 2*mm, fill=1, stroke=0)
-        canvas.restoreState()
+        desenhar_capa_visita(canvas, cliente=nome_condominio, data=data_visita,
+                             operador=operador, logo=encontrar_logo_bem_star(), foto=_foto_capa)
 
     def hf_fn(canvas, doc):
         canvas.saveState()
@@ -10196,7 +10217,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
 
     def bloco(titulo, corpo, cf=colors.HexColor("#EBF8FF"), cb=colors.HexColor("#3182CE")):
         t = Table([[
-            P(titulo, E("BT", fontSize=8, textColor=cb, fontName=_font_bold, leading=12)),
+            P(titulo, E("BT", fontSize=8, textColor=TEAL, fontName=_font_bold, leading=12)),
             P(corpo,  E("BC2", fontSize=8, textColor=CINZA, leading=13, alignment=TA_JUSTIFY)),
         ]], colWidths=[CW*0.22, CW*0.78])
         t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),cf),("BOX",(0,0),(-1,-1),1,cb),
@@ -10213,38 +10234,15 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
 
     story = []
 
-    # CAPA
-    story.append(Sp(12))
-    _logo_bs = encontrar_logo_bem_star()
-    if _logo_bs:
-        _img_bs = Image(str(_logo_bs), width=70*mm, height=40*mm, kind="proportional")
-        _img_bs.hAlign = "CENTER"
-        story.append(_img_bs)
-    story += [Sp(8),
-        P("RELATORIO DE VISITA TECNICA OPERACIONAL", E_CAPA_TAG),
-        P("BEM STAR PISCINAS", E_CAPA_MAIN),
-        P("Manutencao e Limpeza Operacional com Inteligencia Quimica Hidrica", E_CAPA_SUB),
-        Sp(3), P(f"Condominio: {nome_condominio}  |  Data: {data_visita}", E_CAPA_INFO),
-        Sp(2), P("Uberlandia/MG  |  Bem Star Piscinas Ltda", E_CAPA_INFO),
-        PageBreak()]
+    # Capa desenhada no callback; o PageBreak mantém a numeração interna.
+    story += [Sp(1), PageBreak()]
 
-    # APRESENTACAO
+    # APRESENTAÇÃO — textos aprovados, sem vincular conformidade à contratação.
     story += [Sp(3), sec_hdr("SOBRE ESTE DOCUMENTO"), Sp(3)]
-    story.append(bloco("O que e este relatorio",
-        "Este Relatorio de Visita Tecnica Operacional e emitido pela Bem Star Piscinas Ltda para registro "
-        "das atividades de limpeza, manutencao e controle basico de qualidade da agua realizadas em cada visita."))
+    for titulo, corpo in APRESENTACAO:
+        story.append(bloco(titulo, corpo, cf=colors.HexColor("#F2F8FC"), cb=colors.HexColor("#CFDFEB")))
+        story.append(Sp(2))
     story.append(Sp(2))
-    story.append(bloco("Importante",
-        "Este documento NAO constitui Relatorio de Responsabilidade Tecnica (RT) e NAO substitui a documentacao "
-        "exigida pela Vigilancia Sanitaria ou pelo CRQ. Para conformidade normativa, emissao de ART e Relatorio "
-        "Mensal de RT, e necessario contratar a Aqua Gestao - Controle Tecnico de Piscinas (CRQ 024025748).",
-        cf=colors.HexColor("#FFF8F0"), cb=colors.HexColor("#F6AD55")))
-    story.append(Sp(2))
-    story.append(bloco("Aqua Gestao RT",
-        "Para conformidade com ABNT NBR 10339, Resolucoes CFQ e Vigilancia Sanitaria: "
-        "Thyago Fernando da Silveira | Tecnico em Quimica | CRQ 024025748 | Uberlandia/MG.",
-        cf=colors.HexColor("#F0FFF4"), cb=colors.HexColor("#38A169")))
-    story.append(Sp(4))
 
     # IDENTIFICACAO
     story += [sec_hdr("IDENTIFICACAO DA VISITA"), Sp(2)]
@@ -10261,8 +10259,7 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
 
     # PARAMETROS por piscina
     story += [sec_hdr("ANALISE BASICA DA AGUA"), Sp(2),
-        P("Verificacao basica de parametros com Photometer Color Q. Estes resultados sao orientativos. "
-          "Para parecer normativo completo, consulte o Relatorio de RT da Aqua Gestao.", E_BODY), Sp(2)]
+        P(INTRO_ANALISE, E_BODY), Sp(2)]
 
     if piscinas:
         for pisc in piscinas:
@@ -10378,29 +10375,10 @@ def gerar_pdf_relatorio_visita_bem_star(lancamento: dict, nome_condominio: str) 
         ("LEFTPADDING",(0,0),(-1,-1),10),("VALIGN",(0,0),(-1,-1),"TOP"),
     ]))
     story += [ass, Sp(4),
-        P("Documento de uso operacional emitido pela Bem Star Piscinas Ltda. "
-          "Este relatorio NAO constitui Relatorio de Responsabilidade Tecnica (RT) e NAO substitui "
-          "a documentacao exigida pela Vigilancia Sanitaria ou pelo CRQ. "
-          "Para conformidade normativa, contrate a Aqua Gestao - Controle Tecnico de Piscinas.",
-          E_AVISO)]
+        P(NOTA_OPERACIONAL, E("NOTA_BS", fontSize=8.5, textColor=CINZA,
+          backColor=colors.HexColor("#F2F8FC"), leading=12.5, borderPadding=8))]
 
-    # FOTOS
-    # Mesma resolução do PDF ACQUA: base64 do lançamento → Drive → pastas
-    # locais. Um PDF regerado a partir do Sheets (sem base64) mantém as fotos.
-    # Só resolve quando o lançamento declara fotos, para não puxar por padrão
-    # de nome fotos de outras visitas da mesma pasta.
-    _declara_fotos_bs = any(lancamento.get(k) for k in (
-        "fotos", "fotos_drive_ids",
-        *(f"fotos_{c}{suf}" for c in ("antes", "depois", "cmaq", "extras") for suf in ("", "_ids", "_b64")),
-    ))
-    try:
-        _fotos_res_bs = _resolver_fotos_visita_para_relatorio(lancamento) if _declara_fotos_bs else {}
-    except Exception:
-        _fotos_res_bs = {}
-    fotos_b64_antes  = _fotos_res_bs.get("antes")  or lancamento.get("fotos_antes_b64",  [])
-    fotos_b64_depois = _fotos_res_bs.get("depois") or lancamento.get("fotos_depois_b64", [])
-    fotos_b64_cmaq   = _fotos_res_bs.get("cmaq")   or lancamento.get("fotos_cmaq_b64",   [])
-    fotos_b64_extras = _fotos_res_bs.get("extras") or lancamento.get("fotos_extras_b64", [])
+    # FOTOS — reutiliza a mesma resolução usada pela capa.
     todas_fotos = (
         [("Antes do tratamento", f) for f in (fotos_b64_antes  or [])] +
         [("Apos o tratamento",   f) for f in (fotos_b64_depois or [])] +
@@ -11952,7 +11930,10 @@ def _materializar_fotos_remotas_bem_star(cliente: str, lancamentos: list[dict]) 
         ids = []  # (id, categoria)
         for cat in categorias:
             ids.extend((i, cat) for i in (lc.get(f"fotos_{cat}_ids") or []))
-        ids.extend((i, "antes") for i in (lc.get("fotos_drive_ids") or []))
+        # A lista geral só é fallback de visitas antigas sem categorias.
+        # Acrescentá-la depois sobrescrevia Depois/Casa de máquinas como Antes.
+        if not ids:
+            ids.extend((i, "antes") for i in (lc.get("fotos_drive_ids") or []))
         ids = list({str(i).strip(): (str(i).strip(), c) for i, c in ids if str(i or "").strip()}.values())
         obtidas = []
         falhas = 0
@@ -12169,13 +12150,15 @@ def _bs_dia_semana_resumo():
 
 def gerar_parecer_tecnico_bem_star(lancamentos: list[dict], cliente: str = "", mes: str = "", ano: str = "") -> str:
     """Resumo descritivo das leituras, sem diagnóstico ou declaração de conformidade."""
-    from utils.bem_star_mensal import PARAMETROS, numero, expandir
-    registros = expandir(lancamentos)
+    from utils.bem_star_mensal import (PARAMETROS_RELATORIO, valor_parametro, expandir,
+                                       filtrar_analises_semanais, ANALISTA_SEMANAL)
+    registros = expandir(filtrar_analises_semanais(lancamentos))
     linhas = [f"Registro operacional de {mes}/{ano} para {cliente}. "
-              f"Foram identificadas {len({l['data'] for l in registros})} data(s) com registro nesta piscina. "
+              f"Foram identificadas {len({l['data'] for l in registros})} data(s) de análise semanal selecionada "
+              f"do operador {ANALISTA_SEMANAL} nesta piscina. "
               "O resumo descreve os dados informados, sem atestar conformidade normativa ou condições de segurança."]
-    for campo, label, unidade in PARAMETROS:
-        vals = [numero(l.get(campo)) for l in registros if numero(l.get(campo)) is not None]
+    for campo, label, unidade in PARAMETROS_RELATORIO:
+        vals = [valor_parametro(l, campo) for l in registros if valor_parametro(l, campo) is not None]
         if vals:
             fmt = lambda v: f"{v:.2f}".replace(".", ",")
             linhas.append(f"{label}: {len(vals)} medição(ões), mínimo {fmt(min(vals))}, "
@@ -12235,7 +12218,8 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         return {"ok": False, "erros": [msg], "mensagem": msg}
 
     from utils.bem_star_mensal import (unir_agenda, token_pool, materializar_fotos,
-                                       deduplicar_lancamentos, canonizar_nomes_piscinas)
+                                       deduplicar_lancamentos, canonizar_nomes_piscinas,
+                                       filtrar_analises_semanais)
     # A mesma visita existe no JSON local e no Sheets com campos diferentes
     # (fotos em base64, horário de gravação): comparar o JSON inteiro deixava
     # as duas cópias e duplicava as leituras. A chave é o ID da visita.
@@ -12269,6 +12253,9 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         st.session_state.get("bs_mensal_fotos", []) or [],
         st.session_state.get("_bs_rel_contexto"), GENERATED_DIR, baixar=drive_baixar_foto,
     ) if st.session_state.get("bs_mensal_fotos") else ([], {})
+    # Só os anexos já validados deste cliente e mês podem ser escolhidos para a capa.
+    foto_capa = next((p for p in fotos_mensais
+                      if p.stem == st.session_state.get("bs_mensal_capa_hash", "")), None)
     fotos_paths = deduplicar_fotos(list(fotos_paths) + fotos_mensais)
     # Legendas das fotos das visitas recuperadas do Drive (anexos mensais prevalecem).
     metadados = {**(st.session_state.get("_bs_fotos_metadados_visitas") or {}), **(metadados or {})}
@@ -12278,7 +12265,9 @@ def _coletar_contexto_relatorio_bem_star() -> dict:
         "parecer_tecnico": st.session_state.get("bs_rel_parecer_tecnico", ""),
         "dados_cliente": csr_dados_sel, "pasta": pasta_csr,
         "lancamentos": lanc_para_relatorio, "fotos": fotos_paths,
-        "fotos_metadados": metadados, "tipos_piscinas": tipos,
+        # A agenda operacional não altera a autoria ou as medições da coleta semanal.
+        "analises_semanais": filtrar_analises_semanais(lancamentos_csr),
+        "fotos_metadados": metadados, "tipos_piscinas": tipos, "foto_capa": foto_capa,
         "piscinas": piscinas_sel,
         "piscinas_cadastradas": piscinas_cadastradas,
         "origem_fotos": "visitas do período e anexos mensais isolados" if fotos_paths else "sem fotos",
@@ -15485,6 +15474,9 @@ if modo == "📱 Modo Operador (Campo / Celular)":
                 except Exception:
                     pass  # autosave nunca pode derrubar o app
 
+        from utils.bem_star_mensal_ui import renderizar_analise_semanal_operador
+        renderizar_analise_semanal_operador(st, _autosave_rascunho)
+
         def _num_op(chave, label, placeholder, quinzenal=False):
             lbl = f"{label} ⏱ 15d" if quinzenal else label
             v = st.text_input(lbl, key=chave, placeholder=placeholder,
@@ -15868,6 +15860,12 @@ avisar o RT.
                         else:
                             st.image(_imagem_preview, use_container_width=True)
 
+        # Escolha entre fotos já anexadas; não altera os relatórios ACQUA/RT.
+        if not _op_is_rt and _cliente_relatorio_visita_bem_star_sem_rt(op_nome_cond):
+            from utils.bem_star_visita_capa import renderizar_seletor_capa
+            renderizar_seletor_capa(st, op_fotos_depois, _fotos_rasc_existentes["depois"],
+                                   carregar_imagem_corrigida_orientacao, _autosave_rascunho)
+
         # Botão para limpar fotos do rascunho
         if _total_fotos_rasc > 0:
             if st.button("🗑 Limpar fotos do rascunho", key="btn_limpar_fotos_rasc"):
@@ -16027,6 +16025,10 @@ avisar o RT.
 
                 import base64 as _b64
 
+                from utils.bem_star_visita_capa import registrar_escolha_capa
+                _capa_depois_salva = {}
+                _capa_depois_hash = st.session_state.get("op_capa_depois_hash", "") if not _op_is_rt else ""
+
                 def _salvar_categoria(lista_uploads, categoria):
                     """Salva fotos localmente, no Drive e retorna bytes para PDF."""
                     nomes = []; ids = []; b64s = []
@@ -16052,6 +16054,7 @@ avisar o RT.
                         except Exception:
                             b64s.append(_b64.b64encode(foto_bytes).decode("utf-8"))
                         # Upload para o Google Drive (async best-effort)
+                        drive_id = ""
                         try:
                             drive_id = drive_upload_foto(
                                 arquivo_bytes=foto_bytes,
@@ -16063,6 +16066,8 @@ avisar o RT.
                                 ids.append(drive_id)
                         except Exception:
                             pass
+                        registrar_escolha_capa(_capa_depois_salva, _capa_depois_hash, categoria,
+                                               foto_bytes, nome_ff, drive_id, b64s[-1])
                     return nomes, ids, b64s
 
                 fotos_antes_nomes,  fotos_antes_ids,  fotos_antes_b64  = _salvar_categoria(deduplicar_fotos(op_fotos_antes),  "antes")
@@ -16134,6 +16139,7 @@ avisar o RT.
                             if _nome_dest not in _nomes_cat:
                                 _nomes_cat.append(_nome_dest)
                                 # Antes só ficava no disco: envia ao Drive como as fotos do upload atual.
+                                _id_rasc = ""
                                 try:
                                     _id_rasc = drive_upload_foto(
                                         arquivo_bytes=_dest.read_bytes(),
@@ -16154,6 +16160,8 @@ avisar o RT.
                                     _buf2 = _io2.BytesIO()
                                     _img2.convert("RGB").save(_buf2, format="JPEG", quality=82)
                                     _b64s_cat.append(_b64.b64encode(_buf2.getvalue()).decode())
+                                    registrar_escolha_capa(_capa_depois_salva, _capa_depois_hash, _cat,
+                                                           _dest.read_bytes(), _nome_dest, _id_rasc, _b64s_cat[-1])
                                 except Exception:
                                     pass
                     _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
@@ -16184,8 +16192,10 @@ avisar o RT.
                     for _p_lanc in op_piscinas_dados:
                         _p_lanc.update(_parametros_apos_lanc)
 
+                from utils.bem_star_mensal import analise_semanal_no_formulario
                 lancamento = {
                     "data": data_vis, "operador": op_operador.strip(),
+                    "analise_semanal_bem_star": analise_semanal_no_formulario(st.session_state),
                     "visita_rt_semanal": bool(_op_is_rt),
                     "tipo_visita": "RT semanal" if _op_is_rt else "Operador",
                     "ph": op_ph, "cloro_livre": op_crl, "cloro_total": op_ct,
@@ -16236,6 +16246,8 @@ avisar o RT.
                     "fotos_extras": fotos_extras_nomes,
                     "fotos_extras_ids": fotos_extras_ids,
                     "fotos_extras_b64": fotos_extras_b64,
+                    "capa_depois": _capa_depois_salva.get("referencia", {"sha256": _capa_depois_hash} if _capa_depois_hash else {}),
+                    "capa_depois_b64": _capa_depois_salva.get("b64", ""),
                     "condominio": op_nome_cond.strip(),
                     "salvo_em": _agora_brasilia(),
                     "ph_apos":           _parametros_apos_lanc.get("ph_apos", ""),
@@ -19607,7 +19619,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         if _contexto_bs_mudou:
             st.info("Cliente ou período alterado. A agenda e o parecer agora correspondem à seleção atual; confira os dados antes de gerar.")
 
-        from utils.bem_star_mensal import ABA as _BS_ABA, carregar_complementos, salvar_complementos, unir_agenda, token_pool
+        from utils.bem_star_mensal import (ABA as _BS_ABA, carregar_complementos, salvar_complementos,
+                                          unir_agenda, token_pool, filtrar_analises_semanais, expandir)
         from utils.bem_star_mensal_ui import renderizar_piscinas, renderizar_fotos
         _bs_origem_ok = origem_validada(_situacao_csr_tela, chave_validacao_origem("bem_star", csr_sel, str(csr_mes or "").strip(), str(csr_ano or "").strip())) if "_situacao_csr_tela" in locals() else False
         with st.expander("Retomar complementos salvos deste cliente e mês"):
@@ -19641,6 +19654,13 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
             st.success("Complementos recuperados para o cliente e mês selecionados. Confira antes de gerar.")
         _bs_piscinas_cadastradas = _piscinas_cadastradas_cliente(csr_dados_sel)
         renderizar_piscinas(st, lancamentos_csr, _bs_piscinas_cadastradas)
+        _bs_analises_semanais = filtrar_analises_semanais(lancamentos_csr)
+        st.caption("Análise semanal: visitas escolhidas pelo operador Thyago Silveira, na data real da coleta. "
+                   "Segunda-feira é o padrão; coletas marcadas em outros dias também entram no mensal. "
+                   "CC é calculado automaticamente: CT − CL.")
+        if not _bs_analises_semanais:
+            st.info("Nenhuma análise semanal de Thyago foi encontrada neste período. "
+                    "As seções de análise ficarão sem resultados; visitas, serviços e fotos continuam no relatório.")
 
         csr_operador_nome = st.text_input("Operador responsável", key="csr_operador_rel", placeholder="Nome do operador")
         csr_obs_geral     = st.text_area("Observações gerais", key="csr_obs_rel", height=80,
@@ -19649,6 +19669,8 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         # ── Agenda mensal de visitas Bem Star ────────────────────────────────
         st.markdown("### Agenda mensal de visitas")
         st.caption("Escolha a frequência e os dias da semana. O sistema monta automaticamente as visitas do mês.")
+        st.caption("A agenda abaixo registra a operação. Edições manuais de parâmetros não substituem as análises semanais "
+                   "salvas pelo operador Thyago para as tabelas, gráficos e resumo numérico.")
 
         _dias_semana_bs = [
             "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira",
@@ -19699,10 +19721,11 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
         st.markdown("### Resumo e recomendações operacionais")
         st.caption("Clique para gerar um texto automático com base nas visitas, parâmetros e dosagens lançados. Depois revise e edite antes de gerar o PDF.")
 
-        _bs_lancs_para_parecer = unir_agenda(lancamentos_csr, _bs_coletar_lancamentos_agenda_manual(), _bs_piscinas_cadastradas)
+        _bs_lancs_para_parecer = expandir(_bs_analises_semanais, _bs_piscinas_cadastradas)
         if st.button("Preencher resumo e recomendações operacionais", key="bs_btn_preencher_parecer"):
             _blocos_bs = []
-            for _nome_bs in dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer):
+            _nomes_parecer_bs = list(dict.fromkeys(l["piscina"] for l in _bs_lancs_para_parecer)) or list(st.session_state.get("bs_mensal_piscinas") or [])
+            for _nome_bs in _nomes_parecer_bs:
                 _leituras_bs = [l for l in _bs_lancs_para_parecer if l["piscina"] == _nome_bs]
                 _texto_bs = gerar_parecer_tecnico_bem_star(_leituras_bs, cliente=csr_sel, mes=csr_mes, ano=csr_ano)
                 _blocos_bs.append(_nome_bs + "\n" + _texto_bs)

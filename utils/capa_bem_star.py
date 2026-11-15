@@ -1,81 +1,112 @@
-"""Capa vetorial Bem Star, com a paleta da marca e natureza operacional explícita."""
+"""Capa do relatório mensal Bem Star, com período e fotografia selecionada."""
 from html import escape
+from pathlib import Path
+
+from PIL import Image, ImageOps
+import reportlab
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph
 
 
 def desenhar_capa_bem_star(canvas, *, cliente, mes_nome, ano, periodo_ini, periodo_fim,
-                           data_emissao, logo_path, cnpj):
+                           data_emissao, logo_path, cnpj, foto_path=None):
+    """A fotografia é explícita; sua ausência nunca escolhe outra imagem."""
     w, h = A4
-    azul, agua = colors.HexColor('#104888'), colors.HexColor('#0090D0')
+    margem = 44
+    azul, agua, cinza, linha = map(colors.HexColor, ('#104888', '#009DB8', '#516575', '#DCE7ED'))
+    navy = colors.HexColor('#123D65')
+    regular, bold = 'BSMensalVera', 'BSMensalVera-Bold'
+    fonts = Path(reportlab.__file__).parent / 'fonts'
+    for nome, arquivo in [(regular, 'Vera.ttf'), (bold, 'VeraBd.ttf')]:
+        if nome not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(nome, str(fonts / arquivo)))
     canvas.saveState()
-    canvas.setFillColor(colors.HexColor('#F0F6FC'))
-    canvas.rect(0, 0, w, h, fill=1, stroke=0)
-    # Cabeçalho claro reservado à marca original.
-    canvas.setFillColor(colors.white)
-    canvas.rect(0, h-59*mm, w, 59*mm, fill=1, stroke=0)
+
+    def rect(x, top, width, height, cor):
+        canvas.setFillColor(cor)
+        canvas.rect(x, h-top-height, width, height, fill=1, stroke=0)
+
+    def text(txt, x, top, size, cor=navy, forte=False, right=False):
+        canvas.setFillColor(cor)
+        canvas.setFont(bold if forte else regular, size)
+        (canvas.drawRightString if right else canvas.drawString)(x, h-top-size*.82, str(txt))
+
+    def fitted(txt, x, top, width, height, size, forte=False):
+        for pt in range(size, 6, -1):
+            p = Paragraph(escape(str(txt or '—')), ParagraphStyle('capa_mensal',
+                fontName=bold if forte else regular, fontSize=pt, leading=pt*1.15,
+                textColor=navy, splitLongWords=True))
+            _, ph = p.wrap(width, height)
+            if ph <= height:
+                break
+        p.drawOn(canvas, x, h-top-ph)
+
+    periodo = f'{mes_nome} de {ano}'
+    rect(0, 0, w, h, colors.white)
+    rect(0, 0, w, 5, agua)
     try:
         if not logo_path:
-            raise ValueError()
-        canvas.drawImage(ImageReader(str(logo_path)), 21*mm, h-42*mm,
-                         width=76*mm, height=25*mm, preserveAspectRatio=True, mask='auto')
-    except Exception:
-        canvas.setFillColor(azul)
-        canvas.setFont('Helvetica-Bold', 20)
-        canvas.drawString(21*mm, h-35*mm, 'BEM STAR PISCINAS')
-    canvas.setFillColor(azul)
-    canvas.setFont('Helvetica-Bold', 8)
-    canvas.drawRightString(w-21*mm, h-27*mm, 'RELATÓRIO MENSAL')
-    canvas.setFont('Helvetica', 9)
-    canvas.drawRightString(w-21*mm, h-34*mm, f'{mes_nome} / {ano}')
-    # Campo central com presença de cor, ondas e linhas de uma piscina vista de cima.
-    canvas.setFillColor(azul)
-    canvas.rect(0, 65*mm, w, h-124*mm, fill=1, stroke=0)
-    canvas.setFillColor(agua)
-    canvas.rect(0, h-61*mm, w, 2*mm, fill=1, stroke=0)
-    canvas.setStrokeColor(colors.HexColor('#2366A4'))
-    canvas.setLineWidth(.55)
-    for x in range(135, 221, 13):
-        canvas.line(x*mm, 66*mm, x*mm, h-61*mm)
-    for y in range(72, 238, 13):
-        canvas.line(133*mm, y*mm, w, y*mm)
-    canvas.setStrokeColor(colors.HexColor('#268ABF'))
-    canvas.setLineWidth(1.3)
-    for d in range(4):
-        p = canvas.beginPath(); p.moveTo(128*mm, (81+d*7)*mm)
-        p.curveTo(160*mm, (110+d*7)*mm, 181*mm, (57+d*7)*mm, 222*mm, (89+d*7)*mm)
-        canvas.drawPath(p, stroke=1)
+            raise ValueError('Sem logo')
+        canvas.drawImage(ImageReader(str(logo_path)), margem, h-103, 182, 60.22,
+                         preserveAspectRatio=True, mask='auto')
+    except (OSError, ValueError):
+        text('BEM STAR PISCINAS', margem, 67, 17, azul, True)
+    text('RELATÓRIO MENSAL', w-margem, 59, 8.2, azul, True, True)
+    text(periodo, w-margem, 78, 10, right=True)
+    rect(margem, 126, w-2*margem, .7, linha)
+    text('Relatório Mensal', margem, 160, 30, forte=True)
+    text('Operacional', margem, 198, 30, forte=True)
+    text('Limpeza, manutenção e acompanhamento da água', margem, 247, 10.5, cinza)
+    rect(margem, 282, 34, 3, agua)
+    text('CONDOMÍNIO', margem, 307, 8.2, azul, True)
+    fitted(cliente, margem, 329, w-2*margem, 56, 34, True)
 
-    def text(txt, top, size, leading, color=colors.white, bold=False, width=166*mm):
-        para = Paragraph(txt, ParagraphStyle('capa', fontName='Helvetica-Bold' if bold else 'Helvetica',
-                                            fontSize=size, leading=leading, textColor=color))
-        _, ph = para.wrap(width, h)
-        para.drawOn(canvas, 21*mm, top-ph)
-        return ph
-    text('MANUTENÇÃO &amp; ACOMPANHAMENTO', h-77*mm, 9, 12, colors.HexColor('#9FDFFF'), True)
-    text('Cuidado contínuo.<br/>Gestão com clareza.', h-94*mm, 31, 37, bold=True)
-    text('Relatório operacional de manutenção', h-127*mm, 13, 18)
-    text('CLIENTE / LOCAL ATENDIDO', h-157*mm, 8, 11, colors.HexColor('#9FDFFF'), True)
-    for size in range(22, 10, -1):
-        p = Paragraph(escape(str(cliente)), ParagraphStyle('nome', fontName='Helvetica-Bold', fontSize=size, leading=size+4))
-        if p.wrap(161*mm, h)[1] <= 29*mm:
-            break
-    text(escape(str(cliente)), h-167*mm, size, size+4, bold=True, width=161*mm)
-    text(f'{escape(mes_nome)} / {escape(str(ano))}', 91*mm, 17, 21, bold=True)
-    text(f'{escape(periodo_ini)} a {escape(periodo_fim)}', 80*mm, 9, 12, colors.HexColor('#C5E7FF'))
-    text('REGISTRO OPERACIONAL · NÃO É RELATÓRIO DE RT', 53*mm, 9, 13, azul, True)
-    text('Consolida a rotina de manutenção e as leituras informadas.<br/>Não constitui laudo ou ART, nem substitui o acompanhamento técnico quando aplicável.',
-         45*mm, 9, 13, colors.HexColor('#455C74'))
-    canvas.setStrokeColor(colors.HexColor('#C5D8EB'))
-    canvas.line(21*mm, 23*mm, w-21*mm, 23*mm)
-    canvas.setFillColor(azul)
-    canvas.setFont('Helvetica', 8)
-    canvas.drawString(21*mm, 17*mm, f'Data de emissão: {data_emissao}')
-    canvas.setFont('Helvetica', 7.5)
-    canvas.drawString(21*mm, 11*mm, f'Bem Star Piscinas Ltda | CNPJ {cnpj}')
-    canvas.drawRightString(w-21*mm, 11*mm, 'Uberlândia/MG')
+    foto = None
+    if foto_path:
+        try:
+            with Image.open(foto_path) as im:
+                foto = ImageOps.exif_transpose(im).convert('RGB')
+        except (OSError, ValueError):
+            pass
+    if foto is not None:
+        px, top, pw, ph = margem, 393, w-2*margem, 250
+        iw, ih = foto.size
+        scale = max(pw/iw, ph/ih)
+        dw, dh = iw*scale, ih*scale
+        canvas.saveState()
+        clip = canvas.beginPath()
+        clip.rect(px, h-top-ph, pw, ph)
+        canvas.clipPath(clip, stroke=0, fill=0)
+        canvas.drawImage(ImageReader(foto), px+(pw-dw)/2, h-top-dh+min(18, dh-ph), dw, dh)
+        canvas.restoreState()
+        rect(margem, top+ph, 44, 3, agua)
+        text('REGISTRO FOTOGRÁFICO DO PERÍODO', margem, 656, 8.2, cinza)
+    else:
+        rect(margem, 408, w-2*margem, 220, navy)
+        text('CUIDADO CONTÍNUO COM A PISCINA', margem+24, 444, 9.5, colors.HexColor('#91DEEB'), True)
+        text('Limpeza e manutenção', margem+24, 478, 22, colors.white, True)
+        text('Atividades e medições registradas ao longo do mês', margem+24, 517, 9.5, colors.white)
+        canvas.setStrokeColor(agua)
+        canvas.setLineWidth(1)
+        for d in range(3):
+            p = canvas.beginPath()
+            p.moveTo(margem+24, h-573-d*10)
+            p.curveTo(200, h-548-d*10, 340, h-602-d*10, w-margem-24, h-573-d*10)
+            canvas.drawPath(p)
+    rect(margem, 696, w-2*margem, 57, colors.HexColor('#F2F7FA'))
+    text('PERÍODO DO RELATÓRIO', margem+15, 708, 7.5, azul, True)
+    fitted(periodo, margem+15, 726, 220, 22, 11)
+    rect(301, 709, .7, 30, linha)
+    text('REGISTROS DO MÊS', 320, 708, 7.5, azul, True)
+    fitted(f'{periodo_ini} a {periodo_fim}', 320, 726, w-margem-335, 22, 9)
+    text('Bem Star Piscinas Ltda', margem, 780, 8.8, forte=True)
+    text('Uberlândia / MG', w-margem, 780, 8.8, cinza, right=True)
+    text(f'CNPJ {cnpj}', margem, 796, 7.5, cinza)
+    text(f'Data de emissão: {data_emissao}', w-margem, 796, 7.5, cinza, right=True)
+    rect(0, h-5, w, 5, azul)
     canvas.restoreState()

@@ -10,7 +10,9 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer,
                                PageBreak, KeepTogether, Image, Flowable)
 from utils.bem_star_mensal import (PARAMETROS, AVISO, REFERENCIA, expandir, numero, data_ordem,
-                                  chave_piscina)
+                                  chave_piscina, PARAMETROS_RELATORIO, valor_parametro,
+                                  texto_cloro_combinado, filtrar_analises_semanais, ANALISTA_SEMANAL,
+                                  canonizar_nomes_piscinas)
 from utils.capa_bem_star import desenhar_capa_bem_star
 
 AZUL = colors.HexColor('#104888')
@@ -90,7 +92,9 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
         emissao = hoje_brasilia()
         ini, fim = f'01/{mes:02d}/{ano}', f'{monthrange(ano, mes)[1]:02d}/{mes:02d}/{ano}'
         preferidas = list(ctx.get('piscinas_cadastradas') or [])
-        linhas = expandir(ctx.get('lancamentos') or [], preferidas)
+        linhas_operacionais = expandir(ctx.get('lancamentos') or [], preferidas)
+        linhas = expandir(filtrar_analises_semanais(
+            ctx.get('analises_semanais', ctx.get('lancamentos')) or []), preferidas)
         grupos = OrderedDict()
         for l in linhas:
             for campo, label, _ in PARAMETROS:
@@ -103,10 +107,14 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
         # outra grafia de uma piscina já presente ("Piscina adulta" ×
         # "Piscina Adulto"): antes surgia uma seção duplicada e vazia.
         chaves = {chave_piscina(n) for n in grupos}
-        for nome in ctx.get('piscinas') or []:
+        nomes_piscinas = canonizar_nomes_piscinas(
+            list(ctx.get('piscinas') or []) + [l['piscina'] for l in linhas_operacionais], preferidas)
+        for nome in nomes_piscinas:
             if chave_piscina(nome) not in chaves:
                 chaves.add(chave_piscina(nome))
                 grupos.setdefault(nome, [])
+        tipos_das_visitas = {l['piscina']: l['tipo_piscina'] for l in linhas_operacionais}
+        tipos_das_visitas.update(ctx.get('tipos_piscinas') or {})
         styles = {
             'body': ParagraphStyle('body', fontName='Helvetica', fontSize=9, leading=13, textColor=colors.HexColor('#263B4E'), spaceAfter=5),
             'small': ParagraphStyle('small', fontName='Helvetica', fontSize=7.5, leading=10.2, textColor=CINZA),
@@ -139,7 +147,8 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             return t
         def capa(c, doc):
             desenhar_capa_bem_star(c, cliente=cliente, mes_nome=nome_mes, ano=str(ano), periodo_ini=ini,
-                                   periodo_fim=fim, data_emissao=emissao, logo_path=logo_path, cnpj=cnpj)
+                                   periodo_fim=fim, data_emissao=emissao, logo_path=logo_path, cnpj=cnpj,
+                                   foto_path=ctx.get('foto_capa'))
         def rodape(c, doc):
             c.saveState(); w, h = A4
             c.setFillColor(AZUL); c.setFont('Helvetica-Bold', 8)
@@ -152,18 +161,22 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             c.drawRightString(w-19*mm, 11*mm, f'Página {doc.page}')
             c.restoreState()
         story = [Spacer(1,1), PageBreak(), p('O mês em perspectiva', 'h1'), p(f'{cliente} | {nome_mes} / {ano}', 'h2'), p(AVISO)]
-        dias = len({l['data'] for l in linhas})
+        dias = len({l['data'] for l in linhas_operacionais})
         story.append(tabela([['Datas com registro', 'Piscinas identificadas', 'Período'],
                               [str(dias), str(len(grupos)), f'{ini} a {fim}']], [48*mm, 51*mm,72*mm]))
         story.append(Spacer(1,5*mm))
         resumo = [['Piscina / setor', 'Tipo', 'Datas com leituras']]
         for nome, dados in grupos.items():
-            tipos = list(dict.fromkeys(l['tipo_piscina'] for l in dados)) or [(ctx.get('tipos_piscinas') or {}).get(nome, 'Não informado')]
+            tipos = list(dict.fromkeys(l['tipo_piscina'] for l in dados)) or [tipos_das_visitas.get(nome, 'Não informado')]
             cont = len({l['data'] for l in dados if any(numero(l.get(k)) is not None for k,_,_ in PARAMETROS)})
             resumo.append([nome, ', '.join(tipos), str(cont)])
         story.append(tabela(resumo, [81*mm,43*mm,47*mm]))
         story.extend([p('Como ler este relatório', 'h2'), p('As tabelas e os gráficos apresentam somente os valores informados, individualmente por piscina. '
-                'A rotina de análise semanal completa é prevista às segundas-feiras; medições adicionais também são exibidas. '
+                f'A análise semanal é identificada pelo operador {ANALISTA_SEMANAL} na visita. '
+                'A segunda-feira é o dia habitual; coletas selecionadas em outros dias também são incluídas, com a data real. '
+                'As tabelas, os gráficos e o resumo numérico usam esses lançamentos salvos no período. '
+                'Registros anteriores à opção de escolha seguem a regra de segunda-feira. '
+                'As demais visitas permanecem no registro da operação e no registro fotográfico. '
                 'Campos vazios permanecem sem resultado. Ausência de medição não significa resultado adequado.'),
                 p('As linhas dos gráficos apenas conectam medições consecutivas informadas. Lacunas interrompem o traçado; '
                 'não há estimativa de valores ausentes. Os gráficos mostram tendências, sem atestar potabilidade, segurança ou conformidade normativa.', 'small'),
@@ -173,16 +186,19 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
                 'Veja ao final como esse acompanhamento pode beneficiar o condomínio.')])
         for nome, dados in grupos.items():
             story.extend([PageBreak(), p(nome, 'h1')])
-            tipo = next((l['tipo_piscina'] for l in dados), (ctx.get('tipos_piscinas') or {}).get(nome, 'Não informado'))
-            story.append(p(f'Tipo: {tipo} | Leituras informadas por data', 'small'))
-            rows = [['Data', 'pH', 'CL', 'CT', 'Alc.', 'Dur.', 'CYA']]
+            tipo = next((l['tipo_piscina'] for l in dados), tipos_das_visitas.get(nome, 'Não informado'))
+            story.append(p(f'Tipo: {tipo} | Análises semanais — {ANALISTA_SEMANAL}', 'small'))
+            rows = [['Data', 'pH', 'CL', 'CT', 'CC', 'Alc.', 'Dur.', 'CYA']]
             for l in dados:
-                rows.append([l['data']] + [fmt(l.get(k)) for k,_,_ in PARAMETROS])
+                rows.append([l['data']] + [texto_cloro_combinado(l) if k == 'cloro_combinado'
+                                           else fmt(l.get(k)) for k,_,_ in PARAMETROS_RELATORIO])
             if not dados:
-                rows.append(['Sem registro'] + ['-']*6)
-            story.append(tabela(rows, [30*mm]+[23.5*mm]*6))
-            story.extend([Spacer(1,2*mm), p('CL: cloro livre | CT: cloro total | Alc.: alcalinidade | Dur.: dureza cálcica | CYA: ácido cianúrico. '
-                'Concentrações em mg/L; pH sem unidade. Traço: não medido ou não informado.', 'small'),
+                rows.append(['Sem análise semanal'] + ['-']*7)
+            story.append(tabela(rows, [28*mm]+[143/7*mm]*7))
+            story.extend([Spacer(1,2*mm), p('CL: cloro livre | CT: cloro total | CC: cloro combinado (CT − CL) | Alc.: alcalinidade | Dur.: dureza cálcica | CYA: ácido cianúrico. '
+                'Concentrações em mg/L; pH sem unidade. Traço: não medido ou não informado. '
+                'CC não calculado: falta CL ou CT. CC inconsistente: CT menor que CL ou valor negativo; conferir a medição. '
+                'CC ausente ou inconsistente não entra no resumo numérico.', 'small'),
                 p('Evolução dos parâmetros', 'h2')])
             graficos = [GraficoParametro(dados,k,label,unit,width=54.5*mm,height=36*mm) for k,label,unit in PARAMETROS]
             for i in range(0,6,3):
@@ -195,19 +211,15 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
             story.append(p('Resumo numérico da piscina', 'h2'))
             stats = [['Parâmetro', 'Mínimo', 'Média', 'Máximo', 'Nº de leituras']]
             labels = {'cloro_livre':'Cloro Livre', 'cloro_total':'Cloro Total'}
-            for k,label,_ in PARAMETROS:
-                vals = [numero(l.get(k)) for l in dados if numero(l.get(k)) is not None]
+            for k,label,_ in PARAMETROS_RELATORIO:
+                vals = [valor_parametro(l, k) for l in dados if valor_parametro(l, k) is not None]
                 stats.append([labels.get(k,label)] + ([fmt(min(vals)), fmt(round(sum(vals)/len(vals),2)), fmt(max(vals)), str(len(vals))] if vals else ['-']*4))
-            cc = [numero(l.get('cloro_total'))-numero(l.get('cloro_livre')) for l in dados
-                  if numero(l.get('cloro_total')) is not None and numero(l.get('cloro_livre')) is not None
-                  and numero(l.get('cloro_total')) >= numero(l.get('cloro_livre'))]
-            stats.append(['Cloro Combinado'] + ([fmt(min(cc)),fmt(round(sum(cc)/len(cc),2)),fmt(max(cc)),str(len(cc))] if cc else ['-']*4))
             story.append(tabela(stats,[54*mm,28*mm,28*mm,28*mm,33*mm]))
         story.extend([PageBreak(), p('Registro da operação', 'h1')])
         for titulo, chave in [('Observações da equipe','obs_geral'),('Resumo e recomendações operacionais','parecer_tecnico')]:
             if ctx.get(chave):
                 story.append(p(titulo,'h2')); story.extend(textos(ctx[chave]))
-        registros = [l for l in linhas if l.get('observacao') or l.get('dosagens') or l.get('problemas') or l.get('dosagens_da_visita')]
+        registros = [l for l in linhas_operacionais if l.get('observacao') or l.get('dosagens') or l.get('problemas') or l.get('dosagens_da_visita')]
         if registros:
             story.append(p('Ocorrências e dosagens registradas', 'h2'))
             doses_vistas = set()
