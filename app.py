@@ -19602,7 +19602,14 @@ if st.session_state.get("empresa_ativa", "aqua_gestao") == "bem_star":
 
         from utils.bem_star_mensal import (ABA as _BS_ABA, carregar_complementos, salvar_complementos,
                                           unir_agenda, token_pool, filtrar_analises_semanais, expandir)
-        from utils.bem_star_mensal_ui import renderizar_piscinas, renderizar_fotos
+        from utils import bem_star_mensal_ui as _bs_mensal_ui
+        # O servidor pode manter este módulo antigo quando o observador de arquivos
+        # atinge o limite do sistema. Atualiza só as funções, sem reiniciar sessões.
+        if getattr(_bs_mensal_ui, "REVISAO_RESTAURACAO", 0) < 1:
+            import importlib
+            _bs_mensal_ui = importlib.reload(_bs_mensal_ui)
+        renderizar_piscinas = _bs_mensal_ui.renderizar_piscinas
+        renderizar_fotos = _bs_mensal_ui.renderizar_fotos
         _bs_origem_ok = origem_validada(_situacao_csr_tela, chave_validacao_origem("bem_star", csr_sel, str(csr_mes or "").strip(), str(csr_ano or "").strip())) if "_situacao_csr_tela" in locals() else False
         with st.expander("Retomar complementos salvos deste cliente e mês"):
             st.caption("Fotos, tipos de piscina, agenda e observações podem ser salvos na nuvem pelo botão ao final. Carregar substitui os campos atuais deste cliente e mês pela versão salva.")

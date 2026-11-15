@@ -185,3 +185,7 @@ def renderizar_capa_mensal(st):
     escolhida = fotos.get(ss[chave])
     if escolhida and escolhida.get('bytes'):
         st.image(escolhida['bytes'], width=300)
+
+
+# Definido após as funções para sinalizar que a revisão terminou de carregar.
+REVISAO_RESTAURACAO = 1
