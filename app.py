@@ -1615,6 +1615,20 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
         payload["condominio"] = nome_condominio
         payload["id_visita"] = id_visita
         payload["status"] = payload.get("status", "Concluída")
+        # Fotos/assinaturas precisam sobreviver mesmo quando o Drive recusa upload.
+        # Guarda o conteúdo completo em partes e só publica a referência após releitura.
+        if (any(v for k, v in lancamento.items() if str(k).endswith(("_b64", "_base64")))
+                or any(lancamento.get(f"fotos_{cat}") for cat in ("antes", "depois", "cmaq", "extras"))
+                or len(json.dumps(payload, ensure_ascii=True)) > 38000):
+            from utils.arquivos_campo import salvar as salvar_arquivo_campo, contexto_visita, validar_fotos_visita
+            completo = dict(lancamento, data=data_normalizada, condominio=nome_condominio,
+                            id_visita=id_visita, status=payload["status"])
+            validar_fotos_visita(completo)
+            referencia = salvar_arquivo_campo(sh, contexto_visita(completo), completo)
+            if len(json.dumps(payload, ensure_ascii=True)) > 38000:
+                payload = {k: completo.get(k, "") for k in ("id_visita", "data", "condominio", "status", "operador",
+                    "tipo_visita", "visita_rt_semanal", "analise_semanal_bem_star", "acesso_analise_bem_star")}
+            payload["arquivo_campo_ref"] = referencia
         try:
             payload_json = json.dumps(payload, ensure_ascii=False)
         except Exception:
@@ -1668,6 +1682,7 @@ def sheets_salvar_lancamento_campo(lancamento: dict, nome_condominio: str):
 
     except Exception as e:
         _log_sheets_erro("sheets_salvar_lancamento_campo", e)
+        st.session_state["_sheets_ultimo_erro"] = str(e)
         return False
 
 
@@ -2257,6 +2272,12 @@ def _situacao_visitas_cache(nome_condominio: str) -> dict:
                 "problemas": _r(21),
             })
 
+        anexadas = [(i, lc) for i, lc in enumerate(lancamentos) if lc.get("arquivo_campo_ref")]
+        if anexadas:
+            from utils.arquivos_campo import carregar_varios, contexto_visita
+            recuperadas = carregar_varios(sh, [(lc["arquivo_campo_ref"], contexto_visita(lc)) for _, lc in anexadas])
+            for (i, _), recuperada in zip(anexadas, recuperadas):
+                lancamentos[i] = recuperada
         resultado["visitas"] = lancamentos
         resultado["ambiguas"] = ambiguas
         if ambiguas:
@@ -3976,8 +3997,7 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
     try:
         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
         pasta.mkdir(parents=True, exist_ok=True)
-        dados_local = {k: v for k, v in dados.items()
-                       if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
+        dados_local = dict(dados)
         with open(pasta / "_rascunho_operador.json", "w", encoding="utf-8") as f:
             json.dump(dados_local, f, ensure_ascii=False, indent=2)
         salvo_local = True
@@ -4003,11 +4023,12 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                 if aba_rasc is None:
                     aba_rasc = sh.add_worksheet(title="_Rascunhos", rows=500, cols=4)
                     aba_rasc.update(range_name="A1:D1", values=[["Condomínio", "Operador", "Salvo em", "Dados JSON"]])
-                dados_sh = {k: v for k, v in dados.items()
-                            if not any(p in str(k).lower() for p in ["b64","base64","assinatura_responsavel_b64"])}
-                payload = json.dumps(dados_sh, ensure_ascii=False)
-                if len(payload) > 45000:
-                    payload = payload[:45000] + "..."
+                from utils.arquivos_campo import salvar as salvar_arquivo_campo, contexto_rascunho, anexar_fotos_rascunho
+                dados_sh = anexar_fotos_rascunho(dados, pasta / "fotos_rascunho")
+                payload = json.dumps(dados_sh, ensure_ascii=True)
+                if dados_sh.get("_fotos_campo") or len(payload) > 38000:
+                    ref = salvar_arquivo_campo(sh, contexto_rascunho(nome_cond), dados_sh)
+                    payload = json.dumps({"arquivo_campo_ref": ref}, ensure_ascii=False)
                 todos = aba_rasc.get_all_values()
                 chave = nome_cond.strip().lower()
                 linha_existente = None
@@ -4022,10 +4043,11 @@ def salvar_rascunho_operador(nome_cond: str, dados: dict, salvar_sheets: bool = 
                     proxima = max(len(todos) + 1, 2)
                     aba_rasc.update(range_name=f"A{proxima}:D{proxima}", values=[nova], value_input_option="RAW")
                 salvo_sheets = True
-        except Exception:
-            pass
+        except Exception as e:
+            st.session_state["_op_rascunho_erro"] = f"Cópia na nuvem não confirmada: {e}"
 
-    return salvo_local or salvo_sheets  # False: o rascunho não foi gravado em lugar nenhum
+    # No botão explícito, sucesso significa cópia confirmada fora do servidor.
+    return salvo_sheets if salvar_sheets and _rascunho_usa_sheets() else salvo_local
 
 
 def carregar_rascunho_operador(nome_cond: str) -> dict:
@@ -4067,6 +4089,10 @@ def carregar_rascunho_operador(nome_cond: str) -> dict:
             for row in todos[1:]:
                 if row and str(row[0]).strip().lower() == chave and len(row) >= 4 and row[3].strip():
                     dados = json.loads(row[3])
+                    if dados.get("arquivo_campo_ref"):
+                        from utils.arquivos_campo import carregar_varios, contexto_rascunho, restaurar_fotos_rascunho
+                        dados = carregar_varios(sh, [(dados["arquivo_campo_ref"], contexto_rascunho(nome_cond))])[0]
+                        dados = restaurar_fotos_rascunho(dados, pasta / "fotos_rascunho")
                     try:
                         pasta = GENERATED_DIR / slugify_nome(nome_cond.strip())
                         pasta.mkdir(parents=True, exist_ok=True)
@@ -6068,11 +6094,15 @@ def botao_baixar_documento(caminho: Path, chave: str, rotulo: str = "Baixar") ->
     """Download do arquivo guardado no servidor (no Streamlit Cloud "Abrir" usa os.startfile, que
     só funciona em Windows local). O arquivo só é lido no clique."""
     import mimetypes
+    if not empresa_do_escritorio(st.session_state):
+        return
     caminho = Path(caminho)
     if caminho.is_file():
-        st.download_button(rotulo, data=lambda c=caminho: c.read_bytes(), file_name=caminho.name,
+        st.download_button(rotulo, data=lambda c=caminho: c.read_bytes(), file_name=nome_download_seguro(caminho.name),
                            mime=mimetypes.guess_type(caminho.name)[0] or "application/octet-stream",
                            key=chave, use_container_width=True)
+    else:
+        st.caption("Arquivo indisponível neste servidor. Recupere a cópia salva antes de baixar.")
 
 
 def abrir_arquivo_windows(caminho: Path):
@@ -7307,7 +7337,7 @@ def exibir_bloco_envio_bem_star(
 
     with _ec3:
         if pasta and pasta.exists():
-            if st.button("📁 Abrir pasta", key=f"bs_pasta_{key_suffix}",
+            if platform.system() == "Windows" and st.button("📁 Abrir pasta", key=f"bs_pasta_{key_suffix}",
                     use_container_width=True):
                 abrir_pasta_windows(pasta)
 
@@ -7611,7 +7641,7 @@ def exibir_envio_email_documentos_aqua(
                 st.error(msg)
     with _b2:
         if pasta_condominio and Path(pasta_condominio).exists():
-            if st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
+            if platform.system() == "Windows" and st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
                 abrir_pasta_windows(Path(pasta_condominio))
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -12655,7 +12685,7 @@ def gerar_relatorio_mensal() -> tuple[bool, str]:
         else:
             st.warning(f"PDF do relatório não gerado. Erro: {erro_pdf}")
     with c3:
-        if st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
+        if platform.system() == "Windows" and st.button("Abrir pasta do condomínio", key="abrir_pasta_relatorio", use_container_width=True):
             abrir_pasta_windows(pasta_condominio)
     st.markdown("</div>", unsafe_allow_html=True)
     return True, resultado["mensagem"]
@@ -14066,7 +14096,7 @@ if empresa_do_escritorio(st.session_state):
                                     st.warning("Nenhum cadastro salvo encontrado para este condomínio.")
 
                         with col_h2:
-                            if st.button(
+                            if platform.system() == "Windows" and st.button(
                                 "Abrir pasta",
                                 key=f"abrir_pasta_{folder_key}",
                                 use_container_width=True,
@@ -14133,7 +14163,7 @@ if empresa_do_escritorio(st.session_state):
                                 col_a1, col_a2, col_a3 = st.columns([1.15, 1.0, 0.85])
 
                                 with col_a1:
-                                    if st.button(
+                                    if platform.system() == "Windows" and st.button(
                                         "Abrir arquivo",
                                         key=f"abrir_arq_{file_key}",
                                         use_container_width=True,
@@ -14141,7 +14171,7 @@ if empresa_do_escritorio(st.session_state):
                                         abrir_arquivo_windows(caminho)
 
                                 with col_a2:
-                                    if st.button(
+                                    if platform.system() == "Windows" and st.button(
                                         "Abrir pasta",
                                         key=f"abrir_pasta_arq_{file_key}",
                                         use_container_width=True,
@@ -15011,9 +15041,11 @@ if modo == "📱 Modo Operador (Campo / Celular)":
 
     _salvo = st.session_state.pop("op_salvo_sucesso", None)
     if _salvo:
+        _mensagem_salvo = ("✅ Lançamento e anexos confirmados na nuvem" if _salvo.get("nuvem", True)
+                          else "⚠️ Cópia somente local — envio à nuvem pendente")
         st.markdown(f"""
         <div class="op-salvo">
-            ✅ <strong>Lançamento salvo!</strong><br>
+            <strong>{_mensagem_salvo}</strong><br>
             Condomínio: {_salvo['nome']}<br>
             Data: {_salvo['data']}<br>
             Operador: {_salvo['operador']}<br>
@@ -15936,6 +15968,7 @@ avisar o RT.
 
         # ── Botão salvar rascunho ─────────────────────────────────────────────
         st.markdown('<div class="op-card">', unsafe_allow_html=True)
+        st.caption("Para retomar em outro aparelho ou após um reinício, use Salvar rascunho e aguarde a confirmação da cópia na nuvem.")
         _rc_col1, _rc_col2 = st.columns([1, 1])
         with _rc_col1:
             if st.button("📋 Salvar rascunho", key="btn_salvar_rascunho",
@@ -15947,7 +15980,7 @@ avisar o RT.
                     if salvar_rascunho_operador(op_nome_cond, _dados_rasc, salvar_sheets=True):
                         st.success(f"✅ Rascunho salvo! Pode fechar e retomar depois.")
                     else:
-                        st.error("Erro ao salvar rascunho.")
+                        st.error(st.session_state.get("_op_rascunho_erro") or "Não foi possível confirmar o rascunho na nuvem. Mantenha a tela aberta e tente novamente.")
                 else:
                     st.warning("Selecione o condomínio antes de salvar o rascunho.")
         with _rc_col2:
@@ -16111,9 +16144,6 @@ avisar o RT.
                                                            _dest.read_bytes(), _nome_dest, _id_rasc, _b64s_cat[-1])
                                 except Exception:
                                     pass
-                    _shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
-                    from utils.persistencia_pastas import excluir_subpasta as _excluir_subpasta_copia
-                    _excluir_copia_persistente(_excluir_subpasta_copia, pasta_op, "fotos_rascunho")
 
                 fotos_salvas_op = fotos_antes_nomes + fotos_depois_nomes + fotos_cmaq_nomes + fotos_extras_nomes
                 fotos_drive_ids = fotos_antes_ids   + fotos_depois_ids   + fotos_cmaq_ids + fotos_extras_ids
@@ -16254,13 +16284,18 @@ avisar o RT.
                     "nome": op_nome_cond, "data": data_vis,
                     "operador": op_operador.strip() or "Não informado",
                     "total": len(pendentes),
+                    "nuvem": bool(ok_sheets),
                 }
                 # Guarda último lançamento para gerar relatório
                 st.session_state["_op_ultimo_lancamento"] = lancamento
                 # Sinaliza limpeza para o próximo rerun — não toca nos widgets agora
-                st.session_state["op_limpar_campos"] = True
+                st.session_state["op_limpar_campos"] = bool(ok_sheets)
                 # Remove rascunho após salvar lançamento definitivo
-                deletar_rascunho_operador(op_nome_cond)
+                if ok_sheets:
+                    shutil.rmtree(str(_pasta_rasc_f), ignore_errors=True)
+                    from utils.persistencia_pastas import excluir_subpasta as _excluir_subpasta_copia
+                    _excluir_copia_persistente(_excluir_subpasta_copia, pasta_op, "fotos_rascunho")
+                    deletar_rascunho_operador(op_nome_cond)
                 st.rerun()
 
         pasta_hc = GENERATED_DIR / slugify_nome(op_nome_cond.strip()) if op_nome_cond.strip() else None
@@ -18960,7 +18995,7 @@ if _empresa_ativa_codigo() != "bem_star":
         dc1, dc2, dc3, dc4, dc5 = st.columns(5)
         with dc1:
             if ultimo_contrato:
-                if st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
+                if platform.system() == "Windows" and st.button("Abrir último contrato", key=f"abrir_contrato_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_contrato["path"])
                 botao_baixar_documento(ultimo_contrato["path"], f"baixar_contrato_{item_key}", "Baixar último contrato")
             else:
@@ -18968,7 +19003,7 @@ if _empresa_ativa_codigo() != "bem_star":
 
         with dc2:
             if ultimo_aditivo:
-                if st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
+                if platform.system() == "Windows" and st.button("Abrir último aditivo", key=f"abrir_aditivo_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_aditivo["path"])
                 botao_baixar_documento(ultimo_aditivo["path"], f"baixar_aditivo_{item_key}", "Baixar último aditivo")
             else:
@@ -18976,7 +19011,7 @@ if _empresa_ativa_codigo() != "bem_star":
 
         with dc3:
             if ultimo_relatorio:
-                if st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
+                if platform.system() == "Windows" and st.button("Abrir último relatório", key=f"abrir_relatorio_{item_key}", use_container_width=True):
                     abrir_arquivo_windows(ultimo_relatorio["path"])
                 botao_baixar_documento(ultimo_relatorio["path"], f"baixar_relatorio_{item_key}", "Baixar último relatório")
             else:
@@ -19046,7 +19081,7 @@ if _empresa_ativa_codigo() != "bem_star":
                         st.rerun()
 
                 with c2:
-                    if st.button("Abrir pasta", key=f"abrir_vencido_{item_key}", use_container_width=True):
+                    if platform.system() == "Windows" and st.button("Abrir pasta", key=f"abrir_vencido_{item_key}", use_container_width=True):
                         abrir_pasta_windows(pasta)
 
                 with c3:
@@ -19104,7 +19139,7 @@ if _empresa_ativa_codigo() != "bem_star":
                         st.rerun()
 
                 with c2:
-                    if st.button("Abrir pasta", key=f"abrir_vencendo_{item_key}", use_container_width=True):
+                    if platform.system() == "Windows" and st.button("Abrir pasta", key=f"abrir_vencendo_{item_key}", use_container_width=True):
                         abrir_pasta_windows(pasta)
 
                 with c3:
@@ -19170,7 +19205,7 @@ if _empresa_ativa_codigo() != "bem_star":
                             st.rerun()
 
                     with c2:
-                        if st.button("Abrir pasta", key=f"abrir_legado_{item_key}", use_container_width=True):
+                        if platform.system() == "Windows" and st.button("Abrir pasta", key=f"abrir_legado_{item_key}", use_container_width=True):
                             abrir_pasta_windows(pasta)
 
                     with c3:
@@ -19189,7 +19224,7 @@ if _empresa_ativa_codigo() != "bem_star":
                             st.session_state.painel_acao_msg = f"Cadastro de '{nome_exibicao}' carregado para edição."
                             st.rerun()
                     with c2:
-                        if st.button("Abrir pasta", key=f"abrir_indefinido_{item_key}", use_container_width=True):
+                        if platform.system() == "Windows" and st.button("Abrir pasta", key=f"abrir_indefinido_{item_key}", use_container_width=True):
                             abrir_pasta_windows(pasta)
                     with c3:
                         st.button("Gerar aditivo renovação", key=f"aditivo_indefinido_{item_key}", disabled=True, use_container_width=True)
@@ -21514,7 +21549,7 @@ if _adt_dados_encontrados:
                             st.warning("PDF não disponível. Baixe o DOCX.")
 
                     with _adt_col_pasta:
-                        if st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
+                        if platform.system() == "Windows" and st.button("📁 Abrir pasta do aditivo", key="btn_abrir_pasta_aditivo_cnpj"):
                             abrir_pasta_windows(_adt_pasta_encontrada)
 
                     # _EMAIL_ADITIVO_CNPJ_AQUA_V1_
@@ -21605,7 +21640,7 @@ with col_btn3:
         st.rerun()
 
 with col_btn4:
-    if st.button("📁 Abrir pasta", use_container_width=True):
+    if platform.system() == "Windows" and st.button("📁 Abrir pasta", use_container_width=True):
         abrir_pasta_windows(GENERATED_DIR)
 
 st.markdown("</div>", unsafe_allow_html=True)
@@ -24308,7 +24343,7 @@ def exibir_bloco_envio(
                 st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto_mailto, msg_editada), use_container_width=True)
 
     with col_env3:
-        if st.button("📂 Abrir pasta", use_container_width=True, key=f"aq_abrir_pasta_{_slug_envio}"):
+        if platform.system() == "Windows" and st.button("📂 Abrir pasta", use_container_width=True, key=f"aq_abrir_pasta_{_slug_envio}"):
             abrir_pasta_windows(pasta_condominio)
 
     with st.expander("📧 Enviar direto pelo sistema com assinatura premium Aqua Gestão", expanded=False):

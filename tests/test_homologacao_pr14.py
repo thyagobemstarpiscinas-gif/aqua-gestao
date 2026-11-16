@@ -148,9 +148,14 @@ class FotoNoPdfDaVisita(_Homologacao):
 
     def test_visita_regerada_do_sheets_baixa_a_foto_do_drive(self):
         lanc, _ = self._gravar_v00005(com_id_local=True)
+        # Compatibilidade: visita antiga que só tinha o ID do Drive, sem snapshot.
+        for row in self.planilha.worksheet('🔬 Visitas').linhas:
+            if len(row) > 22 and row[1] == 'V00005':
+                payload = json.loads(row[22]); payload.pop('arquivo_campo_ref', None)
+                row[22] = json.dumps(payload)
         visitas = self.app["situacao_visitas_condominio"](EPSILON)["visitas"]
         v5 = next(v for v in visitas if v["id_visita"] == "V00005")
-        self.assertFalse(any(k.endswith("_b64") for k in v5), "o Sheets não guarda base64")
+        self.assertFalse(any(k.endswith("_b64") for k in v5), "visita legada depende dos IDs do Drive")
         shutil.rmtree(self.gerados / slugify_nome(EPSILON))  # outro servidor: sem cópia local
         pdf = self.app["gerar_pdf_relatorio_visita_bem_star"](v5, EPSILON)
         self.assertIn((640, 480), _imagens_pdf(pdf))
