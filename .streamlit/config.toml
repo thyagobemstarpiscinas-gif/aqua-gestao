@@ -1,0 +1,6 @@
+[server]
+# O servidor Cloud atingiu o limite de instâncias inotify durante os reruns.
+# Polling mantém a detecção de mudanças sem consumir esses observadores.
+fileWatcherType = "poll"
+# Dados e fotos não são código: sua gravação não deve disparar recargas.
+folderWatchBlacklist = ["generated"]
