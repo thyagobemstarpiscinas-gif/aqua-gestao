@@ -25,7 +25,7 @@ MESES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho'
 
 def serie_grafico(linhas, campo):
     """Preserva todas as datas, inclusive as lacunas; nunca interpola ausências."""
-    return [(l['data'], numero(l.get(campo))) for l in sorted(linhas, key=lambda l: data_ordem(l['data']))]
+    return [(l['data'], valor_parametro(l, campo)) for l in sorted(linhas, key=lambda l: data_ordem(l['data']))]
 
 
 class GraficoParametro(Flowable):
@@ -200,9 +200,10 @@ def gerar_pdf(output_path, ctx, *, cnpj, responsavel, logo_path):
                 'CC não calculado: falta CL ou CT. CC inconsistente: CT menor que CL ou valor negativo; conferir a medição. '
                 'CC ausente ou inconsistente não entra no resumo numérico.', 'small'),
                 p('Evolução dos parâmetros', 'h2')])
-            graficos = [GraficoParametro(dados,k,label,unit,width=54.5*mm,height=36*mm) for k,label,unit in PARAMETROS]
-            for i in range(0,6,3):
-                t = Table([[graficos[i], graficos[i+1], graficos[i+2]]], colWidths=[57*mm]*3, hAlign='LEFT')
+            graficos = [GraficoParametro(dados,k,label,unit,width=40.5*mm,height=36*mm) for k,label,unit in PARAMETROS_RELATORIO]
+            for i in range(0,len(graficos),4):
+                linha = graficos[i:i+4]
+                t = Table([linha + ['']*(4-len(linha))], colWidths=[42.75*mm]*4, hAlign='LEFT')
                 t.setStyle(TableStyle([('LEFTPADDING',(0,0),(-1,-1),0),('RIGHTPADDING',(0,0),(-1,-1),0),
                                       ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
                 story.append(t)

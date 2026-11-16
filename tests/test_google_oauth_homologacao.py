@@ -143,6 +143,15 @@ class AbaFalsa:
     def insert_row(self, valores, indice, value_input_option=None):
         self.linhas.insert(indice - 1, [str(v) for v in valores])
 
+    def append_rows(self, valores, value_input_option=None):
+        inicio = len(self.linhas) + 1
+        self.linhas.extend([[str(v) for v in linha] for linha in valores])
+        return {'updates': {'updatedRange': f"'{self.title}'!A{inicio}:F{len(self.linhas)}"}}
+
+    def batch_get(self, ranges):
+        return [self.linhas[int(re.search(r'\d+', r.split(':')[0]).group())-1:
+                            int(re.search(r'\d+', r.split(':')[1]).group())] for r in ranges]
+
     def update_title(self, titulo):
         dono = getattr(self, "dono", None)
         if dono is not None:
