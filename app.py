@@ -7437,7 +7437,7 @@ def assinatura_email_aqua_gestao() -> str:
 
 def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexos: list[Path], cc: str = "", bcc: str = "") -> tuple[bool, str]:
     try:
-        import smtplib
+        from utils.email_smtp import enviar_mensagem_smtp
         import mimetypes
         from email.message import EmailMessage
         from html import escape
@@ -7495,10 +7495,11 @@ def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexo
             maintype, subtype = ctype.split("/", 1)
             msg.add_attachment(p.read_bytes(), maintype=maintype, subtype=subtype, filename=p.name)
 
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=45) as smtp:
-            smtp.starttls()
-            smtp.login(smtp_user, smtp_password)
-            smtp.send_message(msg)
+        enviado, detalhe = enviar_mensagem_smtp(
+            msg, smtp_host, smtp_port, smtp_user, smtp_password, timeout=30
+        )
+        if not enviado:
+            return False, detalhe
 
         return True, f"E-mail enviado com sucesso para {destinatario}. Anexos: {len(anexos_validos)}."
     except Exception as e:
@@ -24229,7 +24230,7 @@ def listar_anexos_pasta_condominio(pasta_condominio: Path) -> list[Path]:
 def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str, anexos: list[Path] | None = None, cc: str = "", bcc: str = "") -> tuple[bool, str]:
     """Envia e-mail HTML com anexos usando SMTP configurado no Streamlit Secrets."""
     try:
-        import smtplib
+        from utils.email_smtp import enviar_mensagem_smtp
         import mimetypes
         from email.message import EmailMessage
         from email.utils import formataddr
@@ -24282,12 +24283,12 @@ def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str,
                 )
 
         destinatarios_reais = [e.strip() for e in ([destinatario] + cc.split(",") + bcc.split(",")) if e.strip()]
-        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-            smtp.login(cfg["smtp_user"], cfg["smtp_password"])
-            smtp.send_message(msg, from_addr=cfg["smtp_user"], to_addrs=destinatarios_reais)
+        enviado, detalhe = enviar_mensagem_smtp(
+            msg, cfg["smtp_host"], cfg["smtp_port"], cfg["smtp_user"], cfg["smtp_password"],
+            destinatarios=destinatarios_reais,
+        )
+        if not enviado:
+            return False, detalhe
 
         return True, "E-mail enviado com sucesso."
     except Exception as e:
