@@ -4,8 +4,18 @@ from pathlib import Path
 
 
 EMAIL_ACQUA = "acqua.gestao.rt@gmail.com"
+PEDIDO_CONFIRMACAO = (
+    "Por gentileza, confirme o recebimento deste e-mail e a abertura do relatório em anexo."
+)
 LOGO_CID = "assinatura-acqua@aqua-gestao"
 LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "assinatura_acqua.png"
+
+
+def mensagem_com_confirmacao(mensagem: str) -> str:
+    texto = (mensagem or "").strip()
+    if PEDIDO_CONFIRMACAO.casefold() not in texto.casefold():
+        texto = (texto + "\n\n" + PEDIDO_CONFIRMACAO).strip()
+    return texto
 
 
 def assinatura_email_aqua_gestao() -> str:
@@ -45,6 +55,7 @@ def montar_email_html_aqua(mensagem_texto: str) -> str:
 def adicionar_corpo_email_aqua(msg, mensagem_texto: str) -> None:
     """Inclui versões texto/HTML e a logo inline, independente de acesso ao Drive."""
     logo = LOGO_PATH.read_bytes()
+    mensagem_texto = mensagem_com_confirmacao(mensagem_texto)
     assinatura_texto = (
         "ACQUA GESTÃO\nCONTROLE TÉCNICO DE PISCINAS\n"
         "Thyago Fernando da Silveira\nTécnico em Química · Responsável Técnico\n"
