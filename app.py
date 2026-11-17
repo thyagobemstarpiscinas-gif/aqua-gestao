@@ -4739,6 +4739,8 @@ def relatorio_rt_resultado_salvamento_manual() -> str:
     chave (as duas foram preservadas). "erro": nem a cópia local foi garantida.
     """
     ss = st.session_state
+    if not _relatorio_rt_tem_dados_em_tela():
+        return "vazio"  # ausência de edição não é falha de conexão
     motivo = f"{ss.get('_rt_rasc_aviso', '')} {ss.get('_relatorio_rt_autosave_erro', '')}"
     try:
         preservado = _relatorio_rt_preservar_localmente()
@@ -13648,6 +13650,11 @@ def _relatorio_rt_cb_confirmar_descarte(chave: str):
 def _relatorio_rt_renderizar_painel_rascunho():
     try:
         ss = st.session_state
+        # Atualiza a confirmação ANTES de mostrar o aviso, inclusive na primeira
+        # abertura sem edição. A retentativa mantém o intervalo e as proteções
+        # contra sobrescrita; não modifica os campos do formulário.
+        if _rascunho_backend() != "local":
+            _relatorio_rt_sincronizar_pendentes()
         agora = datetime.now().timestamp()
         cache = ss.get("_rt_rasc_lista_cache")
         if cache and agora - cache[0] < 20 and cache[1].get("empresa") == ss.get("empresa_ativa", "aqua_gestao"):
@@ -23750,7 +23757,9 @@ if st.button("💾 Salvar rascunho", use_container_width=True):
         st.success(f"Rascunho completo preservado {_rascunho_destino('em')}. Use o painel de versões para restaurar.")
     else:
         _resultado_manual_rt = relatorio_rt_resultado_salvamento_manual()
-        if _resultado_manual_rt == "pendente":
+        if _resultado_manual_rt == "vazio":
+            st.info("O formulário está vazio; não há novas alterações para salvar.")
+        elif _resultado_manual_rt == "pendente":
             st.warning(f"Rascunho gravado neste servidor; o envio {_rascunho_destino('a')} ficou pendente (falha de conexão) "
                        f"e será refeito automaticamente. O aviso some quando {_rascunho_destino('o_min')} confirmar o recebimento.")
         elif _resultado_manual_rt == "conflito":
