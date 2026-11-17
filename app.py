@@ -7459,6 +7459,8 @@ def _coletar_documentos_email_aqua(pasta: Path | None = None, documentos_sugerid
             if not caminho:
                 return
             p = Path(caminho)
+            if pasta and p.resolve().parent != Path(pasta).resolve():
+                return
             if p.exists() and p.is_file() and p.suffix.lower() in (".pdf", ".docx"):
                 if p.name not in {DADOS_JSON_NAME, MANIFEST_JSON_NAME}:
                     docs.append(p)
@@ -7504,93 +7506,17 @@ def exibir_envio_email_documentos_aqua(
     documentos_sugeridos: list | None = None,
     key_prefix: str = "docs_aqua",
 ):
+    from utils.envio_documentos import exibir_envio_documentos
     docs = _coletar_documentos_email_aqua(pasta_condominio, documentos_sugeridos)
-    # Nao retorna se nao ha docs locais — permite upload direto na tela
-    # if not docs: return  # <-- removido para sempre mostrar o modulo
-
-    nome_condominio = (nome_condominio or "cliente").strip()
-    email_padrao = (email_cliente or st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
-    if not mensagem_padrao:
-        mensagem_padrao = (
-            f"Prezados,\n\n"
-            f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {nome_condominio}.\n\n"
-            "Seguem os documentos para conferência, registro e arquivo interno.\n\n"
-            "Permaneço à disposição para qualquer esclarecimento."
-        )
-
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("📧 Enviar documentos por e-mail")
-    st.caption("Selecione documentos já gerados ou faça upload de PDFs para enviar ao cliente.")
-
-    status_cfg, erro_cfg = _email_aqua_configurado()
-    if not status_cfg:
-        st.warning("E-mail SMTP ainda não configurado: " + erro_cfg)
-
-    # Upload direto de arquivos (nao depende de arquivos locais)
-    _uploads_email = st.file_uploader(
-        "📎 Adicionar PDFs/DOCX para envio",
-        type=["pdf", "docx"],
-        accept_multiple_files=True,
-        key=f"email_upload_{key_prefix}",
-        help="Faça upload dos documentos que deseja enviar. Eles serão anexados ao e-mail."
+    st.subheader("📤 Enviar documentos ao cliente")
+    exibir_envio_documentos(
+        st, nome_condominio=nome_condominio, documentos=docs,
+        email_cliente=email_cliente,
+        mensagem_padrao=mensagem_padrao or f"Prezados,\n\nEncaminho em anexo a documentação da ACQUA GESTÃO referente ao {nome_condominio}.",
+        key=key_prefix, enviar_email=enviar_email_aqua_smtp,
+        email_configurado=_email_aqua_configurado(),
+        selecionados_padrao=[Path(p) for p in (documentos_sugeridos or []) if p],
     )
-
-    _c1, _c2 = st.columns([1.15, 1.15])
-    with _c1:
-        destinatario = st.text_input("Destinatário", value=email_padrao, key=f"email_destinatario_{key_prefix}")
-    with _c2:
-        assunto = st.text_input(
-            "Assunto",
-            value=f"Documentação técnica Aqua Gestão - {nome_condominio}",
-            key=f"email_assunto_{key_prefix}",
-        )
-
-    with st.expander("CC / CCO", expanded=False):
-        cc = st.text_input("CC", value="", key=f"email_cc_{key_prefix}")
-        bcc = st.text_input("CCO", value="", key=f"email_bcc_{key_prefix}")
-
-    mensagem = st.text_area("Mensagem", value=mensagem_padrao, height=180, key=f"email_msg_{key_prefix}")
-
-    opcoes = [p.name for p in docs]
-    mapa = {p.name: p for p in docs}
-    selecionados = st.multiselect(
-        "Anexos (documentos locais)",
-        options=opcoes,
-        default=opcoes,
-        key=f"email_anexos_{key_prefix}",
-        help="Documentos gerados na sessão atual. Desmarque o que não quiser enviar.",
-    ) if opcoes else []
-
-    _n_uploads = len(st.session_state.get(f"email_upload_{key_prefix}") or [])
-    _n_local = len(selecionados)
-    st.caption(f"{_n_local} arquivo(s) local(is) + {_n_uploads} upload(s) = {_n_local + _n_uploads} anexo(s) total.")
-
-    if not opcoes and _n_uploads == 0:
-        st.info("ℹ️ Nenhum documento encontrado. Faça upload dos PDFs acima para enviar.")
-
-    _b1, _b2 = st.columns([1.2, 1])
-    with _b1:
-        if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"btn_enviar_email_{key_prefix}"):
-            # Anexos locais selecionados
-            anexos = [mapa[n] for n in selecionados if n in mapa]
-            # Anexos por upload — salva temp e adiciona
-            import tempfile as _tmp
-            _tmp_dir = Path(_tmp.mkdtemp())
-            for _uf in (st.session_state.get(f"email_upload_{key_prefix}") or []):
-                _tmp_path = _tmp_dir / _uf.name
-                _tmp_path.write_bytes(_uf.getbuffer())
-                anexos.append(_tmp_path)
-            ok, msg = enviar_email_aqua_smtp(destinatario, assunto, mensagem, anexos, cc=cc, bcc=bcc)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
-    with _b2:
-        if pasta_condominio and Path(pasta_condominio).exists():
-            if platform.system() == "Windows" and st.button("📁 Abrir pasta dos documentos", use_container_width=True, key=f"btn_email_abrir_pasta_{key_prefix}"):
-                abrir_pasta_windows(Path(pasta_condominio))
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================
 # AÇÕES DO PAINEL
@@ -18773,7 +18699,7 @@ if _empresa_ativa_codigo() != "bem_star":
     st.markdown('<div class="section-card aq-only">', unsafe_allow_html=True)
     ancora(st, "nav-envio")
     st.subheader("📧 Central de Envio de Documentos")
-    st.caption("Selecione contrato, aditivo, termo de ciência, POPs, relatórios ou anexos manuais e envie por SMTP Gmail com assinatura premium Aqua Gestão.")
+    st.caption("Escolha os documentos e envie por e-mail, compartilhe pelo WhatsApp ou use os dois canais.")
 
     _pastas_envio = sorted([p for p in GENERATED_DIR.iterdir() if p.is_dir()], key=lambda p: p.name.lower()) if GENERATED_DIR.exists() else []
     _pastas_envio = filtrar_pastas_por_empresa(_pastas_envio, "aqua_gestao")
@@ -18801,104 +18727,22 @@ if _empresa_ativa_codigo() != "bem_star":
         _pasta_cond_envio = None
         st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
 
-    _email_envio_padrao = (st.session_state.get("email_cliente") or st.session_state.get("termo_email_cliente") or "").strip()
     try:
         _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
-        _email_envio_padrao = _email_envio_padrao or str(_dados_cond_envio.get("email_cliente", "") or _dados_cond_envio.get("email", "") or "").strip()
     except Exception:
         _dados_cond_envio = {}
-
-    _docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio, st.session_state.get("ultimos_docs_gerados") or [])
-    _docs_por_tipo = {"Contrato": [], "Aditivo": [], "Termo de ciência": [], "POP": [], "Relatório": [], "Outros": []}
-    for _doc in _docs_envio:
-        _nm = _doc.name.lower()
-        if "contrato" in _nm:
-            _docs_por_tipo["Contrato"].append(_doc)
-        elif "aditivo" in _nm:
-            _docs_por_tipo["Aditivo"].append(_doc)
-        elif "termo" in _nm or "ciencia" in _nm or "ciência" in _nm:
-            _docs_por_tipo["Termo de ciência"].append(_doc)
-        elif "pop" in _nm:
-            _docs_por_tipo["POP"].append(_doc)
-        elif "relatorio" in _nm or "relatório" in _nm:
-            _docs_por_tipo["Relatório"].append(_doc)
-        else:
-            _docs_por_tipo["Outros"].append(_doc)
-
+    _email_envio_padrao = str(_dados_cond_envio.get("email_cliente") or _dados_cond_envio.get("email") or "").strip()
+    _whatsapp_envio_padrao = str(_dados_cond_envio.get("whatsapp_cliente") or _dados_cond_envio.get("telefone") or "").strip()
+    _docs_envio = _coletar_documentos_email_aqua(_pasta_cond_envio)
     with st.expander("📤 Compor e enviar documentação", expanded=False):
-        _env_c1, _env_c2 = st.columns(2)
-        with _env_c1:
-            _dest_env = st.text_input("Destinatário *", value=_email_envio_padrao, key="central_email_destinatario", placeholder="email@condominio.com.br")
-            _assunto_env = st.text_input("Assunto *", value=f"Documentação técnica Aqua Gestão - {_nome_cond_envio}", key="central_email_assunto")
-        with _env_c2:
-            _cc_env = st.text_input("CC", value="", key="central_email_cc", placeholder="administradora@exemplo.com.br")
-            _bcc_env = st.text_input("CCO", value="", key="central_email_bcc")
-
-        _msg_env_padrao = (
-            f"Prezados,\n\n"
-            f"Encaminho em anexo a documentação técnica gerada pela Aqua Gestão referente ao {_nome_cond_envio}.\n\n"
-            "Os documentos selecionados seguem para conferência, registro e arquivo interno do condomínio.\n\n"
-            "Permaneço à disposição para qualquer esclarecimento."
+        from utils.envio_documentos import exibir_envio_documentos
+        exibir_envio_documentos(
+            st, nome_condominio=_nome_cond_envio, documentos=_docs_envio,
+            email_cliente=_email_envio_padrao, whatsapp_cliente=_whatsapp_envio_padrao,
+            mensagem_padrao=(f"Prezados,\n\nEncaminho em anexo a documentação técnica da ACQUA GESTÃO referente ao {_nome_cond_envio}.\n\nPermaneço à disposição para esclarecimentos."),
+            key="central_envio", enviar_email=enviar_email_aqua_smtp,
+            email_configurado=_email_aqua_configurado(), selecionados_padrao=[],
         )
-        _msg_env = st.text_area("Mensagem", value=_msg_env_padrao, height=180, key="central_email_mensagem")
-
-        st.markdown("**Selecionar documentos locais:**")
-        _selecionados_envio = []
-        for _tipo_doc, _lista_docs in _docs_por_tipo.items():
-            if not _lista_docs:
-                continue
-            _opcoes_tipo = [p.name for p in _lista_docs]
-            _default_tipo = _opcoes_tipo[:2] if _tipo_doc in ("Contrato", "Aditivo", "Termo de ciência", "Relatório") else []
-            _sel_tipo = st.multiselect(
-                _tipo_doc,
-                options=_opcoes_tipo,
-                default=_default_tipo,
-                key=f"central_email_tipo_{slugify_nome(_tipo_doc)}",
-            )
-            _mapa_tipo = {p.name: p for p in _lista_docs}
-            _selecionados_envio.extend([_mapa_tipo[n] for n in _sel_tipo if n in _mapa_tipo])
-
-        _uploads_env = st.file_uploader(
-            "📎 Adicionar anexos manuais (PDF/DOCX)",
-            type=["pdf", "docx"],
-            accept_multiple_files=True,
-            key="central_email_uploads",
-        )
-
-        _status_cfg_env, _erro_cfg_env = _email_aqua_configurado()
-        if not _status_cfg_env:
-            st.warning(f"⚠️ SMTP não configurado: {_erro_cfg_env}")
-
-        _qtd_upload_env = len(_uploads_env or [])
-        st.caption(f"{len(_selecionados_envio)} documento(s) local(is) + {_qtd_upload_env} upload(s) selecionado(s).")
-
-        if st.button("📨 Enviar documentos selecionados", type="primary", use_container_width=True, key="central_email_btn_enviar", disabled=not _status_cfg_env):
-            if not _dest_env.strip():
-                st.error("Informe o destinatário.")
-            elif not _assunto_env.strip():
-                st.error("Informe o assunto.")
-            elif not _selecionados_envio and not _uploads_env:
-                st.error("Selecione ou envie pelo menos um anexo.")
-            else:
-                import tempfile as _tmp_env
-                _tmp_dir_env = Path(_tmp_env.mkdtemp())
-                _anexos_env = list(_selecionados_envio)
-                for _uf_env in (_uploads_env or []):
-                    _p_env = _tmp_dir_env / _uf_env.name
-                    _p_env.write_bytes(_uf_env.getbuffer())
-                    _anexos_env.append(_p_env)
-                _ok_env, _msg_retorno_env = enviar_email_aqua_smtp(
-                    destinatario=_dest_env.strip(),
-                    assunto=_assunto_env.strip(),
-                    mensagem=_msg_env,
-                    anexos=_anexos_env,
-                    cc=_cc_env.strip(),
-                    bcc=_bcc_env.strip(),
-                )
-                if _ok_env:
-                    st.success(f"✅ {_msg_retorno_env}")
-                else:
-                    st.error(f"❌ {_msg_retorno_env}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -24161,105 +24005,16 @@ def exibir_bloco_envio(
     email_cliente: str,
     mensagem: str,
 ):
-    """Bloco de envio unificado para Aqua Gestão: WhatsApp, mailto e envio direto SMTP com assinatura premium."""
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    from utils.envio_documentos import exibir_envio_documentos
     st.subheader("📤 Enviar para o cliente")
-
-    _slug_envio = slugify_nome(nome_condominio)
-
-    msg_editada = st.text_area(
-        "Mensagem",
-        value=mensagem,
-        height=220,
-        key=f"aq_msg_envio_{_slug_envio}",
-        label_visibility="collapsed",
+    docs = listar_anexos_pasta_condominio(pasta_condominio)
+    exibir_envio_documentos(
+        st, nome_condominio=nome_condominio, documentos=docs,
+        email_cliente=email_cliente, whatsapp_cliente=whatsapp_cliente,
+        mensagem_padrao=mensagem, key="aq_documentos_" + slugify_nome(nome_condominio),
+        enviar_email=enviar_email_smtp_aqua, email_configurado=_email_aqua_configurado(),
+        selecionados_padrao=[p for p in docs if p.suffix.lower() == ".pdf"][:1],
     )
-    componente_copiar(msg_editada)
-
-    col_env1, col_env2, col_env3 = st.columns(3)
-
-    with col_env1:
-        _tel = (whatsapp_cliente or "").strip()
-        if _tel:
-            url_wa = link_whatsapp(_tel, msg_editada)
-            st.link_button("💬 Abrir WhatsApp", url_wa, use_container_width=True)
-        else:
-            st.text_input("WhatsApp", placeholder="(34) 99999-9999", key=f"aq_tel_envio_{_slug_envio}")
-            _tel2 = st.session_state.get(f"aq_tel_envio_{_slug_envio}", "").strip()
-            if _tel2:
-                st.link_button("💬 Abrir WhatsApp", link_whatsapp(_tel2, msg_editada), use_container_width=True)
-
-    with col_env2:
-        _eml = (email_cliente or "").strip()
-        if _eml:
-            assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
-            url_mail = link_email(_eml, assunto_mailto, msg_editada)
-            st.link_button("✉️ Abrir e-mail", url_mail, use_container_width=True)
-        else:
-            st.text_input("E-mail", placeholder="email@cliente.com.br", key=f"aq_email_envio_{_slug_envio}")
-            _eml2 = st.session_state.get(f"aq_email_envio_{_slug_envio}", "").strip()
-            if _eml2:
-                assunto_mailto = f"Documentação Aqua Gestão – {nome_condominio}"
-                st.link_button("✉️ Abrir e-mail", link_email(_eml2, assunto_mailto, msg_editada), use_container_width=True)
-
-    with col_env3:
-        if platform.system() == "Windows" and st.button("📂 Abrir pasta", use_container_width=True, key=f"aq_abrir_pasta_{_slug_envio}"):
-            abrir_pasta_windows(pasta_condominio)
-
-    with st.expander("📧 Enviar direto pelo sistema com assinatura premium Aqua Gestão", expanded=False):
-        cfg_ok = email_smtp_configurado()
-        if not cfg_ok:
-            st.warning("SMTP ainda não está configurado. Configure o bloco [email] no Streamlit Secrets antes de enviar direto pelo sistema.")
-            st.code(
-                '[email]\n'
-                'smtp_host = "smtp.gmail.com"\n'
-                'smtp_port = 587\n'
-                'smtp_user = "seuemail@gmail.com"\n'
-                'smtp_password = "SENHA_DE_APP_DO_GMAIL"\n'
-                'remetente_nome = "Aqua Gestão – Controle Técnico de Piscinas"\n'
-                'logo_url = "https://link-publico-da-logo.png"\n'
-                'reply_to = "seuemail@gmail.com"',
-                language="toml",
-            )
-        else:
-            st.success("SMTP configurado. Os e-mails sairão com assinatura premium Aqua Gestão.")
-
-        email_padrao = (email_cliente or st.session_state.get(f"aq_email_envio_{_slug_envio}", "") or "").strip()
-        dest = st.text_input("Destinatário", value=email_padrao, placeholder="email@condominio.com.br", key=f"aq_smtp_dest_{_slug_envio}")
-        cc = st.text_input("CC opcional", value="", placeholder="administradora@exemplo.com.br", key=f"aq_smtp_cc_{_slug_envio}")
-        bcc = st.text_input("BCC opcional", value="", placeholder="", key=f"aq_smtp_bcc_{_slug_envio}")
-        assunto = st.text_input(
-            "Assunto",
-            value=f"Documentação Aqua Gestão – {nome_condominio}",
-            key=f"aq_smtp_assunto_{_slug_envio}",
-        )
-
-        anexos_disponiveis = listar_anexos_pasta_condominio(pasta_condominio)
-        if anexos_disponiveis:
-            opcoes = [a.name for a in anexos_disponiveis]
-            padrao = [a.name for a in anexos_disponiveis if a.suffix.lower() == ".pdf"][:8]
-            selecionados = st.multiselect(
-                "Anexos",
-                options=opcoes,
-                default=padrao,
-                key=f"aq_smtp_anexos_{_slug_envio}",
-                help="Por padrão o sistema seleciona PDFs. DOCX também pode ser anexado se necessário.",
-            )
-            anexos_final = [a for a in anexos_disponiveis if a.name in selecionados]
-        else:
-            st.info("Nenhum PDF/DOCX encontrado na pasta deste condomínio.")
-            anexos_final = []
-
-        st.caption("A assinatura premium será adicionada automaticamente no final do e-mail. A senha SMTP não fica no app.py; fica somente no Streamlit Secrets.")
-
-        if st.button("📨 Enviar e-mail agora", type="primary", use_container_width=True, key=f"aq_smtp_enviar_{_slug_envio}", disabled=not cfg_ok):
-            ok, retorno = enviar_email_smtp_aqua(dest, assunto, msg_editada, anexos_final, cc=cc, bcc=bcc)
-            if ok:
-                st.success(f"✅ {retorno}")
-            else:
-                st.error(retorno)
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def gerar_contrato_bem_star_docx(
