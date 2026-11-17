@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from streamlit.testing.v1 import AppTest
-from utils.email_assinatura import adicionar_corpo_email_aqua, PEDIDO_CONFIRMACAO
+from utils.email_assinatura import adicionar_corpo_email_aqua
+from utils.email_confirmacao import PEDIDO_CONFIRMACAO, mensagem_com_confirmacao
 from utils.envio_documentos import preparar_arquivos, executar_envio
 
 
@@ -55,7 +56,7 @@ class CanaisEnvio(unittest.TestCase):
     def test_pedido_confirmacao_aparece_uma_vez_nas_duas_versoes(self):
         for corpo in ['Mensagem', 'Mensagem\n\n' + PEDIDO_CONFIRMACAO]:
             msg=EmailMessage()
-            adicionar_corpo_email_aqua(msg, corpo)
+            adicionar_corpo_email_aqua(msg, mensagem_com_confirmacao(corpo))
             self.assertEqual(msg.get_body(('plain',)).get_content().count(PEDIDO_CONFIRMACAO), 1)
             self.assertEqual(msg.get_body(('html',)).get_content().count(PEDIDO_CONFIRMACAO), 1)
 
