@@ -18729,7 +18729,7 @@ if _empresa_ativa_codigo() != "bem_star":
         st.info("Nenhuma pasta local encontrada em generated. Ainda é possível enviar documentos usando upload manual.")
 
     try:
-        _dados_cond_envio = carregar_dados_condominio(_pasta_cond_envio) if _pasta_cond_envio else {}
+        _dados_cond_envio = (carregar_dados_condominio(_pasta_cond_envio) or {}) if _pasta_cond_envio else {}
     except Exception:
         _dados_cond_envio = {}
     _email_envio_padrao = str(_dados_cond_envio.get("email_cliente") or _dados_cond_envio.get("email") or "").strip()
