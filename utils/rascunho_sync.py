@@ -131,6 +131,8 @@ class GestorRascunhos:
         escrever_atomico(self.caminho(chave), registro)
 
     def reconstruir(self):
+        anteriores = set(self.ss.get("_rt_rasc_sync_pendente") or [])
+        ultimo_aviso = self.ss.get("_rt_rasc_aviso")
         pendentes, problemas, conflitos = [], [], 0
         for p in sorted(self.pasta.glob("*.json")):
             try:
@@ -148,6 +150,8 @@ class GestorRascunhos:
             elif conflitos:
                 motivo = ("Há versão divergente na planilha para um rascunho deste servidor; as duas cópias foram "
                           "preservadas e nenhuma foi sobrescrita. Restaure a versão desejada.")
+            elif ultimo_aviso and anteriores == set(pendentes):
+                motivo = ultimo_aviso  # listar a mesma fila não apaga a causa da última falha
             else:
                 motivo = ("Cópia local aguardando envio à planilha (falha de conexão); o reenvio é automático e o "
                           "aviso some quando a planilha confirmar o recebimento.")
