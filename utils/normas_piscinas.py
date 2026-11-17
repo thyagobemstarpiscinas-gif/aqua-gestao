@@ -6,6 +6,7 @@ comprova a frequência de monitoramento nem a conformidade global da piscina.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,30 @@ def fora_limite(campo: str, valor: float | None, *, tratamento_complementar: boo
     if chave is None or valor is None:
         return False
     return avaliar_leitura(chave, valor, tratamento_complementar=tratamento_complementar) == "fora_limite"
+
+
+# Meta interna da ACQUA, distinta do limite aceitável de CC (até 0,6 mg/L).
+META_CC = 0.5
+TEXTO_META_CC = "Meta operacional interna: CC < 0,50 mg/L; limite aceitável até 0,60 mg/L."
+
+
+def classificacao_operacional(campo: str, valor: float | None) -> str:
+    """Estado visual: ausente, informativo, conforme, atencao ou fora_limite.
+
+    A atenção não altera a conformidade normativa. ORP depende da aplicabilidade;
+    CC no limite e fora da meta interna é atenção, nunca acima do limite.
+    """
+    if valor is None or not isfinite(valor):
+        return "ausente"
+    chave = campo_normativo(campo)
+    if chave == "orp":
+        return "atencao" if avaliar_orp(valor) == ORP_ABAIXO_REFERENCIA else "conforme"
+    estado = avaliar_leitura(chave, valor)
+    if estado == "fora_limite":
+        return estado
+    if estado == "fora_ideal" or (chave == "cc" and valor >= META_CC):
+        return "atencao"
+    return "informativo" if estado == "sem_avaliacao" else "conforme"
 
 
 # ── ORP: regra única dos relatórios do escritório e de campo ───────────────
