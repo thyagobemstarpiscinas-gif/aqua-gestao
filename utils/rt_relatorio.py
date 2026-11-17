@@ -168,7 +168,8 @@ def formatar_volume(v) -> str:
 # tratamento clorado simples), obtidos de utils.normas_piscinas. Cloro total não
 # tem limite próprio (avalia-se CC = CT − CRL) e por isso não recebe faixa.
 from utils.normas_piscinas import (fora_limite as _fora_limite, limites as _limites, texto_limite as _texto_limite,
-                                   cloro_combinado as _cloro_combinado)
+                                   cloro_combinado as _cloro_combinado, classificacao_operacional,
+                                   texto_ideal, campo_normativo, FAIXAS_COLETIVA_SIMPLES, META_CC)
 
 
 def _lim(campo):
@@ -394,7 +395,7 @@ def _fonte(tam: int, bold: bool = False):
 
 def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x: list[str], titulo: str,
                   subtitulo: str, destino: Path, parametros=PARAMETROS) -> Path | None:
-    """Painéis por parâmetro com o limite aceitável da NBR 10818:2026 em verde."""
+    """Limite aceitável em verde; no mensal, atenção ideal/operacional em âmbar."""
     from PIL import Image, ImageDraw
     paineis = [(p, dict(series or {}).get(p[0])) for p in parametros]
     paineis = [(p, vals) for p, vals in paineis if vals and any(v is not None for v in vals)]
@@ -413,9 +414,10 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
     draw.text((50, 72), subtitulo, fill=(222, 196, 120), font=_fonte(20))
     f_eixo, f_rot = _fonte(16), _fonte(20, True)
     larg_painel = (largura - 60) // colunas
+    mensal = parametros == PARAMETROS_MENSAIS
     for i, ((chave, rotulo, mn, mx, unidade), vals) in enumerate(paineis):
         cx, cy = 30 + (i % colunas) * larg_painel, topo + (i // colunas) * alt_painel
-        x0, x1, y0, y1 = cx + 80, cx + larg_painel - 30, cy + 50, cy + alt_painel - 70
+        x0, x1, y0, y1 = cx + 80, cx + larg_painel - 30, cy + 70, cy + alt_painel - 70
         nums = [v for v in vals if v is not None]
         com_faixa = mn is not None and mx is not None and tem_limite(chave)
         vmin, vmax = min(nums + ([mn] if com_faixa else [])), max(nums + ([mx] if com_faixa else []))
@@ -429,10 +431,20 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         if ref is not None:
             vmin, vmax = min(vmin, ref - pad), max(vmax, ref + pad)
         if com_faixa:
-            draw.text((x1 - 300, cy + 12), f"Limite NBR 10818:2026: {texto_faixa(chave)}", fill=(34, 120, 70), font=f_eixo)
+            nota_painel = f"Limite aceitável: {texto_faixa(chave)}"
+            if mensal and texto_ideal(chave) != "—":
+                nota_painel += f" | Ideal: {texto_ideal(chave)}"
+            if mensal and chave == "cloro_combinado":
+                nota_painel += " | Meta interna: < 0,50"
+            draw.text((cx + 10, cy + 36), nota_painel, fill=(34, 120, 70), font=f_eixo)
             draw.rectangle((x0, ym(mx), x1, ym(mn)), fill=faixa)
+            ideal = FAIXAS_COLETIVA_SIMPLES.get(campo_normativo(chave))
+            if mensal and ideal and ideal.ideal_min is not None and ideal.ideal_max is not None:
+                draw.rectangle((x0, ym(ideal.ideal_max), x1, ym(ideal.ideal_min)), fill=(195, 224, 205))
         else:
-            draw.text((x1 - 340, cy + 12), NOTA_SEM_FAIXA.get(chave, "Sem limite próprio"), fill=cinza, font=f_eixo)
+            draw.text((cx + 10, cy + 36), NOTA_SEM_FAIXA.get(chave, "Sem limite próprio"), fill=cinza, font=f_eixo)
+        if mensal and chave == "cloro_combinado":
+            ref = META_CC
         if ref is not None:  # linha tracejada de referência (ponto de atenção, não limite)
             for xa in range(int(x0), int(x1), 18):
                 draw.line((xa, ym(ref), min(xa + 10, x1), ym(ref)), fill=atencao, width=2)
@@ -450,13 +462,14 @@ def gerar_grafico(series: list[tuple[str, list[float | None]]] | None, rotulos_x
         if len(pts) > 1:
             draw.line([(x, y) for x, y, _ in pts], fill=linha_cor, width=4)
         for x, y, v in pts:
-            cor = (fora if com_faixa and not dentro_limite(chave, v)
-                   else atencao if ref is not None and v < ref else linha_cor)
+            estado = classificacao_operacional(chave, v) if mensal else ""
+            cor = (fora if estado == "fora_limite" or (com_faixa and not dentro_limite(chave, v))
+                   else atencao if estado == "atencao" or (chave == "orp" and ref is not None and v < ref) else linha_cor)
             draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=cor, outline=(255, 255, 255), width=2)
-    nota = "Faixa verde: limite aceitável da ABNT NBR 10818:2026 (Tabela 3). Pontos vermelhos: leitura fora do limite."
-    if any(p[0] in REFERENCIA_MINIMA for p, _ in paineis):
-        nota += " Linha laranja: referência mínima de ORP, quando aplicável (ponto de atenção)."
-    draw.text((50, altura - 45), nota, fill=cinza, font=f_eixo)
+    nota_faixas = "Verde claro: limite aceitável NBR 10818:2026. " + ("Verde escuro: faixa ideal. " if mensal else "") + "Vermelho: fora do limite."
+    draw.text((50, altura - 48), nota_faixas, fill=cinza, font=f_eixo)
+    if mensal:
+        draw.text((50, altura - 25), "Âmbar: atenção (faixa ideal, meta de CC ou ORP). Tracejado: meta interna de CC < 0,50 / ORP mín. 650, quando aplicável.", fill=cinza, font=f_eixo)
     draw.line((0, 112, largura, 112), fill=dourado, width=4)
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -565,6 +578,51 @@ def sintese_periodo(analises: list[dict]) -> dict:
     return {"n_leituras": len(linhas), "datas": datas, "piscinas": piscinas, "faixas": faixas}
 
 
+def pontos_atencao(analises: list[dict]) -> list[dict]:
+    """Agrupa todas as ocorrências por parâmetro, mantendo data, piscina e valor."""
+    from utils.normas_piscinas import RECOMENDACAO_ORP, texto_atencao_orp
+    orientacoes = {
+        "ph": "Acompanhar o pH e avaliar ajuste para a faixa ideal 7,4–7,6, com nova medição após estabilização.",
+        "cloro_livre": "Revisar o controle do cloro livre para a faixa ideal 2,0–4,0 mg/L e acompanhar a demanda oxidante.",
+        "alcalinidade": "Avaliar ajuste da alcalinidade para a faixa ideal 80–120 mg/L CaCO3 e acompanhar a estabilidade do pH.",
+        "dureza": "Avaliar ajuste da dureza cálcica para a faixa ideal 180–250 mg/L CaCO3, considerando o equilíbrio da água.",
+        "cianurico": "Revisar o uso de cloro estabilizado e acompanhar a tendência do CYA frente à faixa ideal 30–50 mg/L.",
+        "cloro_combinado": "Repetir as medições de cloro livre e total, conferir o CC e avaliar a demanda oxidante; acompanhar a meta operacional interna de CC < 0,50 mg/L.",
+        "orp": RECOMENDACAO_ORP,
+    }
+    linhas = _com_cc(analises)
+    grupos = []
+    for chave, nome, _mn, _mx, unidade in PARAMETROS_MENSAIS:
+        ocorrencias = [(it, leitura(it.get(chave))) for it in linhas
+                       if classificacao_operacional(chave, leitura(it.get(chave))) == "atencao"]
+        if not ocorrencias:
+            continue
+        if chave == "orp":
+            texto = "; ".join(texto_atencao_orp(v, f" — {_onde(it)}") for it, v in ocorrencias)
+        else:
+            locais = "; ".join(f"{_onde(it)} ({fmt_par(chave, v)}{' ' + unidade if unidade else ''}"
+                               + (", no limite aceitável de 0,60 mg/L" if chave == "cloro_combinado" and v == 0.6 else "")
+                               + ")" for it, v in ocorrencias)
+            criterio = ("fora da meta operacional interna CC < 0,50 mg/L"
+                        if chave == "cloro_combinado" else f"fora da faixa ideal {texto_ideal(chave)}{' ' + unidade if unidade else ''}")
+            texto = f"{nome}: {criterio}, dentro do limite aceitável {_texto_limite(chave)}; ponto de atenção em: {locais}."
+        grupos.append({"campo": chave, "nome": nome, "texto": texto, "recomendacao": orientacoes[chave]})
+    return grupos
+
+
+def resumo_atencoes(grupos: list[dict]) -> str:
+    if not grupos:
+        return ""
+    return ("Há pontos de atenção operacional nos parâmetros: " + ", ".join(g["nome"] for g in grupos)
+            + ". As ocorrências por data e piscina constam das observações; desvios da faixa ideal e da meta interna não são, por si só, não conformidades normativas.")
+
+
+def agrupar_textos_campos(textos: list[str], quantidade: int = 5) -> list[str]:
+    """O formulário tem cinco campos: reúne o excedente no último, sem descartá-lo."""
+    textos = list(dict.fromkeys(t for t in textos if t))
+    return textos if len(textos) <= quantidade else textos[:quantidade - 1] + ["\n\n".join(textos[quantidade - 1:])]
+
+
 def interpretacao_resultados(analises: list[dict]) -> list[tuple[str, str]]:
     """Leitura por grupo de parâmetros, sustentada só pelas leituras e pelos limites centralizados.
 
@@ -648,6 +706,13 @@ def interpretacao_resultados(analises: list[dict]) -> list[tuple[str, str]]:
                       + "; ".join(x for x in (f"TDS de {fx_tds}" if fx_tds else "", f"temperatura de {fx_temp}" if fx_temp else "") if x))
     if partes:
         blocos.append(("Turbidez, ORP, TDS e temperatura", ". ".join(partes) + "."))
+    # A conformidade com o limite não apaga desvios da faixa ideal/meta interna.
+    destinos = {"ph": "pH e cloro livre", "cloro_livre": "pH e cloro livre",
+                "alcalinidade": "Alcalinidade e dureza", "dureza": "Alcalinidade e dureza",
+                "cianurico": "Estabilizante e cloro combinado", "cloro_combinado": "Estabilizante e cloro combinado"}
+    for grupo in pontos_atencao(analises):
+        destino = destinos.get(grupo["campo"])
+        blocos = [(titulo, texto + " " + grupo["texto"] if titulo == destino else texto) for titulo, texto in blocos]
     return blocos
 
 
