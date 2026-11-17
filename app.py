@@ -7386,61 +7386,12 @@ def _email_aqua_configurado() -> tuple[bool, str]:
     return True, ""
 
 
-def assinatura_email_aqua_gestao() -> str:
-    try:
-        cfg = st.secrets.get("email", {})
-    except Exception:
-        cfg = {}
-
-    logo_url = str(cfg.get("logo_url", "") or "").strip()
-    email_resp = str(cfg.get("reply_to", "") or cfg.get("smtp_user", "") or "").strip()
-    logo_html = ""
-    if logo_url:
-        logo_html = (
-            '<td style="width:118px;vertical-align:top;padding-right:18px;">'
-            f'<img src="{logo_url}" alt="Aqua Gestão" style="width:105px;height:auto;display:block;border:0;">'
-            '</td>'
-        )
-
-    return f"""
-    <br><br>
-    <table role="presentation" style="width:100%;max-width:760px;border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
-      <tr>
-        <td style="border-top:4px solid #0B2E59;padding-top:16px;">
-          <table role="presentation" style="width:100%;border-collapse:collapse;">
-            <tr>
-              {logo_html}
-              <td style="vertical-align:top;">
-                <div style="font-size:18px;font-weight:700;color:#0B2E59;line-height:1.25;">Thyago Fernando da Silveira</div>
-                <div style="font-size:14px;color:#374151;margin-top:3px;">Técnico em Química | Responsável Técnico</div>
-                <div style="font-size:13px;color:#374151;margin-top:3px;">CRQ-MG 2ª Região | CRQ 024025748</div>
-                <div style="height:1px;background:#D8E2EF;margin:10px 0;"></div>
-                <div style="font-size:15px;font-weight:700;color:#145DA0;">Aqua Gestão - Controle Técnico de Piscinas</div>
-                <div style="font-size:13px;color:#4b5563;margin-top:4px;line-height:1.5;">
-                  Responsabilidade Técnica • ART • Relatórios Técnicos • POPs • Controle de Piscinas Coletivas
-                </div>
-                <div style="font-size:13px;color:#4b5563;margin-top:8px;line-height:1.5;">
-                  Uberlândia/MG<br>
-                  E-mail: {email_resp}
-                </div>
-                <div style="font-size:11px;color:#6b7280;margin-top:12px;line-height:1.45;">
-                  Esta mensagem e seus anexos podem conter informações técnicas, contratuais e/ou confidenciais destinadas exclusivamente ao(s) destinatário(s).
-                </div>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-    """
-
-
 def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexos: list[Path], cc: str = "", bcc: str = "") -> tuple[bool, str]:
     try:
         from utils.email_smtp import enviar_mensagem_smtp
+        from utils.email_assinatura import adicionar_corpo_email_aqua
         import mimetypes
         from email.message import EmailMessage
-        from html import escape
 
         ok_cfg, erro_cfg = _email_aqua_configurado()
         if not ok_cfg:
@@ -7480,13 +7431,7 @@ def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexo
         msg["Subject"] = assunto or "Documentação técnica Aqua Gestão"
 
         texto_puro = mensagem or "Segue documentação técnica em anexo."
-        msg.set_content(texto_puro + "\n\nAqua Gestão - Controle Técnico de Piscinas")
-
-        corpo_html = "<div style='font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.55;'>"
-        corpo_html += escape(texto_puro).replace("\n", "<br>")
-        corpo_html += assinatura_email_aqua_gestao()
-        corpo_html += "</div>"
-        msg.add_alternative(corpo_html, subtype="html")
+        adicionar_corpo_email_aqua(msg, texto_puro)
 
         for p in anexos_validos:
             ctype, encoding = mimetypes.guess_type(str(p))
@@ -24129,90 +24074,6 @@ def email_smtp_configurado() -> bool:
     return bool(cfg["smtp_host"] and cfg["smtp_user"] and cfg["smtp_password"])
 
 
-def assinatura_email_aqua_gestao() -> str:
-    """Assinatura premium em HTML para todos os e-mails enviados pelo sistema."""
-    import html as _html
-
-    cfg = _email_secrets_aqua()
-    logo_url = cfg.get("logo_url", "")
-    if logo_url:
-        logo_html = f"""
-            <img src="{_html.escape(logo_url)}"
-                 alt="Aqua Gestão"
-                 style="width:112px; height:auto; display:block; border:0; outline:none; text-decoration:none;">
-        """
-    else:
-        logo_html = """
-            <div style="width:112px; height:86px; border-radius:18px; background:#EAF3FF; border:1px solid #D8E2EF;
-                        display:flex; align-items:center; justify-content:center; text-align:center; color:#0B2E59;
-                        font-size:15px; font-weight:800; line-height:1.15;">
-                Aqua<br>Gestão
-            </div>
-        """
-
-    return f"""
-    <br><br>
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0"
-           style="width:100%; max-width:760px; border-collapse:collapse; font-family:Arial, Helvetica, sans-serif; color:#1f2937;">
-      <tr>
-        <td style="border-top:4px solid #0B2E59; padding-top:16px;">
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
-                 style="width:100%; border-collapse:collapse; background:#ffffff;">
-            <tr>
-              <td style="width:132px; vertical-align:top; padding-right:18px;">
-                {logo_html}
-              </td>
-              <td style="vertical-align:top; border-left:3px solid #C9A227; padding-left:16px;">
-                <div style="font-size:18px; font-weight:800; color:#0B2E59; line-height:1.25;">
-                  Thyago Fernando da Silveira
-                </div>
-                <div style="font-size:14px; color:#374151; margin-top:3px;">
-                  Técnico em Química | Responsável Técnico
-                </div>
-                <div style="font-size:13px; color:#374151; margin-top:3px;">
-                  CRQ-MG 2ª Região | CRQ 024025748
-                </div>
-                <div style="height:1px; background:#D8E2EF; margin:10px 0;"></div>
-                <div style="font-size:15px; font-weight:800; color:#145DA0;">
-                  Aqua Gestão – Controle Técnico de Piscinas
-                </div>
-                <div style="font-size:13px; color:#4b5563; margin-top:4px; line-height:1.5;">
-                  Responsabilidade Técnica • ART • Relatórios Técnicos • Controle de Piscinas Coletivas
-                </div>
-                <div style="font-size:13px; color:#4b5563; margin-top:8px; line-height:1.5;">
-                  Uberlândia/MG<br>
-                  WhatsApp: (34) 99291-3171<br>
-                  E-mail: thyagosilveira@bemstarpiscinas.com.br
-                </div>
-                <div style="font-size:11px; color:#6b7280; margin-top:12px; line-height:1.4;">
-                  Esta mensagem e seus anexos podem conter informações técnicas, contratuais e/ou confidenciais
-                  destinadas exclusivamente ao(s) destinatário(s).
-                </div>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-    """
-
-
-def montar_email_html_aqua(mensagem_texto: str) -> str:
-    """Converte texto digitado em HTML e acrescenta assinatura premium."""
-    import html as _html
-    corpo = _html.escape(mensagem_texto or "").replace("\n", "<br>")
-    return f"""
-    <html>
-      <body style="margin:0; padding:0; background:#ffffff;">
-        <div style="font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:1.6; color:#1f2937;">
-          {corpo}
-          {assinatura_email_aqua_gestao()}
-        </div>
-      </body>
-    </html>
-    """
-
-
 def listar_anexos_pasta_condominio(pasta_condominio: Path) -> list[Path]:
     """Lista anexos PDF/DOCX gerados para o condomínio, priorizando os mais recentes."""
     try:
@@ -24231,6 +24092,7 @@ def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str,
     """Envia e-mail HTML com anexos usando SMTP configurado no Streamlit Secrets."""
     try:
         from utils.email_smtp import enviar_mensagem_smtp
+        from utils.email_assinatura import adicionar_corpo_email_aqua
         import mimetypes
         from email.message import EmailMessage
         from email.utils import formataddr
@@ -24261,10 +24123,7 @@ def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str,
         if cfg.get("reply_to"):
             msg["Reply-To"] = cfg["reply_to"]
 
-        texto_plano = (mensagem_texto or "").strip()
-        texto_plano += "\n\n--\nThyago Fernando da Silveira\nTécnico em Química | CRQ-MG 2ª Região | CRQ 024025748\nAqua Gestão – Controle Técnico de Piscinas"
-        msg.set_content(texto_plano)
-        msg.add_alternative(montar_email_html_aqua(mensagem_texto), subtype="html")
+        adicionar_corpo_email_aqua(msg, mensagem_texto or "")
 
         for anexo in anexos:
             caminho = Path(anexo)
