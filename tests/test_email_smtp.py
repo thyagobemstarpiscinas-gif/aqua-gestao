@@ -1,6 +1,8 @@
 """Envio isolado: nenhum e-mail real ou credencial de produção."""
 import ast
 from email.message import EmailMessage
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 import smtplib
 import ssl
@@ -10,6 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from utils.email_smtp import enviar_mensagem_smtp
+from utils.email_assinatura import EMAIL_ACQUA, LOGO_CID, LOGO_PATH
 
 
 class TransporteSMTP(unittest.TestCase):
@@ -111,23 +114,40 @@ class IntegracaoApp(unittest.TestCase):
         nomes = {'enviar_email_aqua_smtp', 'enviar_email_smtp_aqua'}
         nodes = [n for n in ast.parse(source.read_text()).body if isinstance(n, ast.FunctionDef) and n.name in nomes]
         cfg = dict(smtp_host='smtp.example.invalid', smtp_port=465, smtp_user='a@example.invalid',
-                   smtp_password='SEGREDO-TESTE', remetente_nome='ACQUA TESTE', reply_to='a@example.invalid')
+                   smtp_password='SEGREDO-TESTE', remetente_nome='ACQUA TESTE', reply_to=EMAIL_ACQUA)
         ns = dict(Path=Path, st=SimpleNamespace(secrets={'email': cfg}),
                   _email_aqua_configurado=lambda: (True, ''), _email_secrets_aqua=lambda: cfg,
-                  email_smtp_configurado=lambda: True, validar_email=lambda x: True,
-                  assinatura_email_aqua_gestao=lambda: 'TESTE', montar_email_html_aqua=lambda x: x)
+                  email_smtp_configurado=lambda: True, validar_email=lambda x: True)
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), ns)
         with tempfile.TemporaryDirectory() as tmp:
             pdf = Path(tmp) / 'teste.pdf'; pdf.write_bytes(b'%PDF-TESTE')
             for nome in nomes:
                 with self.subTest(fluxo=nome), patch('utils.email_smtp.enviar_mensagem_smtp', return_value=(False, 'Falha controlada')) as transporte:
-                    self.assertEqual(ns[nome]('b@example.invalid', 'Teste', 'Mensagem', [pdf], bcc='c@example.invalid'), (False, 'Falha controlada'))
+                    self.assertEqual(ns[nome]('b@example.invalid', 'Teste', 'Mensagem <teste>\nSegunda linha', [pdf], bcc='c@example.invalid'), (False, 'Falha controlada'))
                     args = transporte.call_args.args
                     self.assertEqual(args[2], 465)
                     anexos = list(args[0].iter_attachments())
                     self.assertEqual(len(anexos), 1)
                     self.assertEqual(anexos[0].get_filename(), 'teste.pdf')
                     self.assertEqual(anexos[0].get_payload(decode=True), b'%PDF-TESTE')
+                    # Valida o MIME transmitido, incluindo logo ligada ao HTML e PDF separado.
+                    recebida = BytesParser(policy=policy.default).parsebytes(args[0].as_bytes())
+                    html = recebida.get_body(preferencelist=('html',)).get_content()
+                    self.assertIn('Mensagem &lt;teste&gt;<br>Segunda linha', html)
+                    self.assertIn('cid:' + LOGO_CID, html)
+                    self.assertIn('mailto:' + EMAIL_ACQUA, html)
+                    self.assertIn('Thyago Fernando da Silveira', html)
+                    self.assertIn('024025748', html)
+                    self.assertNotIn('https://', html)
+                    self.assertNotIn('mailto:aqua.gestao.rt@gmail.com', html)
+                    self.assertNotIn('bemstarpiscinas.com.br', html)
+                    self.assertEqual(recebida['Reply-To'], EMAIL_ACQUA)
+                    self.assertIn(EMAIL_ACQUA, recebida.get_body(preferencelist=('plain',)).get_content())
+                    logos = [p for p in recebida.walk() if p.get_content_type() == 'image/png']
+                    self.assertEqual(len(logos), 1)
+                    self.assertEqual(logos[0]['Content-ID'], '<' + LOGO_CID + '>')
+                    self.assertEqual(logos[0].get_content_disposition(), 'inline')
+                    self.assertEqual(logos[0].get_payload(decode=True), LOGO_PATH.read_bytes())
 
 
 if __name__ == '__main__':
