@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from urllib.parse import quote
 
-from utils.email_assinatura import mensagem_com_confirmacao
+from utils.email_confirmacao import mensagem_com_confirmacao
 
 
 CANAIS = ("E-mail", "WhatsApp", "Ambos")

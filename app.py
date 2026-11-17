@@ -7390,6 +7390,7 @@ def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexo
     try:
         from utils.email_smtp import enviar_mensagem_smtp
         from utils.email_assinatura import adicionar_corpo_email_aqua
+        from utils.email_confirmacao import mensagem_com_confirmacao
         import mimetypes
         from email.message import EmailMessage
 
@@ -7431,7 +7432,7 @@ def enviar_email_aqua_smtp(destinatario: str, assunto: str, mensagem: str, anexo
         msg["Subject"] = assunto or "Documentação técnica Aqua Gestão"
 
         texto_puro = mensagem or "Segue documentação técnica em anexo."
-        adicionar_corpo_email_aqua(msg, texto_puro)
+        adicionar_corpo_email_aqua(msg, mensagem_com_confirmacao(texto_puro))
 
         for p in anexos_validos:
             ctype, encoding = mimetypes.guess_type(str(p))
@@ -23937,6 +23938,7 @@ def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str,
     try:
         from utils.email_smtp import enviar_mensagem_smtp
         from utils.email_assinatura import adicionar_corpo_email_aqua
+        from utils.email_confirmacao import mensagem_com_confirmacao
         import mimetypes
         from email.message import EmailMessage
         from email.utils import formataddr
@@ -23967,7 +23969,7 @@ def enviar_email_smtp_aqua(destinatario: str, assunto: str, mensagem_texto: str,
         if cfg.get("reply_to"):
             msg["Reply-To"] = cfg["reply_to"]
 
-        adicionar_corpo_email_aqua(msg, mensagem_texto or "")
+        adicionar_corpo_email_aqua(msg, mensagem_com_confirmacao(mensagem_texto or ""))
 
         for anexo in anexos:
             caminho = Path(anexo)

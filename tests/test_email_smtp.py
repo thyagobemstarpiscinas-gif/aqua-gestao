@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from utils.email_smtp import enviar_mensagem_smtp
+from utils.email_confirmacao import PEDIDO_CONFIRMACAO
 from utils.email_assinatura import EMAIL_ACQUA, LOGO_CID, LOGO_PATH
 
 
@@ -134,6 +135,8 @@ class IntegracaoApp(unittest.TestCase):
                     recebida = BytesParser(policy=policy.default).parsebytes(args[0].as_bytes())
                     html = recebida.get_body(preferencelist=('html',)).get_content()
                     self.assertIn('Mensagem &lt;teste&gt;<br>Segunda linha', html)
+                    self.assertEqual(html.count(PEDIDO_CONFIRMACAO), 1)
+                    self.assertEqual(recebida.get_body(preferencelist=('plain',)).get_content().count(PEDIDO_CONFIRMACAO), 1)
                     self.assertIn('cid:' + LOGO_CID, html)
                     self.assertIn('mailto:' + EMAIL_ACQUA, html)
                     self.assertIn('Thyago Fernando da Silveira', html)
