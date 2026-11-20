@@ -60,6 +60,9 @@ from rt_monthly_report import (
     build_monthly_rt_pdf_bytes,
     validate_generation_selection,
 )
+from utils.dosagem import CLOROS, META_CRL, calcular_sugestoes_dosagem
+from utils.normas_piscinas import FAIXAS_COLETIVA_SIMPLES
+from utils.rt_relatorio import piscinas_do_cliente
 from utils.normas_piscinas import limites as _nbr_limites, texto_limite as _nbr_texto_limite
 
 # Atualiza a regra pura mesmo quando o observador de arquivos do servidor falha.
@@ -2579,242 +2582,6 @@ def filtrar_condomínios_por_operador(nome_operador: str, todos_condomínios: li
     # Operador não cadastrado → mostra todos (retrocompatibilidade)
     return todos_condomínios
 
-
-# =========================================
-# MOTOR DE SUGESTÕES DE DOSAGEM
-# =========================================
-
-# Doses padrão APSP/WHO
-DOSE_HIPOCLORITO_65  = 13.0   # g/m³ por ppm de CRL
-DOSE_DICLORO_56      = 15.0   # g/m³ por ppm de CRL
-DOSE_ACIDO_MURIATICO = 18.0   # mL/m³ por 0,1 de pH
-DOSE_BICARBONATO     = 15.0   # g/m³ por 10 ppm de Alc
-DOSE_CLORETO_CALCIO  = 17.0   # g/m³ por 10 ppm de Dureza
-FATOR_DEMANDA        = 1.20   # +20% por demanda orgânica/UV
-
-# Metas ideais (centro da faixa)
-META_CRL        = 3.0    # ppm
-META_PH         = 7.35   # centro entre 7,2-7,5
-META_ALC        = 100.0  # ppm
-META_DUREZA     = 225.0  # ppm
-META_CYA        = 40.0   # ppm (só monitoramento)
-
-# Faixas ideais
-FAIXA_PH_MIN    = 7.2;  FAIXA_PH_MAX    = 7.8
-FAIXA_CRL_MIN   = 0.5;  FAIXA_CRL_MAX   = 5.0
-FAIXA_ALC_MIN   = 80;   FAIXA_ALC_MAX   = 120
-FAIXA_DC_MIN    = 150;  FAIXA_DC_MAX    = 300
-FAIXA_CYA_MIN   = 30;   FAIXA_CYA_MAX   = 50
-
-
-def calcular_sugestoes_dosagem(ph: float | None, crl: float | None,
-                                alc: float | None, dc: float | None,
-                                cya: float | None, volume_m3: float) -> list[dict]:
-    """
-    Calcula sugestões de produtos e doses baseado nos parâmetros medidos.
-    Retorna lista de dicts com: produto, quantidade, unidade, prioridade, justificativa.
-    """
-    sugestoes = []
-
-    if volume_m3 <= 0:
-        return sugestoes
-
-    # ── 1. pH — SEMPRE CORRIGIR ANTES DO CLORO ───────────────────────────────
-    if ph is not None:
-        if ph > 7.8:
-            # pH muito alto — reduzir antes de clorar
-            deficit_ph = round(ph - 7.5, 1)
-            dose_ml = round(deficit_ph / 0.1 * DOSE_ACIDO_MURIATICO * volume_m3 * FATOR_DEMANDA)
-            sugestoes.append({
-                "prioridade": 1,
-                "produto": "Ácido muriático 31%",
-                "quantidade": dose_ml,
-                "unidade": "mL",
-                "acao": "Reduzir pH",
-                "justificativa": f"pH {ph:.1f} acima de 7,8 — reduzir para 7,4–7,5 antes de clorar. "
-                                 f"Cloro perde >50% eficiência com pH alto.",
-                "norma": "APSP / ABNT NBR 10339",
-            })
-        elif ph < 7.2:
-            # pH baixo — hipoclorito vai elevar naturalmente
-            sugestoes.append({
-                "prioridade": 1,
-                "produto": "Observação",
-                "quantidade": 0,
-                "unidade": "",
-                "acao": "pH baixo — Hipoclorito de cálcio vai elevar",
-                "justificativa": f"pH {ph:.1f} abaixo de 7,2 — aplicar Hipoclorito de cálcio 65% "
-                                 f"(pH ~11,5) vai elevar o pH naturalmente enquanto desinfeta.",
-                "norma": "APSP / WHO",
-            })
-
-    # ── 2. CLORO — produto baseado no pH ─────────────────────────────────────
-    if crl is not None and crl < META_CRL:
-        deficit_crl = round(META_CRL - crl, 2)
-
-        # Seleciona produto pelo pH
-        if ph is None or ph <= 7.5:
-            produto_cloro = "Hipoclorito de cálcio 65%"
-            fator_cloro   = DOSE_HIPOCLORITO_65
-            motivo_cloro  = f"pH {ph:.1f} ≤ 7,5 — produto ideal nesta faixa" if ph else "pH não medido — usando padrão"
-        else:
-            produto_cloro = "Dicloro 56%"
-            fator_cloro   = DOSE_DICLORO_56
-            motivo_cloro  = f"pH {ph:.1f} entre 7,5–7,8 — Dicloro é mais indicado (mais ácido)"
-
-        dose_g = round(deficit_crl * volume_m3 * fator_cloro * FATOR_DEMANDA)
-
-        if dose_g >= 1000:
-            qtd_fmt = round(dose_g / 1000, 2)
-            unid = "kg"
-        else:
-            qtd_fmt = dose_g
-            unid = "g"
-
-        sugestoes.append({
-            "prioridade": 2,
-            "produto": produto_cloro,
-            "quantidade": qtd_fmt,
-            "unidade": unid,
-            "acao": f"Elevar CRL de {crl:.1f} → {META_CRL:.1f} ppm",
-            "justificativa": f"CRL {crl:.1f} ppm abaixo da meta ({META_CRL} ppm). "
-                             f"Déficit: {deficit_crl} ppm × {volume_m3}m³ × {fator_cloro}g × 1,2 dem. "
-                             f"| {motivo_cloro}.",
-            "norma": "APSP / WHO",
-        })
-
-    elif crl is not None and crl > FAIXA_CRL_MAX:
-        sugestoes.append({
-            "prioridade": 2,
-            "produto": "Aeração + aguardar",
-            "quantidade": 0,
-            "unidade": "",
-            "acao": f"CRL {crl:.1f} ppm — acima de {FAIXA_CRL_MAX} ppm",
-            "justificativa": "Cloro excessivo — não adicionar mais. "
-                             "Aeração (agitação da água) e luz solar reduzem naturalmente.",
-            "norma": "ABNT NBR 10339",
-        })
-
-    # ── 3. ALCALINIDADE ───────────────────────────────────────────────────────
-    if alc is not None:
-        if alc < FAIXA_ALC_MIN:
-            deficit_alc = round(META_ALC - alc, 1)
-            dose_g = round((deficit_alc / 10) * DOSE_BICARBONATO * volume_m3)
-            qtd_fmt = round(dose_g / 1000, 2) if dose_g >= 1000 else dose_g
-            unid = "kg" if dose_g >= 1000 else "g"
-            sugestoes.append({
-                "prioridade": 3,
-                "produto": "Bicarbonato de sódio",
-                "quantidade": qtd_fmt,
-                "unidade": unid,
-                "acao": f"Elevar alcalinidade de {alc:.0f} → {META_ALC:.0f} ppm",
-                "justificativa": f"Alcalinidade {alc:.0f} ppm abaixo de {FAIXA_ALC_MIN} ppm. "
-                                 f"Déficit: {deficit_alc:.0f} ppm ÷ 10 × {DOSE_BICARBONATO}g × {volume_m3}m³.",
-                "norma": "WHO / ABNT NBR 10339",
-            })
-        elif alc > FAIXA_ALC_MAX:
-            excesso_alc = round(alc - META_ALC, 1)
-            dose_ml = round((excesso_alc / 0.1) * DOSE_ACIDO_MURIATICO * volume_m3 * 0.5)
-            sugestoes.append({
-                "prioridade": 3,
-                "produto": "Ácido muriático 31%",
-                "quantidade": dose_ml,
-                "unidade": "mL",
-                "acao": f"Reduzir alcalinidade de {alc:.0f} → {META_ALC:.0f} ppm",
-                "justificativa": f"Alcalinidade {alc:.0f} ppm acima de {FAIXA_ALC_MAX} ppm. "
-                                 "Aplicar ácido muriático com bomba desligada.",
-                "norma": "APSP",
-            })
-
-    # ── 4. DUREZA ─────────────────────────────────────────────────────────────
-    if dc is not None:
-        if dc < FAIXA_DC_MIN:
-            deficit_dc = round(META_DUREZA - dc, 1)
-            dose_g = round((deficit_dc / 10) * DOSE_CLORETO_CALCIO * volume_m3)
-            qtd_fmt = round(dose_g / 1000, 2) if dose_g >= 1000 else dose_g
-            unid = "kg" if dose_g >= 1000 else "g"
-            sugestoes.append({
-                "prioridade": 4,
-                "produto": "Cloreto de cálcio",
-                "quantidade": qtd_fmt,
-                "unidade": unid,
-                "acao": f"Elevar dureza de {dc:.0f} → {META_DUREZA:.0f} ppm",
-                "justificativa": f"Dureza {dc:.0f} ppm abaixo de {FAIXA_DC_MIN} ppm. "
-                                 "Água agressiva corrói equipamentos e pisos.",
-                "norma": "APSP / WHO",
-            })
-        elif dc > FAIXA_DC_MAX:
-            sugestoes.append({
-                "prioridade": 4,
-                "produto": "Troca parcial de água",
-                "quantidade": round(volume_m3 * 0.2),
-                "unidade": "m³",
-                "acao": f"Reduzir dureza de {dc:.0f} ppm",
-                "justificativa": f"Dureza {dc:.0f} ppm acima de {FAIXA_DC_MAX} ppm. "
-                                 "Trocar ~20% da água e reequilibrar.",
-                "norma": "APSP",
-            })
-
-    # ── 5. CYA — só monitoramento ─────────────────────────────────────────────
-    if cya is not None:
-        if cya > FAIXA_CYA_MAX:
-            sugestoes.append({
-                "prioridade": 5,
-                "produto": "Troca parcial de água",
-                "quantidade": round(volume_m3 * 0.3),
-                "unidade": "m³",
-                "acao": f"CYA {cya:.0f} ppm acima do limite",
-                "justificativa": f"CYA {cya:.0f} ppm acima de {FAIXA_CYA_MAX} ppm. "
-                                 "CYA alto inibe o cloro (efeito bloqueio). Trocar ~30% da água.",
-                "norma": "WHO",
-            })
-        elif cya < FAIXA_CYA_MIN and cya > 0:
-            sugestoes.append({
-                "prioridade": 5,
-                "produto": "Monitorar CYA",
-                "quantidade": 0,
-                "unidade": "",
-                "acao": f"CYA {cya:.0f} ppm — abaixo do ideal",
-                "justificativa": f"CYA {cya:.0f} ppm abaixo de {FAIXA_CYA_MIN} ppm. "
-                                 "Sem ácido cianúrico puro no estoque — monitorar.",
-                "norma": "APSP",
-            })
-
-    # Ordena por prioridade
-    sugestoes.sort(key=lambda x: x["prioridade"])
-    return sugestoes
-
-
-def exibir_sugestoes_dosagem(sugestoes: list[dict]):
-    """Exibe as sugestões de dosagem formatadas no Streamlit."""
-    if not sugestoes:
-        st.success("✅ Todos os parâmetros dentro da faixa ideal. Nenhuma correção necessária.")
-        return
-
-    st.markdown("**💊 Sugestões de correção (APSP/WHO):**")
-    for s in sugestoes:
-        prod = s["produto"]
-        qtd  = s["quantidade"]
-        unid = s["unidade"]
-        acao = s["acao"]
-        just = s["justificativa"]
-        prio = s["prioridade"]
-
-        if prio == 1:
-            icon = "🔴"
-        elif prio == 2:
-            icon = "🟡"
-        else:
-            icon = "🔵"
-
-        if qtd and qtd > 0:
-            st.markdown(f"{icon} **{prod}** — **{qtd} {unid}** → _{acao}_")
-        else:
-            st.markdown(f"{icon} **{prod}** → _{acao}_")
-
-        with st.expander("ℹ️ Detalhes técnicos", expanded=False):
-            st.caption(f"📐 {just}")
-            st.caption(f"📚 Norma: {s.get('norma','')}")
 
 # =========================================
 # CONFIGURAÇÃO GERAL
@@ -15406,7 +15173,14 @@ if modo == "📱 Modo Operador (Campo / Celular)":
             v = st.text_input(lbl, key=chave, placeholder=placeholder,
                 on_change=_autosave_rascunho,
                 help="Medição quinzenal — preencha somente nas visitas de medição completa." if quinzenal else None)
-            return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
+            if chave.rsplit("_", 1)[-1] not in {"ph", "crl", "ct", "dc", "alc", "cya"}:
+                return re.sub(r"[^0-9.,]", "", v).replace(",", ".")
+            texto = v.strip().replace(",", ".")
+            if texto and not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", texto):
+                _leituras_invalidas.add(chave)
+                st.warning(f"Confira a leitura de {label}. Informe apenas um valor numérico não negativo.")
+                return ""
+            return texto
 
         with st.expander("📋 Limites NBR 10818:2026", expanded=False):
             from utils.normas_piscinas import texto_ideal as _nbr_ideal
@@ -15429,7 +15203,11 @@ avisar o RT.
         op_piscinas_dados = []
         _slug_map = {"Piscina Adulto":"adulto","Piscina Infantil":"infantil","Piscina Family":"family"}
 
+        _cadastro_dose = piscinas_do_cliente(clientes_mapa_op.get(op_nome_cond))
+        _volumes_dose = {p["nome"]: p["volume"] for p in _cadastro_dose["piscinas"]}
+
         for pisc_nome in piscinas_ativas:
+            _leituras_invalidas = set()
             pisc_slug = _slug_map.get(pisc_nome, slugify_nome(pisc_nome)[:12])
             st.markdown('<div class="op-card">', unsafe_allow_html=True)
             st.markdown(f'<div class="op-title">🧪 {pisc_nome}</div>', unsafe_allow_html=True)
@@ -15472,6 +15250,7 @@ avisar o RT.
             if v_crl2 is not None and v_ct2 is not None:
                 if v_ct2 < v_crl2:
                     # CT < CRL é medição inconsistente: não registrar CC = 0.
+                    _leituras_invalidas.add("ct")
                     st.markdown("⚠️ **Cloro total inferior ao livre — repetir as medições de CRL e CT.**")
                 else:
                     p_cloraminas = round(v_ct2 - v_crl2, 2)
@@ -15500,87 +15279,48 @@ avisar o RT.
             _v_cya = valor_float(p_cya)
             _tem_params = any(v is not None for v in [_v_ph, _v_crl, _v_alc, _v_dc, _v_cya])
 
-            if _tem_params:
-                # Busca volume m³ do condomínio no Sheets
-                _vol_m3 = st.session_state.get(f"_vol_m3_{slugify_nome(op_nome_cond.strip())}", 0.0)
-                if not _vol_m3:
-                    try:
-                        _clientes_vol = sheets_listar_clientes_completo()
-                        for _cv in _clientes_vol:
-                            if _cv["nome"].lower().strip() == op_nome_cond.strip().lower():
-                                # Busca volume da planilha (col D = Volume_m3)
-                                _sh_vol = conectar_sheets()
-                                if _sh_vol:
-                                    _aba_vol = obter_aba_sheets("👥 Clientes")
-                                    _rows_vol = _aba_vol.get_all_values()
-                                    for _rv in _rows_vol:
-                                        if len(_rv) > 3 and _cv["nome"].lower() in str(_rv[2]).lower():
-                                            try:
-                                                _vol_m3 = float(str(_rv[3]).replace(",",".").strip() or 0)
-                                            except Exception:
-                                                _vol_m3 = 0.0
-                                            break
-                                break
-                        st.session_state[f"_vol_m3_{slugify_nome(op_nome_cond.strip())}"] = _vol_m3
-                    except Exception:
-                        _vol_m3 = 0.0
-
-                # Usa volume específico da piscina se disponível
-                _vol_pisc = 0.0
-                _slug_map2 = {"Piscina Adulto":"vol_adulto","Piscina Infantil":"vol_infantil","Piscina Family":"vol_family"}
-                _vol_key = _slug_map2.get(pisc_nome, "")
-                try:
-                    _clv = sheets_listar_clientes_completo()
-                    for _cv2 in _clv:
-                        if nomes_condominio_equivalentes(_cv2["nome"], op_nome_cond):
-                            if _vol_key:
-                                # Piscina padrão (adulto/infantil/family)
-                                _vol_pisc = float(_cv2.get(_vol_key, 0) or 0)
-                            else:
-                                # Piscina extra — busca no JSON local
-                                _pasta_extra_vol = GENERATED_DIR / slugify_nome(op_nome_cond.strip())
-                                _dados_extra_vol = (carregar_dados_condominio(_pasta_extra_vol) or {}) if _pasta_extra_vol.exists() else {}
-                                for _pe in _dados_extra_vol.get("piscinas_extras", []):
-                                    if _pe.get("nome","").strip().lower() == pisc_nome.strip().lower():
-                                        _vol_pisc = float(_pe.get("vol", 0) or 0)
-                                        break
-                            break
-                except Exception:
-                    pass
-                _vol_usar = _vol_pisc if _vol_pisc > 0 else _vol_m3
-
-                _sugestoes = []
-                if _vol_usar > 0:
-                    _sugestoes = calcular_sugestoes_dosagem(
-                        ph=_v_ph, crl=_v_crl, alc=_v_alc, dc=_v_dc, cya=_v_cya,
-                        volume_m3=_vol_usar
-                    )
-                if _sugestoes:
-                    st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:.0f} m³):**")
-                    for _s in _sugestoes:
-                        _icon = "🔴" if _s["prioridade"] == 1 else ("🟡" if _s["prioridade"] == 2 else "🔵")
-                        if _s["quantidade"] and _s["quantidade"] > 0:
-                            st.markdown(f"{_icon} **{_s['produto']}** — **{_s['quantidade']} {_s['unidade']}**")
-                            st.caption(f"↳ {_s['acao']}")
-                        else:
-                            st.markdown(f"{_icon} **{_s['produto']}** — {_s['acao']}")
-                        with st.expander("ℹ️ Base técnica", expanded=False):
-                            st.caption(_s["justificativa"])
-                            st.caption(f"📚 {_s.get('norma','')}")
-                    # Botão aplicar sugestões nas dosagens desta piscina
-                    if st.button(f"✅ Aplicar sugestões de {pisc_nome}",
-                            key=f"btn_aplicar_sug_{pisc_slug}",
-                            use_container_width=True):
-                        # Salva sugestões no session_state para preencher dosagens
-                        _key_sug = f"_sug_pisc_{pisc_slug}"
-                        st.session_state[_key_sug] = [
-                            s for s in _sugestoes
-                            if s.get("quantidade") and s["quantidade"] > 0
-                        ]
-                        st.success(f"✅ Sugestões aplicadas! Verifique as dosagens de {pisc_nome} abaixo.")
-                        st.rerun()
+            if _tem_params and not _leituras_invalidas:
+                _vol_usar = _volumes_dose.get(pisc_nome)
+                if not _vol_usar:
+                    st.info(f"Informe no cadastro o volume individual de {pisc_nome} para calcular dosagens.")
                 else:
-                    st.success("✅ Todos os parâmetros dentro da faixa ideal.")
+                    _chave_dose = f"{op_nome_cond}:{pisc_nome}"
+                    _cloro_escolhido = "Hipoclorito de cálcio 65%"
+                    _teor_bicarbonato = _teor_cloreto = None
+                    if _v_crl is not None and _v_crl < META_CRL:
+                        _cloro_escolhido = st.selectbox("Cloro disponível no rótulo", list(CLOROS),
+                                                       key=f"op_dose_cloro:{_chave_dose}")
+                    if _v_alc is not None and _v_alc < FAIXAS_COLETIVA_SIMPLES["alcalinidade"].ideal_min:
+                        _teor_bicarbonato = st.number_input("Bicarbonato de sódio no rótulo (% NaHCO₃)",
+                            min_value=0.01, max_value=100.0, value=None, key=f"op_dose_bic:{_chave_dose}")
+                    if _v_dc is not None and _v_dc < FAIXAS_COLETIVA_SIMPLES["dureza"].ideal_min:
+                        _teor_cloreto = st.number_input("Cloreto de cálcio no rótulo (% equivalente em CaCl₂ anidro)",
+                            min_value=0.01, max_value=100.0, value=None, key=f"op_dose_cal:{_chave_dose}")
+                    _sugestoes = calcular_sugestoes_dosagem(_v_ph, _v_crl, _v_alc, _v_dc, _v_cya,
+                        _vol_usar, produto_cloro=_cloro_escolhido, teor_bicarbonato=_teor_bicarbonato,
+                        teor_cloreto=_teor_cloreto)
+                    if _sugestoes:
+                        st.markdown(f"**💊 Sugestões para {pisc_nome} ({_vol_usar:g} m³)**")
+                        for _s in _sugestoes:
+                            if _s["quantidade"] > 0:
+                                st.markdown(f"**{_s['produto']} — {_s['quantidade']:g} {_s['unidade']}**")
+                                st.caption(_s["acao"])
+                            else:
+                                st.markdown(f"**{_s['produto']}** — {_s['acao']}")
+                            st.caption(_s["justificativa"])
+                        _doses = [s for s in _sugestoes if s["quantidade"] > 0]
+                        if _doses:
+                            st.caption("Estimativa teórica. Confira o rótulo e registre a quantidade efetivamente aplicada. "
+                                       "Se houver mais de uma correção, reavalie a água entre aplicações.")
+                            if st.button(f"✅ Aplicar sugestões de {pisc_nome}", key=f"btn_aplicar_sug_{pisc_slug}",
+                                         use_container_width=True):
+                                for i, dose in enumerate(_doses):
+                                    st.session_state[f"op_dos_{pisc_slug}_prod_{i}"] = dose["produto"]
+                                    st.session_state[f"op_dos_{pisc_slug}_qtd_{i}"] = str(dose["quantidade"])
+                                    st.session_state[f"op_dos_{pisc_slug}_un_{i}"] = dose["unidade"]
+                                    st.session_state[f"op_dos_{pisc_slug}_fin_{i}"] = dose["acao"]
+                    else:
+                        st.caption("Sem sugestão de dosagem para os parâmetros informados.")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -15602,18 +15342,6 @@ avisar o RT.
         for _pisc_d in op_piscinas_dados:
             _pn_d    = _pisc_d["nome"]
             _slug_d  = _slug_map.get(_pn_d, slugify_nome(_pn_d)[:12])
-            _key_sug = f"_sug_pisc_{_slug_d}"
-
-            # Se há sugestões aplicadas para esta piscina, pré-preenche os campos
-            _sug_aplicadas = st.session_state.get(_key_sug, [])
-            if _sug_aplicadas:
-                for _idx_s, _s in enumerate(_sug_aplicadas[:5]):
-                    st.session_state[f"op_dos_{_slug_d}_prod_{_idx_s}"] = _s.get("produto","")
-                    st.session_state[f"op_dos_{_slug_d}_qtd_{_idx_s}"]  = str(round(_s.get("quantidade",0),1))
-                    st.session_state[f"op_dos_{_slug_d}_un_{_idx_s}"]   = _s.get("unidade","")
-                    st.session_state[f"op_dos_{_slug_d}_fin_{_idx_s}"]  = _s.get("acao","")
-                st.session_state.pop(_key_sug, None)  # limpa após aplicar
-
             st.markdown(f"**🏊 {_pn_d}**")
             _dos_pisc = []
             for i in range(5):
